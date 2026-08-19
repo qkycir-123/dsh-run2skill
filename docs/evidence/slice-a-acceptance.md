@@ -12,7 +12,7 @@ Slice A 已形成最小可运行闭环：单个双面包可安装到 DSH Web pro
 
 | 门 | 命令 | 结果 |
 |---|---|---|
-| 类型、lint、全量单测 | `pnpm run check` | 27 个文件、258 项测试通过 |
+| 类型、lint、全量单测 | `pnpm run check` | 27 个文件、259 项测试通过 |
 | 发布构建 | `pnpm run build` | Host `lib/index.js`、Client `lib/client.js` 和 Host 类型产物生成 |
 | 包内容 | `pnpm pack --pack-destination .probe-work/package` | 仅包含 manifest、许可、README、薄 patch 和 `lib` 产物 |
 | 冻结评测 | `pnpm run evaluate` | 45 个样本；显式保存召回、precision、recall、普通无信号率均为 1.0 |

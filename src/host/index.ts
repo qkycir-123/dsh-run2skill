@@ -121,7 +121,11 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
             }])
             current = checkpoint.snapshot().sessions[lifecycleKey]
           }
-          if (current === undefined || candidate.turnEndSeq < current.activationFenceSeq) return
+          if (
+            current === undefined
+            || candidate.turnStartSeq === undefined
+            || candidate.turnStartSeq < current.activationFenceSeq
+          ) return
           const read = await reader.readFrom(candidate.header.id, 0)
           if (read.status === 'UNAVAILABLE') throw new Error(read.healthCode)
           const turnEnd = read.events.find((event) => (

@@ -5,7 +5,11 @@ import { createServer } from 'node:net'
 import { access, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { safeFailure } from '../support/safe-diagnostics.mjs'
+import {
+  isSafeDiagnosticOutput,
+  safeFailure,
+  sanitizeDiagnostic,
+} from '../support/safe-diagnostics.mjs'
 
 const [cloneArg, candidateArg, workArg] = process.argv.slice(2)
 if (!cloneArg || !candidateArg || !workArg) {
@@ -160,6 +164,7 @@ async function observe(present) {
       await delay(2_000)
       assert.equal(errors.filter(error => /run2skill/iu.test(error)).length, 0)
     }
+    assert.equal(isSafeDiagnosticOutput(sanitizeDiagnostic(logs)), true, 'candidate runtime log gate failed')
   } finally {
     await browser?.close()
     await stop(child)

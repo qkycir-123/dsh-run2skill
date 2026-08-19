@@ -139,6 +139,51 @@ describe('Host plugin assembly', () => {
     await dispose()
   })
 
+  it('does not capture user text from a Turn that started before the activation fence', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const header = { version: 1, id: 'mid-turn-session', createdAt: 1_725_000_000_000 }
+    const beforeActivation = [
+      { type: 'turn/start', seq: 0, time: 1_725_000_001_000, data: { turn: 0 } },
+      {
+        type: 'user/message', seq: 1, time: 1_725_000_001_100,
+        data: {
+          id: 'message-1', source: { kind: 'user' },
+          content: [{ type: 'text', text: '把这个流程保存成 Skill。' }],
+        },
+      },
+    ]
+    const turnEnd = {
+      type: 'turn/end', seq: 2, time: 1_725_000_002_000,
+      data: { turn: 0, reason: { kind: 'completed' } },
+    }
+    let events = beforeActivation
+    let revision = 'jsonl:0'
+    let eventListener: ((session: { header: typeof header }, event: typeof turnEnd) => void) | undefined
+    const context = {
+      sessions: {},
+      sessionPersistence: {
+        async listSnapshots() { return [{ header, revision }] },
+        async readFrom() { return { meta: header, events } },
+      },
+      storageDomain: { async open() { return domain } },
+      workspaceRegistry: { async resolveByPath() { return undefined } },
+      connection: { rpc: { handle() { return async () => undefined } } },
+      on(_event: string, listener: typeof eventListener) { eventListener = listener },
+    }
+
+    const dispose = await apply(context)
+    events = [...beforeActivation, turnEnd]
+    revision = 'jsonl:1'
+    eventListener?.({ header }, turnEnd)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(domain.workItems.size).toBe(0)
+    const checkpoint = Object.values(domain.global.get().sessions)[0]
+    expect(checkpoint?.activationFenceSeq).toBe(2)
+    expect(checkpoint?.durableNextSeq).toBe(2)
+    await dispose()
+  })
+
   it('closes an opened domain when its durable schema cannot initialize', async () => {
     const domain = createMemoryRun2skillDomain()
     const close = vi.fn(async () => undefined)
