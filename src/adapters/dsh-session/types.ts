@@ -41,6 +41,7 @@ export interface TurnObservation {
   readonly turn: number
   readonly turnStartSeq: number
   readonly turnEndSeq: number
+  readonly turnEndTime: number
   readonly turnOutcomeKind: string
   readonly turnInstanceDigest: string
   readonly directUserMessages: readonly DirectUserMessageObservation[]

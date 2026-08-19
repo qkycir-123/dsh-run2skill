@@ -5,14 +5,47 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
   "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
     "test": "vitest run",
+    "evaluate": "vitest run tests/frozen-evaluation.spec.ts --reporter=verbose",
+    "probe:crash": "pnpm run build && node probes/crash-matrix/probe.mjs .",
+    "build": "tsdown",
+    "pack:check": "pnpm run build && pnpm pack --pack-destination .probe-work/package",
+    "verify:candidate": "pnpm run build && pnpm run evaluate && node probes/crash-matrix/probe.mjs . && node probes/candidate/verify.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings src tests vitest.config.ts",
+    "lint": "oxlint --deny-warnings src tests probes/candidate probes/support vitest.config.ts tsdown.config.ts",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
@@ -23,6 +56,7 @@
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "oxlint": "1.76.0",
+    "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   }

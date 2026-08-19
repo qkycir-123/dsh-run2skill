@@ -1,8 +1,10 @@
 # 切片 A：Observe 设计
 
-状态：已接受；等待拆分 Issues，生产实现尚未开始  
-日期：2026-08-19  
-适用版本：dsh-run2skill v0.1  
+状态：已接受并完成实现验收
+
+日期：2026-08-19
+
+适用版本：dsh-run2skill v0.1
 DSH baseline：`99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（0.1.0-rc.7）
 
 ## 1. 结论
@@ -119,7 +121,7 @@ sequenceDiagram
 
 不读取前一 Turn，不读取附件、resource、图片、Agent message、Tool input/output、plugin 或 synthetic user-role message。`turn/end.reason` 只作为事实记录，不作为成功 Workflow 的证据。
 
-如果日志缺少匹配的 `turn/start`、seq 不连续或 `turn/end` 坐标不一致，本次不猜测文本边界。只有 Session 生命周期身份和目标 `turn/end` 已可确定时，才保存 metadata-only blocked WorkItem，`captureBlockers` 包含 `TURN_BOUNDARY_INCOMPLETE`；否则只记录健康状态、置 `catchupNeeded` 并等待后续 gap scan，水位不推进。
+如果日志缺少匹配的 `turn/start`、seq 不连续或 `turn/end` 坐标不一致，本次不猜测文本边界。A6 集成确认：仅有 Session 生命周期和目标 `turn/end` 仍不足以安全构造 `turnInstanceDigest`；若此时伪造 WorkItem ID，上游尾部回退并复用 seq 后可能把两个不同 Turn 合并。因此当前 DSH baseline 下，这类边界损坏统一只记录 `TURN_BOUNDARY_INCOMPLETE` 健康状态、置 `catchupNeeded` 并等待后续 gap scan，水位不推进。只有 SignalKey 的完整 Turn-instance 身份已可证、但正文因大小上限或脱敏异常无法完整扫描时，才保存 metadata-only blocked WorkItem。`TURN_BOUNDARY_INCOMPLETE` blocker 保留在 v1 schema 中作为兼容词汇，但本 baseline 不持久化无法安全寻址的实例。
 
 ### 5.3 SignalKey 与 WorkItem ID
 

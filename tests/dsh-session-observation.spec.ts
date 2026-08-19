@@ -111,6 +111,7 @@ describe('TurnObservation construction', () => {
         turn: 7,
         turnStartSeq: 0,
         turnEndSeq: 4,
+        turnEndTime: 10_004,
         turnOutcomeKind: 'completed',
         directUserMessages: [
           { messageSeq: 1, messageId: 'message-a', textBlocks: ['first'] },
