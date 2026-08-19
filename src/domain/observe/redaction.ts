@@ -87,7 +87,7 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     'bearer [REDACTED]',
   )
   replace(
-    /\b(?:gh[pousr]_[a-z0-9]{20,}|sk-[a-z0-9][a-z0-9_-]{18,}[a-z0-9]|(?:pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu,
+    /\b(?:gh[pousr]_[a-z0-9]{20,}|glpat-[a-z0-9_-]{20,}|xox[baprs]-[a-z0-9-]{10,}|npm_[a-z0-9]{20,}|aiza[a-z0-9_-]{30,}|sk-[a-z0-9][a-z0-9_-]{18,}[a-z0-9]|(?:pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu,
     'API_KEY',
     '[REDACTED]',
   )
@@ -95,6 +95,11 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     /\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gu,
     'SECRET_ASSIGNMENT',
     (match) => `${match.slice(0, match.indexOf('=') + 1)}[REDACTED]`,
+  )
+  replace(
+    /\b((?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key))\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+    'SECRET_ASSIGNMENT',
+    (_match, key: string, separator: string) => `${key.toLowerCase()}${separator}[REDACTED]`,
   )
   replace(
     /\b(password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key)\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,

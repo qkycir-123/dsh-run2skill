@@ -111,6 +111,13 @@ describe('versioned domain schemas', () => {
     })).toThrow()
     expect(() => CaptureWorkItemV1Schema.parse({
       ...item,
+      triggerHits: [{
+        ...item.triggerHits[0]!,
+        ruleId: 'ctv1.rul\u00e9',
+      }],
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
       evidenceRefs: [{
         ...item.evidenceRefs[0]!,
         redactionKinds: ['API_KEY', 'PRIVATE_KEY'],
@@ -179,6 +186,50 @@ describe('versioned domain schemas', () => {
           observedTailSeq: 12,
         },
       },
+    })).toThrow()
+  })
+
+  it('rejects contradictory recovery and checkpoint state', () => {
+    const lifecycle = {
+      rootSessionId: 'session-1',
+      sessionCreatedAt: 100,
+      sessionCwdDigest: 'a'.repeat(64),
+    }
+    const lifecycleKey = deriveSessionLifecycleKey(lifecycle)
+    const session = {
+      ...lifecycle,
+      triggerPolicyVersion: 'cheap-trigger-v1' as const,
+      activationFenceSeq: 10,
+      durableNextSeq: 10,
+      observedTailSeq: 12,
+    }
+    const base = {
+      schemaVersion: 1 as const,
+      activeTriggerPolicyVersion: 'cheap-trigger-v1' as const,
+      sessions: { [lifecycleKey]: session },
+      health: { counts: {} },
+      recovery: { recoveryLag: false },
+      checkpoint: { dirty: false, pendingSessionCount: 0 },
+    }
+
+    expect(GlobalV1Schema.parse(base)).toEqual(base)
+    expect(() => GlobalV1Schema.parse({
+      ...base,
+      recovery: {
+        recoveryLag: false,
+        cursor: { lifecycleKey, nextSeq: 10 },
+      },
+    })).toThrow()
+    expect(() => GlobalV1Schema.parse({
+      ...base,
+      recovery: {
+        recoveryLag: true,
+        cursor: { lifecycleKey: `sl_${'f'.repeat(64)}`, nextSeq: 10 },
+      },
+    })).toThrow()
+    expect(() => GlobalV1Schema.parse({
+      ...base,
+      checkpoint: { dirty: false, pendingSessionCount: 1 },
     })).toThrow()
   })
 })

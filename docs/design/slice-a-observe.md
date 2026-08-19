@@ -282,6 +282,7 @@ Slice A 不淘汰已记录的 Session 生命周期水位。后续 Slice D 必须
 2. 不存在则 `put`，已存在则校验 SignalKey 完全相同并做单调合并；
 3. WorkItem durable 成功后，只在内存中推进 observed tail；无信号与强 Child 也只更新 observed tail；
 4. 更新只允许 trigger/evidence 集合去重并集、blocker 减少、完整性提高，以及 `SCAN_INCOMPLETE` 单向收敛到 `CHEAP_TRIGGER/CAPTURED` 或 `RESOLVED_NO_SIGNAL`；不能覆盖 `createdAt`、重新打开已关闭无信号项或缩短既有证据；
+   A1 的领域 merge 是可交换、结合、幂等的事实 join，只携带输入中最大的已持久 revision；它不猜测下一次 Store revision。A3 在 compare-revision 写入确认 facts 发生变化后，才分配下一 durable revision。两个 `INCOMPLETE` 观察若 blocker 交集为空，表示输入互相矛盾而不是“已经完整”，必须结构化失败，不能借合并顺序推导无信号。
 5. 水位采用 write-behind：候选默认达到 32 个已完整扫描的 Root Turn，或距上次 checkpoint 30 秒时，一次提交所有 dirty Session 水位；持久 `durableNextSeq` 只能推进到 `sessionPersistence.listSnapshots/readFrom` 已证明 durable 的连续前缀，绝不能直接采用 live observed tail；这两个批量值是实现候选值，A3 性能探针必须在固定 Web JSON backend 上测量后冻结；
 6. 命中或 blocked WorkItem 不等待 checkpoint 批次，立即写入；为避免 JSON domain 连续整文件发布，WorkItem durable 后的水位仍可留到批次提交；
 7. WorkItem 成功、水位未成功时，重启会再次扫描并命中同一 ID；水位先于对应 WorkItem 写入是禁止路径。

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   CAPTURE_BLOCKER_ORDER,
+  compareOrdinalText,
   OBSERVE_LIMITS,
   REDACTION_KIND_ORDER,
   TRIGGER_KIND_ORDER,
@@ -50,7 +51,7 @@ export const SignalKeySchema = z.object({
 export const TriggerHitSchema = z.object({
   kind: z.enum(TRIGGER_KIND_ORDER),
   messageSeq: safeNonNegativeInteger,
-  ruleId: z.string().min(1).max(160),
+  ruleId: z.string().min(1).max(160).regex(/^[a-z0-9][a-z0-9._-]*$/),
   confidence: z.literal('HIGH'),
 }).strict()
 
@@ -176,12 +177,12 @@ export const CaptureWorkItemV1Schema = z.object({
   if (!isCanonicallyOrdered(value.triggerHits, (left, right) => (
     left.messageSeq - right.messageSeq
     || TRIGGER_KIND_ORDER.indexOf(left.kind) - TRIGGER_KIND_ORDER.indexOf(right.kind)
-    || left.ruleId.localeCompare(right.ruleId)
+    || compareOrdinalText(left.ruleId, right.ruleId)
   ))) {
     context.addIssue({ code: 'custom', message: 'Trigger hits must use canonical order' })
   }
   if (!isCanonicallyOrdered(value.evidenceRefs, (left, right) => (
-    left.messageSeq - right.messageSeq || left.excerptDigest.localeCompare(right.excerptDigest)
+    left.messageSeq - right.messageSeq || compareOrdinalText(left.excerptDigest, right.excerptDigest)
   ))) {
     context.addIssue({ code: 'custom', message: 'Evidence references must use canonical order' })
   }
@@ -260,6 +261,40 @@ export const GlobalV1Schema = z.object({
         message: 'Session key does not match lifecycle facts',
       })
     }
+  }
+  const cursor = value.recovery.cursor
+  if (value.recovery.recoveryLag !== (cursor !== undefined)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['recovery'],
+      message: 'Recovery lag and cursor presence must agree',
+    })
+  }
+  if (cursor !== undefined) {
+    const session = value.sessions[cursor.lifecycleKey]
+    if (session === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['recovery', 'cursor', 'lifecycleKey'],
+        message: 'Recovery cursor must reference a known session lifecycle',
+      })
+    } else if (
+      cursor.nextSeq < session.activationFenceSeq
+      || cursor.nextSeq > session.observedTailSeq + 1
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['recovery', 'cursor', 'nextSeq'],
+        message: 'Recovery cursor must remain within the observed session envelope',
+      })
+    }
+  }
+  if (value.checkpoint.dirty !== (value.checkpoint.pendingSessionCount > 0)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['checkpoint'],
+      message: 'Checkpoint dirty state and pending session count must agree',
+    })
   }
 })
 

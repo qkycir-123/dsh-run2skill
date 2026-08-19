@@ -181,6 +181,48 @@
       "sourceKind": "user",
       "text": "这个文档记录了保存流程的原理。",
       "expectedKinds": []
+    },
+    {
+      "id": "en-negative-then-positive-save",
+      "sourceKind": "user",
+      "text": "Do not save this file. Please save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-negative-then-positive-save",
+      "sourceKind": "user",
+      "text": "不要保存这份草稿。请记住这个流程。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-without-delay-save",
+      "sourceKind": "user",
+      "text": "Without delay, save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-substring-near-miss-negative",
+      "sourceKind": "user",
+      "text": "For this projection, the mustache process is documented.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-cross-clause-save-negative",
+      "sourceKind": "user",
+      "text": "The service can save workflow state. Could you capture a screenshot?",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-descriptive-constraint-negative",
+      "sourceKind": "user",
+      "text": "For this project, the service never stores tokens.",
+      "expectedKinds": []
+    },
+    {
+      "id": "mixed-save-explanation-negative",
+      "sourceKind": "user",
+      "text": "请 explain 如何保存这个 workflow。",
+      "expectedKinds": []
     }
   ]
 }

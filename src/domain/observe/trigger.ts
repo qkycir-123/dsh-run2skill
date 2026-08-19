@@ -55,6 +55,10 @@ const explicitSaveRequestContext = new RegExp(
   'iu',
 )
 const explicitSaveNegation = new RegExp(CHEAP_TRIGGER_V1_POLICY.explicitSave.negation, 'iu')
+const explicitSaveExplanation = new RegExp(
+  CHEAP_TRIGGER_V1_POLICY.explicitSave.explanation,
+  'iu',
+)
 const correctionAnchor = new RegExp(
   `${WORD_BOUNDARY}${CHEAP_TRIGGER_V1_POLICY.correction.anchors}${WORD_END}`,
   'iu',
@@ -62,6 +66,10 @@ const correctionAnchor = new RegExp(
 const correctionBehavior = new RegExp(CHEAP_TRIGGER_V1_POLICY.correction.behaviorWords, 'iu')
 const persistentScope = new RegExp(CHEAP_TRIGGER_V1_POLICY.constraint.persistentScope, 'iu')
 const constraintOperator = new RegExp(CHEAP_TRIGGER_V1_POLICY.constraint.operators, 'iu')
+const constraintDescriptiveSubject = new RegExp(
+  CHEAP_TRIGGER_V1_POLICY.constraint.descriptiveSubject,
+  'iu',
+)
 const reusableScope = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.reusableScope, 'iu')
 const processWords = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.processWords, 'iu')
 const explicitSavePatterns = [explicitSaveForward, explicitSaveReverse, explicitSaveFixed] as const
@@ -78,6 +86,52 @@ function firstMatchIndex(text: string, patterns: readonly RegExp[]): number | un
   return first
 }
 
+function textClauses(
+  text: string,
+  splitCommas: boolean,
+): Array<{ text: string; start: number }> {
+  const clauses: Array<{ text: string; start: number }> = []
+  const pattern = splitCommas ? /[^。！？.!?;；,，]+/gu : /[^。！？.!?;；]+/gu
+  for (const match of text.matchAll(pattern)) {
+    const raw = match[0]
+    const leadingWhitespace = raw.length - raw.trimStart().length
+    const clause = raw.trim()
+    if (clause.length > 0) {
+      clauses.push({ text: clause, start: (match.index ?? 0) + leadingWhitespace })
+    }
+  }
+  return clauses
+}
+
+function firstExplicitSaveIndex(text: string): number | undefined {
+  for (const clause of textClauses(text, true)) {
+    const candidateIndex = firstMatchIndex(clause.text, explicitSavePatterns)
+    if (
+      candidateIndex !== undefined
+      && explicitSaveRequestContext.test(clause.text)
+      && !explicitSaveNegation.test(clause.text)
+      && !explicitSaveExplanation.test(clause.text)
+    ) {
+      return clause.start + candidateIndex
+    }
+  }
+  return undefined
+}
+
+function firstConstraintIndex(text: string): number | undefined {
+  for (const clause of textClauses(text, false)) {
+    const scopeIndex = firstMatchIndex(clause.text, constraintPatterns)
+    if (
+      scopeIndex !== undefined
+      && constraintOperator.test(clause.text)
+      && !constraintDescriptiveSubject.test(clause.text)
+    ) {
+      return clause.start + scopeIndex
+    }
+  }
+  return undefined
+}
+
 function hasOrderedSteps(text: string): boolean {
   for (const pattern of CHEAP_TRIGGER_V1_POLICY.workflow.orderedSteps) {
     const start = text.indexOf(pattern.start)
@@ -90,12 +144,8 @@ function hasOrderedSteps(text: string): boolean {
 
 function matchRules(text: string): MatchedRule[] {
   const matches: MatchedRule[] = []
-  const explicitSaveIndex = firstMatchIndex(text, explicitSavePatterns)
-  if (
-    explicitSaveIndex !== undefined
-    && explicitSaveRequestContext.test(text)
-    && !explicitSaveNegation.test(text)
-  ) {
+  const explicitSaveIndex = firstExplicitSaveIndex(text)
+  if (explicitSaveIndex !== undefined) {
     matches.push({
       kind: 'EXPLICIT_SAVE',
       ruleId: 'ctv1.explicit-save.save-target',
@@ -114,8 +164,8 @@ function matchRules(text: string): MatchedRule[] {
       matchIndex: correctionIndex,
     })
   }
-  const constraintIndex = firstMatchIndex(text, constraintPatterns)
-  if (constraintIndex !== undefined && constraintOperator.test(text)) {
+  const constraintIndex = firstConstraintIndex(text)
+  if (constraintIndex !== undefined) {
     matches.push({
       kind: 'CONSTRAINT',
       ruleId: 'ctv1.constraint.persistent-operator',

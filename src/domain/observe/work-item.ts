@@ -1,5 +1,6 @@
 import {
   CAPTURE_BLOCKER_ORDER,
+  compareOrdinalText,
   OBSERVE_LIMITS,
   REDACTION_KIND_ORDER,
   TRIGGER_KIND_ORDER,
@@ -48,7 +49,7 @@ function mergeTriggerHits(left: readonly TriggerHit[], right: readonly TriggerHi
   return [...hits.values()].sort((a, b) => (
     a.messageSeq - b.messageSeq
     || TRIGGER_KIND_ORDER.indexOf(a.kind) - TRIGGER_KIND_ORDER.indexOf(b.kind)
-    || a.ruleId.localeCompare(b.ruleId)
+    || compareOrdinalText(a.ruleId, b.ruleId)
   ))
 }
 
@@ -70,7 +71,7 @@ function mergeEvidenceRefs(left: readonly EvidenceRef[], right: readonly Evidenc
   }
 
   const merged = [...evidence.values()].sort((a, b) => (
-    a.messageSeq - b.messageSeq || a.excerptDigest.localeCompare(b.excerptDigest)
+    a.messageSeq - b.messageSeq || compareOrdinalText(a.excerptDigest, b.excerptDigest)
   ))
   const totalBytes = merged.reduce(
     (total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'),
@@ -154,22 +155,21 @@ function materializeMergedFacts(
   const matchesRight = sameJson(mergedFacts, withoutRevisionFacts(right))
   if (matchesLeft && matchesRight) return preferSnapshot(left, right)
 
+  const revision = Math.max(left.revision, right.revision)
+  const updatedAt = compareIsoDateTime(left.updatedAt, right.updatedAt) >= 0
+    ? left.updatedAt
+    : right.updatedAt
   const matchingSnapshot = matchesLeft ? left : matchesRight ? right : undefined
-  const otherSnapshot = matchingSnapshot === left ? right : left
   if (
     matchingSnapshot !== undefined
-    && matchingSnapshot.revision >= otherSnapshot.revision
-    && compareIsoDateTime(matchingSnapshot.updatedAt, otherSnapshot.updatedAt) >= 0
-  ) {
-    return matchingSnapshot
-  }
+    && matchingSnapshot.revision === revision
+    && matchingSnapshot.updatedAt === updatedAt
+  ) return matchingSnapshot
 
   return parseWorkItem({
     ...mergedFacts,
-    revision: Math.max(left.revision, right.revision) + 1,
-    updatedAt: compareIsoDateTime(left.updatedAt, right.updatedAt) >= 0
-      ? left.updatedAt
-      : right.updatedAt,
+    revision,
+    updatedAt,
   })
 }
 
@@ -199,6 +199,8 @@ export function mergeCaptureWorkItems(
   existingValue: CaptureWorkItemV1,
   incomingValue: CaptureWorkItemV1,
 ): CaptureWorkItemV1 {
+  // This is an associative fact join. A3 owns compare-revision persistence and
+  // assigns the next durable revision only when the joined facts change.
   const existing = parseWorkItem(existingValue)
   const incoming = parseWorkItem(incomingValue)
   assertIdentity(existing, incoming)

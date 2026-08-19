@@ -106,7 +106,7 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     const reverse = mergeCaptureWorkItems(resolved, blocked)
 
     expect(forward).toEqual(reverse)
-    expect(forward.revision).toBe(9)
+    expect(forward.revision).toBe(8)
     expect(forward.updatedAt).toBe(blocked.updatedAt)
     expect(forward.processingState).toBe('RESOLVED_NO_SIGNAL')
     expect(mergeCaptureWorkItems(forward, blocked)).toEqual(forward)
@@ -128,7 +128,7 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     const reverse = mergeCaptureWorkItems(triggered, blocked)
 
     expect(forward).toEqual(reverse)
-    expect(forward.revision).toBe(9)
+    expect(forward.revision).toBe(8)
     expect(forward.updatedAt).toBe(blocked.updatedAt)
     expect(forward.captureReason).toBe('CHEAP_TRIGGER')
   })
@@ -153,7 +153,7 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     const reverse = mergeCaptureWorkItems(bound, unavailable)
 
     expect(forward).toEqual(reverse)
-    expect(forward.revision).toBe(9)
+    expect(forward.revision).toBe(8)
     expect(forward.workspaceBinding).toEqual(bound.workspaceBinding)
   })
 
@@ -169,6 +169,68 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     })
 
     expect(() => mergeCaptureWorkItems(nonCanonical, structuredClone(nonCanonical))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WORK_ITEM' }),
+    )
+  })
+
+  it('joins pre-aggregated facts associatively without manufacturing revisions', () => {
+    const explicit = makeWorkItem({ revision: 1 })
+    const constraintHit = {
+      kind: 'CONSTRAINT' as const,
+      messageSeq: 12,
+      ruleId: 'ctv1.constraint.persistent-operator',
+      confidence: 'HIGH' as const,
+    }
+    const constraint = makeWorkItem({ revision: 1, triggerHits: [constraintHit] })
+    const union = makeWorkItem({
+      revision: 1,
+      triggerHits: [...explicit.triggerHits, constraintHit],
+    })
+
+    const leftGrouped = mergeCaptureWorkItems(
+      mergeCaptureWorkItems(explicit, constraint),
+      union,
+    )
+    const rightGrouped = mergeCaptureWorkItems(
+      explicit,
+      mergeCaptureWorkItems(constraint, union),
+    )
+    expect(leftGrouped).toEqual(rightGrouped)
+    expect(leftGrouped.revision).toBe(1)
+
+    const highRevisionExplicit = { ...explicit, revision: 10 }
+    const highLeft = mergeCaptureWorkItems(
+      mergeCaptureWorkItems(highRevisionExplicit, constraint),
+      union,
+    )
+    const highRight = mergeCaptureWorkItems(
+      highRevisionExplicit,
+      mergeCaptureWorkItems(constraint, union),
+    )
+    expect(highLeft).toEqual(highRight)
+    expect(highLeft.revision).toBe(10)
+  })
+
+  it('rejects mutually inconsistent incomplete blocker observations in either order', () => {
+    const turnBoundary = makeWorkItem({
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'INCOMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: ['TURN_BOUNDARY_INCOMPLETE'],
+    })
+    const textLimit = makeWorkItem({
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'INCOMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: ['TEXT_LIMIT_EXCEEDED'],
+    })
+
+    expect(() => mergeCaptureWorkItems(turnBoundary, textLimit)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WORK_ITEM' }),
+    )
+    expect(() => mergeCaptureWorkItems(textLimit, turnBoundary)).toThrowError(
       expect.objectContaining({ code: 'INVALID_WORK_ITEM' }),
     )
   })
@@ -232,7 +294,7 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     const reverse = mergeCaptureWorkItems(second, first)
 
     expect(forward).toEqual(reverse)
-    expect(forward.revision).toBe(2)
+    expect(forward.revision).toBe(1)
     expect(forward.triggerHits.map((hit) => hit.kind)).toEqual(['EXPLICIT_SAVE', 'CONSTRAINT'])
     expect(forward.evidenceRefs.map((evidence) => evidence.messageSeq)).toEqual([11, 12])
   })

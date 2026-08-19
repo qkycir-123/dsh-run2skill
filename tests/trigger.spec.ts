@@ -80,6 +80,26 @@ describe('cheap-trigger-v1', () => {
     expect(result.evidenceRefs[0]!.redactionKinds).toContain(kind)
   })
 
+  it.each([
+    ['SECRET_ASSIGNMENT', 'deepseek_key=synthetic-provider-value'],
+    ['SECRET_ASSIGNMENT', 'client_secret=synthetic-client-value'],
+    ['SECRET_ASSIGNMENT', 'refresh_token=synthetic-refresh-value'],
+    ['SECRET_ASSIGNMENT', 'github_token=synthetic-github-value'],
+    ['API_KEY', 'xoxb-1234567890-synthetic-slack-token'],
+    ['API_KEY', 'glpat-abcdefghijklmnopqrstuvwxyz123456'],
+  ])('keeps selected %s form out of durable evidence', (kind, secret) => {
+    const result = analyzeCheapTriggerV1([{
+      messageSeq: 1,
+      sourceKind: 'user',
+      text: `Remember this workflow. ${secret}`,
+    }])
+
+    expect(result.status).toBe('COMPLETE')
+    expect(result.evidenceRefs).toHaveLength(1)
+    expect(result.evidenceRefs[0]!.excerpt).not.toContain('synthetic')
+    expect(result.evidenceRefs[0]!.redactionKinds).toContain(kind)
+  })
+
   it('fails closed to metadata-only when message or turn limits are exceeded', () => {
     const oversizedMessage = 'a'.repeat(64 * 1024 + 1)
     const result = analyzeCheapTriggerV1([{ messageSeq: 1, sourceKind: 'user', text: oversizedMessage }])

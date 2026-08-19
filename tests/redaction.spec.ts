@@ -99,6 +99,29 @@ describe('Sensitive Data Filter', () => {
   })
 
   it.each([
+    'xoxb-1234567890-synthetic-slack-token',
+    'glpat-abcdefghijklmnopqrstuvwxyz123456',
+  ])('redacts an additional selected provider credential form: %s', (credential) => {
+    const result = preprocessSensitiveText(credential)
+
+    expect(result.text).toBe('[REDACTED]')
+    expect(result.redactionKinds).toContain('API_KEY')
+  })
+
+  it.each([
+    'deepseek_key=synthetic-provider-value',
+    'DEEPSEEK_KEY=synthetic-provider-value',
+    'client_secret=synthetic-client-value',
+    'refresh_token=synthetic-refresh-value',
+    'github_token=synthetic-github-value',
+  ])('redacts a compound credential assignment: %s', (assignment) => {
+    const result = preprocessSensitiveText(assignment)
+
+    expect(result.text).not.toContain('synthetic')
+    expect(result.redactionKinds).toContain('SECRET_ASSIGNMENT')
+  })
+
+  it.each([
     'sk-short-value',
     'tasksk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
   ])('does not redact an API-key near miss: %s', (value) => {

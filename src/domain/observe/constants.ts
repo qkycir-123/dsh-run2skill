@@ -37,3 +37,9 @@ export const OBSERVE_LIMITS = Object.freeze({
   maxPathBytes: 32 * 1024,
   maxHeaderRevisionChars: 1024,
 })
+
+export function compareOrdinalText(left: string, right: string): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
