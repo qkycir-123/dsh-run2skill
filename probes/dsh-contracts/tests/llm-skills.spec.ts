@@ -11,6 +11,7 @@ import LlmRuntime, {
 } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
+  LlmResolvedModelInfo,
   StreamChunk,
   TokenUsage,
 } from '@deepseek-ai/dsh-llm'
@@ -23,6 +24,10 @@ import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
+import {
+  RestrictedLearningClient,
+  type LearningCallLedger,
+} from '../src/adapters/dsh-llm/restricted-learning-client.js'
 import { recallExistingSkills } from '../src/domain/learn/skill-recall.js'
 
 const temporaryDirectories: string[] = []
@@ -196,6 +201,90 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
           failure: { message: 'contract probe cancelled' },
         },
       })
+    } finally {
+      await llmFiber.dispose()
+    }
+  })
+
+  it('runs the production restricted client through ctx.llm with one durable repair', async () => {
+    const ctx = new Context()
+    const llmFiber = await ctx.plugin(LlmRuntime)
+    const valid = JSON.stringify({
+      experiences: [{
+        type: 'WORKFLOW',
+        lesson: 'Run the focused verification first.',
+        persistenceScope: 'PROJECT',
+        evidenceStrength: 'HIGH',
+        supportingEvidence: [{ messageSeq: 11, excerptDigest: 'a'.repeat(64) }],
+      }],
+      proposal: {
+        policyVersion: 'learning-v1',
+        name: 'focused-verification',
+        description: 'Run focused verification before the full suite.',
+        whenToUse: 'Use after changing a narrow implementation unit.',
+        content: '# Focused verification\n\nRun the focused test, then the full suite.',
+        invocation: { modelInvocable: true, userInvocable: false },
+        persistenceScope: 'PROJECT',
+        curation: { decision: 'CREATE', rationale: 'No existing Skill covers it.' },
+      },
+    })
+    const adapter = new class extends LlmAdapter {
+      readonly calls: GenerateOptions[] = []
+      readonly responses = ['{"experiences":', valid]
+
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: 32_000 } })
+      }
+
+      override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        this.calls.push(options)
+        const text = this.responses[this.calls.length - 1]
+        if (text === undefined) throw new Error('unexpected third call')
+        yield { type: 'text-delta', index: 0, text }
+        yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }
+    }()
+    ctx.llm.registerAdapter(['session-provider'], adapter)
+    const calls: Parameters<LearningCallLedger['record']>[0][] = []
+    const ledger: LearningCallLedger = {
+      async reserve(kind) {
+        return { requestOrdinal: kind === 'PRIMARY' ? 1 : 2 }
+      },
+      async record(call) { calls.push(call) },
+    }
+    try {
+      const client = new RestrictedLearningClient({
+        resolveModelInfo: (provider, model, signal) => (
+          ctx.llm.resolveModelInfo(provider, model, signal)
+        ),
+        createUserMessage: text => createMessage({
+          role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' },
+        }),
+        stream: options => ctx.llm.stream(options),
+      })
+      const result = await client.learn({
+        route: { provider: 'session-provider', model: 'session-model' },
+        envelope: JSON.stringify({
+          policyVersion: 'learning-v1',
+          workItemId: `wi_${'b'.repeat(64)}`,
+          trigger: { turn: 2, turnEndSeq: 12, evidenceDigests: ['a'.repeat(64)] },
+          blocks: [],
+        }),
+        workItemId: `wi_${'b'.repeat(64)}`,
+        catalogObservationDigest: 'c'.repeat(64),
+        shortlistDigests: [],
+        ledger,
+      })
+
+      expect(result.status).toBe('SUCCEEDED')
+      expect(adapter.calls).toHaveLength(2)
+      expect(adapter.calls.every(call => call.tools === undefined && call.purpose === undefined)).toBe(true)
+      expect(adapter.calls.every(call => call.provider === 'session-provider')).toBe(true)
+      expect(calls.map(call => [call.requestOrdinal, call.kind, call.outcome])).toEqual([
+        [1, 'PRIMARY', 'SUCCEEDED'],
+        [2, 'FORMAT_REPAIR', 'SUCCEEDED'],
+      ])
     } finally {
       await llmFiber.dispose()
     }

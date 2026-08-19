@@ -1,5 +1,11 @@
 import { sha256Utf8 } from '../observe/hashing.js'
-import type { ExperienceRecordV1, LearningProposalV1 } from './schemas.js'
+import {
+  ExperienceRecordV1Schema,
+  LearningProposalV1Schema,
+  type ExperienceRecordV1,
+  type LearningProposalV1,
+  type ModelLearningOutputV1,
+} from './schemas.js'
 
 type ExperienceFacts = Omit<ExperienceRecordV1, 'experienceId'>
 type ProposalFacts = Omit<LearningProposalV1, 'learningProposalId'>
@@ -22,4 +28,32 @@ export function deriveLearningProposalId(
   facts: ProposalFacts,
 ): `lp_${string}` {
   return `lp_${sha256Utf8(canonicalJson({ workItemId, facts }))}`
+}
+
+export interface LearningHostFacts {
+  readonly workItemId: string
+  readonly catalogObservationDigest: string
+  readonly shortlistDigests: readonly string[]
+}
+
+/** Add deterministic identities and observation facts that the model is not trusted to supply. */
+export function materializeModelLearningOutput(
+  output: ModelLearningOutputV1,
+  host: LearningHostFacts,
+): { experiences: ExperienceRecordV1[]; proposal: LearningProposalV1 } {
+  const experiences = output.experiences.map((facts) => ExperienceRecordV1Schema.parse({
+    experienceId: deriveExperienceId(host.workItemId, facts),
+    ...facts,
+  }))
+  const proposalFacts: Omit<LearningProposalV1, 'learningProposalId'> = {
+    ...output.proposal,
+    supportingExperienceIds: experiences.map(experience => experience.experienceId),
+    catalogObservationDigest: host.catalogObservationDigest,
+    shortlistDigests: [...host.shortlistDigests],
+  }
+  const proposal = LearningProposalV1Schema.parse({
+    learningProposalId: deriveLearningProposalId(host.workItemId, proposalFacts),
+    ...proposalFacts,
+  })
+  return { experiences, proposal }
 }
