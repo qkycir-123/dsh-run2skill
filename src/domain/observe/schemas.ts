@@ -12,6 +12,11 @@ import {
   deriveSessionLifecycleKeyFromFacts,
   deriveWorkItemIdFromFacts,
 } from './identity.js'
+import {
+  LearningStateV1Schema,
+  deriveExperienceId,
+  deriveLearningProposalId,
+} from '../learn/index.js'
 
 const safeNonNegativeInteger = z.number().refine(
   (value) => Number.isSafeInteger(value) && value >= 0,
@@ -122,7 +127,14 @@ export const CaptureWorkItemV1Schema = z.object({
   triggerHits: z.array(TriggerHitSchema).max(OBSERVE_LIMITS.maxTriggerHits),
   evidenceRefs: z.array(EvidenceRefSchema).max(OBSERVE_LIMITS.maxEvidenceRefs),
   captureBlockers: z.array(CaptureBlockerSchema),
-  processingState: z.enum(['CAPTURED', 'RESOLVED_NO_SIGNAL']),
+  processingState: z.enum([
+    'CAPTURED',
+    'ANALYZING',
+    'LEARNED',
+    'NEEDS_ATTENTION',
+    'RESOLVED_NO_SIGNAL',
+  ]),
+  learning: LearningStateV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.workItemId !== deriveWorkItemIdFromFacts(value.signalKey)) {
     context.addIssue({ code: 'custom', message: 'WorkItem ID does not match SignalKey' })
@@ -152,7 +164,6 @@ export const CaptureWorkItemV1Schema = z.object({
       value.scanStatus !== 'COMPLETE'
       || value.triggerHits.length === 0
       || value.evidenceRefs.length === 0
-      || value.processingState !== 'CAPTURED'
     ) {
       context.addIssue({ code: 'custom', message: 'Cheap trigger captures require a complete triggered scan' })
     }
@@ -166,6 +177,90 @@ export const CaptureWorkItemV1Schema = z.object({
       || value.captureBlockers.length > 0
     ) {
       context.addIssue({ code: 'custom', message: 'Resolved no-signal items must be complete and empty' })
+    }
+    if (value.learning !== undefined) {
+      context.addIssue({ code: 'custom', message: 'Resolved no-signal items cannot have learning facts' })
+    }
+  }
+  if (['ANALYZING', 'LEARNED', 'NEEDS_ATTENTION'].includes(value.processingState) && value.learning === undefined) {
+    context.addIssue({ code: 'custom', message: 'Learning states require learning facts' })
+  }
+  if (value.processingState === 'CAPTURED' && value.learning !== undefined) {
+    if (
+      value.learning.claimedAt !== undefined
+      || value.learning.experiences !== undefined
+      || value.learning.proposal !== undefined
+      || value.learning.publicationOutcome !== undefined
+    ) {
+      context.addIssue({ code: 'custom', message: 'Captured items cannot retain active or committed result facts' })
+    }
+  }
+  if (value.processingState === 'ANALYZING' && value.learning !== undefined) {
+    if (value.learning.claimedAt === undefined || value.learning.proposal !== undefined) {
+      context.addIssue({ code: 'custom', message: 'Analyzing items require a claim and no committed result' })
+    }
+  }
+  if (value.processingState === 'LEARNED' && value.learning !== undefined) {
+    if (
+      value.learning.experiences === undefined
+      || value.learning.proposal === undefined
+      || value.learning.failure !== undefined
+      || value.learning.publicationOutcome !== undefined
+      || value.learning.requestBudgetUsed === 0
+      || !value.learning.calls.some(call => (
+        call.requestOrdinal === value.learning?.requestBudgetUsed
+        && call.outcome === 'SUCCEEDED'
+      ))
+    ) {
+      context.addIssue({ code: 'custom', message: 'Learned items require one successful committed result' })
+    } else {
+      const evidenceKeys = new Set(value.evidenceRefs.map(item => `${item.messageSeq}\u0000${item.excerptDigest}`))
+      const experienceIds = new Set(value.learning.experiences.map(item => item.experienceId))
+      for (const [index, experience] of value.learning.experiences.entries()) {
+        if (experience.experienceId !== deriveExperienceId(value.workItemId, {
+          type: experience.type,
+          lesson: experience.lesson,
+          persistenceScope: experience.persistenceScope,
+          evidenceStrength: experience.evidenceStrength,
+          supportingEvidence: experience.supportingEvidence,
+          ...(experience.contextSummary === undefined ? {} : { contextSummary: experience.contextSummary }),
+        })) {
+          context.addIssue({ code: 'custom', path: ['learning', 'experiences', index, 'experienceId'], message: 'Experience id does not match its facts' })
+        }
+        if (experience.supportingEvidence.some(item => !evidenceKeys.has(`${item.messageSeq}\u0000${item.excerptDigest}`))) {
+          context.addIssue({ code: 'custom', path: ['learning', 'experiences', index], message: 'Experience references unknown evidence' })
+        }
+      }
+      const proposal = value.learning.proposal
+      if (proposal.learningProposalId !== deriveLearningProposalId(value.workItemId, {
+        policyVersion: proposal.policyVersion,
+        name: proposal.name,
+        description: proposal.description,
+        whenToUse: proposal.whenToUse,
+        content: proposal.content,
+        invocation: proposal.invocation,
+        persistenceScope: proposal.persistenceScope,
+        supportingExperienceIds: proposal.supportingExperienceIds,
+        curation: proposal.curation,
+        catalogObservationDigest: proposal.catalogObservationDigest,
+        shortlistDigests: proposal.shortlistDigests,
+      })) {
+        context.addIssue({ code: 'custom', path: ['learning', 'proposal', 'learningProposalId'], message: 'Learning Proposal id does not match its facts' })
+      }
+      if (proposal.supportingExperienceIds.some(id => !experienceIds.has(id))) {
+        context.addIssue({ code: 'custom', path: ['learning', 'proposal'], message: 'Proposal references unknown Experiences' })
+      }
+      if (value.learning.experiences.some(item => item.persistenceScope !== proposal.persistenceScope)) {
+        context.addIssue({ code: 'custom', path: ['learning', 'proposal'], message: 'Experience and Proposal scopes must match' })
+      }
+    }
+  }
+  if (value.processingState === 'NEEDS_ATTENTION' && value.learning !== undefined) {
+    if (value.learning.failure === undefined || value.learning.publicationOutcome !== 'NEEDS_ATTENTION') {
+      context.addIssue({ code: 'custom', message: 'Needs-attention items require a visible structured failure' })
+    }
+    if (value.learning.proposal !== undefined) {
+      context.addIssue({ code: 'custom', message: 'Needs-attention items cannot commit a Learning Proposal' })
     }
   }
   const triggerKeys = value.triggerHits.map((hit) => `${hit.messageSeq}\u0000${hit.kind}\u0000${hit.ruleId}`)

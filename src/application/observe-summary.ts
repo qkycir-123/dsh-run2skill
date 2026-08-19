@@ -52,10 +52,19 @@ function latestRecoveryProgressAt(sessions: GlobalV1['sessions']): string | unde
 export function createObserveSummary(sources: ObserveSummarySources): ObserveSummaryV1 {
   let capturedCount = 0
   let blockedCaptureCount = 0
+  const learning = { captured: 0, analyzing: 0, learned: 0, needsAttention: 0 }
   for (const [, item] of sources.domain.table('work_items').entries()) {
-    if (item.processingState !== 'CAPTURED') continue
-    if (item.scanStatus === 'INCOMPLETE') blockedCaptureCount += 1
-    else capturedCount += 1
+    switch (item.processingState) {
+      case 'CAPTURED':
+        learning.captured += item.scanStatus === 'COMPLETE' ? 1 : 0
+        if (item.scanStatus === 'INCOMPLETE') blockedCaptureCount += 1
+        else capturedCount += 1
+        break
+      case 'ANALYZING': learning.analyzing += 1; break
+      case 'LEARNED': learning.learned += 1; break
+      case 'NEEDS_ATTENTION': learning.needsAttention += 1; break
+      case 'RESOLVED_NO_SIGNAL': break
+    }
   }
 
   const notices = sources.notices.list()
@@ -87,6 +96,7 @@ export function createObserveSummary(sources: ObserveSummarySources): ObserveSum
     status,
     capturedCount,
     blockedCaptureCount,
+    learning,
     unsaved: {
       completeness: recoveryComplete ? 'KNOWN' : 'UNKNOWN',
       knownCount: unsavedSignals.size,

@@ -10,6 +10,12 @@ export const ObserveSummaryV1Schema = z.object({
   status: z.enum(['READY', 'RECOVERING', 'DEGRADED', 'INCOMPATIBLE']),
   capturedCount: safeCount,
   blockedCaptureCount: safeCount,
+  learning: z.object({
+    captured: safeCount,
+    analyzing: safeCount,
+    learned: safeCount,
+    needsAttention: safeCount,
+  }).strict().optional(),
   unsaved: z.object({
     completeness: z.enum(['KNOWN', 'UNKNOWN']),
     knownCount: safeCount,
