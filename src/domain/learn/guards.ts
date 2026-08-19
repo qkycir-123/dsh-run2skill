@@ -45,6 +45,15 @@ export function canCandidateCoverScope(
     || (proposalScope === 'PROJECT' && candidateScope === 'USER')
 }
 
+/** A runtime candidate is proven effective for the current project view, not user-wide scope. */
+export function canLoadedCandidateCoverScope(
+  proposalScope: LearningPersistenceScope,
+  candidate: Pick<SkillRecallObservation['candidates'][number], 'persistenceScope' | 'provider'>,
+): boolean {
+  return canCandidateCoverScope(proposalScope, candidate.persistenceScope)
+    || (proposalScope === 'PROJECT' && candidate.provider === 'runtime')
+}
+
 export type LearningGuardReason =
   | 'INVALID_RESULT'
   | 'SCOPE_MISMATCH'
@@ -135,7 +144,7 @@ export function guardLearningResult(input: GuardInput): LearningGuardResult {
     }
     return { status: 'ACCEPTED' }
   }
-  return canCandidateCoverScope(proposal.persistenceScope, candidate.persistenceScope)
+  return canLoadedCandidateCoverScope(proposal.persistenceScope, candidate)
     ? { status: 'ACCEPTED' }
     : { status: 'REJECTED', reason: 'CANDIDATE_SCOPE_MISMATCH' }
 }

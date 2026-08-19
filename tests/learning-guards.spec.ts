@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canCandidateCoverScope,
+  canLoadedCandidateCoverScope,
   guardLearningResult,
   resolveLearningScope,
   type SkillRecallObservation,
@@ -12,6 +13,7 @@ import { makeWorkItem } from './support/work-item-fixture.js'
 function observation(overrides: Partial<SkillRecallObservation> = {}): SkillRecallObservation {
   return {
     catalogObservationDigest: 'c'.repeat(64),
+    catalogSkills: [],
     candidates: [],
     ...overrides,
   }
@@ -50,6 +52,12 @@ describe('Learning scope and Core Guards', () => {
     expect(canCandidateCoverScope('PROJECT', 'USER')).toBe(true)
     expect(canCandidateCoverScope('USER', 'PROJECT')).toBe(false)
     expect(canCandidateCoverScope('USER', 'UNKNOWN')).toBe(false)
+    expect(canLoadedCandidateCoverScope('PROJECT', {
+      persistenceScope: 'UNKNOWN', provider: 'runtime',
+    })).toBe(true)
+    expect(canLoadedCandidateCoverScope('USER', {
+      persistenceScope: 'UNKNOWN', provider: 'runtime',
+    })).toBe(false)
   })
 
   it('accepts an in-scope CREATE and rejects unobserved candidates, unsafe MERGE, and secrets', () => {
@@ -77,6 +85,7 @@ describe('Learning scope and Core Guards', () => {
     const candidate = {
       candidateKey: `cand_${'a'.repeat(64)}` as const,
       candidateDigest: 'd'.repeat(64),
+      provider: 'filesystem',
       source: 'project-agents',
       persistenceScope: 'PROJECT' as const,
       writable: false,

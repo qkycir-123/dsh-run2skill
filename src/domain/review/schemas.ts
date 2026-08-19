@@ -73,11 +73,13 @@ const TargetBindingV1Schema = z.object({
 const ExpectedAbsenceV1Schema = z.object({
   catalogObservationDigest: sha256Hex,
   observedAt: isoDateTime,
+  flatSkillFilePath: path,
   bundlePathAbsent: z.literal(true),
   skillFilePathAbsent: z.literal(true),
+  flatSkillFilePathAbsent: z.literal(true),
 }).strict()
 
-const CandidateBindingV1Schema = z.object({
+const BaseBindingV1Schema = z.object({
   candidateKey: z.string().regex(/^cand_[a-f0-9]{64}$/),
   provider: identity,
   source: identity,
@@ -92,6 +94,24 @@ const CandidateBindingV1Schema = z.object({
   }
 })
 
+const CoveringCandidateBindingV1Schema = z.object({
+  candidateKey: z.string().regex(/^cand_[a-f0-9]{64}$/),
+  provider: identity,
+  source: identity,
+  name: skillName,
+  description: utf8Limited(2 * 1024),
+  whenToUse: utf8Limited(4 * 1024).optional(),
+  content: skillBytes,
+  contentDigest: sha256Hex,
+  path: path.optional(),
+  catalogObservationDigest: sha256Hex,
+  observedAt: isoDateTime,
+}).strict().superRefine((value, context) => {
+  if (value.contentDigest !== sha256Utf8(value.content)) {
+    context.addIssue({ code: 'custom', path: ['contentDigest'], message: 'Candidate digest does not match content' })
+  }
+})
+
 const CreateBindingV1Schema = z.object({
   kind: z.literal('CREATE'),
   rootBinding: RootBindingV1Schema,
@@ -103,12 +123,12 @@ const MergeBindingV1Schema = z.object({
   kind: z.literal('MERGE'),
   rootBinding: RootBindingV1Schema,
   targetBinding: TargetBindingV1Schema,
-  baseBinding: CandidateBindingV1Schema,
+  baseBinding: BaseBindingV1Schema,
 }).strict()
 
 const DiscardBindingV1Schema = z.object({
   kind: z.literal('DISCARD'),
-  coveringCandidateBinding: CandidateBindingV1Schema,
+  coveringCandidateBinding: CoveringCandidateBindingV1Schema,
 }).strict()
 
 const ActionBindingV1Schema = z.discriminatedUnion('kind', [
