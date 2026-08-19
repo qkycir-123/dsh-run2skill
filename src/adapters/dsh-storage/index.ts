@@ -1,4 +1,5 @@
 export * from './domain.js'
 export * from './durable-capture-store.js'
 export * from './learning-work-item-store.js'
+export * from './proposal-review-store.js'
 export * from './types.js'
