@@ -46,6 +46,14 @@ export interface PublicationFactsPort {
   readExactText(path: string, maxBytes: number): Promise<ExactTextObservation>
 }
 
+export type WorkspaceRevalidation =
+  | { readonly status: 'BOUND'; readonly workspaceId: string; readonly canonicalPath: string }
+  | { readonly status: 'UNREGISTERED' | 'UNAVAILABLE' }
+
+export interface WorkspaceRevalidationPort {
+  resolve(path: string): Promise<WorkspaceRevalidation>
+}
+
 export type ProposalBuildFailureCode =
   | 'CATALOG_INCOMPLETE'
   | 'CATALOG_CHANGED'
@@ -124,16 +132,19 @@ function candidateFor(
 export class ProposalSnapshotBuilder<TView extends object> {
   readonly #skills: SkillCatalogPort<TView>
   readonly #publicationFacts: PublicationFactsPort
+  readonly #workspaces: WorkspaceRevalidationPort
   readonly #now: () => string
   readonly #effectiveDshHome: string | undefined
 
   constructor(
     skills: SkillCatalogPort<TView>,
     publicationFacts: PublicationFactsPort,
+    workspaces: WorkspaceRevalidationPort,
     options: ProposalSnapshotBuilderOptions = {},
   ) {
     this.#skills = skills
     this.#publicationFacts = publicationFacts
+    this.#workspaces = workspaces
     this.#now = options.now ?? (() => new Date().toISOString())
     this.#effectiveDshHome = options.effectiveDshHome
   }
@@ -158,6 +169,10 @@ export class ProposalSnapshotBuilder<TView extends object> {
       )
     ) return unavailable('CATALOG_CHANGED')
 
+    const createdAt = this.#now()
+    const workspaceBinding = await this.#revalidateWorkspace(item, learned.persistenceScope, createdAt)
+    if ('failureCode' in workspaceBinding) return unavailable(workspaceBinding.failureCode)
+
     const exactSkillBytes = renderCanonicalSkill(learned)
     if (
       hasFormatControls(exactSkillBytes)
@@ -167,7 +182,6 @@ export class ProposalSnapshotBuilder<TView extends object> {
       return unavailable('UNSAFE_SKILL')
     }
 
-    const createdAt = this.#now()
     const commonFacts = {
       schemaVersion: 1 as const,
       revision: 1,
@@ -182,13 +196,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
       skillBytesDigest: sha256Utf8(exactSkillBytes),
       rendererVersion: SKILL_RENDERER_VERSION,
       persistenceScope: learned.persistenceScope,
-      ...(learned.persistenceScope === 'PROJECT' && item.workspaceBinding.status === 'BOUND'
-        ? { workspaceBinding: {
-          workspaceId: item.workspaceBinding.workspaceId,
-          canonicalPath: item.workspaceBinding.canonicalPath,
-          observedAt: item.workspaceBinding.observedAt,
-        } }
-        : {}),
+      ...(workspaceBinding.value === undefined ? {} : { workspaceBinding: workspaceBinding.value }),
       supportingExperienceIds: learned.supportingExperienceIds,
       catalogObservationDigest: learned.catalogObservationDigest,
       curationRationale: learned.curation.rationale,
@@ -223,7 +231,12 @@ export class ProposalSnapshotBuilder<TView extends object> {
       })
     }
 
-    const target = this.#resolveTarget(item, learned.persistenceScope, learned.name, observation)
+    const target = this.#resolveTarget(
+      workspaceBinding.value?.canonicalPath,
+      learned.persistenceScope,
+      learned.name,
+      observation,
+    )
     if ('failureCode' in target) return unavailable(target.failureCode)
     const rootBinding = await this.#bindRoot(target.root, target.expectedRoot, learned.persistenceScope, observation.roots!)
     if ('failureCode' in rootBinding) return unavailable(rootBinding.failureCode)
@@ -232,7 +245,11 @@ export class ProposalSnapshotBuilder<TView extends object> {
       if (observation.catalogSkills.some(skill => skill.name === learned.name)) {
         return unavailable('CURATION_CONFLICT')
       }
-      const entries = await this.#observeTargetEntries(target.bundlePath, target.skillFilePath)
+      const entries = await this.#observeTargetEntries(
+        target.bundlePath,
+        target.skillFilePath,
+        target.flatSkillFilePath,
+      )
       if ('failureCode' in entries) return unavailable(entries.failureCode)
       return this.#materialize(item.workItemId, {
         ...commonFacts,
@@ -244,8 +261,10 @@ export class ProposalSnapshotBuilder<TView extends object> {
           expectedAbsence: {
             catalogObservationDigest: learned.catalogObservationDigest,
             observedAt: createdAt,
+            flatSkillFilePath: target.flatSkillFilePath,
             bundlePathAbsent: true,
             skillFilePathAbsent: true,
+            flatSkillFilePathAbsent: true,
           },
         },
       })
@@ -294,7 +313,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
   }
 
   #resolveTarget(
-    item: CaptureWorkItemV1,
+    projectWorkspacePath: string | undefined,
     scope: 'PROJECT' | 'USER',
     name: string,
     observation: SkillRecallObservation,
@@ -304,12 +323,13 @@ export class ProposalSnapshotBuilder<TView extends object> {
       readonly expectedRoot: string
       readonly bundlePath: string
       readonly skillFilePath: string
+      readonly flatSkillFilePath: string
       readonly binding: { readonly skillName: string; readonly bundlePath: string; readonly skillFilePath: string }
     }
     | { readonly failureCode: ProposalBuildFailureCode } {
     if (observation.roots === undefined) return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
     const base = scope === 'PROJECT'
-      ? item.workspaceBinding.status === 'BOUND' ? item.workspaceBinding.canonicalPath : undefined
+      ? projectWorkspacePath
       : this.#effectiveDshHome
     if (base === undefined) return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
     const source = scope === 'PROJECT' ? 'project-dsh' : 'user-dsh'
@@ -322,11 +342,13 @@ export class ProposalSnapshotBuilder<TView extends object> {
     if (matches.length !== 1) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
     const bundlePath = join(expectedRoot, name)
     const skillFilePath = join(bundlePath, 'SKILL.md')
+    const flatSkillFilePath = join(expectedRoot, `${name}.md`)
     return {
       root: matches[0]!,
       expectedRoot,
       bundlePath,
       skillFilePath,
+      flatSkillFilePath,
       binding: { skillName: name, bundlePath, skillFilePath },
     }
   }
@@ -387,26 +409,70 @@ export class ProposalSnapshotBuilder<TView extends object> {
   async #observeTargetEntries(
     bundlePath: string,
     skillFilePath: string,
+    flatSkillFilePath: string,
   ): Promise<{ readonly ok: true } | { readonly failureCode: ProposalBuildFailureCode }> {
     let bundle: ObservedEntry
     let skillFile: ObservedEntry
+    let flatSkillFile: ObservedEntry
     try {
       const observations = await Promise.all([
         this.#publicationFacts.observeEntry(bundlePath),
         this.#publicationFacts.observeEntry(skillFilePath),
+        this.#publicationFacts.observeEntry(flatSkillFilePath),
       ])
       bundle = observations[0]
       skillFile = observations[1]
+      flatSkillFile = observations[2]
     } catch {
       return { failureCode: 'TARGET_FACTS_UNAVAILABLE' }
     }
-    if (bundle.status === 'UNAVAILABLE' || skillFile.status === 'UNAVAILABLE') {
+    if (
+      bundle.status === 'UNAVAILABLE'
+      || skillFile.status === 'UNAVAILABLE'
+      || flatSkillFile.status === 'UNAVAILABLE'
+    ) {
       return { failureCode: 'TARGET_FACTS_UNAVAILABLE' }
     }
-    if (bundle.status !== 'ABSENT' || skillFile.status !== 'ABSENT') {
+    if (
+      bundle.status !== 'ABSENT'
+      || skillFile.status !== 'ABSENT'
+      || flatSkillFile.status !== 'ABSENT'
+    ) {
       return { failureCode: 'TARGET_ALREADY_EXISTS' }
     }
     return { ok: true }
+  }
+
+  async #revalidateWorkspace(
+    item: CaptureWorkItemV1,
+    scope: 'PROJECT' | 'USER',
+    observedAt: string,
+  ): Promise<
+    | { readonly value: { readonly workspaceId: string; readonly canonicalPath: string; readonly observedAt: string } | undefined }
+    | { readonly failureCode: ProposalBuildFailureCode }
+  > {
+    if (scope === 'USER') return { value: undefined }
+    if (item.workspaceBinding.status !== 'BOUND') {
+      return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
+    }
+    let current: WorkspaceRevalidation
+    try {
+      current = await this.#workspaces.resolve(item.workspaceBinding.canonicalPath)
+    } catch {
+      return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
+    }
+    if (
+      current.status !== 'BOUND'
+      || current.workspaceId !== item.workspaceBinding.workspaceId
+      || current.canonicalPath !== item.workspaceBinding.canonicalPath
+    ) return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
+    return {
+      value: {
+        workspaceId: current.workspaceId,
+        canonicalPath: current.canonicalPath,
+        observedAt,
+      },
+    }
   }
 
   #materialize(workItemId: string, facts: ProposalSnapshotFactsV1): ProposalBuildResult {

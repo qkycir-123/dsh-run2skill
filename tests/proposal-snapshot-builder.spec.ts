@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   ProposalSnapshotBuilder,
   type PublicationFactsPort,
+  type ProposalSnapshotBuilderOptions,
+  type WorkspaceRevalidationPort,
 } from '../src/application/curation/index.js'
 import {
   deriveLearningProposalId,
@@ -57,6 +59,24 @@ function publicationFacts(overrides: Partial<PublicationFactsPort> = {}): Public
     readExactText: async () => ({ status: 'UNAVAILABLE' }),
     ...overrides,
   }
+}
+
+function workspaceFacts(overrides: Partial<WorkspaceRevalidationPort> = {}): WorkspaceRevalidationPort {
+  return {
+    resolve: async () => ({
+      status: 'BOUND', workspaceId: 'workspace-fixture', canonicalPath: workspace,
+    }),
+    ...overrides,
+  }
+}
+
+function proposalBuilder(
+  skills: SkillCatalogPort<View>,
+  facts: PublicationFactsPort = publicationFacts(),
+  options: ProposalSnapshotBuilderOptions = {},
+  workspaces: WorkspaceRevalidationPort = workspaceFacts(),
+): ProposalSnapshotBuilder<View> {
+  return new ProposalSnapshotBuilder(skills, facts, workspaces, options)
 }
 
 async function learnedFor(
@@ -165,8 +185,8 @@ describe('ProposalSnapshotBuilder', () => {
     const current = snapshot()
     const skills = catalog(() => current)
     const item = await learnedFor(skills, { decision: 'CREATE', rationale: 'No existing Skill matched.' })
-    const builder = new ProposalSnapshotBuilder(skills, publicationFacts(), {
-      now: () => '2026-08-20T00:00:00.000Z',
+    const builder = proposalBuilder(skills, publicationFacts(), {
+      now: () => '2026-08-20T01:00:00.000Z',
     })
 
     const result = await builder.build(item, { cwd: workspace })
@@ -175,15 +195,43 @@ describe('ProposalSnapshotBuilder', () => {
     if (result.status !== 'READY') return
     expect(result.proposal).toMatchObject({
       kind: 'CREATE',
-      workspaceBinding: { workspaceId: 'workspace-fixture', canonicalPath: workspace },
+      workspaceBinding: {
+        workspaceId: 'workspace-fixture',
+        canonicalPath: workspace,
+        observedAt: '2026-08-20T01:00:00.000Z',
+      },
       actionBinding: {
         kind: 'CREATE',
         rootBinding: { state: 'ABSENT', declaredRootPath: root, missingSegments: ['.dsh', 'skills'] },
         targetBinding: { bundlePath, skillFilePath },
+        expectedAbsence: {
+          flatSkillFilePath: join(root, `${skillName}.md`),
+          flatSkillFilePathAbsent: true,
+        },
       },
     })
     expect(result.proposal.exactSkillBytes).toContain('disable-model-invocation: false')
     expect(result.proposal.exactSkillBytes).toContain('user-invocable: false')
+  })
+
+  it.each([
+    ['unregistered', { status: 'UNREGISTERED' as const }],
+    ['same path with a new identity', {
+      status: 'BOUND' as const, workspaceId: 'replacement-workspace', canonicalPath: workspace,
+    }],
+    ['same identity with a changed canonical path', {
+      status: 'BOUND' as const, workspaceId: 'workspace-fixture', canonicalPath: resolve('replacement-workspace'),
+    }],
+  ])('rejects a stale PROJECT workspace when it is %s', async (_label, currentWorkspace) => {
+    const skills = catalog(() => snapshot())
+    const item = await learnedFor(skills, { decision: 'CREATE', rationale: 'Create it.' })
+    const builder = proposalBuilder(skills, publicationFacts(), {}, workspaceFacts({
+      resolve: async () => currentWorkspace,
+    }))
+
+    await expect(builder.build(item, { cwd: workspace })).resolves.toEqual({
+      status: 'UNAVAILABLE', failureCode: 'WORKSPACE_BINDING_UNAVAILABLE',
+    })
   })
 
   it.each([
@@ -200,7 +248,7 @@ describe('ProposalSnapshotBuilder', () => {
     const stable = snapshot()
     const initialSkills = catalog(() => stable)
     const item = await learnedFor(initialSkills, { decision: 'CREATE', rationale: 'Create it.' })
-    const builder = new ProposalSnapshotBuilder(catalog(() => nextSnapshot), publicationFacts())
+    const builder = proposalBuilder(catalog(() => nextSnapshot), publicationFacts())
 
     await expect(builder.build(item, { cwd: workspace })).resolves.toEqual({
       status: 'UNAVAILABLE', failureCode,
@@ -224,7 +272,7 @@ describe('ProposalSnapshotBuilder', () => {
     const candidateKey = recalled.observation.candidates[0]!.candidateKey
     const item = await learnedFor(skills, { decision: 'MERGE', candidateKey, rationale: 'Same capability.' })
     const exactBase = '---\nname: generated-file-hygiene\ndescription: old\n---\n\n# Existing\n\nOld behavior.\n'
-    const builder = new ProposalSnapshotBuilder(skills, publicationFacts({
+    const builder = proposalBuilder(skills, publicationFacts({
       observeRoot: async () => ({
         status: 'EXISTING', canonicalRootPath: root, rootIdentityDigest: 'b'.repeat(64),
       }),
@@ -251,7 +299,7 @@ describe('ProposalSnapshotBuilder', () => {
         status: 'EXISTING', canonicalRootPath: root, rootIdentityDigest: 'b'.repeat(64),
       }),
     })
-    const created = await new ProposalSnapshotBuilder(emptySkills, existingRoot).build(create, { cwd: workspace })
+    const created = await proposalBuilder(emptySkills, existingRoot).build(create, { cwd: workspace })
     expect(created).toMatchObject({
       status: 'READY', proposal: { actionBinding: { rootBinding: { state: 'EXISTING' } } },
     })
@@ -272,7 +320,7 @@ describe('ProposalSnapshotBuilder', () => {
     const merge = await learnedFor(mergeSkills, {
       decision: 'MERGE', candidateKey: recall.observation.candidates[0]!.candidateKey, rationale: 'Merge it.',
     })
-    await expect(new ProposalSnapshotBuilder(mergeSkills, publicationFacts()).build(
+    await expect(proposalBuilder(mergeSkills, publicationFacts()).build(
       merge, { cwd: workspace },
     )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'TARGET_FORMAT_UNSUPPORTED' })
   })
@@ -291,10 +339,10 @@ describe('ProposalSnapshotBuilder', () => {
         missingSegments: ['skills'],
       }),
     })
-    await expect(new ProposalSnapshotBuilder(skills, facts).build(item, { cwd: workspace }))
+    await expect(proposalBuilder(skills, facts).build(item, { cwd: workspace }))
       .resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' })
 
-    const result = await new ProposalSnapshotBuilder(skills, facts, {
+    const result = await proposalBuilder(skills, facts, {
       effectiveDshHome: userHome,
       now: () => '2026-08-20T00:00:00.000Z',
     }).build(item, { cwd: workspace })
@@ -317,7 +365,7 @@ describe('ProposalSnapshotBuilder', () => {
     const changed = snapshot({ skills: [{
       name: 'unrelated', description: 'changed catalog', provider: 'runtime', source: 'runtime',
     }] })
-    await expect(new ProposalSnapshotBuilder(catalog(() => changed), publicationFacts()).build(
+    await expect(proposalBuilder(catalog(() => changed), publicationFacts()).build(
       item, { cwd: workspace },
     )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'CATALOG_CHANGED' })
 
@@ -338,7 +386,7 @@ describe('ProposalSnapshotBuilder', () => {
       const merge = await learnedFor(skills, {
         decision: 'MERGE', candidateKey: recalled.observation.candidates[0]!.candidateKey, rationale: 'Merge it.',
       })
-      await expect(new ProposalSnapshotBuilder(skills, publicationFacts({
+      await expect(proposalBuilder(skills, publicationFacts({
         observeRoot: async () => ({
           status: 'EXISTING', canonicalRootPath: root, rootIdentityDigest: 'b'.repeat(64),
         }),
@@ -351,7 +399,7 @@ describe('ProposalSnapshotBuilder', () => {
   it('fails closed when root or target observations cannot prove fixed facts', async () => {
     const skills = catalog(() => snapshot())
     const item = await learnedFor(skills, { decision: 'CREATE', rationale: 'Create it.' })
-    await expect(new ProposalSnapshotBuilder(skills, publicationFacts({
+    await expect(proposalBuilder(skills, publicationFacts({
       observeRoot: async () => ({
         status: 'ABSENT',
         canonicalExistingAncestorPath: workspace,
@@ -361,8 +409,15 @@ describe('ProposalSnapshotBuilder', () => {
     })).build(item, { cwd: workspace })).resolves.toEqual({
       status: 'UNAVAILABLE', failureCode: 'ROOT_BINDING_AMBIGUOUS',
     })
-    await expect(new ProposalSnapshotBuilder(skills, publicationFacts({
+    await expect(proposalBuilder(skills, publicationFacts({
       observeEntry: async () => ({ status: 'UNAVAILABLE' }),
+    })).build(item, { cwd: workspace })).resolves.toEqual({
+      status: 'UNAVAILABLE', failureCode: 'TARGET_FACTS_UNAVAILABLE',
+    })
+    await expect(proposalBuilder(skills, publicationFacts({
+      observeEntry: async path => path.endsWith(`${skillName}.md`)
+        ? { status: 'UNAVAILABLE' }
+        : { status: 'ABSENT' },
     })).build(item, { cwd: workspace })).resolves.toEqual({
       status: 'UNAVAILABLE', failureCode: 'TARGET_FACTS_UNAVAILABLE',
     })
@@ -382,7 +437,7 @@ describe('ProposalSnapshotBuilder', () => {
     if (recalled.status !== 'AVAILABLE') throw new Error('fixture recall must be available')
     const candidateKey = recalled.observation.candidates[0]!.candidateKey
     const item = await learnedFor(skills, { decision: 'DISCARD', candidateKey, rationale: 'Fully covered.' })
-    const builder = new ProposalSnapshotBuilder(skills, publicationFacts(), {
+    const builder = proposalBuilder(skills, publicationFacts(), {
       now: () => '2026-08-20T00:00:00.000Z',
     })
 
@@ -405,25 +460,36 @@ describe('ProposalSnapshotBuilder', () => {
     }] })
     const collisionSkills = catalog(() => collision)
     const collisionItem = await learnedFor(collisionSkills, { decision: 'CREATE', rationale: 'Create it.' })
-    await expect(new ProposalSnapshotBuilder(collisionSkills, publicationFacts()).build(
+    await expect(proposalBuilder(collisionSkills, publicationFacts()).build(
       collisionItem, { cwd: workspace },
     )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'CURATION_CONFLICT' })
 
     const stable = snapshot()
     const skills = catalog(() => stable)
     const item = await learnedFor(skills, { decision: 'CREATE', rationale: 'Create it.' })
-    await expect(new ProposalSnapshotBuilder(skills, publicationFacts({
+    await expect(proposalBuilder(skills, publicationFacts({
       observeEntry: async () => ({ status: 'DIRECTORY' }),
     })).build(item, { cwd: workspace })).resolves.toEqual({
       status: 'UNAVAILABLE', failureCode: 'TARGET_ALREADY_EXISTS',
     })
+
+    const observedPaths: string[] = []
+    await expect(proposalBuilder(skills, publicationFacts({
+      observeEntry: async path => {
+        observedPaths.push(path)
+        return path.endsWith(`${skillName}.md`) ? { status: 'FILE' } : { status: 'ABSENT' }
+      },
+    })).build(item, { cwd: workspace })).resolves.toEqual({
+      status: 'UNAVAILABLE', failureCode: 'TARGET_ALREADY_EXISTS',
+    })
+    expect(observedPaths).toContain(join(root, `${skillName}.md`))
 
     for (const content of [
       `# Unsafe\n\n${['api', 'key'].join('_')}=synthetic-fixture-secret`,
       '# Unsafe\n\nzero\u200bwidth',
       'Missing a Markdown heading.',
     ]) {
-      await expect(new ProposalSnapshotBuilder(skills, publicationFacts()).build(
+      await expect(proposalBuilder(skills, publicationFacts()).build(
         withProposalContent(item, content), { cwd: workspace },
       )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'UNSAFE_SKILL' })
     }

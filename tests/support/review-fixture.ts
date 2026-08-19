@@ -85,8 +85,10 @@ export function makeCreateProposalSnapshot(item = makeLearnedWorkItem()) {
       expectedAbsence: {
         catalogObservationDigest: 'c'.repeat(64),
         observedAt: '2026-08-20T00:00:00.000Z',
+        flatSkillFilePath: 'D:\\workspace\\.dsh\\skills\\generated-file-hygiene.md',
         bundlePathAbsent: true,
         skillFilePathAbsent: true,
+        flatSkillFilePathAbsent: true,
       },
     },
   }

@@ -73,8 +73,10 @@ const TargetBindingV1Schema = z.object({
 const ExpectedAbsenceV1Schema = z.object({
   catalogObservationDigest: sha256Hex,
   observedAt: isoDateTime,
+  flatSkillFilePath: path,
   bundlePathAbsent: z.literal(true),
   skillFilePathAbsent: z.literal(true),
+  flatSkillFilePathAbsent: z.literal(true),
 }).strict()
 
 const BaseBindingV1Schema = z.object({
