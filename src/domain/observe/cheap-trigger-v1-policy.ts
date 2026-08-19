@@ -13,16 +13,16 @@ export const CHEAP_TRIGGER_V1_POLICY = Object.freeze({
   ] satisfies readonly TriggerKind[],
   explicitSave: {
     saveWords: String.raw`(?:保存|记录|记住|沉淀|存成|save|remember|capture)`,
-    targetWords: String.raw`(?:skill|技能|规则|流程|workflow|process|做法|以后|后续|future|reuse|复用)`,
+    targetWords: String.raw`(?:skill|技能|规则|流程|workflow|process|做法|reuse|复用)`,
     fixedPhrases: String.raw`(?:记住这个(?:做法|流程|规则)|remember this)`,
     maxDistance: 64,
   },
   correction: {
-    anchors: String.raw`(?:不对|错了|不是这样|更正|纠正|that's wrong|that is wrong|incorrect|actually)`,
+    anchors: String.raw`(?:不对|错了|不是这样|更正|纠正|that's wrong|that is wrong|incorrect)`,
     behaviorWords: String.raw`(?:以后|后续|必须|应该|不要|不得|不能|只允许|只能|先.+?(?:再|然后)|from now on|going forward|must|should|never|always|instead)`,
   },
   constraint: {
-    persistentScope: String.raw`(?:以后|后续|从现在开始|这个项目|本项目|所有(?:文档|任务|回复)|每次|from now on|going forward|for this project|all future|every time|always)`,
+    persistentScope: String.raw`(?:以后|后续|从现在开始|这个项目|本项目|所有(?:文档|任务|回复)|每次|from now on|going forward|for this project|all future|every time)`,
     operators: String.raw`(?:必须|不得|禁止|不能|只允许|只能|务必|must|never|only|always|prohibit|forbid|should always)`,
   },
   workflow: {

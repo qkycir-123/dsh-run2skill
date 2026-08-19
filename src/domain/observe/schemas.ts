@@ -17,11 +17,12 @@ const positiveSafeInteger = z.number().refine(
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/)
 const isoDateTime = z.string().datetime({ offset: true })
 const healthCode = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)
+const identityString = z.string().min(1).max(OBSERVE_LIMITS.maxIdentityChars)
 
 export const TriggerPolicyVersionSchema = z.literal(TRIGGER_POLICY_VERSION)
 
 export const SignalKeySchema = z.object({
-  rootSessionId: z.string().min(1),
+  rootSessionId: identityString,
   sessionCreatedAt: safeNonNegativeInteger,
   sessionCwdDigest: sha256Hex,
   turn: safeNonNegativeInteger,
@@ -51,7 +52,7 @@ export const EvidenceRefSchema = z.object({
   messageSeq: safeNonNegativeInteger,
   excerpt: z.string(),
   excerptDigest: sha256Hex,
-  redactionKinds: z.array(RedactionKindSchema),
+  redactionKinds: z.array(RedactionKindSchema).max(OBSERVE_LIMITS.maxRedactionKinds),
   truncated: z.boolean(),
 }).strict().superRefine((value, context) => {
   if (Buffer.byteLength(value.excerpt, 'utf8') > OBSERVE_LIMITS.maxEvidenceBytes) {
@@ -63,18 +64,21 @@ export const EvidenceRefSchema = z.object({
   if (value.excerptDigest !== sha256Utf8(value.excerpt)) {
     context.addIssue({ code: 'custom', message: 'Evidence digest does not match excerpt' })
   }
+  if (new Set(value.redactionKinds).size !== value.redactionKinds.length) {
+    context.addIssue({ code: 'custom', message: 'Redaction kinds must be unique' })
+  }
 })
 
 const RootIdentitySchema = z.object({
   status: z.literal('ROOT'),
-  parentSessionId: z.string().min(1).optional(),
+  parentSessionId: identityString.optional(),
 }).strict()
 
 const WorkspaceBindingSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('BOUND'),
-    workspaceId: z.string().min(1),
-    canonicalPath: z.string().min(1),
+    workspaceId: identityString,
+    canonicalPath: z.string().min(1).max(OBSERVE_LIMITS.maxPathChars),
     observedAt: isoDateTime,
   }).strict(),
   z.object({
@@ -101,7 +105,7 @@ export const CaptureWorkItemV1Schema = z.object({
   rootIdentity: RootIdentitySchema,
   workspaceBinding: WorkspaceBindingSchema,
   scanStatus: z.enum(['COMPLETE', 'INCOMPLETE']),
-  triggerHits: z.array(TriggerHitSchema),
+  triggerHits: z.array(TriggerHitSchema).max(OBSERVE_LIMITS.maxTriggerHits),
   evidenceRefs: z.array(EvidenceRefSchema).max(OBSERVE_LIMITS.maxEvidenceRefs),
   captureBlockers: z.array(CaptureBlockerSchema),
   processingState: z.enum(['CAPTURED', 'RESOLVED_NO_SIGNAL']),
@@ -156,10 +160,28 @@ export const CaptureWorkItemV1Schema = z.object({
   if (new Set(value.captureBlockers).size !== value.captureBlockers.length) {
     context.addIssue({ code: 'custom', message: 'Capture blockers must be unique' })
   }
+  for (const [index, hit] of value.triggerHits.entries()) {
+    if (hit.messageSeq > value.signalKey.turnEndSeq) {
+      context.addIssue({
+        code: 'custom',
+        path: ['triggerHits', index, 'messageSeq'],
+        message: 'Trigger hit cannot follow the Turn end sequence',
+      })
+    }
+  }
+  for (const [index, evidence] of value.evidenceRefs.entries()) {
+    if (evidence.messageSeq > value.signalKey.turnEndSeq) {
+      context.addIssue({
+        code: 'custom',
+        path: ['evidenceRefs', index, 'messageSeq'],
+        message: 'Evidence cannot follow the Turn end sequence',
+      })
+    }
+  }
 })
 
 const SessionCheckpointV1Schema = z.object({
-  rootSessionId: z.string().min(1),
+  rootSessionId: identityString,
   sessionCreatedAt: safeNonNegativeInteger,
   sessionCwdDigest: sha256Hex,
   triggerPolicyVersion: TriggerPolicyVersionSchema,
@@ -167,11 +189,14 @@ const SessionCheckpointV1Schema = z.object({
   durableNextSeq: safeNonNegativeInteger,
   observedTailSeq: safeNonNegativeInteger,
   lastScannedAt: isoDateTime.optional(),
-  headerRevision: z.string().min(1).optional(),
+  headerRevision: z.string().min(1).max(OBSERVE_LIMITS.maxHeaderRevisionChars).optional(),
   headerDigest: sha256Hex.optional(),
 }).strict().superRefine((value, context) => {
   if (value.durableNextSeq < value.activationFenceSeq) {
     context.addIssue({ code: 'custom', message: 'Durable watermarks cannot precede the activation fence' })
+  }
+  if (value.durableNextSeq > value.observedTailSeq + 1) {
+    context.addIssue({ code: 'custom', message: 'Durable next sequence cannot skip beyond the observed tail' })
   }
 })
 

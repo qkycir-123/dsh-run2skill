@@ -43,6 +43,59 @@ describe('versioned domain schemas', () => {
     })).toThrow()
   })
 
+  it('bounds identity and repeated fields at the schema boundary', () => {
+    const item = makeWorkItem()
+    const trigger = item.triggerHits[0]!
+    const evidence = item.evidenceRefs[0]!
+
+    expect(() => SignalKeySchema.parse({
+      ...item.signalKey,
+      rootSessionId: 's'.repeat(1025),
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      triggerHits: Array.from({ length: 4097 }, () => trigger),
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      evidenceRefs: [{
+        ...evidence,
+        redactionKinds: ['API_KEY', 'API_KEY'],
+      }],
+    })).toThrow()
+  })
+
+  it('keeps hit and evidence coordinates within the Turn end boundary', () => {
+    const item = makeWorkItem()
+    const atBoundary = {
+      ...item,
+      triggerHits: item.triggerHits.map((hit) => ({
+        ...hit,
+        messageSeq: item.signalKey.turnEndSeq,
+      })),
+      evidenceRefs: item.evidenceRefs.map((evidence) => ({
+        ...evidence,
+        messageSeq: item.signalKey.turnEndSeq,
+      })),
+    }
+
+    expect(CaptureWorkItemV1Schema.parse(atBoundary)).toEqual(atBoundary)
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...atBoundary,
+      triggerHits: [{
+        ...atBoundary.triggerHits[0]!,
+        messageSeq: item.signalKey.turnEndSeq + 1,
+      }],
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...atBoundary,
+      evidenceRefs: [{
+        ...atBoundary.evidenceRefs[0]!,
+        messageSeq: item.signalKey.turnEndSeq + 1,
+      }],
+    })).toThrow()
+  })
+
   it('accepts GlobalV1 without storing raw paths or text', () => {
     const lifecycle = {
       rootSessionId: 'session-1',
@@ -70,6 +123,15 @@ describe('versioned domain schemas', () => {
     }
 
     expect(GlobalV1Schema.parse(global)).toEqual(global)
+    expect(GlobalV1Schema.parse({
+      ...global,
+      sessions: {
+        [lifecycleKey]: {
+          ...global.sessions[lifecycleKey],
+          durableNextSeq: 13,
+        },
+      },
+    })).toBeDefined()
     expect(() => GlobalV1Schema.parse({
       ...global,
       health: { counts: { 'D:\\private\\path': 1 } },
@@ -77,6 +139,16 @@ describe('versioned domain schemas', () => {
     expect(() => GlobalV1Schema.parse({
       ...global,
       sessions: { [`sl_${'e'.repeat(64)}`]: global.sessions[lifecycleKey] },
+    })).toThrow()
+    expect(() => GlobalV1Schema.parse({
+      ...global,
+      sessions: {
+        [lifecycleKey]: {
+          ...global.sessions[lifecycleKey],
+          durableNextSeq: 100,
+          observedTailSeq: 12,
+        },
+      },
     })).toThrow()
   })
 })

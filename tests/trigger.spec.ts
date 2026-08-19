@@ -66,6 +66,11 @@ describe('cheap-trigger-v1', () => {
       secret: 'ghp_abcdefghijklmnopqrstuvwxyz123456',
       text: 'ghp_abcdefghijklmnopqrstuvwxyz123456\nremember this workflow',
     },
+    {
+      kind: 'API_KEY',
+      secret: 'sk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
+      text: 'sk-abcdefghijklmnopqrstuvwxyz123456789012345678901234\nremember this workflow',
+    },
   ])('keeps $kind secrets out of durable evidence', ({ kind, secret, text }) => {
     const result = analyzeCheapTriggerV1([{ messageSeq: 1, sourceKind: 'user', text }])
 

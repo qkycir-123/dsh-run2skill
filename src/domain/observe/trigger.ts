@@ -94,7 +94,11 @@ function matchRules(text: string): MatchedRule[] {
     })
   }
   const correctionIndex = firstMatchIndex(text, correctionPatterns)
-  if (correctionIndex !== undefined && correctionBehavior.test(text)) {
+  if (
+    correctionIndex !== undefined
+    && correctionBehavior.test(text)
+    && persistentScope.test(text)
+  ) {
     matches.push({
       kind: 'CORRECTION',
       ruleId: 'ctv1.correction.anchor-behavior',

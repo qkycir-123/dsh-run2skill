@@ -89,12 +89,20 @@ describe('Sensitive Data Filter', () => {
   it.each([
     'ghp_abcdefghijklmnopqrstuvwxyz123456',
     'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
+    'sk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
     'AKIAABCDEFGHIJKLMNOP',
   ])('redacts a common provider credential form: %s', (credential) => {
     const result = preprocessSensitiveText(credential)
 
     expect(result.text).toBe('[REDACTED]')
     expect(result.redactionKinds).toContain('API_KEY')
+  })
+
+  it.each([
+    'sk-short-value',
+    'tasksk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
+  ])('does not redact an API-key near miss: %s', (value) => {
+    expect(preprocessSensitiveText(value).text).toBe(value)
   })
 
   it('keeps nested shorter fences inside a longer outer fence', () => {

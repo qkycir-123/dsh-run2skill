@@ -95,7 +95,7 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     'bearer [REDACTED]',
   )
   replace(
-    /\b(?:gh[pousr]_[a-z0-9]{20,}|sk-(?:proj|svcacct)-[a-z0-9_-]{16,}|(?:sk|pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu,
+    /\b(?:gh[pousr]_[a-z0-9]{20,}|sk-[a-z0-9][a-z0-9_-]{18,}[a-z0-9]|(?:pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu,
     'API_KEY',
     '[REDACTED]',
   )

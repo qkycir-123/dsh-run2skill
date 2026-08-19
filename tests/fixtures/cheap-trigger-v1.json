@@ -109,6 +109,42 @@
       "sourceKind": "user",
       "text": "帮我解释一下这个函数。",
       "expectedKinds": []
+    },
+    {
+      "id": "en-always-habit-negative",
+      "sourceKind": "user",
+      "text": "I always drink coffee.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-always-description-negative",
+      "sourceKind": "user",
+      "text": "The service always returns JSON.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-save-file-future-negative",
+      "sourceKind": "user",
+      "text": "Please save the file; we can discuss the future later.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-save-file-future-negative",
+      "sourceKind": "user",
+      "text": "请保存文件，以后再讨论。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-one-shot-correction-negative",
+      "sourceKind": "user",
+      "text": "Actually, this one-time task should update README.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-one-shot-correction-negative",
+      "sourceKind": "user",
+      "text": "不对，这次应该更新 README。",
+      "expectedKinds": []
     }
   ]
 }

@@ -145,6 +145,39 @@ function canonicalSnapshot(value: CaptureWorkItemV1): string {
   return JSON.stringify(value)
 }
 
+function mergeResolvedWithIncomplete(
+  resolved: CaptureWorkItemV1,
+  incomplete: CaptureWorkItemV1,
+): CaptureWorkItemV1 {
+  const isMetadataOnlyIncomplete = incomplete.captureReason === 'SCAN_INCOMPLETE'
+    && incomplete.scanStatus === 'INCOMPLETE'
+    && incomplete.processingState === 'CAPTURED'
+    && incomplete.triggerHits.length === 0
+    && incomplete.evidenceRefs.length === 0
+
+  if (!isMetadataOnlyIncomplete) throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+
+  const workspaceBinding = mergeWorkspaceBinding(
+    resolved.workspaceBinding,
+    incomplete.workspaceBinding,
+  )
+  if (
+    sameJson(workspaceBinding, resolved.workspaceBinding)
+    && resolved.revision >= incomplete.revision
+  ) {
+    return resolved
+  }
+
+  return parseWorkItem({
+    ...resolved,
+    revision: Math.max(resolved.revision, incomplete.revision) + 1,
+    updatedAt: compareIsoDateTime(resolved.updatedAt, incomplete.updatedAt) >= 0
+      ? resolved.updatedAt
+      : incomplete.updatedAt,
+    workspaceBinding,
+  })
+}
+
 export function mergeCaptureWorkItems(
   existingValue: CaptureWorkItemV1,
   incomingValue: CaptureWorkItemV1,
@@ -179,7 +212,9 @@ export function mergeCaptureWorkItems(
         workspaceBinding,
       })
     }
-    return existing.processingState === 'RESOLVED_NO_SIGNAL' ? existing : incoming
+    return existing.processingState === 'RESOLVED_NO_SIGNAL'
+      ? mergeResolvedWithIncomplete(existing, incoming)
+      : mergeResolvedWithIncomplete(incoming, existing)
   }
 
   const triggerHits = mergeTriggerHits(existing.triggerHits, incoming.triggerHits)

@@ -62,6 +62,56 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     expect(mergeCaptureWorkItems(closed, blocked)).toEqual(closed)
   })
 
+  it('rejects resolved no-signal snapshots that conflict with triggered facts', () => {
+    const triggered = makeWorkItem()
+    const resolved = makeWorkItem({
+      revision: 2,
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'COMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: [],
+      processingState: 'RESOLVED_NO_SIGNAL',
+    })
+
+    for (const [left, right] of [[resolved, triggered], [triggered, resolved]] as const) {
+      expect(() => mergeCaptureWorkItems(left, right)).toThrowError(
+        expect.objectContaining({ code: 'IMMUTABLE_FIELD_CONFLICT' }),
+      )
+    }
+  })
+
+  it('advances revision when a lower-revision terminal snapshot closes newer metadata', () => {
+    const blocked = makeWorkItem({
+      revision: 8,
+      updatedAt: '2026-08-19T00:00:08.000Z',
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'INCOMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: ['TURN_BOUNDARY_INCOMPLETE'],
+    })
+    const resolved = makeWorkItem({
+      revision: 2,
+      updatedAt: '2026-08-19T00:00:02.000Z',
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'COMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: [],
+      processingState: 'RESOLVED_NO_SIGNAL',
+    })
+
+    const forward = mergeCaptureWorkItems(blocked, resolved)
+    const reverse = mergeCaptureWorkItems(resolved, blocked)
+
+    expect(forward).toEqual(reverse)
+    expect(forward.revision).toBe(9)
+    expect(forward.updatedAt).toBe(blocked.updatedAt)
+    expect(forward.processingState).toBe('RESOLVED_NO_SIGNAL')
+    expect(mergeCaptureWorkItems(forward, blocked)).toEqual(forward)
+  })
+
   it('rejects an ID collision with a different SignalKey without leaking values', () => {
     const existing = makeWorkItem()
     const conflicting = makeWorkItem({
