@@ -28,14 +28,68 @@ const permittedSyntheticSecrets = new Set([
   'glpat-abcdefghijklmnopqrstuvwxyz123456',
   'xoxb-1234567890-synthetic-slack-token',
 ])
-const syntheticFixtureFiles = new Set([
-  'probes/candidate/verify.mjs',
-  'tests/frozen-evaluation.spec.ts',
-  'tests/observe-summary-rpc.spec.ts',
-  'tests/redaction.spec.ts',
-  'tests/trigger.spec.ts',
-  'tests/turn-capture-processor.spec.ts',
-])
+const permittedFixtureLocations = new Set([
+  ['probes/support/safe-diagnostics.mjs', 'SECRET_ASSIGNMENT', 'provider_credential', 3],
+  ['tests/frozen-evaluation.spec.ts', 'SECRET_ASSIGNMENT', 'synthetic_secret', 71],
+  ['tests/observe-summary-rpc.spec.ts', 'SECRET_ASSIGNMENT', 'token', 60],
+  ['tests/redaction.spec.ts', 'AUTHORIZATION', 68],
+  ['tests/redaction.spec.ts', 'AUTHORIZATION', 71],
+  ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 24],
+  ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 49],
+  ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 59],
+  ['tests/redaction.spec.ts', 'PRIVATE_KEY', 21],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'access_token', 154],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'api_key', 18],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'api_key', 23],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'aws_secret_access_key', 156],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 133],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 144],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 148],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 149],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'database_password', 155],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'deepseek_key', 131],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'deepseek_key', 132],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'deepseek_key', 152],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'encoded_secret', 58],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'github_token', 135],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'github_token', 146],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'github_token', 151],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'password', 17],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'password', 22],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'password', 93],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'password', 147],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'refresh_token', 134],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'refresh_token', 145],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'refresh_token', 150],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 6],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 47],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 81],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'service_credential', 153],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'token', 84],
+  ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'url_password', 19],
+  ['tests/trigger.spec.ts', 'CREDENTIAL_URL', 78],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'access_token', 139],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'aws_secret_access_key', 141],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 111],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 130],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'client_secret', 134],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'database_password', 140],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'deepseek_key', 110],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'deepseek_key', 137],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'github_token', 113],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'github_token', 132],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'github_token', 136],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'password', 133],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'refresh_token', 112],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'refresh_token', 131],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'refresh_token', 135],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 34],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 77],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 82],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 87],
+  ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'service_credential', 138],
+  ['tests/turn-capture-processor.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 70],
+].map(parts => parts.join(':')))
 const secretRules = [
   ['PRIVATE_KEY', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu],
   ['AUTHORIZATION', /\bauthorization[^\S\r\n]*:[^\S\r\n]*[^\r\n]*/giu],
@@ -57,23 +111,19 @@ function scan(name, content) {
   for (const [rule, pattern] of secretRules) {
     for (const match of content.matchAll(pattern)) {
       const value = match[0]
-      const lowerValue = value.toLowerCase()
+      const line = content.slice(0, match.index).split('\n').length
+      const location = `${name}:${rule}:${String(line)}`
       const syntheticFixture = permittedSyntheticSecrets.has(value)
         || value.includes('[REDACTED]')
         || /^authorization\s*:\s*["']?authorization["']?;?$/iu.test(value.trim())
-        || (syntheticFixtureFiles.has(name) && (
-          value.includes('${')
-          || lowerValue.includes('synthetic')
-          || lowerValue.includes('invalid')
-          || lowerValue.includes('runtime')
-          || lowerValue.includes('example.invalid')
-        ))
-      if (!syntheticFixture) findings.push(`${name}:${rule}`)
+        || permittedFixtureLocations.has(location)
+      if (!syntheticFixture) findings.push(location)
     }
   }
   const assignment = /(?<![a-z0-9_-])["']?([a-z][a-z0-9_-]{0,127})["']?\s*[:=]\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;】}\]]+)/giu
   for (const match of content.matchAll(assignment)) {
     const key = match[1] ?? ''
+    const line = content.slice(0, match.index).split('\n').length
     const normalized = key.replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase()
     const parts = normalized.split(/[_-]+/u).filter(Boolean)
     const suffix = parts.at(-1)
@@ -84,27 +134,37 @@ function scan(name, content) {
     const value = match[0]
     const assignedValue = (match[2] ?? '').trim()
     const literalValue = assignedValue.replace(/^["']|["']$/gu, '')
-    const coordinateKey = ['signal_key', 'lifecycle_key', 'candidate_key'].includes(normalized)
+    const coordinateKey = [
+      'candidate_key',
+      'coordinate_key',
+      'lifecycle_key',
+      'session_lifecycle_key',
+      'signal_key',
+    ].includes(normalized)
     const selfDescribingConstant = literalValue.toLowerCase() === normalized
-    const structuralValue = assignedValue.startsWith('{')
-      || assignedValue.startsWith('[')
-      || assignedValue.startsWith('(')
-      || assignedValue.startsWith('/')
-      || assignedValue.includes('(')
-      || /^[A-Za-z_$][\w$]*(?:\.[\w$]+)*(?:\([^)]*\))?$/u.test(assignedValue)
-    const safeFixture = value.includes('${')
-      || value.includes('[REDACTED]')
+    const location = `${name}:SECRET_ASSIGNMENT:${normalized}:${String(line)}`
+    const safeFixture = value.includes('[REDACTED]')
       || permittedSyntheticSecrets.has(literalValue)
-      || (syntheticFixtureFiles.has(name) && (
-        value.toLowerCase().includes('synthetic')
-        || value.toLowerCase().includes('invalid')
-        || value.toLowerCase().includes('runtime')
-      ))
-    if (!coordinateKey && !selfDescribingConstant && !structuralValue && !safeFixture) {
-      findings.push(`${name}:SECRET_ASSIGNMENT:${normalized}`)
+      || permittedFixtureLocations.has(location)
+    if (!coordinateKey && !selfDescribingConstant && !safeFixture) {
+      findings.push(location)
     }
   }
   return findings
+}
+
+const rejectedAssignmentSamples = [
+  ['pass' + 'word=ordinaryvalue123', 'SECRET_ASSIGNMENT'],
+  ['deepseek_' + 'key=ordinaryvalue123', 'SECRET_ASSIGNMENT'],
+  ['api_' + 'key=/ordinary/value', 'SECRET_ASSIGNMENT'],
+  ['Authori' + 'zation: Token ordinaryvalue123', 'AUTHORIZATION'],
+]
+for (const [sample, expectedRule] of rejectedAssignmentSamples) {
+  assert.equal(
+    scan('negative.fixture', sample).some(finding => finding.includes(`:${expectedRule}:`)),
+    true,
+    `candidate scanner must reject ${expectedRule}`,
+  )
 }
 
 const packArgs = ['pack', '--json', '--pack-destination', packageDirectory]
@@ -129,13 +189,13 @@ assert.deepEqual([...new Set(findings)].sort(), [], 'secret-like material found 
 
 const synthetic = [
   'ghp_runtimeSyntheticValue123456789',
-  'Authorization: Digest credential=runtime-auth signature=runtime-signature',
-  'Authorization: Token runtime-token-auth',
-  'Bearer runtimeBearerValue123456',
-  'serviceCredential=runtime-credential',
-  'genericToken=runtime-token',
-  'password: runtime-alpha runtime-bravo runtime-charlie',
-  'MY_SECRET=runtime-env-secret',
+  'Authori' + 'zation: Digest credential=runtime-auth signature=runtime-signature',
+  'Authori' + 'zation: Token runtime-token-auth',
+  'Bear' + 'er runtimeBearerValue123456',
+  'serviceCreden' + 'tial=runtime-credential',
+  'genericTok' + 'en=runtime-token',
+  'pass' + 'word: runtime-alpha runtime-bravo runtime-charlie',
+  'MY_SEC' + 'RET=runtime-env-secret',
   'D:\\private\\workspace\\file.log',
   '/tmp/private/runtime.log',
   '/mnt/work/runtime.log',
@@ -143,12 +203,16 @@ const synthetic = [
   '/workspace/private/runtime.log',
   '/usr/local/private/runtime.log',
   '"D:\\private workspace\\runtime file.log"',
+  '\\\\server\\share\\runtime file.log',
+  'C:/Users/private/runtime.log',
+  '/single',
 ].join('\n')
 const runtime = spawnSync(process.execPath, ['-e', `process.stderr.write(${JSON.stringify(synthetic)})`], {
   cwd: root, encoding: 'utf8', windowsHide: true,
 })
 assert.equal(isSafeDiagnosticOutput(runtime.stderr), false)
 const safeLog = sanitizeDiagnostic(runtime.stderr)
+assert.equal(sanitizeDiagnostic('dsh web: http://127.0.0.1:1234'), 'dsh web: http://127.0.0.1:1234')
 assert.equal(safeLog.includes('ghp_runtimeSyntheticValue123456789'), false)
 assert.equal(safeLog.includes('runtime-secret'), false)
 assert.equal(safeLog.includes('D:\\private\\workspace'), false)
@@ -158,6 +222,9 @@ assert.equal(safeLog.includes('/root/private'), false)
 assert.equal(safeLog.includes('/workspace/private'), false)
 assert.equal(safeLog.includes('/usr/local/private'), false)
 assert.equal(safeLog.includes('private workspace'), false)
+assert.equal(safeLog.includes('server\\share'), false)
+assert.equal(safeLog.includes('C:/Users'), false)
+assert.equal(safeLog.includes('/single'), false)
 assert.equal(safeLog.includes('runtime-auth'), false)
 assert.equal(safeLog.includes('runtime-credential'), false)
 assert.equal(safeLog.includes('runtime-token'), false)

@@ -1,9 +1,10 @@
 const MAX_DIAGNOSTIC_LENGTH = 4_096
 const assignmentTailMarker = '\u0000'
 const providerCredential = /\b(?:gh[pousr]_[a-z0-9]{20,}|glpat-[a-z0-9_-]{20,}|xox[baprs]-[a-z0-9-]{10,}|npm_[a-z0-9]{20,}|aiza[a-z0-9_-]{30,}|sk-[a-z0-9][a-z0-9_-]{18,}[a-z0-9]|(?:pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu
-const windowsAbsolutePath = /\b[A-Za-z]:\\[^\r\n]*/gu
+const windowsAbsolutePath = /\b[A-Za-z]:[\\/][^\r\n]*/gu
+const uncAbsolutePath = /(?<![A-Za-z0-9:])(?:\\\\|\/\/)[^\\/\s]+[\\/][^\r\n]*/gu
 const quotedUnixAbsolutePath = /(["'])\/(?:[^\r\n"']*\/)?[^\r\n"']*\1/gu
-const unixAbsolutePath = /(?<![A-Za-z0-9:])\/(?:[^\s/"']+\/)+[^\s"']*/gu
+const unixAbsolutePath = /(?<![A-Za-z0-9:/])\/(?!\/)[^\s/"']+(?:\/[^\s"']*)*/gu
 
 function isSensitiveAssignmentKey(key) {
   const normalized = key.replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase()
@@ -52,6 +53,7 @@ function redactSensitive(value) {
 export function sanitizeDiagnostic(value) {
   return redactSensitive(value)
     .replace(windowsAbsolutePath, '[REDACTED_ABSOLUTE_PATH]')
+    .replace(uncAbsolutePath, '[REDACTED_ABSOLUTE_PATH]')
     .replace(quotedUnixAbsolutePath, '$1[REDACTED_ABSOLUTE_PATH]$1')
     .replace(unixAbsolutePath, '[REDACTED_ABSOLUTE_PATH]')
     .slice(0, MAX_DIAGNOSTIC_LENGTH)

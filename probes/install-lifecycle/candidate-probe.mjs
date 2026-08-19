@@ -97,6 +97,14 @@ async function stop(child) {
   if (child.exitCode === null) child.kill('SIGKILL')
 }
 
+async function waitForOutputClose(stream) {
+  if (stream.closed || stream.destroyed) return
+  await Promise.race([
+    new Promise(resolveClose => stream.once('close', resolveClose)),
+    delay(1_000),
+  ])
+}
+
 const requireFromWeb = createRequire(join(clone, 'apps', 'web', 'package.json'))
 const { chromium } = requireFromWeb('playwright')
 async function browserExecutable() {
@@ -163,11 +171,16 @@ async function observe(present) {
       await delay(2_000)
       assert.equal(errors.filter(error => /run2skill/iu.test(error)).length, 0)
     }
-    assert.equal(isSafeDiagnosticOutput(logs), true, 'candidate runtime log gate failed')
   } finally {
     await browser?.close()
     await stop(child)
+    await Promise.all([waitForOutputClose(child.stdout), waitForOutputClose(child.stderr)])
   }
+  assert.equal(
+    isSafeDiagnosticOutput(logs),
+    true,
+    safeFailure('candidate runtime log gate failed', logs),
+  )
 }
 
 console.log('CP_INS_A6_STAGE=add')
