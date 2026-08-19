@@ -1,0 +1,230 @@
+import { CHEAP_TRIGGER_V1_POLICY } from './cheap-trigger-v1-policy.js'
+import { OBSERVE_LIMITS } from './constants.js'
+import { DomainError } from './errors.js'
+import {
+  CaptureWorkItemV1Schema,
+  type CaptureBlocker,
+  type CaptureWorkItemV1,
+  type EvidenceRef,
+  type TriggerHit,
+} from './schemas.js'
+import { canonicalizeSignalKey } from './signal-key.js'
+
+const BLOCKER_ORDER: readonly CaptureBlocker[] = [
+  'TURN_BOUNDARY_INCOMPLETE',
+  'TEXT_LIMIT_EXCEEDED',
+  'REDACTION_UNAVAILABLE',
+]
+
+function parseWorkItem(value: CaptureWorkItemV1): CaptureWorkItemV1 {
+  const parsed = CaptureWorkItemV1Schema.safeParse(value)
+  if (!parsed.success) throw new DomainError('INVALID_WORK_ITEM')
+  return parsed.data
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function assertIdentity(left: CaptureWorkItemV1, right: CaptureWorkItemV1): void {
+  if (
+    left.workItemId !== right.workItemId
+    || canonicalizeSignalKey(left.signalKey) !== canonicalizeSignalKey(right.signalKey)
+  ) {
+    throw new DomainError('SIGNAL_KEY_CONFLICT')
+  }
+  if (
+    left.createdAt !== right.createdAt
+    || left.turnOutcomeKind !== right.turnOutcomeKind
+    || !sameJson(left.rootIdentity, right.rootIdentity)
+  ) {
+    throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+  }
+}
+
+function mergeTriggerHits(left: readonly TriggerHit[], right: readonly TriggerHit[]): TriggerHit[] {
+  const hits = new Map<string, TriggerHit>()
+  for (const hit of [...left, ...right]) {
+    hits.set(`${hit.messageSeq}\u0000${hit.kind}\u0000${hit.ruleId}`, hit)
+  }
+  return [...hits.values()].sort((a, b) => (
+    a.messageSeq - b.messageSeq
+    || CHEAP_TRIGGER_V1_POLICY.kindOrder.indexOf(a.kind) - CHEAP_TRIGGER_V1_POLICY.kindOrder.indexOf(b.kind)
+    || a.ruleId.localeCompare(b.ruleId)
+  ))
+}
+
+function mergeEvidenceRefs(left: readonly EvidenceRef[], right: readonly EvidenceRef[]): EvidenceRef[] {
+  const evidence = new Map<string, EvidenceRef>()
+  for (const next of [...left, ...right]) {
+    const key = `${next.source}\u0000${next.messageSeq}\u0000${next.excerptDigest}`
+    const current = evidence.get(key)
+    if (current !== undefined && current.excerpt !== next.excerpt) {
+      throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+    }
+    evidence.set(key, current === undefined ? next : {
+      ...current,
+      redactionKinds: [...new Set([...current.redactionKinds, ...next.redactionKinds])].sort(),
+      truncated: current.truncated || next.truncated,
+    })
+  }
+
+  const merged = [...evidence.values()].sort((a, b) => (
+    a.messageSeq - b.messageSeq || a.excerptDigest.localeCompare(b.excerptDigest)
+  ))
+  const totalBytes = merged.reduce(
+    (total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'),
+    0,
+  )
+  if (
+    merged.length > OBSERVE_LIMITS.maxEvidenceRefs
+    || totalBytes > OBSERVE_LIMITS.maxEvidenceTotalBytes
+  ) {
+    throw new DomainError('EVIDENCE_LIMIT_EXCEEDED')
+  }
+  return merged
+}
+
+function mergeBlockers(
+  left: readonly CaptureBlocker[],
+  right: readonly CaptureBlocker[],
+): CaptureBlocker[] {
+  const rightSet = new Set(right)
+  return BLOCKER_ORDER.filter((blocker) => left.includes(blocker) && rightSet.has(blocker))
+}
+
+function bindingRank(binding: CaptureWorkItemV1['workspaceBinding']): number {
+  switch (binding.status) {
+    case 'BOUND': return 3
+    case 'NO_CWD': return 2
+    case 'UNREGISTERED': return 2
+    case 'UNAVAILABLE': return 1
+  }
+}
+
+function mergeWorkspaceBinding(
+  left: CaptureWorkItemV1['workspaceBinding'],
+  right: CaptureWorkItemV1['workspaceBinding'],
+): CaptureWorkItemV1['workspaceBinding'] {
+  if (sameJson(left, right)) return left
+  if (left.status === right.status) {
+    if (
+      left.status === 'BOUND'
+      && right.status === 'BOUND'
+      && (left.workspaceId !== right.workspaceId || left.canonicalPath !== right.canonicalPath)
+    ) {
+      throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+    }
+    return compareIsoDateTime(left.observedAt, right.observedAt) >= 0 ? left : right
+  }
+  const leftRank = bindingRank(left)
+  const rightRank = bindingRank(right)
+  if (leftRank === rightRank) throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+  return leftRank > rightRank ? left : right
+}
+
+function withoutRevisionFacts(value: CaptureWorkItemV1): Omit<CaptureWorkItemV1, 'revision' | 'updatedAt'> {
+  const { revision: _revision, updatedAt: _updatedAt, ...facts } = value
+  return facts
+}
+
+function preferSnapshot(left: CaptureWorkItemV1, right: CaptureWorkItemV1): CaptureWorkItemV1 {
+  if (left.revision !== right.revision) return left.revision > right.revision ? left : right
+  const timeOrder = compareIsoDateTime(left.updatedAt, right.updatedAt)
+  if (timeOrder !== 0) return timeOrder > 0 ? left : right
+  return canonicalSnapshot(left) <= canonicalSnapshot(right) ? left : right
+}
+
+function compareIsoDateTime(left: string, right: string): number {
+  const instantOrder = Date.parse(left) - Date.parse(right)
+  if (instantOrder !== 0) return instantOrder
+  return left.localeCompare(right)
+}
+
+function canonicalSnapshot(value: CaptureWorkItemV1): string {
+  return JSON.stringify(value)
+}
+
+export function mergeCaptureWorkItems(
+  existingValue: CaptureWorkItemV1,
+  incomingValue: CaptureWorkItemV1,
+): CaptureWorkItemV1 {
+  const existing = parseWorkItem(existingValue)
+  const incoming = parseWorkItem(incomingValue)
+  assertIdentity(existing, incoming)
+
+  if (
+    existing.processingState === 'RESOLVED_NO_SIGNAL'
+    || incoming.processingState === 'RESOLVED_NO_SIGNAL'
+  ) {
+    if (
+      existing.processingState === 'RESOLVED_NO_SIGNAL'
+      && incoming.processingState === 'RESOLVED_NO_SIGNAL'
+    ) {
+      const workspaceBinding = mergeWorkspaceBinding(
+        existing.workspaceBinding,
+        incoming.workspaceBinding,
+      )
+      const matchesExisting = sameJson(workspaceBinding, existing.workspaceBinding)
+      const matchesIncoming = sameJson(workspaceBinding, incoming.workspaceBinding)
+      if (matchesExisting && matchesIncoming) return preferSnapshot(existing, incoming)
+      if (matchesExisting) return existing
+      if (matchesIncoming) return incoming
+      return parseWorkItem({
+        ...preferSnapshot(existing, incoming),
+        revision: Math.max(existing.revision, incoming.revision) + 1,
+        updatedAt: compareIsoDateTime(existing.updatedAt, incoming.updatedAt) >= 0
+          ? existing.updatedAt
+          : incoming.updatedAt,
+        workspaceBinding,
+      })
+    }
+    return existing.processingState === 'RESOLVED_NO_SIGNAL' ? existing : incoming
+  }
+
+  const triggerHits = mergeTriggerHits(existing.triggerHits, incoming.triggerHits)
+  const evidenceRefs = mergeEvidenceRefs(existing.evidenceRefs, incoming.evidenceRefs)
+  const scanStatus = existing.scanStatus === 'COMPLETE' || incoming.scanStatus === 'COMPLETE'
+    ? 'COMPLETE'
+    : 'INCOMPLETE'
+  const captureBlockers = scanStatus === 'COMPLETE'
+    ? []
+    : mergeBlockers(existing.captureBlockers, incoming.captureBlockers)
+
+  if (scanStatus === 'INCOMPLETE' && captureBlockers.length === 0) {
+    throw new DomainError('INVALID_WORK_ITEM')
+  }
+
+  const hasTrigger = triggerHits.length > 0
+  const mergedFacts: Omit<CaptureWorkItemV1, 'revision' | 'updatedAt'> = {
+    schemaVersion: 1,
+    workItemId: existing.workItemId,
+    signalKey: existing.signalKey,
+    captureReason: hasTrigger ? 'CHEAP_TRIGGER' : 'SCAN_INCOMPLETE',
+    createdAt: existing.createdAt,
+    turnOutcomeKind: existing.turnOutcomeKind,
+    rootIdentity: existing.rootIdentity,
+    workspaceBinding: mergeWorkspaceBinding(existing.workspaceBinding, incoming.workspaceBinding),
+    scanStatus,
+    triggerHits,
+    evidenceRefs,
+    captureBlockers,
+    processingState: 'CAPTURED',
+  }
+
+  const existingFacts = withoutRevisionFacts(existing)
+  const incomingFacts = withoutRevisionFacts(incoming)
+  if (sameJson(mergedFacts, existingFacts) && sameJson(mergedFacts, incomingFacts)) {
+    return preferSnapshot(existing, incoming)
+  }
+  if (sameJson(mergedFacts, existingFacts)) return existing
+  if (sameJson(mergedFacts, incomingFacts)) return incoming
+
+  return parseWorkItem({
+    ...mergedFacts,
+    revision: Math.max(existing.revision, incoming.revision) + 1,
+    updatedAt: compareIsoDateTime(existing.updatedAt, incoming.updatedAt) >= 0
+      ? existing.updatedAt
+      : incoming.updatedAt,
+  })
+}

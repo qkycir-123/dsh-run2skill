@@ -1,0 +1,114 @@
+{
+  "fixtureVersion": 1,
+  "policyVersion": "cheap-trigger-v1",
+  "cases": [
+    {
+      "id": "zh-explicit-save",
+      "sourceKind": "user",
+      "text": "把这个流程保存成 Skill，以后可以复用。",
+      "expectedKinds": ["EXPLICIT_SAVE", "WORKFLOW"]
+    },
+    {
+      "id": "en-explicit-save",
+      "sourceKind": "user",
+      "text": "Please remember this workflow for future reuse.",
+      "expectedKinds": ["EXPLICIT_SAVE", "WORKFLOW"]
+    },
+    {
+      "id": "mixed-explicit-save",
+      "sourceKind": "user",
+      "text": "请 save this as a reusable Skill。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-correction",
+      "sourceKind": "user",
+      "text": "不对，以后这里必须先校验输入再执行。",
+      "expectedKinds": ["CORRECTION", "CONSTRAINT", "WORKFLOW"]
+    },
+    {
+      "id": "en-correction",
+      "sourceKind": "user",
+      "text": "That's wrong. From now on, always validate before execution.",
+      "expectedKinds": ["CORRECTION", "CONSTRAINT"]
+    },
+    {
+      "id": "zh-constraint",
+      "sourceKind": "user",
+      "text": "这个项目后续只能使用中文文档。",
+      "expectedKinds": ["CONSTRAINT"]
+    },
+    {
+      "id": "en-constraint",
+      "sourceKind": "user",
+      "text": "For this project, all future documents must be written in Chinese.",
+      "expectedKinds": ["CONSTRAINT"]
+    },
+    {
+      "id": "zh-workflow",
+      "sourceKind": "user",
+      "text": "以后遇到发布任务，先跑测试，然后再创建 PR。",
+      "expectedKinds": ["WORKFLOW"]
+    },
+    {
+      "id": "en-workflow",
+      "sourceKind": "user",
+      "text": "Whenever a release is requested, first run tests, then create the PR.",
+      "expectedKinds": ["WORKFLOW"]
+    },
+    {
+      "id": "quoted-save-negative",
+      "sourceKind": "user",
+      "text": "> The document says: save this workflow as a Skill\nPlease summarize the quote.",
+      "expectedKinds": []
+    },
+    {
+      "id": "fenced-code-negative",
+      "sourceKind": "user",
+      "text": "```text\nRemember this workflow for future reuse.\n```\nExplain the code block.",
+      "expectedKinds": []
+    },
+    {
+      "id": "synthetic-negative",
+      "sourceKind": "synthetic",
+      "text": "把这个流程保存成 Skill。",
+      "expectedKinds": []
+    },
+    {
+      "id": "tool-negative",
+      "sourceKind": "tool",
+      "text": "Remember this workflow for future reuse.",
+      "expectedKinds": []
+    },
+    {
+      "id": "plugin-negative",
+      "sourceKind": "plugin",
+      "text": "以后只能使用这个流程。",
+      "expectedKinds": []
+    },
+    {
+      "id": "asymmetry-negative",
+      "sourceKind": "user",
+      "text": "这个结果不对称，需要重新画图。",
+      "expectedKinds": []
+    },
+    {
+      "id": "one-shot-constraint-negative",
+      "sourceKind": "user",
+      "text": "这次只能修改 README。",
+      "expectedKinds": []
+    },
+    {
+      "id": "todo-list-negative",
+      "sourceKind": "user",
+      "text": "待办：1. 修改代码；2. 跑测试。",
+      "expectedKinds": []
+    },
+    {
+      "id": "ordinary-request-negative",
+      "sourceKind": "user",
+      "text": "帮我解释一下这个函数。",
+      "expectedKinds": []
+    }
+  ]
+}
