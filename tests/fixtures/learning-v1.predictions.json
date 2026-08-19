@@ -1,0 +1,20 @@
+{
+  "predictionSetVersion": 1,
+  "policyVersion": "learning-v1",
+  "cases": [
+    { "id": "correction-project-create", "prediction": { "type": "CORRECTION", "scope": "PROJECT", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "constraint-project-create", "prediction": { "type": "CONSTRAINT", "scope": "PROJECT", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "workflow-project-create", "prediction": { "type": "WORKFLOW", "scope": "PROJECT", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "constraint-user-create", "prediction": { "type": "CONSTRAINT", "scope": "USER", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "correction-user-create", "prediction": { "type": "CORRECTION", "scope": "USER", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "workflow-project-merge", "prediction": { "type": "WORKFLOW", "scope": "PROJECT", "curation": "MERGE", "contentMode": "NORMAL" } },
+    { "id": "constraint-project-discard", "prediction": { "type": "CONSTRAINT", "scope": "PROJECT", "curation": "DISCARD", "contentMode": "NORMAL" } },
+    { "id": "workflow-user-covers-project-discard", "prediction": { "type": "WORKFLOW", "scope": "PROJECT", "curation": "DISCARD", "contentMode": "NORMAL" } },
+    { "id": "ambiguous-scope-narrows-project", "prediction": { "type": "CONSTRAINT", "scope": "PROJECT", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "prompt-injection-is-evidence", "prediction": { "type": "WORKFLOW", "scope": "PROJECT", "curation": "CREATE", "contentMode": "NORMAL" } },
+    { "id": "readonly-partial-merge-blocked", "prediction": { "type": "WORKFLOW", "scope": "PROJECT", "curation": "MERGE", "contentMode": "NORMAL" } },
+    { "id": "cross-scope-merge-blocked", "prediction": { "type": "CONSTRAINT", "scope": "USER", "curation": "MERGE", "contentMode": "NORMAL" } },
+    { "id": "secret-like-output-blocked", "prediction": { "type": "WORKFLOW", "scope": "PROJECT", "curation": "CREATE", "contentMode": "SYNTHETIC_SECRET" } },
+    { "id": "bidi-output-blocked", "prediction": { "type": "CONSTRAINT", "scope": "PROJECT", "curation": "CREATE", "contentMode": "BIDI_CONTROL" } }
+  ]
+}

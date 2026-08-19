@@ -1,6 +1,6 @@
 # dsh-run2skill 项目路线
 
-状态：切片 A Observe 已实现并通过固定 DSH baseline 集成验收；切片 B Learn 独立 Design 进入评审
+状态：切片 A Observe 与切片 B Learn 已实现并通过固定 DSH baseline 集成验收；下一步为切片 C 独立 Design
 更新时间：2026-08-20
 
 ## 1. 路线目标
@@ -101,11 +101,11 @@
 
 结果：Session、Storage、LLM、Skill、Web、Publication CAS 和安装生命周期已取得运行证据。CP-ROOT-001 仍为 PARTIAL；它没有被包装成成功，而是形成明确发布锁：目标 session-scoped provider 的 root parity 和 Registry 精确回读成立前，PROJECT/USER publication 都不得启用。
 
-阶段门：Slice A/B 所需的底层契约已有运行证据；剩余不确定性已转换为 fail-closed 产品约束，而不是生产 workaround。按切片依赖当前只允许 Slice A 进入 Design；Slice B 等 Slice A 集成验收与契约冻结后开始。Slice C 仍必须解除 root publication 锁。
+阶段门：Slice A/B 所需的底层契约已有运行证据，且两条切片均已完成验收；剩余不确定性已转换为 fail-closed 产品约束，而不是生产 workaround。Slice C 仍必须先独立设计，并在允许 publication 前解除 root publication 锁。
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A Observe 的独立 Design、Issues #2–#7、实现和集成验收已经完成。切片 B 独立 Design 已形成候选，评审通过后只拆 B 的实现 Issues，不提前铺开切片 C/D。
+状态：进行中；切片 A Observe 与切片 B Learn 的独立 Design、逐 Issue 实现和集成验收已经完成。下一步只设计切片 C，不提前铺开切片 D 的详细 Issues。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：`docs/design/slice-a-observe.md`、公开 Issues [#2](https://github.com/qkycir-123/dsh-run2skill/issues/2) 至 [#7](https://github.com/qkycir-123/dsh-run2skill/issues/7)、`docs/evidence/slice-a-acceptance.md`，以及 `docs/design/slice-b-learn.md` Design Candidate。
+当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`。切片 C 目前只有路线边界，尚未形成 Design 或实现 Issues。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
@@ -139,7 +139,7 @@ Design → Review → Issues → Feature Branch → Implementation
 
 每条切片都要形成可运行、可验证的纵向能力，不以一批孤立模块代替端到端证据。不得直接 push `main`。
 
-Slice A 已逐 Issue 合并并完成集成验收。当前推进顺序是：评审并冻结切片 B Design → 只拆 B 的实现 Issues → 逐 Issue 实现与验收。切片 C/D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
+Slice A/B 已逐 Issue 合并并完成集成验收。当前推进顺序是：形成并评审切片 C Design → 冻结后只拆 C 的实现 Issues → 逐 Issue 实现与验收。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
 
 ### 阶段 6：v0.1 集成验证
 
