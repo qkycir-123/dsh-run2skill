@@ -6,7 +6,10 @@ export interface RuntimeNoticeInput {
   readonly turnEndSeq?: number
 }
 
+export type RuntimeNoticeKind = 'HEALTH' | 'UNSAVED_SIGNAL'
+
 export interface RuntimeNotice extends RuntimeNoticeInput {
+  readonly kind: RuntimeNoticeKind
   readonly count: number
   readonly firstObservedAt: number
   readonly lastObservedAt: number
@@ -17,6 +20,7 @@ export class RuntimeNotices {
   readonly #limit
   readonly #aggregationWindowMs
   readonly #notices = new Map<string, RuntimeNotice>()
+  #unsavedComplete = true
 
   constructor(options: {
     now?: () => number
@@ -29,6 +33,18 @@ export class RuntimeNotices {
   }
 
   record(input: RuntimeNoticeInput): void {
+    this.#record(input, 'HEALTH')
+  }
+
+  recordUnsaved(input: RuntimeNoticeInput): void {
+    this.#record(input, 'UNSAVED_SIGNAL')
+  }
+
+  unsavedCompletenessKnown(): boolean {
+    return this.#unsavedComplete
+  }
+
+  #record(input: RuntimeNoticeInput, kind: RuntimeNoticeKind): void {
     if (!HEALTH_CODE_PATTERN.test(input.healthCode)) throw new TypeError('Invalid health code')
     if (input.sessionId.length === 0) throw new TypeError('Session ID is required')
     if (input.turnEndSeq !== undefined && (!Number.isSafeInteger(input.turnEndSeq) || input.turnEndSeq < 0)) {
@@ -39,9 +55,13 @@ export class RuntimeNotices {
     const existing = this.#notices.get(key)
     const canAggregate = existing !== undefined
       && now - existing.lastObservedAt <= this.#aggregationWindowMs
+    const retainedKind = existing?.kind === 'UNSAVED_SIGNAL' || kind === 'UNSAVED_SIGNAL'
+      ? 'UNSAVED_SIGNAL'
+      : 'HEALTH'
     this.#notices.delete(key)
     this.#notices.set(key, !canAggregate
       ? {
+          kind: retainedKind,
           healthCode: input.healthCode,
           sessionId: input.sessionId,
           ...(input.turnEndSeq === undefined ? {} : { turnEndSeq: input.turnEndSeq }),
@@ -49,10 +69,11 @@ export class RuntimeNotices {
           firstObservedAt: now,
           lastObservedAt: now,
         }
-      : { ...existing, count: existing.count + 1, lastObservedAt: now })
+      : { ...existing, kind: retainedKind, count: existing.count + 1, lastObservedAt: now })
     while (this.#notices.size > this.#limit) {
       const oldest = this.#notices.keys().next().value as string | undefined
       if (oldest === undefined) break
+      if (this.#notices.get(oldest)?.kind === 'UNSAVED_SIGNAL') this.#unsavedComplete = false
       this.#notices.delete(oldest)
     }
   }

@@ -61,7 +61,7 @@ export function createObserveSummary(sources: ObserveSummarySources): ObserveSum
   const notices = sources.notices.list()
   const unsavedSignals = new Set<string>()
   for (const notice of notices) {
-    if (notice.turnEndSeq !== undefined) {
+    if (notice.kind === 'UNSAVED_SIGNAL' && notice.turnEndSeq !== undefined) {
       unsavedSignals.add(`${notice.sessionId}\u0000${notice.turnEndSeq}`)
     }
   }
@@ -70,7 +70,9 @@ export function createObserveSummary(sources: ObserveSummarySources): ObserveSum
     sources.lifecycle.status,
     sources.lifecycle.recoveryLag,
   )
-  const recoveryComplete = status === 'READY' && !sources.lifecycle.recoveryLag
+  const recoveryComplete = status === 'READY'
+    && !sources.lifecycle.recoveryLag
+    && sources.notices.unsavedCompletenessKnown()
   const latestRuntimeNotice = latestNotice(notices)
   const global = sources.domain.global.get()
   const lastRecoveryProgressAt = status === 'RECOVERING' || status === 'DEGRADED'

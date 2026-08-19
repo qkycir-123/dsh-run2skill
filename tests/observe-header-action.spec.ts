@@ -43,6 +43,8 @@ describe('Observe Header action', () => {
     expect(describeObserveState({ phase: 'UNAVAILABLE' })).toContain('暂不可用')
     expect(describeObserveState({ ...readyState(), phase: 'STALE' })).toContain('可能已过期')
     expect(describeObserveState(readyState())).toContain('已记录 2 条待处理事项')
+    expect(describeObserveState(readyState())).toContain('另有 1 条观察不完整')
+    expect(describeObserveState(readyState())).not.toContain('其中 1 条观察不完整')
   })
 
   it('renders a keyboard-focusable status whose meaning is not color-only', () => {

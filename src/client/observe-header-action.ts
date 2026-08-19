@@ -49,7 +49,7 @@ function summaryFacts(state: Extract<ObserveSummaryClientState, { summary: unkno
   else if (summary.status === 'RECOVERING') facts.push('正在恢复历史观察')
   facts.push(`已记录 ${summary.capturedCount} 条待处理事项`)
   if (summary.blockedCaptureCount > 0) {
-    facts.push(`其中 ${summary.blockedCaptureCount} 条观察不完整`)
+    facts.push(`另有 ${summary.blockedCaptureCount} 条观察不完整`)
   }
   if (summary.unsaved.completeness === 'UNKNOWN') {
     facts.push(summary.unsaved.knownCount > 0

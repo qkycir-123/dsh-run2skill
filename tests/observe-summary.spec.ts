@@ -61,9 +61,9 @@ describe('ObserveSummaryV1', () => {
     })
     for (const item of [complete, blocked, resolved]) domain.workItems.set(item.workItemId, item)
     const notices = new RuntimeNotices({ now: () => 1_000 })
-    notices.record({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-a', turnEndSeq: 11 })
-    notices.record({ healthCode: 'REDACTION_UNAVAILABLE', sessionId: 'session-a', turnEndSeq: 11 })
-    notices.record({ healthCode: 'INGRESS_SATURATED', sessionId: 'session-b', turnEndSeq: 12 })
+    notices.recordUnsaved({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-a', turnEndSeq: 11 })
+    notices.recordUnsaved({ healthCode: 'REDACTION_UNAVAILABLE', sessionId: 'session-a', turnEndSeq: 11 })
+    notices.recordUnsaved({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-b', turnEndSeq: 12 })
 
     const summary = createObserveSummary({
       domain,
@@ -79,10 +79,39 @@ describe('ObserveSummaryV1', () => {
       blockedCaptureCount: 1,
       unsaved: { completeness: 'KNOWN', knownCount: 2 },
       recoveryLag: false,
-      lastHealthCode: 'INGRESS_SATURATED',
+      lastHealthCode: 'WORK_ITEM_WRITE_FAILED',
     })
     expect(JSON.stringify(summary)).not.toContain('session-')
     expect(JSON.stringify(summary)).not.toContain('把这个流程')
+  })
+
+  it('does not present generic health coordinates as confirmed unsaved signals', () => {
+    const domain = createMemoryRun2skillDomain()
+    const notices = new RuntimeNotices()
+    notices.record({ healthCode: 'INGRESS_SATURATED', sessionId: 'session-a', turnEndSeq: 11 })
+
+    expect(createObserveSummary({
+      domain,
+      lifecycle: lifecycle('READY'),
+      notices,
+      compatibility: 'COMPATIBLE',
+    }).unsaved).toEqual({ completeness: 'KNOWN', knownCount: 0 })
+  })
+
+  it('marks the count unknown after a confirmed unsaved signal is evicted', () => {
+    const domain = createMemoryRun2skillDomain()
+    const notices = new RuntimeNotices({ limit: 1 })
+    notices.recordUnsaved({
+      healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-a', turnEndSeq: 11,
+    })
+    notices.record({ healthCode: 'SESSION_LOG_UNAVAILABLE', sessionId: 'session-b' })
+
+    expect(createObserveSummary({
+      domain,
+      lifecycle: lifecycle('READY'),
+      notices,
+      compatibility: 'COMPATIBLE',
+    }).unsaved).toEqual({ completeness: 'UNKNOWN', knownCount: 0 })
   })
 
   it('uses fixed status priority and keeps unsaved completeness unknown during recovery', () => {
