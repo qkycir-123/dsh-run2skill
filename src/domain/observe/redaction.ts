@@ -116,15 +116,15 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     '[REDACTED]',
   )
   redactAssignments(
-    /"([a-z][a-z0-9_-]{0,127})"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    /"([a-z][a-z0-9_-]{0,127})"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,，}\]\r\n]+)/giu,
     (key, separator) => `"${key}"${separator}"[REDACTED]"`,
   )
   redactAssignments(
-    /'([a-z][a-z0-9_-]{0,127})'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    /'([a-z][a-z0-9_-]{0,127})'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,，}\]\r\n]+)/giu,
     (key, separator) => `'${key}'${separator}'[REDACTED]'`,
   )
   redactAssignments(
-    /\b([a-z][a-z0-9_-]{0,127})\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+    /\b([a-z][a-z0-9_-]{0,127})\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^,;，；\r\n]+)/giu,
     (key, separator) => `${key}${separator}[REDACTED]`,
   )
 

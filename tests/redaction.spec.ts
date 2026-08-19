@@ -86,6 +86,15 @@ describe('Sensitive Data Filter', () => {
     expect(result.text).not.toContain(secret)
   })
 
+  it('redacts an entire unquoted multi-word assignment value', () => {
+    const secretWords = ['invalid-alpha', 'invalid-bravo', 'invalid-charlie']
+    const result = preprocessSensitiveText(`password: ${secretWords.join(' ')}\nordinary request`)
+
+    expect(result.text).toBe('password:[REDACTED] ordinary request')
+    expect(result.redactionKinds).toContain('SECRET_ASSIGNMENT')
+    for (const word of secretWords) expect(result.text).not.toContain(word)
+  })
+
   it.each([
     'ghp_abcdefghijklmnopqrstuvwxyz123456',
     'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
