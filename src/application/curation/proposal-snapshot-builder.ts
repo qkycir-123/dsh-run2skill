@@ -291,6 +291,10 @@ export class ProposalSnapshotBuilder<TView extends object> {
     if (base.status !== 'AVAILABLE' || Buffer.byteLength(base.text, 'utf8') > MAX_BASE_BYTES) {
       return unavailable('BASE_UNAVAILABLE')
     }
+    if (
+      hasFormatControls(base.text)
+      || preprocessPersistentText(base.text).redactionKinds.length > 0
+    ) return unavailable('UNSAFE_SKILL')
     return this.#materialize(item.workItemId, {
       ...commonFacts,
       kind: 'MERGE',

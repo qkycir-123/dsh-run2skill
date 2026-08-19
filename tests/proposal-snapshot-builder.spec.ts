@@ -289,6 +289,18 @@ describe('ProposalSnapshotBuilder', () => {
       kind: 'MERGE',
       baseBinding: { path: skillFilePath, exactBytes: exactBase },
     })
+
+    const unsafeBase = `---\nname: ${skillName}\ndescription: old\n---\n\n# Existing\n\n${[
+      'client', 'secret',
+    ].join('_')}=synthetic-fixture-value\n`
+    await expect(proposalBuilder(skills, publicationFacts({
+      observeRoot: async () => ({
+        status: 'EXISTING', canonicalRootPath: root, rootIdentityDigest: 'b'.repeat(64),
+      }),
+      readExactText: async () => ({ status: 'AVAILABLE', text: unsafeBase }),
+    })).build(item, { cwd: workspace })).resolves.toEqual({
+      status: 'UNAVAILABLE', failureCode: 'UNSAFE_SKILL',
+    })
   })
 
   it('accepts an existing root for CREATE and rejects an absent root for MERGE', async () => {
