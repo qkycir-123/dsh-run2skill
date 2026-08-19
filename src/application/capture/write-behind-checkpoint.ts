@@ -193,6 +193,33 @@ export class WriteBehindCheckpoint {
     })
   }
 
+  setRecoveryCursor(cursor?: GlobalV1['recovery']['cursor']): Promise<void> {
+    return this.#enqueue(async () => {
+      const recovery = cursor === undefined
+        ? { recoveryLag: false as const }
+        : { recoveryLag: true as const, cursor }
+      if (
+        JSON.stringify(this.#state.recovery) === JSON.stringify(recovery)
+        && !this.#state.checkpoint.dirty
+      ) return
+      const committed = GlobalV1Schema.parse({
+        ...this.#state,
+        recovery,
+        lastSuccessfulStoreWriteAt: this.#isoNow(),
+        checkpoint: {
+          dirty: false,
+          pendingSessionCount: 0,
+          lastCheckpointAt: this.#isoNow(),
+        },
+      })
+      await this.#domain.global.set(committed)
+      this.#state = committed
+      this.#dirtySessions.clear()
+      this.#completedSinceFlush = 0
+      this.#lastFlushAt = this.#now()
+    })
+  }
+
   #enqueue(operation: () => Promise<void>): Promise<void> {
     const result = this.#tail.then(operation)
     this.#tail = result.then(() => {}, () => {})
