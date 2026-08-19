@@ -1,0 +1,27 @@
+{
+  "name": "dsh-run2skill",
+  "version": "0.0.0-dev",
+  "description": "A DSH-native, local-first Run to Skill plugin",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings src tests vitest.config.ts",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "oxlint": "1.76.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

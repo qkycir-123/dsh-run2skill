@@ -1,0 +1,252 @@
+{
+  "fixtureVersion": 1,
+  "policyVersion": "cheap-trigger-v1",
+  "cases": [
+    {
+      "id": "zh-explicit-save",
+      "sourceKind": "user",
+      "text": "把这个流程保存成 Skill，以后可以复用。",
+      "expectedKinds": ["EXPLICIT_SAVE", "WORKFLOW"]
+    },
+    {
+      "id": "en-explicit-save",
+      "sourceKind": "user",
+      "text": "Please remember this workflow for future reuse.",
+      "expectedKinds": ["EXPLICIT_SAVE", "WORKFLOW"]
+    },
+    {
+      "id": "mixed-explicit-save",
+      "sourceKind": "user",
+      "text": "请 save this as a reusable Skill。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-correction",
+      "sourceKind": "user",
+      "text": "不对，以后这里必须先校验输入再执行。",
+      "expectedKinds": ["CORRECTION", "CONSTRAINT", "WORKFLOW"]
+    },
+    {
+      "id": "en-correction",
+      "sourceKind": "user",
+      "text": "That's wrong. From now on, always validate before execution.",
+      "expectedKinds": ["CORRECTION", "CONSTRAINT"]
+    },
+    {
+      "id": "zh-constraint",
+      "sourceKind": "user",
+      "text": "这个项目后续只能使用中文文档。",
+      "expectedKinds": ["CONSTRAINT"]
+    },
+    {
+      "id": "en-constraint",
+      "sourceKind": "user",
+      "text": "For this project, all future documents must be written in Chinese.",
+      "expectedKinds": ["CONSTRAINT"]
+    },
+    {
+      "id": "zh-workflow",
+      "sourceKind": "user",
+      "text": "以后遇到发布任务，先跑测试，然后再创建 PR。",
+      "expectedKinds": ["WORKFLOW"]
+    },
+    {
+      "id": "en-workflow",
+      "sourceKind": "user",
+      "text": "Whenever a release is requested, first run tests, then create the PR.",
+      "expectedKinds": ["WORKFLOW"]
+    },
+    {
+      "id": "quoted-save-negative",
+      "sourceKind": "user",
+      "text": "> The document says: save this workflow as a Skill\nPlease summarize the quote.",
+      "expectedKinds": []
+    },
+    {
+      "id": "fenced-code-negative",
+      "sourceKind": "user",
+      "text": "```text\nRemember this workflow for future reuse.\n```\nExplain the code block.",
+      "expectedKinds": []
+    },
+    {
+      "id": "synthetic-negative",
+      "sourceKind": "synthetic",
+      "text": "把这个流程保存成 Skill。",
+      "expectedKinds": []
+    },
+    {
+      "id": "tool-negative",
+      "sourceKind": "tool",
+      "text": "Remember this workflow for future reuse.",
+      "expectedKinds": []
+    },
+    {
+      "id": "plugin-negative",
+      "sourceKind": "plugin",
+      "text": "以后只能使用这个流程。",
+      "expectedKinds": []
+    },
+    {
+      "id": "asymmetry-negative",
+      "sourceKind": "user",
+      "text": "这个结果不对称，需要重新画图。",
+      "expectedKinds": []
+    },
+    {
+      "id": "one-shot-constraint-negative",
+      "sourceKind": "user",
+      "text": "这次只能修改 README。",
+      "expectedKinds": []
+    },
+    {
+      "id": "todo-list-negative",
+      "sourceKind": "user",
+      "text": "待办：1. 修改代码；2. 跑测试。",
+      "expectedKinds": []
+    },
+    {
+      "id": "ordinary-request-negative",
+      "sourceKind": "user",
+      "text": "帮我解释一下这个函数。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-always-habit-negative",
+      "sourceKind": "user",
+      "text": "I always drink coffee.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-always-description-negative",
+      "sourceKind": "user",
+      "text": "The service always returns JSON.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-save-file-future-negative",
+      "sourceKind": "user",
+      "text": "Please save the file; we can discuss the future later.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-save-file-future-negative",
+      "sourceKind": "user",
+      "text": "请保存文件，以后再讨论。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-one-shot-correction-negative",
+      "sourceKind": "user",
+      "text": "Actually, this one-time task should update README.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-one-shot-correction-negative",
+      "sourceKind": "user",
+      "text": "不对，这次应该更新 README。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-negated-save-negative",
+      "sourceKind": "user",
+      "text": "Do not save this workflow as a Skill.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-negated-save-negative",
+      "sourceKind": "user",
+      "text": "不要把这个流程保存成 Skill。",
+      "expectedKinds": []
+    },
+    {
+      "id": "mixed-negated-save-negative",
+      "sourceKind": "user",
+      "text": "请不要 save this workflow as a Skill。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-descriptive-save-negative",
+      "sourceKind": "user",
+      "text": "The service saves workflow state to disk.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-explanation-save-negative",
+      "sourceKind": "user",
+      "text": "This document explains how to save a workflow.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-descriptive-save-negative",
+      "sourceKind": "user",
+      "text": "这个文档记录了保存流程的原理。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-negative-then-positive-save",
+      "sourceKind": "user",
+      "text": "Do not save this file. Please save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-negative-then-positive-save",
+      "sourceKind": "user",
+      "text": "不要保存这份草稿。请记住这个流程。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-cross-clause-save-negative",
+      "sourceKind": "user",
+      "text": "The service can save workflow state. Could you capture a screenshot?",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-descriptive-constraint-negative",
+      "sourceKind": "user",
+      "text": "For this project, the service never stores tokens.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-contrastive-save",
+      "sourceKind": "user",
+      "text": "Do not save this draft but please save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-contrastive-save",
+      "sourceKind": "user",
+      "text": "不要保存草稿而是把这个流程保存成 Skill。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-cross-sentence-workflow-negative",
+      "sourceKind": "user",
+      "text": "For future planning, this note is background. The build process failed.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-cross-sentence-correction-negative",
+      "sourceKind": "user",
+      "text": "不对。以后再讨论天气。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-must-always-constraint",
+      "sourceKind": "user",
+      "text": "For this project, developers must always validate inputs.",
+      "expectedKinds": ["CONSTRAINT"]
+    },
+    {
+      "id": "en-must-always-correction",
+      "sourceKind": "user",
+      "text": "That's wrong. Going forward, developers must always validate inputs.",
+      "expectedKinds": ["CORRECTION", "CONSTRAINT"]
+    },
+    {
+      "id": "en-future-run-description-negative",
+      "sourceKind": "user",
+      "text": "From now on, our deployment process will run nightly.",
+      "expectedKinds": []
+    }
+  ]
+}

@@ -17,6 +17,7 @@ coverage/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.tsbuildinfo
 
 .DS_Store
 Thumbs.db
