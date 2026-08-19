@@ -1,6 +1,6 @@
 # dsh-run2skill 项目路线
 
-状态：Architecture Baseline 与切片 A Design 已批准；阶段 3 基线探针轮次完成；切片 A 等待拆分 Issues 并实现  
+状态：Architecture Baseline 与切片 A Design 已批准；阶段 3 基线探针轮次完成；切片 A Issues #2–#7 已建立，生产实现尚未开始  
 更新时间：2026-08-19
 
 ## 1. 路线目标
@@ -105,7 +105,7 @@
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A Observe 的独立 Design 与 2026-08-19 Architecture 窄修订已经批准；Issues 和生产实现尚未开始。
+状态：进行中；切片 A Observe 的独立 Design 与 2026-08-19 Architecture 窄修订已经批准；A1–A6 Issues #2–#7 已建立，生产实现尚未开始。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：`docs/design/slice-a-observe.md`。
+当前交付物：`docs/design/slice-a-observe.md`，以及公开 Issues [#2](https://github.com/qkycir-123/dsh-run2skill/issues/2) 至 [#7](https://github.com/qkycir-123/dsh-run2skill/issues/7)。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
@@ -139,7 +139,7 @@ Design → Review → Issues → Feature Branch → Implementation
 
 每条切片都要形成可运行、可验证的纵向能力，不以一批孤立模块代替端到端证据。不得直接 push `main`。
 
-当前推进顺序是：建立 Slice A Issues → 逐 Issue 实现并通过 PR 合并 → 完成 Slice A 集成验收并冻结契约 → 再开始 Slice B Design。不是先把 A/B 的生产实现并行铺开。
+Slice A Issues 已建立。当前推进顺序是：从 A1 开始逐 Issue 实现并通过 PR 合并 → 完成 Slice A 集成验收并冻结契约 → 再开始 Slice B Design。不是先把 A/B 的生产实现并行铺开。
 
 ### 阶段 6：v0.1 集成验证
 
