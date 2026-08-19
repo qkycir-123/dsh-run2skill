@@ -4,7 +4,9 @@ import {
   type LearningWorkerPort,
 } from '../src/application/learn/learning-scheduler.js'
 import { RuntimeNotices } from '../src/application/capture/runtime-notices.js'
+import { LearningWorkItemStore } from '../src/adapters/dsh-storage/learning-work-item-store.js'
 import type { CaptureWorkItemV1 } from '../src/domain/observe/schemas.js'
+import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
 function queuedItem(sessionId: string, turnEndSeq: number, marker: string): CaptureWorkItemV1 {
@@ -123,6 +125,32 @@ describe('LearningScheduler', () => {
     await vi.waitFor(() => expect(store.listEligible).toHaveBeenCalled())
 
     expect(run).not.toHaveBeenCalled()
+    await scheduler.dispose()
+  })
+
+  it('does not relaunch a stale item after its third attempt is exhausted', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      learning: { policyVersion: 'learning-v1', attempt: 2, requestBudgetUsed: 0, calls: [] },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain)
+    const claimed = await store.claim(item.workItemId, item.revision)
+    domain.workItems.set(item.workItemId, { ...claimed, revision: claimed.revision + 1 })
+    await store.resetStale(item.workItemId, 3)
+    const run = vi.fn(async () => undefined)
+    const scheduler = new LearningScheduler({
+      store,
+      worker: { canResolveScope: () => true, run },
+      notices: new RuntimeNotices(),
+    })
+
+    await scheduler.start()
+    scheduler.wake()
+    await Promise.resolve()
+
+    expect(run).not.toHaveBeenCalled()
+    expect(domain.workItems.get(item.workItemId)?.processingState).toBe('NEEDS_ATTENTION')
     await scheduler.dispose()
   })
 

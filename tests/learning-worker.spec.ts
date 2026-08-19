@@ -45,6 +45,7 @@ function setup(options: {
   resultScope?: 'PROJECT' | 'USER'
   learnThrows?: boolean
   catalogIncompleteCalls?: number
+  modelFails?: boolean
 } = {}) {
   const fixture = makeLearningSessionFixture()
   const item = {
@@ -75,8 +76,12 @@ function setup(options: {
     options.beforeRecord?.()
     await request.ledger.record({
       requestOrdinal: reservation.requestOrdinal,
-      kind: 'PRIMARY', inputTokens: 12, outputTokens: 8, outcome: 'SUCCEEDED',
+      kind: 'PRIMARY', inputTokens: 12, outputTokens: 8,
+      outcome: options.modelFails === true ? 'FAILED' : 'SUCCEEDED',
     })
+    if (options.modelFails === true) {
+      return { status: 'FAILED' as const, failureCode: 'MODEL_TERMINAL_FAILURE' }
+    }
     const output = rawOutput(item)
     if (options.resultScope !== undefined) {
       output.experiences[0]!.persistenceScope = options.resultScope
@@ -128,6 +133,7 @@ describe('LearningWorker', () => {
       learning: {
         attempt: 1,
         requestBudgetUsed: 1,
+        modelRoute: { provider: 'target-provider', model: 'target-model-last' },
         calls: [{ requestOrdinal: 1, inputTokens: 12, outputTokens: 8, outcome: 'SUCCEEDED' }],
       },
     })
@@ -165,6 +171,21 @@ describe('LearningWorker', () => {
         attempt: 1,
         requestBudgetUsed: 0,
         failure: { code: 'STORE_WRITE_FAILED', retryable: true },
+      },
+    })
+  })
+
+  it('keeps the effective model route with a failed durable call', async () => {
+    const { item, domain, worker } = setup({ modelFails: true })
+
+    await worker.run(item, new AbortController().signal)
+
+    expect(domain.workItems.get(item.workItemId)).toMatchObject({
+      processingState: 'CAPTURED',
+      learning: {
+        modelRoute: { provider: 'target-provider', model: 'target-model-last' },
+        calls: [{ requestOrdinal: 1, outcome: 'FAILED' }],
+        failure: { code: 'MODEL_TERMINAL_FAILURE', retryable: true },
       },
     })
   })

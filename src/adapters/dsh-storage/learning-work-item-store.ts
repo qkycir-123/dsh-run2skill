@@ -52,6 +52,8 @@ export class LearningWorkItemStore {
       && item.captureReason === 'CHEAP_TRIGGER'
       && item.scanStatus === 'COMPLETE'
       && item.evidenceRefs.length > 0
+      && (item.learning?.attempt ?? 0) < 3
+      && (item.learning?.requestBudgetUsed ?? 0) < 2
       && (item.learning?.nextEligibleAt === undefined
         || Date.parse(item.learning.nextEligibleAt) <= instant)
     )).sort((left, right) => (
@@ -107,13 +109,31 @@ export class LearningWorkItemStore {
     })
   }
 
-  reserveRequest(workItemId: string, expectedRevision: number): Promise<CaptureWorkItemV1> {
+  reserveRequest(
+    workItemId: string,
+    expectedRevision: number,
+    modelRoute: { readonly provider: string; readonly model: string },
+  ): Promise<CaptureWorkItemV1> {
     return this.#update(workItemId, expectedRevision, (current) => {
       const learning = this.#analyzing(current)
       if (learning.requestBudgetUsed >= 2) {
         throw new LearningStoreError('LEARNING_REQUEST_BUDGET_EXHAUSTED')
       }
-      return { ...current, learning: { ...learning, requestBudgetUsed: learning.requestBudgetUsed + 1 } }
+      if (
+        learning.modelRoute !== undefined
+        && (
+          learning.modelRoute.provider !== modelRoute.provider
+          || learning.modelRoute.model !== modelRoute.model
+        )
+      ) throw new LearningStoreError('INVALID_LEARNING_STATE')
+      return {
+        ...current,
+        learning: {
+          ...learning,
+          modelRoute,
+          requestBudgetUsed: learning.requestBudgetUsed + 1,
+        },
+      }
     })
   }
 
@@ -264,17 +284,24 @@ export class LearningWorkItemStore {
       if (learning.attempt !== expectedAttempt) {
         throw new LearningStoreError('INVALID_LEARNING_STATE')
       }
+      const exhausted = learning.attempt >= 3 || learning.requestBudgetUsed >= 2
       return {
         ...current,
-        processingState: 'CAPTURED',
+        processingState: exhausted ? 'NEEDS_ATTENTION' : 'CAPTURED',
         learning: withoutUndefined({
           ...learning,
           claimedAt: undefined,
           nextEligibleAt: undefined,
-          failure: undefined,
+          failure: exhausted
+            ? {
+                code: 'STORE_WRITE_FAILED' as const,
+                retryable: false,
+                occurredAt: this.#now(),
+              }
+            : undefined,
           experiences: undefined,
           proposal: undefined,
-          publicationOutcome: undefined,
+          publicationOutcome: exhausted ? 'NEEDS_ATTENTION' as const : undefined,
         }),
       }
     })

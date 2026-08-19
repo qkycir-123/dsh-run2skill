@@ -247,7 +247,11 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
       const ledger: RestrictedLearningRequest['ledger'] = {
         reserve: async (_kind) => {
           try {
-            current = await this.#store.reserveRequest(current.workItemId, current.revision)
+            current = await this.#store.reserveRequest(
+              current.workItemId,
+              current.revision,
+              projected.projection.route,
+            )
           } catch (error) {
             if (error instanceof LearningStoreError && error.code === 'LEARNING_REVISION_CONFLICT') {
               stale = true

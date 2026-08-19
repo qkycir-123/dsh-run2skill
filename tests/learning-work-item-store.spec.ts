@@ -5,6 +5,8 @@ import { makeLearningResult } from './support/learning-fixture.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
+const MODEL_ROUTE = { provider: 'target-provider', model: 'target-model' }
+
 describe('LearningWorkItemStore', () => {
   it('claims, reserves at most two requests, records usage, and completes once', async () => {
     const domain = createMemoryRun2skillDomain()
@@ -16,8 +18,8 @@ describe('LearningWorkItemStore', () => {
     expect(claimed).toMatchObject({ revision: 2, processingState: 'ANALYZING', learning: { attempt: 1 } })
     await expect(store.complete(item.workItemId, claimed.revision, makeLearningResult(item)))
       .rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
-    const reserved = await store.reserveRequest(item.workItemId, 2)
-    expect(reserved.learning?.requestBudgetUsed).toBe(1)
+    const reserved = await store.reserveRequest(item.workItemId, 2, MODEL_ROUTE)
+    expect(reserved.learning).toMatchObject({ requestBudgetUsed: 1, modelRoute: MODEL_ROUTE })
     const called = await store.recordCall(item.workItemId, 3, {
       requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED', inputTokens: 10, outputTokens: 5,
     })
@@ -33,9 +35,12 @@ describe('LearningWorkItemStore', () => {
     const store = new LearningWorkItemStore(domain)
     await expect(store.claim(item.workItemId, 2)).rejects.toMatchObject({ code: 'LEARNING_REVISION_CONFLICT' })
     const claimed = await store.claim(item.workItemId, 1)
-    const one = await store.reserveRequest(item.workItemId, claimed.revision)
-    const two = await store.reserveRequest(item.workItemId, one.revision)
-    await expect(store.reserveRequest(item.workItemId, two.revision)).rejects.toMatchObject({ code: 'LEARNING_REQUEST_BUDGET_EXHAUSTED' })
+    const one = await store.reserveRequest(item.workItemId, claimed.revision, MODEL_ROUTE)
+    await expect(store.reserveRequest(item.workItemId, one.revision, {
+      provider: 'other-provider', model: 'other-model',
+    })).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+    const two = await store.reserveRequest(item.workItemId, one.revision, MODEL_ROUTE)
+    await expect(store.reserveRequest(item.workItemId, two.revision, MODEL_ROUTE)).rejects.toMatchObject({ code: 'LEARNING_REQUEST_BUDGET_EXHAUSTED' })
   })
 
   it('requires the latest reserved request to succeed before completion', async () => {
@@ -54,27 +59,28 @@ describe('LearningWorkItemStore', () => {
     const store = new LearningWorkItemStore(domain)
 
     let failedRepair = await store.claim(failedRepairItem.workItemId, 1)
-    failedRepair = await store.reserveRequest(failedRepairItem.workItemId, failedRepair.revision)
+    failedRepair = await store.reserveRequest(failedRepairItem.workItemId, failedRepair.revision, MODEL_ROUTE)
     failedRepair = await store.recordCall(failedRepairItem.workItemId, failedRepair.revision, {
       requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED',
     })
-    failedRepair = await store.reserveRequest(failedRepairItem.workItemId, failedRepair.revision)
+    failedRepair = await store.reserveRequest(failedRepairItem.workItemId, failedRepair.revision, MODEL_ROUTE)
     await expect(store.complete(
       failedRepairItem.workItemId, failedRepair.revision, makeLearningResult(failedRepairItem),
     )).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
     failedRepair = await store.recordCall(failedRepairItem.workItemId, failedRepair.revision, {
       requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'FAILED',
     })
+    expect(failedRepair.learning?.modelRoute).toEqual(MODEL_ROUTE)
     await expect(store.complete(
       failedRepairItem.workItemId, failedRepair.revision, makeLearningResult(failedRepairItem),
     )).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
 
     let successfulRepair = await store.claim(successfulRepairItem.workItemId, 1)
-    successfulRepair = await store.reserveRequest(successfulRepairItem.workItemId, successfulRepair.revision)
+    successfulRepair = await store.reserveRequest(successfulRepairItem.workItemId, successfulRepair.revision, MODEL_ROUTE)
     successfulRepair = await store.recordCall(successfulRepairItem.workItemId, successfulRepair.revision, {
       requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED',
     })
-    successfulRepair = await store.reserveRequest(successfulRepairItem.workItemId, successfulRepair.revision)
+    successfulRepair = await store.reserveRequest(successfulRepairItem.workItemId, successfulRepair.revision, MODEL_ROUTE)
     successfulRepair = await store.recordCall(successfulRepairItem.workItemId, successfulRepair.revision, {
       requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'SUCCEEDED',
     })
@@ -119,7 +125,7 @@ describe('LearningWorkItemStore', () => {
     domain.workItems.set(second.workItemId, second)
     const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
     const claimed = await store.claim(first.workItemId, 1)
-    await store.reserveRequest(first.workItemId, claimed.revision)
+    await store.reserveRequest(first.workItemId, claimed.revision, MODEL_ROUTE)
 
     const recovered = await store.recoverInterrupted()
     expect(recovered).toHaveLength(1)
@@ -133,7 +139,7 @@ describe('LearningWorkItemStore', () => {
     const learning = new LearningWorkItemStore(domain)
     const capture = new DurableCaptureStore(domain)
     let current = await learning.claim(item.workItemId, 1)
-    current = await learning.reserveRequest(item.workItemId, current.revision)
+    current = await learning.reserveRequest(item.workItemId, current.revision, MODEL_ROUTE)
     current = await learning.recordCall(item.workItemId, current.revision, {
       requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED',
     })
@@ -213,7 +219,7 @@ describe('LearningWorkItemStore', () => {
     domain.workItems.set(item.workItemId, item)
     const store = new LearningWorkItemStore(domain)
     let current = await store.claim(item.workItemId, item.revision)
-    current = await store.reserveRequest(item.workItemId, current.revision)
+    current = await store.reserveRequest(item.workItemId, current.revision, MODEL_ROUTE)
     domain.workItems.set(item.workItemId, { ...current, revision: current.revision + 1 })
 
     const recorded = await store.recordCallLatest(item.workItemId, current.learning!.attempt, {
@@ -226,5 +232,28 @@ describe('LearningWorkItemStore', () => {
       learning: { requestBudgetUsed: 1, calls: [{ requestOrdinal: 1, outcome: 'SUCCEEDED' }] },
     })
     expect(reset.learning).not.toHaveProperty('claimedAt')
+  })
+
+  it('moves a stale third attempt to visible terminal attention instead of leaving it eligible', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      learning: { policyVersion: 'learning-v1', attempt: 2, requestBudgetUsed: 0, calls: [] },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain)
+    const claimed = await store.claim(item.workItemId, item.revision)
+    domain.workItems.set(item.workItemId, { ...claimed, revision: claimed.revision + 1 })
+
+    const reset = await store.resetStale(item.workItemId, 3)
+
+    expect(reset).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        attempt: 3,
+        failure: { code: 'STORE_WRITE_FAILED', retryable: false },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    expect(store.listEligible(new Date().toISOString())).toEqual([])
   })
 })
