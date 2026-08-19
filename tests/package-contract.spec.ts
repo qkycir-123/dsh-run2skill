@@ -11,8 +11,12 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
   }
   scripts?: Record<string, string>
 }
-const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
-const workspace = readFileSync(new URL('../pnpm-workspace.yaml', import.meta.url), 'utf8')
+function readPortableText(path: string): string {
+  return readFileSync(new URL(path, import.meta.url), 'utf8').replaceAll('\r\n', '\n')
+}
+
+const patch = readPortableText('../cordis.patch.yml')
+const workspace = readPortableText('../pnpm-workspace.yaml')
 
 describe('published package contract', () => {
   it('exports Host and Client faces and declares the thin Web bundle layer', () => {
