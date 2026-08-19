@@ -7,6 +7,10 @@ import {
   ExactAgentScopeRegistry,
   type AgentScopeProjection,
 } from '../adapters/dsh-skills/exact-agent-scope.js'
+import {
+  DshSkillCatalogAdapter,
+  type DshSkillRegistryPort,
+} from '../adapters/dsh-skills/skill-catalog.js'
 import { LearningWorkItemStore } from '../adapters/dsh-storage/learning-work-item-store.js'
 import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 import type {
@@ -37,7 +41,6 @@ import {
   LearningWorker,
   type LearningSkillView,
 } from '../application/learn/index.js'
-import type { SkillCatalogPort } from '../domain/learn/index.js'
 import { ObserveSummaryV1Schema, type ObserveSummaryV1 } from '../domain/observe/observe-summary.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
 
@@ -72,7 +75,7 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly workspaceRegistry: DshWorkspaceRegistryPort
   readonly connection: ObserveSummaryHostConnection
   readonly llm: DshLlmPort
-  readonly skills: SkillCatalogPort<LearningSkillView<Run2skillAgent>>
+  readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
   on(
     event: string,
     listener: (...args: never[]) => unknown,
@@ -115,7 +118,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         store: learningStore,
         sessionReader: reader,
         scopes: this.scopes,
-        skills: this.context.skills,
+        skills: new DshSkillCatalogAdapter(this.context.skills),
         client: new RestrictedLearningClient(this.context.llm),
         notices: this.notices,
       })

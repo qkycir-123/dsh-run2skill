@@ -20,6 +20,7 @@ export interface SkillSummaryProjection {
   readonly whenToUse?: string | undefined
   readonly source: string
   readonly provider: string
+  readonly path?: string | undefined
 }
 
 export interface SkillDefinitionProjection extends SkillSummaryProjection {
@@ -29,6 +30,13 @@ export interface SkillDefinitionProjection extends SkillSummaryProjection {
 export interface SkillCatalogSnapshotProjection {
   readonly skills: readonly SkillSummaryProjection[]
   readonly complete: boolean
+  readonly roots?: readonly SkillCatalogRootProjection[] | undefined
+}
+
+export interface SkillCatalogRootProjection {
+  readonly provider: string
+  readonly source: string
+  readonly path: string
 }
 
 export interface SkillCatalogPort<TView extends object> {
@@ -42,6 +50,7 @@ export interface LoadedSkillCandidate {
   readonly candidateKey: `cand_${string}`
   readonly candidateDigest: string
   readonly source: string
+  readonly provider: string
   readonly persistenceScope: CandidatePersistenceScope
   readonly writable: boolean
   readonly name: string
@@ -49,10 +58,13 @@ export interface LoadedSkillCandidate {
   readonly whenToUse?: string | undefined
   readonly content: string
   readonly bodyDigest: string
+  readonly path?: string | undefined
 }
 
 export interface SkillRecallObservation {
   readonly catalogObservationDigest: string
+  readonly catalogSkills: readonly SkillSummaryProjection[]
+  readonly roots?: readonly SkillCatalogRootProjection[] | undefined
   readonly candidates: readonly LoadedSkillCandidate[]
 }
 
@@ -127,10 +139,11 @@ function sameWinner(summary: SkillSummaryProjection, loaded: SkillDefinitionProj
   return summary.name === loaded.name
     && summary.provider === loaded.provider
     && summary.source === loaded.source
+    && (summary.path === undefined || summary.path === loaded.path)
 }
 
-function catalogDigest(skills: readonly SkillSummaryProjection[]): string {
-  const sanitized = skills.map(skill => ({
+function sanitizeCatalogSkills(skills: readonly SkillSummaryProjection[]): SkillSummaryProjection[] {
+  return skills.map(skill => ({
     name: preprocessPersistentText(skill.name).text,
     description: preprocessPersistentText(skill.description).text,
     ...(skill.whenToUse === undefined
@@ -138,7 +151,14 @@ function catalogDigest(skills: readonly SkillSummaryProjection[]): string {
       : { whenToUse: preprocessPersistentText(skill.whenToUse).text }),
     source: skill.source,
     provider: skill.provider,
+    ...(skill.path === undefined ? {} : { path: skill.path }),
   })).sort((left, right) => deriveCandidateKey(left).localeCompare(deriveCandidateKey(right)))
+}
+
+export function deriveSkillCatalogObservationDigest(
+  skills: readonly SkillSummaryProjection[],
+): string {
+  const sanitized = sanitizeCatalogSkills(skills).map(({ path: _path, ...skill }) => skill)
   return sha256Utf8(canonicalJson({ complete: true, skills: sanitized }))
 }
 
@@ -206,11 +226,15 @@ export async function recallExistingSkills<TView extends object>(
     candidates.push({
       ...persistedFacts,
       candidateDigest: sha256Utf8(canonicalJson(persistedFacts)),
+      provider: loaded.provider,
       content,
+      ...(loaded.path === undefined ? {} : { path: loaded.path }),
     })
   }
   const observation = {
-    catalogObservationDigest: catalogDigest(snapshot.skills),
+    catalogObservationDigest: deriveSkillCatalogObservationDigest(snapshot.skills),
+    catalogSkills: sanitizeCatalogSkills(snapshot.skills),
+    ...(snapshot.roots === undefined ? {} : { roots: snapshot.roots.map(root => ({ ...root })) }),
     candidates,
   }
   return { status: 'AVAILABLE', observation }
