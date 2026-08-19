@@ -4,6 +4,7 @@ import { RuntimeNotices } from '../src/application/capture/runtime-notices.js'
 import type { RecoveryLifecycleSnapshot } from '../src/application/capture/recovery-lifecycle.js'
 import { deriveSessionLifecycleKeyFromFacts } from '../src/domain/observe/identity.js'
 import type { CaptureWorkItemV1, SessionCheckpointV1 } from '../src/domain/observe/schemas.js'
+import { makeLearningResult } from './support/learning-fixture.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
@@ -77,6 +78,7 @@ describe('ObserveSummaryV1', () => {
       status: 'READY',
       capturedCount: 1,
       blockedCaptureCount: 1,
+      learning: { captured: 1, analyzing: 0, learned: 0, needsAttention: 0 },
       unsaved: { completeness: 'KNOWN', knownCount: 2 },
       recoveryLag: false,
       lastHealthCode: 'WORK_ITEM_WRITE_FAILED',
@@ -96,6 +98,35 @@ describe('ObserveSummaryV1', () => {
       notices,
       compatibility: 'COMPATIBLE',
     }).unsaved).toEqual({ completeness: 'KNOWN', knownCount: 0 })
+  })
+
+  it('reports learning state counts without exposing learned content', () => {
+    const domain = createMemoryRun2skillDomain()
+    const states = ['CAPTURED', 'ANALYZING', 'LEARNED', 'NEEDS_ATTENTION'] as const
+    for (const [index, processingState] of states.entries()) {
+      const base = itemAt(index + 10)
+      const item = itemAt(index + 10, processingState === 'CAPTURED' ? {} : {
+        processingState,
+        learning: processingState === 'ANALYZING'
+          ? { policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [], claimedAt: '2026-08-20T00:00:00.000Z' }
+          : processingState === 'LEARNED'
+            ? {
+                policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1, calls: [],
+                ...makeLearningResult(base),
+              }
+            : {
+                policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [],
+                failure: { code: 'MODEL_ROUTE_UNAVAILABLE', retryable: false, occurredAt: '2026-08-20T00:00:00.000Z' },
+                publicationOutcome: 'NEEDS_ATTENTION',
+              },
+      })
+      domain.workItems.set(item.workItemId, item)
+    }
+    const summary = createObserveSummary({
+      domain, lifecycle: lifecycle('READY'), notices: new RuntimeNotices(), compatibility: 'COMPATIBLE',
+    })
+    expect(summary.learning).toEqual({ captured: 1, analyzing: 1, learned: 1, needsAttention: 1 })
+    expect(JSON.stringify(summary)).not.toContain('MODEL_ROUTE_UNAVAILABLE')
   })
 
   it('marks the count unknown after a confirmed unsaved signal is evicted', () => {
@@ -186,6 +217,7 @@ describe('ObserveSummaryV1', () => {
       'capturedCount',
       'lastHealthCode',
       'lastRecoveryProgressAt',
+      'learning',
       'recoveryLag',
       'status',
       'unsaved',

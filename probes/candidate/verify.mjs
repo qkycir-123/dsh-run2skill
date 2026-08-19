@@ -29,7 +29,7 @@ const permittedSyntheticSecrets = new Set([
   'xoxb-1234567890-synthetic-slack-token',
 ])
 const permittedFixtureLocations = new Set([
-  ['package/lib/index.js', 'AUTHORIZATION', 1964],
+  ['package/lib/index.js', 'AUTHORIZATION', 2237],
   ['probes/support/safe-diagnostics.mjs', 'AUTHORIZATION', 38],
   ['probes/support/safe-diagnostics.mjs', 'SECRET_ASSIGNMENT', 'provider_credential', 3],
   ['src/domain/observe/redaction.ts', 'AUTHORIZATION', 109],
