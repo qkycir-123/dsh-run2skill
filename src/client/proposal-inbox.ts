@@ -273,7 +273,15 @@ export class ProposalInboxController {
           publicationOutcome: receipt.publicationOutcome,
         },
       })
-      await this.#refreshWithin(signal)
+      try {
+        await this.#refreshWithin(signal)
+      } catch {
+        if (!this.#disposed && !signal.aborted) this.#publish({
+          ...this.#state,
+          summaryPhase: this.#state.summary === undefined ? 'UNAVAILABLE' : 'STALE',
+          listPhase: this.#state.listPhase === 'LOADING' ? 'ERROR' : this.#state.listPhase,
+        })
+      }
     }, () => {
       this.#publish({
         ...this.#state,

@@ -48,6 +48,11 @@ export function trapDialogTab(
   }
   const first = focusable[0]!
   const last = focusable.at(-1)!
+  if (!focusable.includes(activeElement as { focus(): void })) {
+    preventDefault()
+    ;(backwards ? last : first).focus()
+    return
+  }
   if (backwards && activeElement === first) {
     preventDefault()
     last.focus()
@@ -55,6 +60,10 @@ export function trapDialogTab(
     preventDefault()
     first.focus()
   }
+}
+
+export function proposalInboxContentBlocked(mutationPending: boolean, rejectConfirm: boolean): boolean {
+  return mutationPending || rejectConfirm
 }
 
 function useDialogFocus(
@@ -153,6 +162,7 @@ function ProposalInboxPanel(props: {
   readonly setRejectConfirm: (value: boolean) => void
 }): ReactElement {
   const { controller, state } = props
+  const contentBlocked = proposalInboxContentBlocked(state.mutationPending, props.rejectConfirm)
   return createElement('div', {
     ref: props.dialogRef,
     role: 'dialog',
@@ -177,6 +187,11 @@ function ProposalInboxPanel(props: {
       boxShadow: '0 1rem 3rem rgb(0 0 0 / 35%)',
     },
   },
+  createElement('div', {
+    'aria-hidden': props.rejectConfirm || undefined,
+    inert: props.rejectConfirm || undefined,
+    style: { display: 'contents', pointerEvents: props.rejectConfirm ? 'none' : undefined },
+  },
   createElement('section', { 'aria-label': 'Proposal 待处理队列', style: { overflow: 'auto' } },
     createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
       createElement('h2', { id: 'run2skill-proposal-inbox-title' }, 'Skill Proposal Inbox'),
@@ -196,7 +211,7 @@ function ProposalInboxPanel(props: {
       ...state.items.map(item => createElement('li', { key: item.proposalRef.proposalId },
         createElement('button', {
           type: 'button',
-          disabled: state.mutationPending || state.detailPhase === 'LOADING',
+          disabled: contentBlocked || state.detailPhase === 'LOADING',
           'aria-current': state.selectedProposalId === item.proposalRef.proposalId ? 'true' : undefined,
           onClick: () => { void controller.select(item.proposalRef.proposalId) },
           style: {
@@ -219,13 +234,14 @@ function ProposalInboxPanel(props: {
       detail: state.detail,
       textMode: props.textMode,
       setTextMode: props.setTextMode,
-      mutationPending: state.mutationPending,
+      mutationPending: contentBlocked,
       onApprove: () => { void controller.mutate('APPROVE') },
       onReject: () => { props.setRejectConfirm(true) },
       onRetry: () => { void controller.mutate('RETRY') },
       onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD') },
     }),
     createElement('div', { 'aria-live': 'polite', 'aria-atomic': true }, state.announcement),
+  ),
   ),
   props.rejectConfirm
     ? createElement(RejectConfirmation, {
@@ -443,15 +459,24 @@ function RejectConfirmation(props: {
       }
     },
     style: {
-      position: 'absolute',
-      inset: '20% 20%',
+      position: 'fixed',
+      inset: 0,
+      zIndex: 1001,
+      display: 'grid',
+      placeItems: 'center',
+      padding: '1rem',
+      background: 'rgb(0 0 0 / 35%)',
+    },
+  },
+  createElement('div', {
+    style: {
+      maxWidth: '32rem',
       padding: '1rem',
       background: 'Canvas',
       color: 'CanvasText',
       border: '2px solid currentColor',
-      zIndex: 1001,
+      borderRadius: '0.5rem',
     },
-  },
-  createElement(RejectConfirmationBody, props),
+  }, createElement(RejectConfirmationBody, props)),
   )
 }

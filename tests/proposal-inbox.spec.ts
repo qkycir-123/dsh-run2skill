@@ -11,7 +11,11 @@ import {
   makeSafeText,
   type ProposalPollEnvironment,
 } from '../src/client/proposal-inbox.js'
-import { RejectConfirmationBody, trapDialogTab } from '../src/client/proposal-inbox-view.js'
+import {
+  RejectConfirmationBody,
+  proposalInboxContentBlocked,
+  trapDialogTab,
+} from '../src/client/proposal-inbox-view.js'
 import { parseProposalDetail } from '../src/client/proposal-inbox-wire.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import {
@@ -144,6 +148,16 @@ describe('Proposal Inbox client', () => {
     const preventInside = vi.fn()
     trapDialogTab('Tab', false, preventInside, root, middle)
     expect(preventInside).not.toHaveBeenCalled()
+
+    const preventEscaped = vi.fn()
+    trapDialogTab('Tab', false, preventEscaped, root, { focus: vi.fn() })
+    expect(preventEscaped).toHaveBeenCalledTimes(1)
+    expect(first.focus).toHaveBeenCalledTimes(2)
+
+    const preventReverseEscape = vi.fn()
+    trapDialogTab('Tab', true, preventReverseEscape, root, { focus: vi.fn() })
+    expect(preventReverseEscape).toHaveBeenCalledTimes(1)
+    expect(last.focus).toHaveBeenCalledTimes(2)
   })
 
   it('requires an explicit Reject confirmation and cancellation has no side effect', () => {
@@ -161,6 +175,8 @@ describe('Proposal Inbox client', () => {
     expect(onConfirm).not.toHaveBeenCalled()
     ;(buttons[1]!.props.onClick as () => void)()
     expect(onConfirm).toHaveBeenCalledTimes(1)
+    expect(proposalInboxContentBlocked(false, true)).toBe(true)
+    expect(proposalInboxContentBlocked(false, false)).toBe(false)
   })
 
   it('loads summary/list/detail lazily and approves using only the immutable reference', async () => {
@@ -212,6 +228,44 @@ describe('Proposal Inbox client', () => {
         revision: staged.item.review!.proposal.revision,
         digest: staged.item.review!.proposal.digest,
       },
+    })
+    controller.dispose()
+  })
+
+  it('keeps a successful mutation receipt when the immediate refresh fails', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const staged = await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const host = createProposalReviewRpcHandler(() => domain)
+    let failNextSummary = false
+    const controller = new ProposalInboxController(
+      'workspace-fixture',
+      async (calledEndpoint, payload, signal) => {
+        if (calledEndpoint === 'summary' && failNextSummary) throw new Error('offline after receipt')
+        const response = await host(calledEndpoint, payload, signal)
+        if (calledEndpoint === 'proposals/approve') failNextSummary = true
+        return response
+      },
+      fakeEnvironment(),
+    )
+
+    controller.start()
+    await controller.whenIdle()
+    await controller.open()
+    await controller.select(staged.item.review!.proposal.proposalId)
+    await controller.mutate('APPROVE')
+
+    expect(domain.workItems.get(item.workItemId)?.review?.reviewDecision).toBe('APPROVED')
+    expect(controller.snapshot()).toMatchObject({
+      mutationPending: false,
+      summaryPhase: 'STALE',
+      announcement: 'Proposal 已批准，正在发布',
+      detail: { reviewDecision: 'APPROVED', processingState: 'PUBLISHING' },
     })
     controller.dispose()
   })
