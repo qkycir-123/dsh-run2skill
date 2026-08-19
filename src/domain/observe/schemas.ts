@@ -207,7 +207,10 @@ export const CaptureWorkItemV1Schema = z.object({
       || value.learning.failure !== undefined
       || value.learning.publicationOutcome !== undefined
       || value.learning.requestBudgetUsed === 0
-      || !value.learning.calls.some(call => call.outcome === 'SUCCEEDED')
+      || !value.learning.calls.some(call => (
+        call.requestOrdinal === value.learning?.requestBudgetUsed
+        && call.outcome === 'SUCCEEDED'
+      ))
     ) {
       context.addIssue({ code: 'custom', message: 'Learned items require one successful committed result' })
     } else {

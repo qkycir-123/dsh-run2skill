@@ -106,7 +106,10 @@ export class LearningWorkItemStore {
       const learning = this.#analyzing(current)
       if (
         learning.requestBudgetUsed === 0
-        || !learning.calls.some(call => call.outcome === 'SUCCEEDED')
+        || !learning.calls.some(call => (
+          call.requestOrdinal === learning.requestBudgetUsed
+          && call.outcome === 'SUCCEEDED'
+        ))
       ) throw new LearningStoreError('INVALID_LEARNING_STATE')
       return {
         ...current,

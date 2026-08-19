@@ -128,4 +128,19 @@ describe('Slice B durable learning schemas', () => {
       },
     })).success).toBe(false)
   })
+
+  it('requires the latest reserved call to succeed for a learned item', () => {
+    const result = { experiences: [experience()], proposal: proposal() }
+    expect(CaptureWorkItemV1Schema.safeParse(makeWorkItem({
+      processingState: 'LEARNED',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 2,
+        calls: [
+          { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED' },
+          { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'FAILED' },
+        ],
+        ...result,
+      },
+    })).success).toBe(false)
+  })
 })

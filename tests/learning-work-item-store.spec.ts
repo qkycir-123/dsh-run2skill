@@ -38,6 +38,53 @@ describe('LearningWorkItemStore', () => {
     await expect(store.reserveRequest(item.workItemId, two.revision)).rejects.toMatchObject({ code: 'LEARNING_REQUEST_BUDGET_EXHAUSTED' })
   })
 
+  it('requires the latest reserved request to succeed before completion', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const failedRepairItem = makeWorkItem()
+    const successfulRepairItem = makeWorkItem({
+      signalKey: {
+        ...failedRepairItem.signalKey,
+        turn: 3,
+        turnEndSeq: 20,
+        turnInstanceDigest: 'd'.repeat(64),
+      },
+    })
+    domain.workItems.set(failedRepairItem.workItemId, failedRepairItem)
+    domain.workItems.set(successfulRepairItem.workItemId, successfulRepairItem)
+    const store = new LearningWorkItemStore(domain)
+
+    let failedRepair = await store.claim(failedRepairItem.workItemId, 1)
+    failedRepair = await store.reserveRequest(failedRepairItem.workItemId, failedRepair.revision)
+    failedRepair = await store.recordCall(failedRepairItem.workItemId, failedRepair.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED',
+    })
+    failedRepair = await store.reserveRequest(failedRepairItem.workItemId, failedRepair.revision)
+    await expect(store.complete(
+      failedRepairItem.workItemId, failedRepair.revision, makeLearningResult(failedRepairItem),
+    )).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+    failedRepair = await store.recordCall(failedRepairItem.workItemId, failedRepair.revision, {
+      requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'FAILED',
+    })
+    await expect(store.complete(
+      failedRepairItem.workItemId, failedRepair.revision, makeLearningResult(failedRepairItem),
+    )).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+
+    let successfulRepair = await store.claim(successfulRepairItem.workItemId, 1)
+    successfulRepair = await store.reserveRequest(successfulRepairItem.workItemId, successfulRepair.revision)
+    successfulRepair = await store.recordCall(successfulRepairItem.workItemId, successfulRepair.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED',
+    })
+    successfulRepair = await store.reserveRequest(successfulRepairItem.workItemId, successfulRepair.revision)
+    successfulRepair = await store.recordCall(successfulRepairItem.workItemId, successfulRepair.revision, {
+      requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'SUCCEEDED',
+    })
+    await expect(store.complete(
+      successfulRepairItem.workItemId,
+      successfulRepair.revision,
+      makeLearningResult(successfulRepairItem),
+    )).resolves.toMatchObject({ processingState: 'LEARNED' })
+  })
+
   it('retries retryable failures and records a visible terminal failure', async () => {
     const domain = createMemoryRun2skillDomain()
     const item = makeWorkItem()
