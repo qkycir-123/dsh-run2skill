@@ -12,8 +12,8 @@ Slice B 已形成最小 Learning 闭环：完整的 durable WorkItem 可以在�
 
 | 门 | 命令 | 结果 |
 |---|---|---|
-| 类型、lint、全量单测 | `pnpm run check` | 38 个文件、334 项测试通过 |
-| Observe + Learning 冻结评测 | `pnpm run evaluate` | Observe 45 个样本全部通过；Learning 20 个语义/边界场景全部通过，Type、Scope、Curation、安全阻断均为 1.0 |
+| 类型、lint、全量单测 | `pnpm run check` | 38 个文件、335 项测试通过 |
+| Observe + Learning 冻结评测 | `pnpm run evaluate` | Observe 45 个样本全部通过；Learning 20 个语义/边界场景全部通过，Type、Scope、Curation、安全阻断均为 1.0；错误常量预测的负向控制按预期未达到 90% 门槛 |
 | 构建、崩溃矩阵与候选包安全门 | `pnpm run verify:candidate` | 构建通过；4 个崩溃边界通过；精确 7 文件 allowlist、仓库/包敏感材料扫描和合成日志脱敏通过 |
 | DSH 契约探针 | `powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <clean-baseline>` | 7 个文件、20 项测试通过；上游前后不变 |
 | 安装生命周期 | `powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <clean-baseline>` | 基线 fixture 与当前候选包的安装、禁用、升级、卸载通过；上游仍为 fixed/clean |
@@ -21,7 +21,7 @@ Slice B 已形成最小 Learning 闭环：完整的 durable WorkItem 可以在�
 
 ## 已冻结行为
 
-- 只有完整、可学习的 `CAPTURED` WorkItem 才能进入 Learning；失败、取消、无模型请求和缺失 route 的 Turn 均 fail closed。
+- 只有完整、可学习的 `CAPTURED` WorkItem 才能进入 Learning；failed/cancelled Turn 只允许学习其中明确的直接用户教学证据，不根据 Agent 行为推导成功 Workflow；缺失有效模型 route 时 fail closed 并进入结构化 attention 路径。
 - Window、Envelope、模型输出、候选数、每项请求预算、单 Session 与全局并发都有硬上限。
 - 模型只接收 canonical Envelope 和固定 schema；原 Agent system、tools、路径与凭据不透传。
 - Skill catalog 必须是完整只读快照；候选消失、只读、跨 scope 或内容不安全时由 Core Guard 拒绝。
@@ -31,6 +31,7 @@ Slice B 已形成最小 Learning 闭环：完整的 durable WorkItem 可以在�
 ## 证据边界
 
 - CP-LLM/Skill 使用固定 fake Adapter，验证真实 DSH 接口契约但不调用外部模型。
+- Learning 金标与版本化预测记录分开保存；预测必须经过真实 Restricted Client、Worker、Core Guard 和 durable Store 后才能计分。该门验证冻结离线结果与产品管线，不把 fake Adapter 宣称为实时模型质量。
 - 本次没有执行真实 provider smoke；Slice B 的确定性验收不依赖外部服务或环境中的 key。
 - PASS 只绑定当前插件 commit、上述 DSH baseline、测试源码与运行平台；任一变化都必须重跑。
 - 临时 clone、构建产物和完整终端日志位于被忽略的探针目录，不作为提交证据。
