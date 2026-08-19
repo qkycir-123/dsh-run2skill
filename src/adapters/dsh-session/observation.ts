@@ -203,6 +203,7 @@ export function buildTurnObservation(
       turn,
       turnStartSeq: turnStart.seq,
       turnEndSeq,
+      turnEndTime: turnEnd.time,
       turnOutcomeKind: reason['kind'],
       turnInstanceDigest,
       directUserMessages,

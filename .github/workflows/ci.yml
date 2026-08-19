@@ -20,4 +20,5 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
+      - run: pnpm run verify:candidate
       - run: pnpm audit --prod --audit-level high

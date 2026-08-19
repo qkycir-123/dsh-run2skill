@@ -46,4 +46,20 @@ export class DurableCaptureCoordinator {
   observeNoSignal(progress: SessionCheckpointV1): Promise<void> {
     return this.checkpoint.observeCompletedRoot(progress)
   }
+
+  hasCaptured(workItemId: string): boolean {
+    return this.store.get(workItemId) !== undefined
+  }
+
+  async resolveNoSignalIfCaptured(
+    item: CaptureWorkItemV1,
+    progress: SessionCheckpointV1,
+  ): Promise<boolean> {
+    if (!this.hasCaptured(item.workItemId)) {
+      await this.observeNoSignal(progress)
+      return false
+    }
+    await this.capture(item, progress)
+    return true
+  }
 }
