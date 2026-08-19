@@ -301,6 +301,24 @@
       "sourceKind": "user",
       "text": "For future releases, the workflow is documented elsewhere.",
       "expectedKinds": []
+    },
+    {
+      "id": "en-must-always-constraint",
+      "sourceKind": "user",
+      "text": "For this project, developers must always validate inputs.",
+      "expectedKinds": ["CONSTRAINT"]
+    },
+    {
+      "id": "en-must-always-correction",
+      "sourceKind": "user",
+      "text": "That's wrong. Going forward, developers must always validate inputs.",
+      "expectedKinds": ["CORRECTION", "CONSTRAINT"]
+    },
+    {
+      "id": "en-future-run-description-negative",
+      "sourceKind": "user",
+      "text": "From now on, our deployment process will run nightly.",
+      "expectedKinds": []
     }
   ]
 }

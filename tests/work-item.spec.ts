@@ -173,7 +173,7 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     )
   })
 
-  it('joins pre-aggregated facts associatively without manufacturing revisions', () => {
+  it('converges for pre-aggregated facts across valid groupings without manufacturing revisions', () => {
     const explicit = makeWorkItem({ revision: 1 })
     const constraintHit = {
       kind: 'CONSTRAINT' as const,
@@ -181,10 +181,19 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
       ruleId: 'ctv1.constraint.persistent-operator',
       confidence: 'HIGH' as const,
     }
-    const constraint = makeWorkItem({ revision: 1, triggerHits: [constraintHit] })
+    const constraintEvidence = {
+      ...explicit.evidenceRefs[0]!,
+      messageSeq: 12,
+    }
+    const constraint = makeWorkItem({
+      revision: 1,
+      triggerHits: [constraintHit],
+      evidenceRefs: [constraintEvidence],
+    })
     const union = makeWorkItem({
       revision: 1,
       triggerHits: [...explicit.triggerHits, constraintHit],
+      evidenceRefs: [...explicit.evidenceRefs, constraintEvidence],
     })
 
     const leftGrouped = mergeCaptureWorkItems(
@@ -209,6 +218,72 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     )
     expect(highLeft).toEqual(highRight)
     expect(highLeft.revision).toBe(10)
+  })
+
+  it('merges revision and updatedAt maxima independently of fact grouping', () => {
+    const olderHighRevision = makeWorkItem({
+      revision: 10,
+      updatedAt: '2026-08-19T00:00:01.000Z',
+    })
+    const newestLowRevision = makeWorkItem({
+      revision: 1,
+      updatedAt: '2026-08-19T00:00:03.000Z',
+    })
+    const enriched = makeWorkItem({
+      revision: 1,
+      updatedAt: '2026-08-19T00:00:02.000Z',
+      triggerHits: [{
+        kind: 'EXPLICIT_SAVE',
+        messageSeq: 11,
+        ruleId: 'ctv1.explicit-save.zh.save-target',
+        confidence: 'HIGH',
+      }, {
+        kind: 'CONSTRAINT',
+        messageSeq: 12,
+        ruleId: 'ctv1.constraint.persistent-operator',
+        confidence: 'HIGH',
+      }],
+    })
+
+    const left = mergeCaptureWorkItems(
+      mergeCaptureWorkItems(olderHighRevision, newestLowRevision),
+      enriched,
+    )
+    const right = mergeCaptureWorkItems(
+      olderHighRevision,
+      mergeCaptureWorkItems(newestLowRevision, enriched),
+    )
+
+    expect(left).toEqual(right)
+    expect(left).toMatchObject({ revision: 10, updatedAt: newestLowRevision.updatedAt })
+  })
+
+  it('uses a deterministic latest observation for incomparable unbound workspace states', () => {
+    const noCwd = makeWorkItem({
+      workspaceBinding: { status: 'NO_CWD', observedAt: '2026-08-19T00:00:01.000Z' },
+    })
+    const unregistered = makeWorkItem({
+      workspaceBinding: { status: 'UNREGISTERED', observedAt: '2026-08-19T00:00:02.000Z' },
+    })
+    const bound = makeWorkItem({
+      workspaceBinding: {
+        status: 'BOUND',
+        workspaceId: 'workspace-1',
+        canonicalPath: 'D:\\workspace',
+        observedAt: '2026-08-19T00:00:03.000Z',
+      },
+    })
+
+    expect(mergeCaptureWorkItems(noCwd, unregistered).workspaceBinding).toEqual(
+      unregistered.workspaceBinding,
+    )
+    expect(mergeCaptureWorkItems(
+      mergeCaptureWorkItems(noCwd, unregistered),
+      bound,
+    )).toEqual(mergeCaptureWorkItems(
+      noCwd,
+      mergeCaptureWorkItems(unregistered, bound),
+    ))
   })
 
   it('rejects mutually inconsistent incomplete blocker observations in either order', () => {

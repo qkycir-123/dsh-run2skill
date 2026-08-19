@@ -148,7 +148,12 @@ export const CaptureWorkItemV1Schema = z.object({
     context.addIssue({ code: 'custom', message: 'A completed formerly blocked scan must close as no-signal' })
   }
   if (value.captureReason === 'CHEAP_TRIGGER') {
-    if (value.scanStatus !== 'COMPLETE' || value.triggerHits.length === 0 || value.processingState !== 'CAPTURED') {
+    if (
+      value.scanStatus !== 'COMPLETE'
+      || value.triggerHits.length === 0
+      || value.evidenceRefs.length === 0
+      || value.processingState !== 'CAPTURED'
+    ) {
       context.addIssue({ code: 'custom', message: 'Cheap trigger captures require a complete triggered scan' })
     }
   }
@@ -173,6 +178,10 @@ export const CaptureWorkItemV1Schema = z.object({
   }
   if (new Set(value.captureBlockers).size !== value.captureBlockers.length) {
     context.addIssue({ code: 'custom', message: 'Capture blockers must be unique' })
+  }
+  const triggerMessageSeqs = new Set(value.triggerHits.map((hit) => hit.messageSeq))
+  if (value.evidenceRefs.some((evidence) => !triggerMessageSeqs.has(evidence.messageSeq))) {
+    context.addIssue({ code: 'custom', message: 'Evidence must correspond to a triggered message coordinate' })
   }
   if (!isCanonicallyOrdered(value.triggerHits, (left, right) => (
     left.messageSeq - right.messageSeq

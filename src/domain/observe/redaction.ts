@@ -50,6 +50,20 @@ function removeFencedCodeAndQuotes(value: string): string {
   return kept.join('\n')
 }
 
+function isSensitiveAssignmentKey(key: string): boolean {
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
+    .toLowerCase()
+  const parts = normalized.split(/[_-]+/u).filter(Boolean)
+  const suffix = parts.at(-1)
+  if (suffix === undefined) return false
+  if (['password', 'passwd', 'pwd', 'token', 'secret', 'credential'].includes(suffix)) {
+    return true
+  }
+  if (suffix === 'key' && parts.length > 1) return true
+  return ['apikey', 'accesskey'].includes(normalized)
+}
+
 export function preprocessSensitiveText(input: string): PreprocessedSensitiveText {
   const counts: Partial<Record<RedactionKind, number>> = {}
   let text = removeInvisibleControls(input).normalize('NFKC')
@@ -63,6 +77,17 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     text = text.replace(pattern, (...args: [string, ...string[]]) => {
       counts[kind] = (counts[kind] ?? 0) + 1
       return typeof replacement === 'string' ? replacement : replacement(...args)
+    })
+  }
+
+  const redactAssignments = (
+    pattern: RegExp,
+    format: (key: string, separator: string) => string,
+  ): void => {
+    text = text.replace(pattern, (match, key: string, separator: string) => {
+      if (!isSensitiveAssignmentKey(key)) return match
+      counts.SECRET_ASSIGNMENT = (counts.SECRET_ASSIGNMENT ?? 0) + 1
+      return format(key.toLowerCase(), separator)
     })
   }
 
@@ -91,30 +116,17 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     'API_KEY',
     '[REDACTED]',
   )
-  replace(
-    /"((?:(?:client|refresh|github|deepseek)[_-]?(?:token|secret|key)|(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
-    'SECRET_ASSIGNMENT',
-    (_match, key: string, separator: string) => `"${key.toLowerCase()}"${separator}"[REDACTED]"`,
+  redactAssignments(
+    /"([a-z][a-z0-9_-]{0,127})"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    (key, separator) => `"${key}"${separator}"[REDACTED]"`,
   )
-  replace(
-    /'((?:(?:client|refresh|github|deepseek)[_-]?(?:token|secret|key)|(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
-    'SECRET_ASSIGNMENT',
-    (_match, key: string, separator: string) => `'${key.toLowerCase()}'${separator}'[REDACTED]'`,
+  redactAssignments(
+    /'([a-z][a-z0-9_-]{0,127})'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    (key, separator) => `'${key}'${separator}'[REDACTED]'`,
   )
-  replace(
-    /\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gu,
-    'SECRET_ASSIGNMENT',
-    (match) => `${match.slice(0, match.indexOf('=') + 1)}[REDACTED]`,
-  )
-  replace(
-    /\b((?:(?:client|refresh|github|deepseek)[_-]?(?:token|secret|key)|(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)))\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
-    'SECRET_ASSIGNMENT',
-    (_match, key: string, separator: string) => `${key.toLowerCase()}${separator}[REDACTED]`,
-  )
-  replace(
-    /\b(password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key)\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
-    'SECRET_ASSIGNMENT',
-    (_match, key: string, separator: string) => `${key.toLowerCase()}${separator}[REDACTED]`,
+  redactAssignments(
+    /\b([a-z][a-z0-9_-]{0,127})\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+    (key, separator) => `${key}${separator}[REDACTED]`,
   )
 
   text = text.replace(/\s+/gu, ' ').trim().toLowerCase()

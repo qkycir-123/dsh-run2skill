@@ -120,7 +120,11 @@ function mergeWorkspaceBinding(
   }
   const leftRank = bindingRank(left)
   const rightRank = bindingRank(right)
-  if (leftRank === rightRank) throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+  if (leftRank === rightRank) {
+    const timeOrder = compareIsoDateTime(left.observedAt, right.observedAt)
+    if (timeOrder !== 0) return timeOrder > 0 ? left : right
+    return left.status < right.status ? left : right
+  }
   return leftRank > rightRank ? left : right
 }
 
@@ -153,8 +157,6 @@ function materializeMergedFacts(
 ): CaptureWorkItemV1 {
   const matchesLeft = sameJson(mergedFacts, withoutRevisionFacts(left))
   const matchesRight = sameJson(mergedFacts, withoutRevisionFacts(right))
-  if (matchesLeft && matchesRight) return preferSnapshot(left, right)
-
   const revision = Math.max(left.revision, right.revision)
   const updatedAt = compareIsoDateTime(left.updatedAt, right.updatedAt) >= 0
     ? left.updatedAt
@@ -199,8 +201,9 @@ export function mergeCaptureWorkItems(
   existingValue: CaptureWorkItemV1,
   incomingValue: CaptureWorkItemV1,
 ): CaptureWorkItemV1 {
-  // This is an associative fact join. A3 owns compare-revision persistence and
-  // assigns the next durable revision only when the joined facts change.
+  // This reconciles one jointly valid monotonic observation chain. A3 owns
+  // compare-revision persistence and assigns the next durable revision only
+  // when these reconciled facts change.
   const existing = parseWorkItem(existingValue)
   const incoming = parseWorkItem(incomingValue)
   assertIdentity(existing, incoming)

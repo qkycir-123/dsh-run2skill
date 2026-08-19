@@ -28,6 +28,7 @@ export const CHEAP_TRIGGER_V1_POLICY = Object.freeze({
     reusableScope: String.raw`(?:以后|后续|每次|遇到|当.+?时|\b(?:from now on|whenever|every time|for future|going forward)\b)`,
     processWords: String.raw`(?:流程|步骤|\b(?:workflow|process)\b)`,
     directiveWords: String.raw`(?:使用|遵循|执行|定义|制定|\b(?:use|follow|run|apply|define|document)\b)`,
+    descriptiveDirective: String.raw`\b(?:will|is|are|was|were|has|have|had)\s+(?:run|use|follow|apply|define|document)\b`,
     orderedSteps: [
       { start: '先', ends: ['再', '然后', '最后'] },
       { start: 'first', ends: ['then', 'next', 'finally'] },

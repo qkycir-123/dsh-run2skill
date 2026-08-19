@@ -109,6 +109,10 @@ describe('cheap-trigger-v1', () => {
     '{"refreshToken":"synthetic-refresh-value"}',
     '{"githubToken":"synthetic-github-value"}',
     '{"deepseekKey":"synthetic-provider-value"}',
+    '{"serviceCredential":"synthetic-service-value"}',
+    '{"accessToken":"synthetic-access-value"}',
+    '{"databasePassword":"synthetic-database-value"}',
+    '{"awsSecretAccessKey":"synthetic-aws-value"}',
   ])('keeps a quoted JSON credential out of durable evidence: %s', (secret) => {
     const result = analyzeCheapTriggerV1([{
       messageSeq: 1,

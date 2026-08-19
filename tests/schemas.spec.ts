@@ -96,6 +96,22 @@ describe('versioned domain schemas', () => {
     })).toThrow()
   })
 
+  it('requires trigger evidence to reference an actual triggered message', () => {
+    const item = makeWorkItem()
+
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      evidenceRefs: [],
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      evidenceRefs: [{
+        ...item.evidenceRefs[0]!,
+        messageSeq: item.evidenceRefs[0]!.messageSeq + 1,
+      }],
+    })).toThrow()
+  })
+
   it('rejects non-canonical repeated-field ordering', () => {
     const item = makeWorkItem()
     const constraintHit = {

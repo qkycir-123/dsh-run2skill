@@ -73,6 +73,11 @@ const constraintDescriptiveSubject = new RegExp(
 const reusableScope = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.reusableScope, 'iu')
 const processWords = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.processWords, 'iu')
 const workflowDirective = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.directiveWords, 'iu')
+const workflowDescriptiveDirective = new RegExp(
+  CHEAP_TRIGGER_V1_POLICY.workflow.descriptiveDirective,
+  'iu',
+)
+const explicitModalDirective = /\b(?:must|should)\b/iu
 const explicitSavePatterns = [explicitSaveForward, explicitSaveReverse, explicitSaveFixed] as const
 const correctionPatterns = [correctionAnchor] as const
 const constraintPatterns = [persistentScope] as const
@@ -151,7 +156,10 @@ function firstCorrectionIndex(text: string): number | undefined {
 function isPersistentDirective(text: string, directive: RegExp): boolean {
   return persistentScope.test(text)
     && directive.test(text)
-    && !constraintDescriptiveSubject.test(text)
+    && (
+      explicitModalDirective.test(text)
+      || !constraintDescriptiveSubject.test(text)
+    )
 }
 
 function firstConstraintIndex(text: string): number | undefined {
@@ -178,6 +186,7 @@ function firstWorkflowIndex(text: string): number | undefined {
           processWords.test(clause.text)
           && (
             workflowDirective.test(clause.text)
+            && !workflowDescriptiveDirective.test(clause.text)
             || firstExplicitSaveIndex(clause.text) !== undefined
           )
         )
