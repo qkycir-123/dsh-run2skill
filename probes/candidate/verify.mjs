@@ -25,10 +25,20 @@ const permittedSyntheticSecrets = new Set([
   'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
   'sk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
   'AKIAABCDEFGHIJKLMNOP',
+  'glpat-abcdefghijklmnopqrstuvwxyz123456',
+  'xoxb-1234567890-synthetic-slack-token',
+])
+const syntheticFixtureFiles = new Set([
+  'probes/candidate/verify.mjs',
+  'tests/frozen-evaluation.spec.ts',
+  'tests/observe-summary-rpc.spec.ts',
+  'tests/redaction.spec.ts',
+  'tests/trigger.spec.ts',
+  'tests/turn-capture-processor.spec.ts',
 ])
 const secretRules = [
   ['PRIVATE_KEY', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu],
-  ['AUTHORIZATION', /\bauthorization[^\S\r\n]*:[^\S\r\n]*(?:bearer|basic|digest|aws4-[a-z0-9-]+)\s+[^\r\n]*/giu],
+  ['AUTHORIZATION', /\bauthorization[^\S\r\n]*:[^\S\r\n]*[^\r\n]*/giu],
   ['BEARER_TOKEN', /\bbearer\s+[a-z0-9._~+/=-]{8,}/giu],
   ['API_KEY', /\b(?:gh[pousr]_[a-z0-9]{20,}|glpat-[a-z0-9_-]{20,}|xox[baprs]-[a-z0-9-]{10,}|npm_[a-z0-9]{20,}|aiza[a-z0-9_-]{30,}|sk-[a-z0-9][a-z0-9_-]{18,}[a-z0-9]|(?:pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu],
   ['CREDENTIAL_URL', /https?:\/\/[^\s/:]+:[^\s/@]+@/gu],
@@ -49,13 +59,15 @@ function scan(name, content) {
       const value = match[0]
       const lowerValue = value.toLowerCase()
       const syntheticFixture = permittedSyntheticSecrets.has(value)
-        || value.includes('${')
-        || lowerValue.includes('synthetic')
-        || lowerValue.includes('example.invalid')
-        || value.includes('abcdefghijklmnopqrstuvwxyz')
         || value.includes('[REDACTED]')
-        || lowerValue.includes('runtime-')
-        || lowerValue.includes('runtime')
+        || /^authorization\s*:\s*["']?authorization["']?;?$/iu.test(value.trim())
+        || (syntheticFixtureFiles.has(name) && (
+          value.includes('${')
+          || lowerValue.includes('synthetic')
+          || lowerValue.includes('invalid')
+          || lowerValue.includes('runtime')
+          || lowerValue.includes('example.invalid')
+        ))
       if (!syntheticFixture) findings.push(`${name}:${rule}`)
     }
   }
@@ -81,11 +93,13 @@ function scan(name, content) {
       || assignedValue.includes('(')
       || /^[A-Za-z_$][\w$]*(?:\.[\w$]+)*(?:\([^)]*\))?$/u.test(assignedValue)
     const safeFixture = value.includes('${')
-      || value.includes('synthetic')
-      || value.includes('invalid')
       || value.includes('[REDACTED]')
-      || value.includes('runtime-')
       || permittedSyntheticSecrets.has(literalValue)
+      || (syntheticFixtureFiles.has(name) && (
+        value.toLowerCase().includes('synthetic')
+        || value.toLowerCase().includes('invalid')
+        || value.toLowerCase().includes('runtime')
+      ))
     if (!coordinateKey && !selfDescribingConstant && !structuralValue && !safeFixture) {
       findings.push(`${name}:SECRET_ASSIGNMENT:${normalized}`)
     }
@@ -116,6 +130,7 @@ assert.deepEqual([...new Set(findings)].sort(), [], 'secret-like material found 
 const synthetic = [
   'ghp_runtimeSyntheticValue123456789',
   'Authorization: Digest credential=runtime-auth signature=runtime-signature',
+  'Authorization: Token runtime-token-auth',
   'Bearer runtimeBearerValue123456',
   'serviceCredential=runtime-credential',
   'genericToken=runtime-token',
@@ -123,15 +138,26 @@ const synthetic = [
   'MY_SECRET=runtime-env-secret',
   'D:\\private\\workspace\\file.log',
   '/tmp/private/runtime.log',
+  '/mnt/work/runtime.log',
+  '/root/private/runtime.log',
+  '/workspace/private/runtime.log',
+  '/usr/local/private/runtime.log',
+  '"D:\\private workspace\\runtime file.log"',
 ].join('\n')
 const runtime = spawnSync(process.execPath, ['-e', `process.stderr.write(${JSON.stringify(synthetic)})`], {
   cwd: root, encoding: 'utf8', windowsHide: true,
 })
+assert.equal(isSafeDiagnosticOutput(runtime.stderr), false)
 const safeLog = sanitizeDiagnostic(runtime.stderr)
 assert.equal(safeLog.includes('ghp_runtimeSyntheticValue123456789'), false)
 assert.equal(safeLog.includes('runtime-secret'), false)
 assert.equal(safeLog.includes('D:\\private\\workspace'), false)
 assert.equal(safeLog.includes('/tmp/private'), false)
+assert.equal(safeLog.includes('/mnt/work'), false)
+assert.equal(safeLog.includes('/root/private'), false)
+assert.equal(safeLog.includes('/workspace/private'), false)
+assert.equal(safeLog.includes('/usr/local/private'), false)
+assert.equal(safeLog.includes('private workspace'), false)
 assert.equal(safeLog.includes('runtime-auth'), false)
 assert.equal(safeLog.includes('runtime-credential'), false)
 assert.equal(safeLog.includes('runtime-token'), false)

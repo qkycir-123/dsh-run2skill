@@ -8,7 +8,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import {
   isSafeDiagnosticOutput,
   safeFailure,
-  sanitizeDiagnostic,
 } from '../support/safe-diagnostics.mjs'
 
 const [cloneArg, candidateArg, workArg] = process.argv.slice(2)
@@ -164,7 +163,7 @@ async function observe(present) {
       await delay(2_000)
       assert.equal(errors.filter(error => /run2skill/iu.test(error)).length, 0)
     }
-    assert.equal(isSafeDiagnosticOutput(sanitizeDiagnostic(logs)), true, 'candidate runtime log gate failed')
+    assert.equal(isSafeDiagnosticOutput(logs), true, 'candidate runtime log gate failed')
   } finally {
     await browser?.close()
     await stop(child)
