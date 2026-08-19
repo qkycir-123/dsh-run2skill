@@ -1,0 +1,7 @@
+- insert:
+    - id: run2skill-install-probe
+      name: '@dsh-run2skill/install-probe'
+      inject: [storageDomain, workspaceRegistry, skills]
+      config:
+        marker: !!js dshHomePath('run2skill-install-probe.json')
+        userSkillRoot: !!js dshHomePath('skills')
