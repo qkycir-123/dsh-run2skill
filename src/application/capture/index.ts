@@ -1,3 +1,6 @@
+export * from './bounded-gap-scanner.js'
+export * from './bounded-signal-retry.js'
 export * from './durable-capture-coordinator.js'
+export * from './recovery-lifecycle.js'
 export * from './runtime-notices.js'
 export * from './write-behind-checkpoint.js'
