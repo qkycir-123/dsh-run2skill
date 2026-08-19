@@ -1,4 +1,5 @@
 export { DshSessionGapReader } from './gap-reader.js'
+export * from './learning-window.js'
 export { SessionCoordinateIngress } from './ingress.js'
 export type { SessionCoordinateIngressOptions } from './ingress.js'
 export {
