@@ -259,6 +259,48 @@
       "sourceKind": "user",
       "text": "For this project, the database always stores timestamps.",
       "expectedKinds": []
+    },
+    {
+      "id": "en-now-contrastive-save",
+      "sourceKind": "user",
+      "text": "Do not save this draft but now save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-now-contrastive-save",
+      "sourceKind": "user",
+      "text": "不要保存草稿而是现在把这个流程保存成 Skill。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-correction-description-negative",
+      "sourceKind": "user",
+      "text": "That's wrong. Going forward, the database always stores timestamps.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-proper-subject-description-negative",
+      "sourceKind": "user",
+      "text": "For this project, PostgreSQL always stores timestamps.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-possessive-subject-description-negative",
+      "sourceKind": "user",
+      "text": "For this project, our database always stores timestamps.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-reference-process-negative",
+      "sourceKind": "user",
+      "text": "For future reference, the build process failed.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-release-workflow-description-negative",
+      "sourceKind": "user",
+      "text": "For future releases, the workflow is documented elsewhere.",
+      "expectedKinds": []
     }
   ]
 }

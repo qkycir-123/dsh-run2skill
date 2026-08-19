@@ -72,6 +72,7 @@ const constraintDescriptiveSubject = new RegExp(
 )
 const reusableScope = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.reusableScope, 'iu')
 const processWords = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.processWords, 'iu')
+const workflowDirective = new RegExp(CHEAP_TRIGGER_V1_POLICY.workflow.directiveWords, 'iu')
 const explicitSavePatterns = [explicitSaveForward, explicitSaveReverse, explicitSaveFixed] as const
 const correctionPatterns = [correctionAnchor] as const
 const constraintPatterns = [persistentScope] as const
@@ -137,8 +138,9 @@ function firstCorrectionIndex(text: string): number | undefined {
     const anchorIndex = firstMatchIndex(clause.text, correctionPatterns)
     if (anchorIndex === undefined) continue
     const candidates = [clause, clauses[index + 1]].filter((value) => value !== undefined)
-    if (candidates.some((candidate) => (
-      correctionBehavior.test(candidate.text) && persistentScope.test(candidate.text)
+    if (candidates.some((candidate) => isPersistentDirective(
+      candidate.text,
+      correctionBehavior,
     ))) {
       return clause.start + anchorIndex
     }
@@ -146,13 +148,18 @@ function firstCorrectionIndex(text: string): number | undefined {
   return undefined
 }
 
+function isPersistentDirective(text: string, directive: RegExp): boolean {
+  return persistentScope.test(text)
+    && directive.test(text)
+    && !constraintDescriptiveSubject.test(text)
+}
+
 function firstConstraintIndex(text: string): number | undefined {
   for (const clause of textClauses(text, false)) {
     const scopeIndex = firstMatchIndex(clause.text, constraintPatterns)
     if (
       scopeIndex !== undefined
-      && constraintOperator.test(clause.text)
-      && !constraintDescriptiveSubject.test(clause.text)
+      && isPersistentDirective(clause.text, constraintOperator)
     ) {
       return clause.start + scopeIndex
     }
@@ -165,7 +172,16 @@ function firstWorkflowIndex(text: string): number | undefined {
     const scopeIndex = firstMatchIndex(clause.text, workflowPatterns)
     if (
       scopeIndex !== undefined
-      && (processWords.test(clause.text) || hasOrderedSteps(clause.text))
+      && (
+        hasOrderedSteps(clause.text)
+        || (
+          processWords.test(clause.text)
+          && (
+            workflowDirective.test(clause.text)
+            || firstExplicitSaveIndex(clause.text) !== undefined
+          )
+        )
+      )
     ) {
       return clause.start + scopeIndex
     }

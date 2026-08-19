@@ -127,6 +127,10 @@ describe('Sensitive Data Filter', () => {
     '{"github_token":"synthetic-github-value"}',
     '{"password":"synthetic-password-value"}',
     "{'client_secret':'synthetic-client-value'}",
+    '{"clientSecret":"synthetic-client-value"}',
+    '{"refreshToken":"synthetic-refresh-value"}',
+    '{"githubToken":"synthetic-github-value"}',
+    '{"deepseekKey":"synthetic-provider-value"}',
   ])('redacts a quoted object credential assignment: %s', (assignment) => {
     const result = preprocessSensitiveText(assignment)
 

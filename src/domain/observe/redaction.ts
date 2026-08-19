@@ -92,12 +92,12 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     '[REDACTED]',
   )
   replace(
-    /"((?:(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    /"((?:(?:client|refresh|github|deepseek)[_-]?(?:token|secret|key)|(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
     'SECRET_ASSIGNMENT',
     (_match, key: string, separator: string) => `"${key.toLowerCase()}"${separator}"[REDACTED]"`,
   )
   replace(
-    /'((?:(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    /'((?:(?:client|refresh|github|deepseek)[_-]?(?:token|secret|key)|(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
     'SECRET_ASSIGNMENT',
     (_match, key: string, separator: string) => `'${key.toLowerCase()}'${separator}'[REDACTED]'`,
   )
@@ -107,7 +107,7 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     (match) => `${match.slice(0, match.indexOf('=') + 1)}[REDACTED]`,
   )
   replace(
-    /\b((?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key))\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+    /\b((?:(?:client|refresh|github|deepseek)[_-]?(?:token|secret|key)|(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)))\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
     'SECRET_ASSIGNMENT',
     (_match, key: string, separator: string) => `${key.toLowerCase()}${separator}[REDACTED]`,
   )
