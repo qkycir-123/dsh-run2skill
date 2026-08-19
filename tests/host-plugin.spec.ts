@@ -3,6 +3,21 @@ import { apply, inject, name } from '../src/host/index.js'
 import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 
+function learningServices() {
+  return {
+    llm: {
+      async resolveModelInfo() { return { context: { contextWindow: 16_384 } } },
+      async *stream() {
+        yield { type: 'finish' as const, reason: { kind: 'stop' } }
+      },
+    },
+    skills: {
+      async snapshot() { return { skills: [], complete: true } },
+      async get() { return undefined },
+    },
+  }
+}
+
 describe('Host plugin assembly', () => {
   it('declares only the approved DSH services', () => {
     expect(name).toBe('run2skill')
@@ -12,9 +27,9 @@ describe('Host plugin assembly', () => {
       'storageDomain',
       'workspaceRegistry',
       'connection',
+      'llm',
+      'skills',
     ])
-    expect(inject).not.toContain('llm')
-    expect(inject).not.toContain('skills')
     expect(inject).not.toContain('settings')
   })
 
@@ -44,6 +59,7 @@ describe('Host plugin assembly', () => {
     let rpcHandler: ObserveSummaryRpcHandler | undefined
     const disposeRpc = vi.fn(async () => { order.push('rpc-dispose') })
     const context = {
+      ...learningServices(),
       sessions: {},
       sessionPersistence: {
         async listSnapshots() {
@@ -67,10 +83,11 @@ describe('Host plugin assembly', () => {
           },
         },
       },
-      on(event: string, listener: typeof eventListener) {
-        expect(event).toBe('session/event')
+      on(event: string, listener: (...args: never[]) => unknown) {
         order.push('listener')
-        eventListener = listener
+        if (event === 'session/event') {
+          eventListener = listener as unknown as typeof eventListener
+        }
       },
     }
 
@@ -83,6 +100,7 @@ describe('Host plugin assembly', () => {
     revision = 'jsonl:1'
     for (const event of events) eventListener?.({ header }, event)
     await vi.waitFor(() => expect(domain.workItems.size).toBe(1))
+    await vi.waitFor(() => expect([...domain.workItems.values()][0]?.processingState).toBe('NEEDS_ATTENTION'))
     const response = await rpcHandler?.(
       'observe-summary',
       { apiVersion: 1 },
@@ -90,7 +108,12 @@ describe('Host plugin assembly', () => {
     )
     expect(response).toMatchObject({
       ok: true,
-      value: { status: 'READY', capturedCount: 1, blockedCaptureCount: 0 },
+      value: {
+        status: 'READY',
+        capturedCount: 0,
+        blockedCaptureCount: 0,
+        learning: { needsAttention: 1 },
+      },
     })
 
     await dispose()
@@ -119,6 +142,7 @@ describe('Host plugin assembly', () => {
     let snapshots: Array<{ header: typeof header; revision: string }> = []
     let eventListener: ((session: { header: typeof header }, event: typeof events[number]) => void) | undefined
     const context = {
+      ...learningServices(),
       sessions: {},
       sessionPersistence: {
         async listSnapshots() { return snapshots },
@@ -127,7 +151,11 @@ describe('Host plugin assembly', () => {
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
-      on(_event: string, listener: typeof eventListener) { eventListener = listener },
+      on(event: string, listener: (...args: never[]) => unknown) {
+        if (event === 'session/event') {
+          eventListener = listener as unknown as typeof eventListener
+        }
+      },
     }
 
     const dispose = await apply(context)
@@ -160,6 +188,7 @@ describe('Host plugin assembly', () => {
     let revision = 'jsonl:0'
     let eventListener: ((session: { header: typeof header }, event: typeof turnEnd) => void) | undefined
     const context = {
+      ...learningServices(),
       sessions: {},
       sessionPersistence: {
         async listSnapshots() { return [{ header, revision }] },
@@ -168,7 +197,11 @@ describe('Host plugin assembly', () => {
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
-      on(_event: string, listener: typeof eventListener) { eventListener = listener },
+      on(event: string, listener: (...args: never[]) => unknown) {
+        if (event === 'session/event') {
+          eventListener = listener as unknown as typeof eventListener
+        }
+      },
     }
 
     const dispose = await apply(context)
@@ -184,12 +217,49 @@ describe('Host plugin assembly', () => {
     await dispose()
   })
 
+  it('borrows the exact live Agent without changing the pre-step waterfall decision', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const agent = {
+      id: 'session-1',
+      session: { header: { id: 'session-1', createdAt: 1_725_000_000_000, cwd: 'D:\\workspace' } },
+    }
+    let preStep: ((payload: { agent: typeof agent }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+    let agentDisposed: ((payload: { agent: typeof agent }) => void) | undefined
+    const context = {
+      ...learningServices(),
+      sessions: {},
+      sessionPersistence: {
+        async listSnapshots() { return [] },
+        async readFrom() { throw new Error('must not read') },
+      },
+      storageDomain: { async open() { return domain } },
+      workspaceRegistry: { async resolveByPath() { return undefined } },
+      connection: { rpc: { handle() { return async () => undefined } } },
+      on(event: string, listener: (...args: never[]) => unknown) {
+        if (event === 'agent/pre-step') {
+          preStep = listener as unknown as typeof preStep
+        } else if (event === 'agent/disposed') {
+          agentDisposed = listener as unknown as typeof agentDisposed
+        }
+      },
+    }
+    const dispose = await apply(context)
+    const decision = { kind: 'enter', messages: [] }
+    const next = vi.fn(async () => decision)
+
+    await expect(preStep?.({ agent }, next)).resolves.toBe(decision)
+    expect(next).toHaveBeenCalledOnce()
+    agentDisposed?.({ agent })
+    await dispose()
+  })
+
   it('closes an opened domain when its durable schema cannot initialize', async () => {
     const domain = createMemoryRun2skillDomain()
     const close = vi.fn(async () => undefined)
     domain.close = close
     domain.global.get = () => ({ schemaVersion: 999 } as never)
     const context = {
+      ...learningServices(),
       sessions: {},
       sessionPersistence: {
         async listSnapshots() { return [] },
@@ -212,6 +282,7 @@ describe('Host plugin assembly', () => {
     const close = vi.fn(async () => undefined)
     domain.close = close
     const context = {
+      ...learningServices(),
       sessions: {},
       sessionPersistence: {
         async listSnapshots() { return [] },

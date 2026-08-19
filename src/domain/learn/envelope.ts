@@ -16,6 +16,7 @@ export type LearningBlockRetention =
   | { readonly kind: 'EXTERNAL' }
   | { readonly kind: 'HISTORY'; readonly distance: number }
   | { readonly kind: 'TOOL' }
+  | { readonly kind: 'SKILL_SUMMARY'; readonly rank: number }
   | { readonly kind: 'SKILL'; readonly rank: number }
   | { readonly kind: 'ASSISTANT' }
 
@@ -98,6 +99,7 @@ function removalOrder(blocks: readonly LearningWindowBlock[]): number[] {
       case 'EXTERNAL': return [{ index, tier: 0, withinTier: block.eventSeq }]
       case 'HISTORY': return [{ index, tier: 1, withinTier: -block.retention.distance }]
       case 'TOOL': return [{ index, tier: 2, withinTier: block.eventSeq }]
+      case 'SKILL_SUMMARY': return []
       case 'SKILL': return [{ index, tier: 3, withinTier: -block.retention.rank }]
       case 'ASSISTANT': return [{ index, tier: 4, withinTier: block.eventSeq }]
     }

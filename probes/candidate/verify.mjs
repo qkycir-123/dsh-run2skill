@@ -29,7 +29,6 @@ const permittedSyntheticSecrets = new Set([
   'xoxb-1234567890-synthetic-slack-token',
 ])
 const permittedFixtureLocations = new Set([
-  ['package/lib/index.js', 'AUTHORIZATION', 222],
   ['probes/support/safe-diagnostics.mjs', 'AUTHORIZATION', 38],
   ['probes/support/safe-diagnostics.mjs', 'SECRET_ASSIGNMENT', 'provider_credential', 3],
   ['src/domain/observe/redaction.ts', 'AUTHORIZATION', 112],
@@ -120,10 +119,16 @@ function scan(name, content) {
       const value = match[0]
       const line = content.slice(0, match.index).split('\n').length
       const location = `${name}:${rule}:${String(line)}`
+      const sourceLine = content.split('\n')[line - 1]?.trim() ?? ''
+      const bundledAuthorizationRedactor = name === 'package/lib/index.js'
+        && rule === 'AUTHORIZATION'
+        && sourceLine.startsWith('replace(/\\bauthorization')
+        && sourceLine.endsWith('"authori' + 'zation: [REDACTED]");')
       const syntheticFixture = permittedSyntheticSecrets.has(value)
         || (rule === 'AUTHORIZATION'
           && /^authorization\s*:\s*\[REDACTED\]$/iu.test(value.trim()))
         || /^authorization\s*:\s*["']?authorization["']?;?$/iu.test(value.trim())
+        || bundledAuthorizationRedactor
         || permittedFixtureLocations.has(location)
       if (!syntheticFixture) findings.push(location)
     }

@@ -53,15 +53,6 @@ class RecordingLlm implements DshLlmPort {
     return { context: { contextWindow: this.contextWindow } }
   }
 
-  createUserMessage(text: string) {
-    return {
-      id: `msg_${this.calls.length}`,
-      role: 'user' as const,
-      content: [{ type: 'text' as const, text }],
-      source: { kind: 'user' as const },
-    }
-  }
-
   async * stream(options: DshGenerateOptions): AsyncIterable<DshStreamChunk> {
     this.calls.push(options)
     for (const chunk of this.responses[this.calls.length - 1] ?? []) yield chunk
@@ -259,9 +250,6 @@ describe('RestrictedLearningClient', () => {
   it('does not reserve or call when model context metadata is unavailable', async () => {
     const llm: DshLlmPort = {
       async resolveModelInfo() { return {} },
-      createUserMessage: text => ({
-        id: 'msg', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' },
-      }),
       async * stream() {
         yield* [] as DshStreamChunk[]
         throw new Error('must not call')
@@ -297,9 +285,6 @@ describe('RestrictedLearningClient', () => {
     const started = Promise.withResolvers<void>()
     const llm: DshLlmPort = {
       async resolveModelInfo() { return { context: { contextWindow: 32_000 } } },
-      createUserMessage: text => ({
-        id: 'msg', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' },
-      }),
       async * stream(options) {
         started.resolve()
         await new Promise<void>((_resolve, reject) => {
@@ -323,9 +308,6 @@ describe('RestrictedLearningClient', () => {
     try {
       const llm: DshLlmPort = {
         async resolveModelInfo() { return { context: { contextWindow: 32_000 } } },
-        createUserMessage: text => ({
-          id: 'msg', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' },
-        }),
         async * stream(options) {
           await new Promise<void>((_resolve, reject) => {
             options.signal.addEventListener('abort', () => { reject(options.signal.reason) }, { once: true })
@@ -341,5 +323,19 @@ describe('RestrictedLearningClient', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('preflights a route-specific Envelope budget without consuming a request', async () => {
+    const llm = new RecordingLlm([], 32_000)
+    const client = new RestrictedLearningClient(llm)
+    const result = await client.envelopeByteBudget({
+      provider: 'session-provider', model: 'session-model',
+    })
+    expect(result.status).toBe('AVAILABLE')
+    if (result.status === 'AVAILABLE') {
+      expect(result.maxBytes).toBeGreaterThan(0)
+      expect(result.maxBytes).toBeLessThanOrEqual(48 * 1024)
+    }
+    expect(llm.calls).toHaveLength(0)
   })
 })

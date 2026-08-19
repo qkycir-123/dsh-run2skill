@@ -1,4 +1,13 @@
 import { DshSessionGapReader } from '../adapters/dsh-session/gap-reader.js'
+import {
+  RestrictedLearningClient,
+  type DshLlmPort,
+} from '../adapters/dsh-llm/restricted-learning-client.js'
+import {
+  ExactAgentScopeRegistry,
+  type AgentScopeProjection,
+} from '../adapters/dsh-skills/exact-agent-scope.js'
+import { LearningWorkItemStore } from '../adapters/dsh-storage/learning-work-item-store.js'
 import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 import type {
   DshSessionEvent,
@@ -23,6 +32,12 @@ import { RuntimeNotices } from '../application/capture/runtime-notices.js'
 import { TurnCaptureProcessor } from '../application/capture/turn-capture-processor.js'
 import { WriteBehindCheckpoint } from '../application/capture/write-behind-checkpoint.js'
 import { createObserveSummary } from '../application/observe-summary.js'
+import {
+  LearningScheduler,
+  LearningWorker,
+  type LearningSkillView,
+} from '../application/learn/index.js'
+import type { SkillCatalogPort } from '../domain/learn/index.js'
 import { ObserveSummaryV1Schema, type ObserveSummaryV1 } from '../domain/observe/observe-summary.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
 
@@ -33,10 +48,22 @@ export const inject = [
   'storageDomain',
   'workspaceRegistry',
   'connection',
+  'llm',
+  'skills',
 ] as const
 
 interface DshSessionProjection {
   readonly header: DshSessionHeader
+}
+
+type Run2skillAgent = object & AgentScopeProjection
+
+interface AgentPreStepPayload {
+  readonly agent: Run2skillAgent
+}
+
+interface AgentDisposedPayload {
+  readonly agent: Run2skillAgent
 }
 
 export interface Run2skillHostContext extends Run2skillStorageContext {
@@ -44,9 +71,11 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly sessionPersistence: SessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
   readonly connection: ObserveSummaryHostConnection
+  readonly llm: DshLlmPort
+  readonly skills: SkillCatalogPort<LearningSkillView<Run2skillAgent>>
   on(
-    event: 'session/event',
-    listener: (session: DshSessionProjection, event: DshSessionEvent) => void,
+    event: string,
+    listener: (...args: never[]) => unknown,
   ): void
 }
 
@@ -62,11 +91,17 @@ function candidateKey(candidate: TurnIngressCandidate): string {
 
 class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentDomain: Run2skillDomain | undefined
+  currentScheduler: LearningScheduler | undefined
 
   constructor(
     private readonly context: Run2skillHostContext,
     private readonly notices: RuntimeNotices,
+    private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
   ) {}
+
+  wakeLearning(): void {
+    this.currentScheduler?.wake()
+  }
 
   async open(): Promise<RecoveryRuntime> {
     const domain = await openRun2skillDomain(this.context)
@@ -75,6 +110,17 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const checkpoint = new WriteBehindCheckpoint(domain)
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
       const store = new DurableCaptureStore(domain)
+      const learningStore = new LearningWorkItemStore(domain)
+      const worker = new LearningWorker({
+        store: learningStore,
+        sessionReader: reader,
+        scopes: this.scopes,
+        skills: this.context.skills,
+        client: new RestrictedLearningClient(this.context.llm),
+        notices: this.notices,
+      })
+      const scheduler = new LearningScheduler({ store: learningStore, worker, notices: this.notices })
+      this.currentScheduler = scheduler
       const coordinator = new DurableCaptureCoordinator(store, checkpoint, this.notices)
       const processor = new TurnCaptureProcessor(
         coordinator,
@@ -89,7 +135,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       }, 30_000)
 
       let closed = false
-      return {
+      const runtime: RecoveryRuntime = {
         scanner,
         processCandidate: async (candidate) => {
           const root = classifySessionRoot(candidate.header)
@@ -144,16 +190,25 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
               lastScannedAt: new Date().toISOString(),
             },
           })
+          scheduler.wake()
         },
         close: async () => {
           if (closed) return
           closed = true
           clearInterval(checkpointTimer)
+          if (this.currentScheduler === scheduler) this.currentScheduler = undefined
           if (this.currentDomain === domain) this.currentDomain = undefined
-          await domain.close()
+          try {
+            await scheduler.dispose()
+          } finally {
+            await domain.close()
+          }
         },
       }
+      await scheduler.start()
+      return runtime
     } catch (error) {
+      this.currentScheduler = undefined
       if (this.currentDomain === domain) this.currentDomain = undefined
       await domain.close()
       throw error
@@ -176,7 +231,9 @@ function unavailableSummary(lifecycle: RecoveryLifecycle, notices: RuntimeNotice
 
 export async function apply(context: Run2skillHostContext): Promise<() => Promise<void>> {
   const notices = new RuntimeNotices()
-  const factory = new Run2skillRuntimeFactory(context, notices)
+  const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
+  const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
+  const factory = new Run2skillRuntimeFactory(context, notices, scopes)
   const lifecycle = new RecoveryLifecycle(factory, candidateKey, notices)
   const ingress = new SessionCoordinateIngress(
     candidate => { lifecycle.accept(candidate) },
@@ -184,8 +241,23 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   )
   let accepting = true
 
-  context.on('session/event', (session, event) => {
+  context.on('session/event', (session: DshSessionProjection, event: DshSessionEvent) => {
     if (accepting) ingress.observe(session.header, event)
+  })
+  context.on('agent/pre-step', async ({ agent }: AgentPreStepPayload, next: () => Promise<unknown>) => {
+    if (accepting && !scopeDisposers.has(agent)) {
+      try {
+        scopeDisposers.set(agent, scopes.register(agent))
+        factory.wakeLearning()
+      } catch {
+        notices.record({ healthCode: 'AGENT_SCOPE_UNAVAILABLE', sessionId: agent.id || 'global' })
+      }
+    }
+    return await next()
+  })
+  context.on('agent/disposed', ({ agent }: AgentDisposedPayload) => {
+    scopeDisposers.get(agent)?.()
+    scopeDisposers.delete(agent)
   })
 
   const disposeRpc = registerObserveSummaryRpc(context.connection, () => {
@@ -206,7 +278,11 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     try {
       await disposeRpc()
     } finally {
-      await lifecycle.dispose()
+      try {
+        await lifecycle.dispose()
+      } finally {
+        scopes.clear()
+      }
     }
   }
 }

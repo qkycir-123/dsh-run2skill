@@ -47,6 +47,17 @@ describe('Observe Header action', () => {
     expect(describeObserveState(readyState())).not.toContain('其中 1 条观察不完整')
   })
 
+  it('shows only aggregate learning counts in the Header summary', () => {
+    const description = describeObserveState(readyState({
+      learning: { captured: 2, analyzing: 1, learned: 3, needsAttention: 1 },
+    }))
+
+    expect(description).toContain('3 条已学习草案')
+    expect(description).toContain('1 条正在学习')
+    expect(description).toContain('1 条学习需处理')
+    expect(description).not.toMatch(/正文|证据|Diff|Approve|Reject|批准|拒绝/)
+  })
+
   it('renders a keyboard-focusable status whose meaning is not color-only', () => {
     const element = ObserveStatusPill({ state: readyState() })
     expect(element.type).toBe('span')

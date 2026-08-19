@@ -48,6 +48,13 @@ function summaryFacts(state: Extract<ObserveSummaryClientState, { summary: unkno
   else if (summary.status === 'DEGRADED') facts.push('观察功能暂时降级')
   else if (summary.status === 'RECOVERING') facts.push('正在恢复历史观察')
   facts.push(`已记录 ${summary.capturedCount} 条待处理事项`)
+  if (summary.learning !== undefined) {
+    if (summary.learning.learned > 0) facts.push(`${summary.learning.learned} 条已学习草案`)
+    if (summary.learning.analyzing > 0) facts.push(`${summary.learning.analyzing} 条正在学习`)
+    if (summary.learning.needsAttention > 0) {
+      facts.push(`${summary.learning.needsAttention} 条学习需处理`)
+    }
+  }
   if (summary.blockedCaptureCount > 0) {
     facts.push(`另有 ${summary.blockedCaptureCount} 条观察不完整`)
   }
