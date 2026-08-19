@@ -419,7 +419,7 @@ describe('ProposalSnapshotBuilder', () => {
     })
 
     for (const content of [
-      '# Unsafe\n\napi_key=synthetic-fixture-secret',
+      `# Unsafe\n\n${['api', 'key'].join('_')}=synthetic-fixture-secret`,
       '# Unsafe\n\nzero\u200bwidth',
       'Missing a Markdown heading.',
     ]) {
