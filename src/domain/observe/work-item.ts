@@ -133,6 +133,13 @@ function withoutRevisionFacts(value: CaptureWorkItemV1): Omit<CaptureWorkItemV1,
   return facts
 }
 
+export function sameCaptureWorkItemFacts(
+  left: CaptureWorkItemV1,
+  right: CaptureWorkItemV1,
+): boolean {
+  return sameJson(withoutRevisionFacts(left), withoutRevisionFacts(right))
+}
+
 function preferSnapshot(left: CaptureWorkItemV1, right: CaptureWorkItemV1): CaptureWorkItemV1 {
   if (left.revision !== right.revision) return left.revision > right.revision ? left : right
   const timeOrder = compareIsoDateTime(left.updatedAt, right.updatedAt)
