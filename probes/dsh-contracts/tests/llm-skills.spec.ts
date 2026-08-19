@@ -329,6 +329,7 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
       expect(initial.complete).toBe(true)
       expect(initial.skills.map(skill => skill.name)).toEqual(['same-skill', 'user-only'])
       expect(initial.skills.find(skill => skill.name === 'same-skill')).toMatchObject({
+        provider: 'filesystem',
         source: 'project-dsh',
         description: 'Project wins',
       })

@@ -7,8 +7,12 @@ const MAX_CANDIDATES = 5
 const MAX_SKILL_BODY_BYTES = 8 * 1024
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'for', 'in', 'of', 'on', 'please', 'the', 'this', 'to', 'use',
-  '个', '为', '了', '和', '在', '把', '的', '请',
 ])
+const CHINESE_STOP_WORDS = [
+  '这个', '这些', '那个', '那些', '一个', '一种', '我们', '你们',
+  '使用', '进行', '用于', '需要', '可以', '请',
+] as const
+const VERIFIED_FILESYSTEM_PROVIDER = 'filesystem'
 
 export interface SkillSummaryProjection {
   readonly name: string
@@ -73,10 +77,12 @@ export function tokenizeForSkillRecall(value: string): string[] {
     seen.add(token)
     result.push(token)
   }
-  for (const match of normalized.matchAll(/[a-z0-9]+|[\p{Script=Han}]+/gu)) {
+  for (const match of normalized.matchAll(/[\p{Script=Latin}\p{Number}]+|[\p{Script=Han}]+/gu)) {
     const term = match[0]
     if (/^[\p{Script=Han}]+$/u.test(term)) {
-      const characters = [...term]
+      let meaningful = term
+      for (const stopWord of CHINESE_STOP_WORDS) meaningful = meaningful.replaceAll(stopWord, '')
+      const characters = [...meaningful]
       for (let index = 0; index + 1 < characters.length; index += 1) {
         add(`${characters[index]}${characters[index + 1]}`)
       }
@@ -101,7 +107,13 @@ export function deriveCandidateKey(
   return `cand_${sha256Utf8(canonicalJson({ name: value.name, provider: value.provider, source: value.source }))}`
 }
 
-function sourceFacts(source: string): { persistenceScope: CandidatePersistenceScope; writable: boolean } {
+function sourceFacts(
+  provider: string,
+  source: string,
+): { persistenceScope: CandidatePersistenceScope; writable: boolean } {
+  if (provider !== VERIFIED_FILESYSTEM_PROVIDER) {
+    return { persistenceScope: 'UNKNOWN', writable: false }
+  }
   switch (source) {
     case 'project-dsh': return { persistenceScope: 'PROJECT', writable: true }
     case 'user-dsh': return { persistenceScope: 'USER', writable: true }
@@ -177,8 +189,11 @@ export async function recallExistingSkills<TView extends object>(
       ? undefined
       : preprocessPersistentText(loaded.whenToUse).text
     const content = preprocessPersistentText(loaded.content).text
+    if (Buffer.byteLength(content, 'utf8') > MAX_SKILL_BODY_BYTES) {
+      return { status: 'UNAVAILABLE', failureCode: 'CANDIDATE_UNAVAILABLE' }
+    }
     const bodyDigest = sha256Utf8(loaded.content)
-    const facts = sourceFacts(loaded.source)
+    const facts = sourceFacts(loaded.provider, loaded.source)
     const persistedFacts = {
       candidateKey: selected.candidateKey,
       source: loaded.source,

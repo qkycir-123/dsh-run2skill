@@ -20,7 +20,23 @@ function summary(overrides: Partial<SkillSummaryProjection> & Pick<SkillSummaryP
 describe('Skill recall', () => {
   it('normalizes Latin and overlapping Chinese tokens with a 64-token bound', () => {
     expect(tokenizeForSkillRecall('Code Reviews 代码审查')).toEqual(['code', 'reviews', '代码', '码审', '审查'])
+    expect(tokenizeForSkillRecall('révision naïve café')).toEqual(['révision', 'naïve', 'café'])
+    expect(tokenizeForSkillRecall('请使用这个代码审查')).toEqual(['代码', '码审', '审查'])
     expect(tokenizeForSkillRecall(Array.from({ length: 80 }, (_, index) => `word${index}`).join(' '))).toHaveLength(64)
+  })
+
+  it('does not let Chinese stop words create a shortlist hit', async () => {
+    const rows = [
+      summary({ name: 'generic', description: '请使用这个' }),
+      summary({ name: 'code-review', description: '代码审查' }),
+    ]
+    const result = await recallExistingSkills({
+      snapshot: async () => ({ skills: rows, complete: true }),
+      get: async name => ({ ...rows.find(row => row.name === name)!, content: '# Skill\n\nBody.' }),
+    }, { cwd: 'D:\\repo', scope: {} }, '请使用这个代码审查')
+    expect(result.status).toBe('AVAILABLE')
+    if (result.status !== 'AVAILABLE') return
+    expect(result.observation.candidates.map(candidate => candidate.name)).toEqual(['code-review'])
   })
 
   it('uses the frozen tuple, supports whenToUse-only hits, and loads at most five winners in the same view', async () => {
@@ -63,6 +79,7 @@ describe('Skill recall', () => {
       summary({ name: 'project', description: 'review', source: 'project-dsh' }),
       summary({ name: 'user', description: 'review', source: 'user-agents' }),
       summary({ name: 'runtime', description: 'review', source: 'runtime' }),
+      summary({ name: 'spoofed', description: 'review', source: 'project-dsh', provider: 'custom-provider' }),
     ]
     const port: SkillCatalogPort<object> = {
       snapshot: async () => ({ skills: rows, complete: true }),
@@ -76,6 +93,7 @@ describe('Skill recall', () => {
     )))).toEqual({
       project: { persistenceScope: 'PROJECT', writable: true },
       runtime: { persistenceScope: 'UNKNOWN', writable: false },
+      spoofed: { persistenceScope: 'UNKNOWN', writable: false },
       user: { persistenceScope: 'USER', writable: false },
     })
   })
@@ -92,6 +110,7 @@ describe('Skill recall', () => {
       undefined,
       { ...row, provider: 'changed', content: '# Body' },
       { ...row, content: `# Body\n${'x'.repeat(8192)}` },
+      { ...row, content: 'token=x\n'.repeat(1000) },
     ]) {
       expect(await recallExistingSkills({
         snapshot: async () => ({ skills: [row], complete: true }),
