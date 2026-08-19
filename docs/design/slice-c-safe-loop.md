@@ -1,8 +1,8 @@
 # 切片 C Design：最小安全闭环
 
-状态：待评审  
-设计日期：2026-08-20  
-对应 Issue：#31  
+状态：待评审
+设计日期：2026-08-20
+对应 Issue：#31
 前置契约：已接受的 PRD、Architecture Baseline、切片 A/B，以及 CP-SKL-001、CP-PUB-001、CP-WEB-001 运行证据
 
 ## 1. 结论
@@ -52,7 +52,7 @@ Design 合并后才拆切片 C 实现 Issues。每个 Issue 仍执行轻量流�
 
 ### 2.4 允许发布的运行时阶段门
 
-一个 Proposal 只有同时满足下列事实，才能进入 `PENDING_REVIEW`：
+CREATE/MERGE Proposal 只有同时满足下列事实，才能进入 `PENDING_REVIEW`：
 
 1. `ctx.skills.snapshot()` 是 `complete: true`；
 2. root observation 属于同一次完整 snapshot；
@@ -62,6 +62,8 @@ Design 合并后才拆切片 C 实现 Issues。每个 Issue 仍执行轻量流�
 6. canonical Skill bytes 已由 Host 生成并通过格式与 secret Guard。
 
 缺少任一事实都进入 `NEEDS_ATTENTION`。这不是临时错误旁路，也不能由用户点击 Approve 绕过。
+
+显式保存请求的 DISCARD 不执行 publication，因此不要求 writable root、写入 target 或 Base/absence；它必须绑定 `complete: true` Catalog 中证明完全覆盖的完整 candidate identity、exact bytes 和 digest，并进入 Web 让用户确认。Catalog 不完整或覆盖 candidate 消失时仍为 `NEEDS_ATTENTION`。
 
 ## 3. 关键决策
 
@@ -122,18 +124,19 @@ name, description, whenToUse, invocation
 exactSkillBytes, skillBytesDigest, rendererVersion, schemaVersion
 persistenceScope
 workspaceBinding?                 # PROJECT 必填
-rootBinding                       # provider/source/canonicalRoot/observationDigest
-targetBinding                     # name/canonical bundle path/SKILL.md path
-expectedAbsence?                  # CREATE 必填
-baseBinding?                      # MERGE 必填，含 exact bytes/hash/candidate identity
+actionBinding:
+  CREATE: rootBinding + targetBinding + expectedAbsence
+  MERGE:  rootBinding + targetBinding + baseBinding
+  DISCARD: coveringCandidateBinding
 curationRationale
 catalogObservationDigest
 ```
 
 约束：
 
-- CREATE 只能有 `expectedAbsence`，MERGE 只能有 `baseBinding`；
-- DISCARD 不含写入目标，但必须绑定证明覆盖的完整 candidate；
+- CREATE 只能有 `rootBinding + targetBinding + expectedAbsence`；
+- MERGE 只能有 `rootBinding + targetBinding + baseBinding`；
+- DISCARD 不含 writable root 或写入目标，必须绑定证明覆盖的完整 candidate identity、exact bytes 和 digest；
 - exact bytes 使用版本化 deterministic renderer；
 - digest 是上述授权事实的 canonical JSON SHA-256，不包含可变 UI 字段；
 - 相同事实重放得到相同 proposalId/digest，不增加 Store revision；
@@ -154,6 +157,8 @@ processingState:
 
 - `PENDING/PENDING_REVIEW -> APPROVED/PENDING_REVIEW + PUBLISHING`；
 - `PENDING/PENDING_REVIEW -> REJECTED/DISCARDED + TERMINAL`；
+- 显式保存 DISCARD 的覆盖确认记录为 `REJECTED/DISCARDED + TERMINAL`，含 `decisionReason=COVERAGE_CONFIRMED`；这表示用户拒绝产生重复 Skill，不表示发布失败；
+- 用户不同意覆盖结论时不复用原 DISCARD：`proposals/retry` 执行一次有界重新分析并生成新 ProposalRef，无法形成新事实则进入 `NEEDS_ATTENTION`；
 - `APPROVED -> NEEDS_REFRESH | NEEDS_ATTENTION | PUBLISH_FAILED | PUBLISHED`；
 - `PUBLISH_FAILED -> PUBLISHING` 仅限原 ProposalRef 和全部绑定事实仍有效；
 - `NEEDS_REFRESH` 只能形成新 ProposalRef，不能重用旧 Approval。
@@ -167,6 +172,7 @@ Journal 是 WorkItem 内 append-only、有界且可校验的动作记录。事�
 ```text
 APPROVAL_COMMITTED
 FACTS_REVALIDATED
+ROOT_PREPARED             # CREATE may create fixed missing segments
 STAGE_PREPARED
 BACKUP_INSTALLED          # MERGE only
 TARGET_INSTALLED
@@ -224,7 +230,7 @@ interface SkillCatalogSnapshot {
 - `roots` 缺失：`ROOT_OBSERVATION_UNAVAILABLE`；
 - `complete: false`：可展示候选，不能形成可批准快照；
 - 目标 provider/source/path 匹配 0 个或多个：`ROOT_BINDING_AMBIGUOUS`；
-- path 必须经同一 DSH filesystem abstraction 的 canonical/realpath 能力验证；
+- 已存在 root 必须经同一 DSH filesystem abstraction 的 canonical/realpath 能力验证；尚未创建的 root 使用 6.3 的固定祖先绑定与安全创建协议；
 - PROJECT 还必须与 `workspaceRegistry` 的 canonical workspace + `/.dsh/skills` 一致；
 - USER 必须与 composition 中有效 DSH Home + `/skills` 一致；
 - source 只接受 `project-dsh` 或 `user-dsh`，provider 只接受已验证 filesystem provider；
@@ -232,9 +238,19 @@ interface SkillCatalogSnapshot {
 
 插件对旧 DSH 保持兼容：观察不到 `roots` 时 Agent 继续工作、学习事实仍保留，但发布 fail closed。上游 API 合并并进入新的固定 DSH baseline 前，项目只能记录开发证据，不能发布 `v0.1.0-alpha`。
 
-### 6.3 exact target
+### 6.3 absent root 与 exact target
 
-v0.1 只生成 bundle Skill：`<canonicalRoot>/<name>/SKILL.md`。name 继续使用已冻结的小写 kebab-case schema；不接受路径分隔符、`.`、`..`、绝对路径或浏览器/模型提供的 path。
+root observation 即使目录尚未创建也能证明 provider 配置，但不能伪造 `realpath` 结果。首次 CREATE 按以下固定协议准备 root：
+
+1. PROJECT 只允许从已重新验证的 canonical workspace 追加固定片段 `.dsh/skills`；USER 只允许从已验证的 effective DSH Home 追加固定片段 `skills`；
+2. 找到最近的已存在批准祖先，验证其 canonical identity 和 containment；
+3. 对每个缺失固定片段执行非递归、单层 `mkdir`，每步前后 `lstat`，拒绝 symlink、junction、reparse point、文件或未知类型；
+4. 遇到并发 `EEXIST` 只重新观察；只有同一 canonical parent 下的普通目录才可继续；
+5. root 创建后执行 `realpath`/containment 与 provider root parity 复核，再允许 claim Skill bundle；
+6. journal 记录 `ROOT_PREPARED` 及创建的固定片段。崩溃最多留下空的 `.dsh`/`skills` 目录；恢复不删除非空目录，也不把未知路径当成已批准 root；
+7. 任一 ancestor 在操作前后身份变化、越界或成为链接时停止并进入 `NEEDS_ATTENTION`。
+
+v0.1 只生成 bundle Skill：`<canonicalRoot>/<name>/SKILL.md`。name 继续使用已冻结的小写 kebab-case schema；不接受路径分隔符、`.`、`..`、绝对路径或浏览器/模型提供的 path。CREATE 先完成上述 root 协议，再原子 claim 单个 bundle 目录。
 
 MERGE 可读取合法 flat Skill，但若无法用已验证 CAS 原语安全保持其形态，则进入 `NEEDS_ATTENTION`；v0.1 不静默迁移 flat 到 bundle。该分支必须由实现 Issue 的探针决定并冻结，不能在运行时猜测。
 
@@ -387,7 +403,7 @@ src/client/                     # Inbox/Review UI
 
 - Storage restart 后 Proposal、Approval、Outcome、Journal、Lineage 不丢失；
 - 同 target 多 Session race 只有一个成功，其他 `NEEDS_REFRESH`；
-- crash matrix 覆盖每个 journal/filesystem/Lineage 边界；
+- crash matrix 覆盖 absent-root 逐层创建以及每个 journal/filesystem/Lineage 边界；
 - Web RPC 在业务 handler 前拒绝远程 Host、Origin 和 cross-site；
 - Client keyboard/focus/aria-live、Reject confirm 和 duplicate-click；
 - Registry incomplete、candidate 消失、manual edit/delete、readback timeout 均 truthful。
@@ -396,7 +412,7 @@ src/client/                     # Inbox/Review UI
 
 - 当前 baseline：证明旧 API 缺少 roots 时 publication fail closed，Agent/Learning 不受阻；
 - 候选上游 root contract：证明空 root、PROJECT/USER parity、deterministic roots 和 incomplete 语义；
-- CP-PUB-001：Windows + WSL/Linux CREATE/MERGE race、crash、junction/symlink；
+- CP-PUB-001：Windows + WSL/Linux missing-root first CREATE、CREATE/MERGE race、crash、junction/symlink；
 - CP-WEB-001：真实 web profile、loopback fence、Host/Client slot；
 - exact `skills/change`、complete snapshot 和 `get()` 热回读。
 
@@ -418,19 +434,32 @@ src/client/                     # Inbox/Review UI
 
 只在本 Design exact-HEAD CLEAN 并合并后创建：
 
-1. **C1 — immutable ProposalSnapshot 与 durable Review 状态**  
+1. **C1 — immutable ProposalSnapshot 与 durable Review 状态**
+
    扩展 WorkItem schema/store，冻结 canonical digest、Review Decision、Publication Outcome 和状态转换；不接 DSH、不写文件。
-2. **C2 — complete Skill/root observation 与 Host-owned target binding**  
+
+2. **C2 — complete Skill/root observation 与 Host-owned target binding**
+
    实现 root adapter、scope/target resolver、curation revalidation、renderer 和 CREATE absence/MERGE Base snapshot；root 不可证时 fail closed。
-3. **C3 — Review RPC 与 immutable mutation**  
+
+3. **C3 — Review RPC 与 immutable mutation**
+
    list/get/approve/reject/retry/confirm-discard 的严格 DTO、loopback handler、compare revision 和幂等 receipt；不写 Skill。
-4. **C4 — DSH Web Proposal Inbox 与 Review UI**  
+
+4. **C4 — DSH Web Proposal Inbox 与 Review UI**
+
    Action Queue、惰性详情、safe/raw、Diff、确认、键盘/focus/aria-live 和 polling；不实现 Settings/Purge/History。
-5. **C5 — Publication filesystem CAS 与 append-only journal**  
-   path/link Guards、CREATE/MERGE 原语、target 单飞和 crash recovery primitives；不宣称 PUBLISHED。
-6. **C6 — Approval publication saga、Registry 回读与 Lineage**  
+
+5. **C5 — Publication filesystem CAS 与 append-only journal**
+
+   absent-root 固定目录创建、path/link Guards、CREATE/MERGE 原语、target 单飞和 crash recovery primitives；不宣称 PUBLISHED。
+
+6. **C6 — Approval publication saga、Registry 回读与 Lineage**
+
    串起 immutable Approval、revalidation、CAS、热回读、revision saga、retry/recovery 和 truthful outcomes。
-7. **C7 — Slice C 真实 DSH 黄金验收**  
+
+7. **C7 — Slice C 真实 DSH 黄金验收**
+
    CREATE、MERGE、Base Conflict、故障注入、secret 阻断与跨重启证据；只做验收修复，不提前实现 D。
 
 若上游 root API 在 C2 前仍未可用，C2 可以合并“缺失即 fail closed”的兼容实现和候选契约探针，但 C6 不得在固定 baseline 开启真实 publication，C7 也不得宣称切片完成。
