@@ -264,7 +264,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     scopeDisposers.delete(agent)
   })
 
-  const disposeRpc = registerObserveSummaryRpc(context.connection, () => {
+  const readSummary = (): ObserveSummaryV1 => {
     const domain = factory.currentDomain
     return domain === undefined
       ? unavailableSummary(lifecycle, notices)
@@ -274,7 +274,19 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
           notices,
           compatibility: 'COMPATIBLE',
         })
-  }, createProposalReviewRpcHandler(() => factory.currentDomain))
+  }
+  const disposeRpc = registerObserveSummaryRpc(
+    context.connection,
+    readSummary,
+    createProposalReviewRpcHandler(() => factory.currentDomain, () => {
+      const summary = readSummary()
+      return {
+        status: summary.status,
+        recoveryLag: summary.recoveryLag,
+        ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
+      }
+    }),
+  )
 
   await lifecycle.start()
   return async () => {

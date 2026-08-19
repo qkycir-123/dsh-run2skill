@@ -118,7 +118,24 @@ describe('Proposal Review RPC', () => {
       apiVersion: 1, workspaceId: 'workspace-fixture',
     }, new AbortController().signal)).resolves.toEqual({
       ok: true,
-      value: { apiVersion: 1, pendingReview: 2, publishing: 0, needsAttention: 0 },
+      value: {
+        apiVersion: 1,
+        status: 'READY',
+        recoveryLag: false,
+        pendingReview: 2,
+        publishing: 0,
+        needsAttention: 0,
+      },
+    })
+    const degradedHandler = createProposalReviewRpcHandler(
+      () => domain,
+      () => ({ status: 'DEGRADED', recoveryLag: true, lastHealthCode: 'STORAGE_UNAVAILABLE' }),
+    )
+    await expect(degradedHandler(PROPOSAL_SUMMARY_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'workspace-fixture',
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      value: { status: 'DEGRADED', recoveryLag: true, lastHealthCode: 'STORAGE_UNAVAILABLE' },
     })
     expect(JSON.stringify(listed)).not.toContain('exactSkillBytes')
 
@@ -129,6 +146,12 @@ describe('Proposal Review RPC', () => {
       ok: true,
       value: {
         workItemId: current.workItemId,
+        sessionCoordinate: {
+          rootSessionId: current.signalKey.rootSessionId,
+          sessionCreatedAt: current.signalKey.sessionCreatedAt,
+          turn: current.signalKey.turn,
+          turnEndSeq: current.signalKey.turnEndSeq,
+        },
         proposal: { proposalId: currentProposal.proposalId, exactSkillBytes: currentProposal.exactSkillBytes },
       },
     })

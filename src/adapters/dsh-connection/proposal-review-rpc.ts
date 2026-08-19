@@ -24,6 +24,7 @@ const identity = z.string().min(1).max(256)
 const workItemId = z.string().regex(/^wi_[a-f0-9]{64}$/)
 const proposalId = z.string().regex(/^prop_[a-f0-9]{64}$/)
 const positiveSafeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 1)
+const safeNonNegativeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 0)
 
 const listRequestSchema = z.object({
   apiVersion: z.literal(1),
@@ -63,6 +64,9 @@ const listResponseSchema = z.object({
 }).strict()
 const summaryResponseSchema = z.object({
   apiVersion: z.literal(1),
+  status: z.enum(['READY', 'RECOVERING', 'DEGRADED', 'INCOMPATIBLE']),
+  recoveryLag: z.boolean(),
+  lastHealthCode: z.string().regex(/^[A-Z0-9_]+$/).optional(),
   pendingReview: z.number().int().nonnegative(),
   publishing: z.number().int().nonnegative(),
   needsAttention: z.number().int().nonnegative(),
@@ -78,6 +82,12 @@ const detailResponseSchema = z.object({
     'PENDING_REVIEW', 'DISCARDED', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISHED', 'PUBLISH_FAILED',
   ]),
   proposal: ProposalSnapshotV1Schema,
+  sessionCoordinate: z.object({
+    rootSessionId: identity,
+    sessionCreatedAt: safeNonNegativeInteger,
+    turn: safeNonNegativeInteger,
+    turnEndSeq: safeNonNegativeInteger,
+  }).strict(),
   evidenceRefs: z.array(EvidenceRefSchema),
   experiences: z.array(ExperienceRecordV1Schema),
 }).strict()
@@ -140,6 +150,11 @@ function mappedStoreError(value: unknown): ObserveRpcResult<never> {
 
 export function createProposalReviewRpcHandler(
   getDomain: () => Run2skillDomain | undefined,
+  readHealth: () => {
+    readonly status: 'READY' | 'RECOVERING' | 'DEGRADED' | 'INCOMPATIBLE'
+    readonly recoveryLag: boolean
+    readonly lastHealthCode?: string | undefined
+  } = () => ({ status: 'READY', recoveryLag: false }),
 ): ObserveSummaryRpcHandler {
   const stores = new WeakMap<Run2skillDomain, ProposalReviewStore>()
   return async (endpoint, payload, signal) => {
@@ -176,8 +191,15 @@ export function createProposalReviewRpcHandler(
           || item.review.proposal.workspaceBinding?.workspaceId === request.workspaceId
         )
       ))
+      let health: ReturnType<typeof readHealth>
+      try {
+        health = readHealth()
+      } catch {
+        return error('internal')
+      }
       return { ok: true, value: summaryResponseSchema.parse({
         apiVersion: 1,
+        ...health,
         pendingReview: items.filter(item => item.processingState === 'READY_FOR_REVIEW').length,
         publishing: items.filter(item => item.processingState === 'PUBLISHING').length,
         needsAttention: items.filter(item => item.processingState === 'NEEDS_ATTENTION').length,
@@ -236,6 +258,12 @@ export function createProposalReviewRpcHandler(
         reviewDecision: item.review.reviewDecision,
         publicationOutcome: item.review.publicationOutcome,
         proposal: item.review.proposal,
+        sessionCoordinate: {
+          rootSessionId: item.signalKey.rootSessionId,
+          sessionCreatedAt: item.signalKey.sessionCreatedAt,
+          turn: item.signalKey.turn,
+          turnEndSeq: item.signalKey.turnEndSeq,
+        },
         evidenceRefs: item.evidenceRefs,
         experiences: item.learning?.experiences ?? [],
       }) }
