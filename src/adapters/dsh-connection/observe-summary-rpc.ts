@@ -9,10 +9,11 @@ export const OBSERVE_SUMMARY_ENDPOINT = 'observe-summary'
 
 const ObserveSummaryRequestV1Schema = z.object({ apiVersion: z.literal(1) }).strict()
 
-type ObserveRpcError =
-  | { readonly code: 'bad-request'; readonly message: string; readonly details: { readonly issues: never[] } }
-  | { readonly code: 'cancelled'; readonly message: string; readonly details: Record<string, never> }
-  | { readonly code: 'internal'; readonly message: string; readonly details: Record<string, never> }
+type ObserveRpcError = {
+  readonly code: 'bad-request' | 'cancelled' | 'internal' | 'not-found' | 'conflict' | 'invalid-state'
+  readonly message: string
+  readonly details: Record<string, never> | { readonly issues: never[] }
+}
 
 export type ObserveRpcResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -44,11 +45,14 @@ function badRequest(): ObserveRpcResult<never> {
 export function registerObserveSummaryRpc(
   connection: ObserveSummaryHostConnection,
   readSummary: () => ObserveSummaryV1 | Promise<ObserveSummaryV1>,
+  fallback?: ObserveSummaryRpcHandler,
 ): () => Promise<void> {
   return connection.rpc.handle(
     RUN2SKILL_RPC_CHANNEL,
     async (endpoint, payload, signal) => {
-      if (endpoint !== OBSERVE_SUMMARY_ENDPOINT) return badRequest()
+      if (endpoint !== OBSERVE_SUMMARY_ENDPOINT) {
+        return fallback === undefined ? badRequest() : await fallback(endpoint, payload, signal)
+      }
       if (!ObserveSummaryRequestV1Schema.safeParse(payload).success) return badRequest()
       if (signal.aborted) {
         return {

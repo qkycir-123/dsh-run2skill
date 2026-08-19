@@ -1,0 +1,234 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  COVERAGE_CONFIRM_DISCARD_ENDPOINT,
+  PROPOSALS_APPROVE_ENDPOINT,
+  PROPOSALS_GET_ENDPOINT,
+  PROPOSALS_LIST_ENDPOINT,
+  PROPOSALS_REJECT_ENDPOINT,
+  PROPOSALS_RETRY_ENDPOINT,
+  PROPOSAL_SUMMARY_ENDPOINT,
+  createProposalReviewRpcHandler,
+} from '../src/adapters/dsh-connection/proposal-review-rpc.js'
+import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
+import { deriveExperienceId, deriveLearningProposalId } from '../src/domain/learn/index.js'
+import { CaptureWorkItemV1Schema, type CaptureWorkItemV1 } from '../src/domain/observe/schemas.js'
+import { materializeProposalSnapshot, proposalRefOf } from '../src/domain/review/index.js'
+import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import {
+  makeCreateProposalSnapshot,
+  makeDiscardProposalSnapshot,
+  makeLearnedWorkItem,
+} from './support/review-fixture.js'
+
+function nextItem(turn: number, marker: string, workspaceId = 'workspace-fixture') {
+  const base = makeLearnedWorkItem()
+  return makeLearnedWorkItem({
+    signalKey: {
+      ...base.signalKey,
+      turn,
+      turnEndSeq: 10 + turn,
+      turnInstanceDigest: marker.repeat(64),
+    },
+    workspaceBinding: {
+      status: 'BOUND',
+      workspaceId,
+      canonicalPath: workspaceId === 'workspace-fixture' ? 'D:\\workspace' : 'D:\\other-workspace',
+      observedAt: '2026-08-20T00:00:00.000Z',
+    },
+  })
+}
+
+function asUserItem(item: CaptureWorkItemV1): CaptureWorkItemV1 {
+  const experiences = item.learning!.experiences!.map((experience) => {
+    const facts = {
+      type: experience.type,
+      lesson: experience.lesson,
+      persistenceScope: 'USER' as const,
+      evidenceStrength: experience.evidenceStrength,
+      supportingEvidence: experience.supportingEvidence,
+      ...(experience.contextSummary === undefined ? {} : { contextSummary: experience.contextSummary }),
+    }
+    return { experienceId: deriveExperienceId(item.workItemId, facts), ...facts }
+  })
+  const previous = item.learning!.proposal!
+  const facts = {
+    policyVersion: previous.policyVersion,
+    name: previous.name,
+    description: previous.description,
+    whenToUse: previous.whenToUse,
+    content: previous.content,
+    invocation: previous.invocation,
+    persistenceScope: 'USER' as const,
+    supportingExperienceIds: experiences.map(experience => experience.experienceId),
+    curation: previous.curation,
+    catalogObservationDigest: previous.catalogObservationDigest,
+    shortlistDigests: previous.shortlistDigests,
+  }
+  return CaptureWorkItemV1Schema.parse({
+    ...item,
+    learning: {
+      ...item.learning!,
+      experiences,
+      proposal: { learningProposalId: deriveLearningProposalId(item.workItemId, facts), ...facts },
+    },
+  })
+}
+
+function userDiscardSnapshot(item: CaptureWorkItemV1) {
+  const project = makeDiscardProposalSnapshot(item)
+  const { proposalId: _proposalId, digest: _digest, workspaceBinding: _workspace, ...facts } = project
+  return materializeProposalSnapshot(item.workItemId, {
+    ...facts,
+    persistenceScope: 'USER',
+  })
+}
+
+describe('Proposal Review RPC', () => {
+  it('lists only the current PROJECT queue and returns immutable detail lazily', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const current = nextItem(2, 'd')
+    const other = nextItem(3, 'e', 'other-workspace')
+    const user = asUserItem(nextItem(4, 'f'))
+    domain.workItems.set(current.workItemId, current)
+    domain.workItems.set(other.workItemId, other)
+    domain.workItems.set(user.workItemId, user)
+    const store = new ProposalReviewStore(domain)
+    const currentProposal = makeCreateProposalSnapshot(current)
+    const otherProposal = makeCreateProposalSnapshot(other)
+    await store.stage(current.workItemId, current.revision, currentProposal)
+    await store.stage(other.workItemId, other.revision, otherProposal)
+    const userProposal = userDiscardSnapshot(user)
+    await store.stage(user.workItemId, user.revision, userProposal)
+    const handler = createProposalReviewRpcHandler(() => domain)
+
+    const listed = await handler(PROPOSALS_LIST_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'workspace-fixture',
+    }, new AbortController().signal)
+    expect(listed).toMatchObject({
+      ok: true,
+      value: { apiVersion: 1 },
+    })
+    const listedItems = (listed as {
+      value?: { items?: Array<{ proposalRef: { proposalId: string } }> }
+    }).value?.items ?? []
+    expect(listedItems.map(item => item.proposalRef.proposalId).sort()).toEqual([
+      currentProposal.proposalId, userProposal.proposalId,
+    ].sort())
+    await expect(handler(PROPOSAL_SUMMARY_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'workspace-fixture',
+    }, new AbortController().signal)).resolves.toEqual({
+      ok: true,
+      value: { apiVersion: 1, pendingReview: 2, publishing: 0, needsAttention: 0 },
+    })
+    expect(JSON.stringify(listed)).not.toContain('exactSkillBytes')
+
+    const detail = await handler(PROPOSALS_GET_ENDPOINT, {
+      apiVersion: 1, proposalId: currentProposal.proposalId,
+    }, new AbortController().signal)
+    expect(detail).toMatchObject({
+      ok: true,
+      value: {
+        workItemId: current.workItemId,
+        proposal: { proposalId: currentProposal.proposalId, exactSkillBytes: currentProposal.exactSkillBytes },
+      },
+    })
+  })
+
+  it('applies approve idempotently and rejects stale or malformed mutations', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const staged = await new ProposalReviewStore(domain).stage(
+      item.workItemId, item.revision, makeCreateProposalSnapshot(item),
+    )
+    const ref = proposalRefOf(staged.item.review!.proposal)
+    const request = {
+      apiVersion: 1 as const,
+      workItemId: item.workItemId,
+      workItemRevision: staged.item.revision,
+      proposalRef: ref,
+    }
+    const handler = createProposalReviewRpcHandler(() => domain)
+
+    const approved = await handler(PROPOSALS_APPROVE_ENDPOINT, request, new AbortController().signal)
+    expect(approved).toMatchObject({
+      ok: true,
+      value: { changed: true, processingState: 'PUBLISHING', reviewDecision: 'APPROVED' },
+    })
+    await expect(handler(PROPOSALS_APPROVE_ENDPOINT, request, new AbortController().signal))
+      .resolves.toMatchObject({ ok: true, value: { changed: false, processingState: 'PUBLISHING' } })
+
+    for (const payload of [
+      { ...request, unknown: true },
+      { ...request, proposalRef: { ...ref, digest: 'f'.repeat(64) } },
+      { ...request, workItemId: 'not-an-id' },
+    ]) {
+      await expect(handler(PROPOSALS_APPROVE_ENDPOINT, payload, new AbortController().signal))
+        .resolves.toMatchObject({ ok: false, error: { code: expect.stringMatching(/bad-request|conflict/) } })
+    }
+  })
+
+  it('requires reject confirmation and supports DISCARD confirm or one retry', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const rejectItem = nextItem(4, 'a')
+    const discardItem = nextItem(5, 'b')
+    domain.workItems.set(rejectItem.workItemId, rejectItem)
+    domain.workItems.set(discardItem.workItemId, discardItem)
+    const store = new ProposalReviewStore(domain)
+    const rejectStaged = await store.stage(
+      rejectItem.workItemId, rejectItem.revision, makeCreateProposalSnapshot(rejectItem),
+    )
+    const discardStaged = await store.stage(
+      discardItem.workItemId, discardItem.revision, makeDiscardProposalSnapshot(discardItem),
+    )
+    const handler = createProposalReviewRpcHandler(() => domain)
+    const mutation = (item: typeof rejectStaged.item) => ({
+      apiVersion: 1 as const,
+      workItemId: item.workItemId,
+      workItemRevision: item.revision,
+      proposalRef: proposalRefOf(item.review!.proposal),
+    })
+
+    await expect(handler(PROPOSALS_REJECT_ENDPOINT, {
+      ...mutation(rejectStaged.item), confirm: false,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
+    await expect(handler(PROPOSALS_REJECT_ENDPOINT, {
+      ...mutation(rejectStaged.item), confirm: true,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true, value: { publicationOutcome: 'DISCARDED', reviewDecision: 'REJECTED' },
+    })
+
+    await expect(handler(COVERAGE_CONFIRM_DISCARD_ENDPOINT, mutation(discardStaged.item), new AbortController().signal))
+      .resolves.toMatchObject({ ok: true, value: { publicationOutcome: 'DISCARDED' } })
+
+    const retryDomain = createMemoryRun2skillDomain()
+    retryDomain.workItems.set(discardItem.workItemId, discardItem)
+    const retryStaged = await new ProposalReviewStore(retryDomain).stage(
+      discardItem.workItemId, discardItem.revision, makeDiscardProposalSnapshot(discardItem),
+    )
+    await expect(createProposalReviewRpcHandler(() => retryDomain)(
+      PROPOSALS_RETRY_ENDPOINT,
+      mutation(retryStaged.item),
+      new AbortController().signal,
+    )).resolves.toMatchObject({
+      ok: true, value: { changed: true, processingState: 'NEEDS_ATTENTION' },
+    })
+  })
+
+  it('rejects invalid cursors, oversized payloads and cancellation before reading durable state', async () => {
+    const getDomain = vi.fn(() => createMemoryRun2skillDomain())
+    const handler = createProposalReviewRpcHandler(getDomain)
+    await expect(handler(PROPOSALS_LIST_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'workspace-fixture', cursor: 'invalid',
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
+    await expect(handler(PROPOSALS_LIST_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'x'.repeat(9_000),
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
+    const aborted = new AbortController()
+    aborted.abort()
+    await expect(handler(PROPOSALS_LIST_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'workspace-fixture',
+    }, aborted.signal)).resolves.toMatchObject({ ok: false, error: { code: 'cancelled' } })
+    expect(getDomain).not.toHaveBeenCalled()
+  })
+})
