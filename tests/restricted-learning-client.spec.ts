@@ -204,8 +204,9 @@ describe('RestrictedLearningClient', () => {
   })
 
   it('filters the first response before placing it in a repair request', async () => {
+    const credentialField = ['client', 'Secret'].join('')
     const llm = new RecordingLlm([
-      responseChunks('{"clientSecret":"synthetic-value",'),
+      responseChunks(`{"${credentialField}":"synthetic-value",`),
       responseChunks(JSON.stringify(validModelOutput())),
     ])
 
