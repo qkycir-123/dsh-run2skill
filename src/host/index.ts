@@ -107,7 +107,20 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
             sessionCreatedAt: candidate.header.createdAt,
             sessionCwdDigest: deriveSessionCwdDigest(candidate.header.cwd),
           })
-          const current = checkpoint.snapshot().sessions[lifecycleKey]
+          let current = checkpoint.snapshot().sessions[lifecycleKey]
+          if (current === undefined) {
+            if (candidate.turnStartSeq === undefined) throw new Error('TURN_BOUNDARY_INCOMPLETE')
+            await checkpoint.activate([{
+              rootSessionId: candidate.header.id,
+              sessionCreatedAt: candidate.header.createdAt,
+              sessionCwdDigest: deriveSessionCwdDigest(candidate.header.cwd),
+              triggerPolicyVersion: 'cheap-trigger-v1',
+              activationFenceSeq: candidate.turnStartSeq,
+              durableNextSeq: candidate.turnStartSeq,
+              observedTailSeq: candidate.turnEndSeq,
+            }])
+            current = checkpoint.snapshot().sessions[lifecycleKey]
+          }
           if (current === undefined || candidate.turnEndSeq < current.activationFenceSeq) return
           const read = await reader.readFrom(candidate.header.id, 0)
           if (read.status === 'UNAVAILABLE') throw new Error(read.healthCode)

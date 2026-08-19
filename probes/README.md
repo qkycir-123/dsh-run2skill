@@ -42,6 +42,8 @@ powershell -File probes/run-publication-contract-probe.ps1 -WslDistribution <dis
 
 第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前全量结果为 6 个文件、17 个测试。第二条应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 5 个测试。第三条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
 
+`pnpm run verify:candidate` 还会精确锁定候选包的 7 个文件，并对仓库、包内容和合成运行日志执行敏感信息门。
+
 ## 证据边界
 
 - PASS 只绑定当前 dsh-run2skill commit、文档记录的 DSH commit、测试源码和运行平台；任何一项变化都要重新运行。

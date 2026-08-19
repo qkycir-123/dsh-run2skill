@@ -12,11 +12,12 @@ Slice A 已形成最小可运行闭环：单个双面包可安装到 DSH Web pro
 
 | 门 | 命令 | 结果 |
 |---|---|---|
-| 类型、lint、全量单测 | `pnpm run check` | 27 个文件、256 项测试通过 |
+| 类型、lint、全量单测 | `pnpm run check` | 27 个文件、258 项测试通过 |
 | 发布构建 | `pnpm run build` | Host `lib/index.js`、Client `lib/client.js` 和 Host 类型产物生成 |
 | 包内容 | `pnpm pack --pack-destination .probe-work/package` | 仅包含 manifest、许可、README、薄 patch 和 `lib` 产物 |
 | 冻结评测 | `pnpm run evaluate` | 45 个样本；显式保存召回、precision、recall、普通无信号率均为 1.0 |
 | 硬崩溃矩阵 | `pnpm run probe:crash` | 4 个提交边界及 seq 复用场景通过 |
+| 候选包安全门 | `pnpm run verify:candidate` | 精确 7 文件 allowlist、仓库与包敏感材料扫描、合成运行日志脱敏通过 |
 | DSH 契约探针 | `powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <clean-baseline>` | 6 个文件、17 项测试通过；上游前后不变 |
 | 安装生命周期 | `powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <clean-baseline>` | 基线 fixture 与当前候选包的安装、禁用、升级、卸载通过 |
 | 生产依赖审计 | `pnpm audit --prod --audit-level high` | 无已知漏洞 |

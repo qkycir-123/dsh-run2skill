@@ -5,6 +5,7 @@ import { createServer } from 'node:net'
 import { access, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { safeFailure } from '../support/safe-diagnostics.mjs'
 
 const [cloneArg, candidateArg, workArg] = process.argv.slice(2)
 if (!cloneArg || !candidateArg || !workArg) {
@@ -63,7 +64,10 @@ async function run(executable, args, timeoutMs = 120_000) {
 
 async function dsh(args) {
   const result = await run(process.execPath, [bin, ...args])
-  if (result.code !== 0) throw new Error(`candidate dsh command failed: ${args.join(' ')}\n${result.stderr}`)
+  if (result.code !== 0) throw new Error(safeFailure(
+    `candidate dsh command failed (${args[0] ?? 'unknown'})`,
+    result.stderr,
+  ))
   return result
 }
 
@@ -118,7 +122,7 @@ async function observe(present) {
     const deadline = Date.now() + 60_000
     let html
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`candidate Web exited early\n${logs}`)
+      if (child.exitCode !== null) throw new Error(safeFailure('candidate Web exited early', logs))
       try {
         const response = await fetch(`${base}/`)
         if (response.ok) { html = await response.text(); break }

@@ -99,6 +99,46 @@ describe('Host plugin assembly', () => {
     expect(order.indexOf('rpc-dispose')).toBeLessThan(order.indexOf('domain-close'))
   })
 
+  it('captures the first durable Turn of a Root Session created after activation', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const header = { version: 1, id: 'new-session', createdAt: 1_725_000_000_000 }
+    const events = [
+      { type: 'turn/start', seq: 0, time: 1_725_000_001_000, data: { turn: 0 } },
+      {
+        type: 'user/message', seq: 1, time: 1_725_000_001_100,
+        data: {
+          id: 'message-1', source: { kind: 'user' },
+          content: [{ type: 'text', text: '把这个流程保存成 Skill。' }],
+        },
+      },
+      {
+        type: 'turn/end', seq: 2, time: 1_725_000_002_000,
+        data: { turn: 0, reason: { kind: 'completed' } },
+      },
+    ]
+    let snapshots: Array<{ header: typeof header; revision: string }> = []
+    let eventListener: ((session: { header: typeof header }, event: typeof events[number]) => void) | undefined
+    const context = {
+      sessions: {},
+      sessionPersistence: {
+        async listSnapshots() { return snapshots },
+        async readFrom() { return { meta: header, events } },
+      },
+      storageDomain: { async open() { return domain } },
+      workspaceRegistry: { async resolveByPath() { return undefined } },
+      connection: { rpc: { handle() { return async () => undefined } } },
+      on(_event: string, listener: typeof eventListener) { eventListener = listener },
+    }
+
+    const dispose = await apply(context)
+    snapshots = [{ header, revision: 'jsonl:1' }]
+    for (const event of events) eventListener?.({ header }, event)
+
+    await vi.waitFor(() => expect(domain.workItems.size).toBe(1))
+    expect(Object.keys(domain.global.get().sessions)).toHaveLength(1)
+    await dispose()
+  })
+
   it('closes an opened domain when its durable schema cannot initialize', async () => {
     const domain = createMemoryRun2skillDomain()
     const close = vi.fn(async () => undefined)

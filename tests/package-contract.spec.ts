@@ -9,8 +9,10 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
     bundle?: { patch?: string }
     client?: { platform?: string; inject?: string[] }
   }
+  scripts?: Record<string, string>
 }
 const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+const workspace = readFileSync(new URL('../pnpm-workspace.yaml', import.meta.url), 'utf8')
 
 describe('published package contract', () => {
   it('exports Host and Client faces and declares the thin Web bundle layer', () => {
@@ -20,7 +22,7 @@ describe('published package contract', () => {
       './client': { default: './lib/client.js' },
       './package.json': './package.json',
     })
-    expect(manifest.files).toEqual(expect.arrayContaining(['lib', 'cordis.patch.yml']))
+    expect(manifest.files).toEqual(['lib', 'cordis.patch.yml'])
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },
       client: {
@@ -31,6 +33,11 @@ describe('published package contract', () => {
         ],
       },
     })
+  })
+
+  it('runs the exact candidate verifier and permits only the required build helper', () => {
+    expect(manifest.scripts?.['verify:candidate']).toContain('probes/candidate/verify.mjs')
+    expect(workspace).toBe("packages:\n  - '.'\n\nonlyBuiltDependencies:\n  - esbuild\n")
   })
 
   it('inserts only the run2skill Host row and never mounts later-slice services', () => {
