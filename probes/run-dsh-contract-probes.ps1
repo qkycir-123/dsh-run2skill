@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string[]]$TestFiles = @('session-storage.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts')
+  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +55,11 @@ foreach ($testFile in $TestFiles) {
   }
   Copy-Item -LiteralPath $sourceTest -Destination $probeDestination
 }
+$sourceDestination = Join-Path (Split-Path -Parent $probeDestination) 'src'
+Copy-Item -LiteralPath (Join-Path $projectRoot 'src') -Destination $sourceDestination -Recurse
+$testSupportDestination = Join-Path $probeDestination 'support'
+New-Item -ItemType Directory -Path $testSupportDestination -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot 'tests\support\work-item-fixture.ts') -Destination $testSupportDestination
 $configSource = Join-Path $PSScriptRoot 'dsh-contracts\vitest.config.ts'
 $configDestination = Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts'
 Copy-Item -LiteralPath $configSource -Destination $configDestination

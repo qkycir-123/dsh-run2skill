@@ -314,4 +314,5 @@ export type RedactionKind = z.infer<typeof RedactionKindSchema>
 export type EvidenceRef = z.infer<typeof EvidenceRefSchema>
 export type CaptureBlocker = z.infer<typeof CaptureBlockerSchema>
 export type CaptureWorkItemV1 = z.infer<typeof CaptureWorkItemV1Schema>
+export type SessionCheckpointV1 = z.infer<typeof SessionCheckpointV1Schema>
 export type GlobalV1 = z.infer<typeof GlobalV1Schema>
