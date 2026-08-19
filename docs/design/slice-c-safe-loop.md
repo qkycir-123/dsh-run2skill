@@ -137,6 +137,7 @@ catalogObservationDigest
 - CREATE 只能有 `rootBinding + targetBinding + expectedAbsence`；
 - MERGE 只能有 `rootBinding + targetBinding + baseBinding`；
 - DISCARD 不含 writable root 或写入目标，必须绑定证明覆盖的完整 candidate identity、exact bytes 和 digest；
+- `rootBinding` 是 6.2 定义的 `EXISTING | ABSENT` 判别联合；声明 root、现存祖先和固定缺失片段都是 immutable Proposal digest 的一部分；
 - exact bytes 使用版本化 deterministic renderer；
 - digest 是上述授权事实的 canonical JSON SHA-256，不包含可变 UI 字段；
 - 相同事实重放得到相同 proposalId/digest，不增加 Store revision；
@@ -236,6 +237,25 @@ interface SkillCatalogSnapshot {
 - source 只接受 `project-dsh` 或 `user-dsh`，provider 只接受已验证 filesystem provider；
 - API 存在不代表目录可写，publication 前仍执行 containment、link/reparse 和权限 Guard。
 
+`RootBindingV1` 必须把已存在与尚未创建的 root 分开：
+
+```text
+common:
+  scope, provider, source, resolverVersion, observationDigest
+  declaredRootPath
+
+EXISTING:
+  state=EXISTING
+  canonicalRootPath, rootIdentityDigest
+
+ABSENT:
+  state=ABSENT
+  canonicalExistingAncestorPath, ancestorIdentityDigest
+  missingSegments                  # 只能是固定允许片段
+```
+
+`declaredRootPath` 必须精确等于 root observation 的 provider-local path。`rootIdentityDigest`/`ancestorIdentityDigest` 来自 filesystem abstraction 的不透明稳定 identity 的 canonical digest；实现不得解析 identity。PROJECT 的 `missingSegments` 只能是相对 canonical workspace 的 `.dsh`、`skills` 子序列，USER 只能是相对 effective DSH Home 的 `skills`。空数组非法：已经存在的 root 必须使用 `EXISTING`。
+
 插件对旧 DSH 保持兼容：观察不到 `roots` 时 Agent 继续工作、学习事实仍保留，但发布 fail closed。上游 API 合并并进入新的固定 DSH baseline 前，项目只能记录开发证据，不能发布 `v0.1.0-alpha`。
 
 ### 6.3 absent root 与 exact target
@@ -249,6 +269,15 @@ root observation 即使目录尚未创建也能证明 provider 配置，但不�
 5. root 创建后执行 `realpath`/containment 与 provider root parity 复核，再允许 claim Skill bundle；
 6. journal 记录 `ROOT_PREPARED` 及创建的固定片段。崩溃最多留下空的 `.dsh`/`skills` 目录；恢复不删除非空目录，也不把未知路径当成已批准 root；
 7. 任一 ancestor 在操作前后身份变化、越界或成为链接时停止并进入 `NEEDS_ATTENTION`。
+
+Approve 时必须重新计算完整 `RootBindingV1`：
+
+- `EXISTING -> EXISTING` 只有 root identity、canonical path 和 provider observation 全部相同时可继续；
+- `ABSENT -> ABSENT` 只有 ancestor identity、declared path 和 missing segments 全部相同时可继续；
+- `ABSENT -> EXISTING` 只允许 declared root 已由并发方创建为同一批准祖先下的普通目录，且逐段无 link/reparse、canonical containment 与 provider parity 全部成立；
+- 其他变化均为 `NEEDS_ATTENTION`，不得用新计算的 binding 替换已批准 digest。
+
+安全创建完成后的 `EXISTING` 事实写入 journal；它是当前 attempt 的派生磁盘事实，不回写或改变 immutable Proposal。后续 retry 仍以原 `ABSENT` Approval 和 journal 共同恢复，不能伪造一个新 Approval。
 
 v0.1 只生成 bundle Skill：`<canonicalRoot>/<name>/SKILL.md`。name 继续使用已冻结的小写 kebab-case schema；不接受路径分隔符、`.`、`..`、绝对路径或浏览器/模型提供的 path。CREATE 先完成上述 root 协议，再原子 claim 单个 bundle 目录。
 
@@ -393,7 +422,7 @@ src/client/                     # Inbox/Review UI
 ### 11.1 Unit
 
 - Proposal canonicalization、digest、互斥 Base/absence 与非法状态转换；
-- root 缺失/incomplete/0 match/multi match/source mismatch/path mismatch；
+- RootBinding `EXISTING/ABSENT` canonical digest、批准时合法转化，以及 roots 缺失/incomplete/0 match/multi match/source/path mismatch；
 - CREATE/MERGE/DISCARD Core Curation hard positives/negatives；
 - renderer、Skill parse、secret、path traversal、containment、link/reparse Guards；
 - stale ProposalRef、重复 Approve/Reject/Retry 幂等；
