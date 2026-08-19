@@ -143,4 +143,88 @@ describe('LearningWorkItemStore', () => {
     expect(replay.changed).toBe(false)
     expect(replay.item).toEqual(current)
   })
+
+  it('lists only due complete trigger work in deterministic order', () => {
+    const domain = createMemoryRun2skillDomain()
+    const first = makeWorkItem({
+      signalKey: { ...makeWorkItem().signalKey, turn: 3, turnEndSeq: 30, turnInstanceDigest: '3'.repeat(64) },
+    })
+    const second = makeWorkItem({
+      signalKey: { ...makeWorkItem().signalKey, turn: 2, turnEndSeq: 20, turnInstanceDigest: '2'.repeat(64) },
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [],
+        nextEligibleAt: '2026-08-20T00:00:10.000Z',
+      },
+    })
+    const future = makeWorkItem({
+      signalKey: { ...makeWorkItem().signalKey, turn: 4, turnEndSeq: 40, turnInstanceDigest: '4'.repeat(64) },
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [],
+        nextEligibleAt: '2026-08-20T00:01:00.000Z',
+      },
+    })
+    const incomplete = makeWorkItem({
+      signalKey: { ...makeWorkItem().signalKey, turn: 1, turnEndSeq: 10, turnInstanceDigest: '1'.repeat(64) },
+      captureReason: 'SCAN_INCOMPLETE', scanStatus: 'INCOMPLETE', processingState: 'CAPTURED',
+      triggerHits: [], evidenceRefs: [], captureBlockers: ['TURN_BOUNDARY_INCOMPLETE'],
+    })
+    for (const item of [first, second, future, incomplete]) domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain)
+
+    expect(store.listEligible('2026-08-20T00:00:10.000Z').map(item => item.workItemId))
+      .toEqual([second.workItemId, first.workItemId])
+    expect(store.nextEligibleAt('2026-08-20T00:00:10.000Z')).toBe('2026-08-20T00:01:00.000Z')
+  })
+
+  it('reopens only an available exact-agent-scope failure', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const available = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [],
+        failure: { code: 'AGENT_SCOPE_UNAVAILABLE', retryable: false, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    const unavailable = makeWorkItem({
+      signalKey: { ...available.signalKey, turn: 3, turnEndSeq: 20, turnInstanceDigest: 'd'.repeat(64) },
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [],
+        failure: { code: 'AGENT_SCOPE_UNAVAILABLE', retryable: false, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(available.workItemId, available)
+    domain.workItems.set(unavailable.workItemId, unavailable)
+    const store = new LearningWorkItemStore(domain)
+
+    const reopened = await store.resumeAvailableAgentScopes(item => item.workItemId === available.workItemId)
+
+    expect(reopened.map(item => item.workItemId)).toEqual([available.workItemId])
+    expect(reopened[0]).toMatchObject({ processingState: 'CAPTURED', revision: 2 })
+    expect(reopened[0]?.learning).not.toHaveProperty('failure')
+    expect(domain.workItems.get(unavailable.workItemId)?.processingState).toBe('NEEDS_ATTENTION')
+  })
+
+  it('records completed-call usage before resetting a stale analyzing input', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain)
+    let current = await store.claim(item.workItemId, item.revision)
+    current = await store.reserveRequest(item.workItemId, current.revision)
+    domain.workItems.set(item.workItemId, { ...current, revision: current.revision + 1 })
+
+    const recorded = await store.recordCallLatest(item.workItemId, current.learning!.attempt, {
+      requestOrdinal: 1, kind: 'PRIMARY', inputTokens: 5, outputTokens: 3, outcome: 'SUCCEEDED',
+    })
+    const reset = await store.resetStale(item.workItemId, recorded.learning!.attempt)
+
+    expect(reset).toMatchObject({
+      processingState: 'CAPTURED',
+      learning: { requestBudgetUsed: 1, calls: [{ requestOrdinal: 1, outcome: 'SUCCEEDED' }] },
+    })
+    expect(reset.learning).not.toHaveProperty('claimedAt')
+  })
 })

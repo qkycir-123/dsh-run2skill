@@ -1,4 +1,5 @@
 import {
+  LEARNING_ENVELOPE_MAX_BYTES,
   materializeModelLearningOutput,
   ModelLearningOutputV1Schema,
   type ExperienceRecordV1,
@@ -7,6 +8,7 @@ import {
   type LearningProposalV1,
 } from '../../domain/learn/index.js'
 import { preprocessPersistentText } from '../../domain/observe/redaction.js'
+import { randomUUID } from 'node:crypto'
 
 export const LEARNING_MAX_TOKENS = 4_096
 export const LEARNING_OUTPUT_MAX_BYTES = 32 * 1024
@@ -99,7 +101,6 @@ export interface DshLlmPort {
     model: string,
     signal?: AbortSignal,
   ): Promise<{ readonly context?: { readonly contextWindow: number } }>
-  createUserMessage(text: string): DshUserMessage
   stream(options: DshGenerateOptions): AsyncIterable<DshStreamChunk>
 }
 
@@ -125,6 +126,10 @@ export type RestrictedLearningResult =
     readonly proposal: LearningProposalV1
   }
   | { readonly status: 'FAILED'; readonly failureCode: LearningFailureCode }
+
+export type LearningEnvelopeBudgetResult =
+  | { readonly status: 'AVAILABLE'; readonly maxBytes: number }
+  | { readonly status: 'FAILED'; readonly failureCode: 'MODEL_INFO_UNAVAILABLE' | 'MODEL_ABORTED' }
 
 interface PartialBlock {
   readonly blockType: string
@@ -222,6 +227,15 @@ function byteLength(...values: readonly string[]): number {
   return values.reduce((total, value) => total + Buffer.byteLength(value, 'utf8'), 0)
 }
 
+function userMessage(text: string): DshUserMessage {
+  return Object.freeze({
+    id: randomUUID(),
+    role: 'user' as const,
+    content: [{ type: 'text' as const, text }],
+    source: Object.freeze({ kind: 'user' as const }),
+  })
+}
+
 function parseModelOutput(text: string) {
   try {
     return ModelLearningOutputV1Schema.safeParse(JSON.parse(text) as unknown)
@@ -233,26 +247,35 @@ function parseModelOutput(text: string) {
 export class RestrictedLearningClient {
   constructor(private readonly llm: DshLlmPort) {}
 
-  async learn(request: RestrictedLearningRequest): Promise<RestrictedLearningResult> {
+  async envelopeByteBudget(
+    route: RestrictedLearningRequest['route'],
+    signal?: AbortSignal,
+  ): Promise<LearningEnvelopeBudgetResult> {
     let contextWindow: number | undefined
     try {
-      const info = await this.llm.resolveModelInfo(
-        request.route.provider,
-        request.route.model,
-        request.signal,
-      )
+      const info = await this.llm.resolveModelInfo(route.provider, route.model, signal)
       contextWindow = info.context?.contextWindow
     } catch {
       return {
         status: 'FAILED',
-        failureCode: request.signal?.aborted === true ? 'MODEL_ABORTED' : 'MODEL_INFO_UNAVAILABLE',
+        failureCode: signal?.aborted === true ? 'MODEL_ABORTED' : 'MODEL_INFO_UNAVAILABLE',
       }
     }
     const budget = contextWindow === undefined ? undefined : requestByteBudget(contextWindow)
-    if (budget === undefined || byteLength(PRIMARY_SYSTEM) >= budget) {
-      return { status: 'FAILED', failureCode: 'MODEL_INFO_UNAVAILABLE' }
-    }
-    if (byteLength(PRIMARY_SYSTEM, request.envelope) > budget) {
+    if (budget === undefined) return { status: 'FAILED', failureCode: 'MODEL_INFO_UNAVAILABLE' }
+    const maxBytes = Math.min(
+      LEARNING_ENVELOPE_MAX_BYTES,
+      budget - byteLength(PRIMARY_SYSTEM),
+    )
+    return maxBytes <= 0
+      ? { status: 'FAILED', failureCode: 'MODEL_INFO_UNAVAILABLE' }
+      : { status: 'AVAILABLE', maxBytes }
+  }
+
+  async learn(request: RestrictedLearningRequest): Promise<RestrictedLearningResult> {
+    const envelopeBudget = await this.envelopeByteBudget(request.route, request.signal)
+    if (envelopeBudget.status === 'FAILED') return envelopeBudget
+    if (byteLength(request.envelope) > envelopeBudget.maxBytes) {
       return { status: 'FAILED', failureCode: 'ENVELOPE_UNBUILDABLE' }
     }
 
@@ -263,7 +286,8 @@ export class RestrictedLearningClient {
     if (!parsed.success) {
       const filtered = preprocessPersistentText(primary.text).text
       const repairMessage = `Repair this response for format only; preserve its semantics exactly:\n${filtered}`
-      if (byteLength(REPAIR_SYSTEM, repairMessage) > budget) {
+      const contextBudget = envelopeBudget.maxBytes + byteLength(PRIMARY_SYSTEM)
+      if (byteLength(REPAIR_SYSTEM, repairMessage) > contextBudget) {
         return { status: 'FAILED', failureCode: 'INVALID_STRUCTURED_OUTPUT' }
       }
       const repair = await this.#call(
@@ -314,7 +338,7 @@ export class RestrictedLearningClient {
       const stream = this.llm.stream({
         provider: request.route.provider,
         model: request.route.model,
-        messages: [this.llm.createUserMessage(userText)],
+        messages: [userMessage(userText)],
         system,
         maxTokens: LEARNING_MAX_TOKENS,
         signal: controller.signal,

@@ -258,9 +258,6 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
         resolveModelInfo: (provider, model, signal) => (
           ctx.llm.resolveModelInfo(provider, model, signal)
         ),
-        createUserMessage: text => createMessage({
-          role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' },
-        }),
         stream: options => ctx.llm.stream(options),
       })
       const result = await client.learn({

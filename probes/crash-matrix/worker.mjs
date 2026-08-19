@@ -120,9 +120,17 @@ const domain = {
   close: async () => {},
 }
 
-let listener
+const listeners = new Map()
 const context = {
   sessions: {},
+  llm: {
+    resolveModelInfo: async () => ({ context: { contextWindow: 16_384 } }),
+    stream: async function * () { yield { type: 'finish', reason: { kind: 'stop' } } },
+  },
+  skills: {
+    snapshot: async () => ({ skills: [], complete: true }),
+    get: async () => undefined,
+  },
   storageDomain: { open: async () => domain },
   sessionPersistence: {
     listSnapshots: async () => [{ header, revision }],
@@ -133,7 +141,7 @@ const context = {
   },
   workspaceRegistry: { resolveByPath: async () => undefined },
   connection: { rpc: { handle: () => async () => {} } },
-  on: (_event, handler) => { listener = handler },
+  on: (event, handler) => { listeners.set(event, handler) },
 }
 
 if (mode === 'crash-after-work-item') {
@@ -151,7 +159,9 @@ const dispose = await host.apply(context)
 if (mode === 'volatile-old-crash') {
   volatileEvents = events(0)
   revision = 'volatile:old'
-  for (const event of volatileEvents) listener({ header }, event)
+  const sessionListener = listeners.get('session/event')
+  if (sessionListener === undefined) throw new Error('missing session listener')
+  for (const event of volatileEvents) sessionListener({ header }, event)
   await new Promise(() => {})
 }
 await dispose()
