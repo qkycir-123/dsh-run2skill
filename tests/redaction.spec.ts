@@ -95,6 +95,16 @@ describe('Sensitive Data Filter', () => {
     for (const word of secretWords) expect(result.text).not.toContain(word)
   })
 
+  it('finds a sensitive assignment after an ordinary assignment on the same line', () => {
+    const secretWords = ['invalid-alpha', 'invalid-bravo', 'invalid-charlie']
+    const result = preprocessSensitiveText(
+      `mode=dev password: ${secretWords.join(' ')}`,
+    )
+
+    expect(result.text).toBe('mode=dev password:[REDACTED]')
+    for (const word of secretWords) expect(result.text).not.toContain(word)
+  })
+
   it.each([
     'ghp_abcdefghijklmnopqrstuvwxyz123456',
     'sk-proj-abcdefghijklmnopqrstuvwxyz123456',

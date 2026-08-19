@@ -65,6 +65,7 @@ function isSensitiveAssignmentKey(key: string): boolean {
 
 export function preprocessSensitiveText(input: string): PreprocessedSensitiveText {
   const redactionKinds = new Set<RedactionKind>()
+  const assignmentTailMarker = '\u0000'
   let text = removeInvisibleControls(input).normalize('NFKC')
   text = removeFencedCodeAndQuotes(text)
 
@@ -78,15 +79,17 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
       return typeof replacement === 'string' ? replacement : replacement(...args)
     })
   }
-
   const redactAssignments = (
     pattern: RegExp,
     format: (key: string, separator: string) => string,
   ): void => {
-    text = text.replace(pattern, (match, key: string, separator: string) => {
+    text = text.replace(pattern, (match, key: string, separator: string, value: string) => {
       if (!isSensitiveAssignmentKey(key)) return match
       redactionKinds.add('SECRET_ASSIGNMENT')
-      return format(key.toLowerCase(), separator)
+      const unquotedTail = value.startsWith('"') || value.startsWith("'")
+        ? ''
+        : assignmentTailMarker
+      return `${format(key.toLowerCase(), separator)}${unquotedTail}`
     })
   }
 
@@ -116,16 +119,21 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     '[REDACTED]',
   )
   redactAssignments(
-    /"([a-z][a-z0-9_-]{0,127})"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,，}\]\r\n]+)/giu,
+    /"([a-z][a-z0-9_-]{0,127})"(\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
     (key, separator) => `"${key}"${separator}"[REDACTED]"`,
   )
   redactAssignments(
-    /'([a-z][a-z0-9_-]{0,127})'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,，}\]\r\n]+)/giu,
+    /'([a-z][a-z0-9_-]{0,127})'(\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
     (key, separator) => `'${key}'${separator}'[REDACTED]'`,
   )
   redactAssignments(
-    /\b([a-z][a-z0-9_-]{0,127})\s*([:=])\s*(?:"[^"]*"|'[^']*'|[^,;，；\r\n]+)/giu,
+    /\b([a-z][a-z0-9_-]{0,127})\s*([:=])\s*("[^"]*"|'[^']*'|[^\s,;]+)/giu,
     (key, separator) => `${key}${separator}[REDACTED]`,
+  )
+  // NUL cannot originate from input because controls were removed above.
+  text = text.replace(
+    new RegExp(`${assignmentTailMarker}[^,;，；}\\]\\r\\n]*`, 'gu'),
+    '',
   )
 
   text = text.replace(/\s+/gu, ' ').trim().toLowerCase()

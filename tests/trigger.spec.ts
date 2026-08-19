@@ -58,6 +58,19 @@ describe('cheap-trigger-v1', () => {
     for (const word of secretWords) expect(result.evidenceRefs[0]!.excerpt).not.toContain(word)
   })
 
+  it('keeps a secret after an ordinary assignment out of durable evidence', () => {
+    const secretWords = ['invalid-alpha', 'invalid-bravo', 'invalid-charlie']
+    const result = analyzeCheapTriggerV1([{
+      messageSeq: 7,
+      sourceKind: 'user',
+      text: `Remember this workflow. mode=dev password: ${secretWords.join(' ')}`,
+    }])
+
+    expect(result.status).toBe('COMPLETE')
+    expect(result.evidenceRefs).toHaveLength(1)
+    for (const word of secretWords) expect(result.evidenceRefs[0]!.excerpt).not.toContain(word)
+  })
+
   it.each([
     {
       kind: 'URL_CREDENTIAL',
