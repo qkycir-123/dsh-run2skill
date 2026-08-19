@@ -37,7 +37,7 @@ describe('published package contract', () => {
 
   it('runs the exact candidate verifier and permits only the required build helper', () => {
     expect(manifest.scripts?.['verify:candidate']).toContain('probes/candidate/verify.mjs')
-    expect(workspace).toBe("packages:\n  - '.'\n\nonlyBuiltDependencies:\n  - esbuild\n")
+    expect(workspace).toBe("packages:\n  - '.'\n\nallowBuilds:\n  esbuild: true\n")
   })
 
   it('inserts only the run2skill Host row and never mounts later-slice services', () => {
