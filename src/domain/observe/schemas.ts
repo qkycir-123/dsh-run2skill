@@ -17,6 +17,11 @@ import {
   deriveExperienceId,
   deriveLearningProposalId,
 } from '../learn/index.js'
+import {
+  ReviewStateV1Schema,
+  deriveProposalId,
+  proposalFactsOf,
+} from '../review/index.js'
 
 const safeNonNegativeInteger = z.number().refine(
   (value) => Number.isSafeInteger(value) && value >= 0,
@@ -131,10 +136,14 @@ export const CaptureWorkItemV1Schema = z.object({
     'CAPTURED',
     'ANALYZING',
     'LEARNED',
+    'READY_FOR_REVIEW',
+    'PUBLISHING',
+    'TERMINAL',
     'NEEDS_ATTENTION',
     'RESOLVED_NO_SIGNAL',
   ]),
   learning: LearningStateV1Schema.optional(),
+  review: ReviewStateV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.workItemId !== deriveWorkItemIdFromFacts(value.signalKey)) {
     context.addIssue({ code: 'custom', message: 'WorkItem ID does not match SignalKey' })
@@ -178,11 +187,11 @@ export const CaptureWorkItemV1Schema = z.object({
     ) {
       context.addIssue({ code: 'custom', message: 'Resolved no-signal items must be complete and empty' })
     }
-    if (value.learning !== undefined) {
-      context.addIssue({ code: 'custom', message: 'Resolved no-signal items cannot have learning facts' })
+    if (value.learning !== undefined || value.review !== undefined) {
+      context.addIssue({ code: 'custom', message: 'Resolved no-signal items cannot have learning or review facts' })
     }
   }
-  if (['ANALYZING', 'LEARNED', 'NEEDS_ATTENTION'].includes(value.processingState) && value.learning === undefined) {
+  if (['ANALYZING', 'LEARNED', 'READY_FOR_REVIEW', 'PUBLISHING', 'TERMINAL', 'NEEDS_ATTENTION'].includes(value.processingState) && value.learning === undefined) {
     context.addIssue({ code: 'custom', message: 'Learning states require learning facts' })
   }
   if (value.processingState === 'CAPTURED' && value.learning !== undefined) {
@@ -195,12 +204,21 @@ export const CaptureWorkItemV1Schema = z.object({
       context.addIssue({ code: 'custom', message: 'Captured items cannot retain active or committed result facts' })
     }
   }
+  if (['CAPTURED', 'ANALYZING', 'LEARNED'].includes(value.processingState) && value.review !== undefined) {
+    context.addIssue({ code: 'custom', message: 'Pre-review states cannot retain review facts' })
+  }
   if (value.processingState === 'ANALYZING' && value.learning !== undefined) {
     if (value.learning.claimedAt === undefined || value.learning.proposal !== undefined) {
       context.addIssue({ code: 'custom', message: 'Analyzing items require a claim and no committed result' })
     }
   }
-  if (value.processingState === 'LEARNED' && value.learning !== undefined) {
+  if (
+    (
+      ['LEARNED', 'READY_FOR_REVIEW', 'PUBLISHING', 'TERMINAL'].includes(value.processingState)
+      || (value.processingState === 'NEEDS_ATTENTION' && value.review !== undefined)
+    )
+    && value.learning !== undefined
+  ) {
     if (
       value.learning.experiences === undefined
       || value.learning.proposal === undefined
@@ -255,12 +273,50 @@ export const CaptureWorkItemV1Schema = z.object({
       }
     }
   }
-  if (value.processingState === 'NEEDS_ATTENTION' && value.learning !== undefined) {
-    if (value.learning.failure === undefined || value.learning.publicationOutcome !== 'NEEDS_ATTENTION') {
-      context.addIssue({ code: 'custom', message: 'Needs-attention items require a visible structured failure' })
+  if (value.review !== undefined && value.learning?.proposal !== undefined) {
+    if (
+      value.review.proposal.proposalId
+      !== deriveProposalId(value.workItemId, proposalFactsOf(value.review.proposal))
+    ) {
+      context.addIssue({ code: 'custom', path: ['review', 'proposal', 'proposalId'], message: 'Review Proposal id does not match its WorkItem facts' })
     }
-    if (value.learning.proposal !== undefined) {
-      context.addIssue({ code: 'custom', message: 'Needs-attention items cannot commit a Learning Proposal' })
+    if (value.review.proposal.sourceLearningProposalId !== value.learning.proposal.learningProposalId) {
+      context.addIssue({ code: 'custom', path: ['review', 'proposal'], message: 'Review must bind the committed Learning Proposal' })
+    }
+    const experienceIds = new Set(value.learning.experiences?.map(item => item.experienceId) ?? [])
+    if (value.review.proposal.supportingExperienceIds.some(id => !experienceIds.has(id))) {
+      context.addIssue({ code: 'custom', path: ['review', 'proposal'], message: 'Review references unknown Experiences' })
+    }
+  }
+  if (value.processingState === 'READY_FOR_REVIEW') {
+    if (value.review?.reviewDecision !== 'PENDING' || value.review.publicationOutcome !== 'PENDING_REVIEW') {
+      context.addIssue({ code: 'custom', message: 'Ready items require one pending review' })
+    }
+  }
+  if (value.processingState === 'PUBLISHING') {
+    if (value.review?.reviewDecision !== 'APPROVED' || value.review.publicationOutcome !== 'PENDING_REVIEW') {
+      context.addIssue({ code: 'custom', message: 'Publishing items require an approved pending publication' })
+    }
+  }
+  if (value.processingState === 'TERMINAL') {
+    if (
+      value.review === undefined
+      || !['DISCARDED', 'PUBLISHED'].includes(value.review.publicationOutcome)
+    ) context.addIssue({ code: 'custom', message: 'Terminal items require a terminal review outcome' })
+  }
+  if (value.processingState === 'NEEDS_ATTENTION' && value.learning !== undefined) {
+    if (value.review === undefined) {
+      if (value.learning.failure === undefined || value.learning.publicationOutcome !== 'NEEDS_ATTENTION') {
+        context.addIssue({ code: 'custom', message: 'Needs-attention items require a visible structured failure' })
+      }
+      if (value.learning.proposal !== undefined) {
+        context.addIssue({ code: 'custom', message: 'Learning failures cannot commit a Learning Proposal' })
+      }
+    } else if (
+      !['NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISH_FAILED'].includes(value.review.publicationOutcome)
+      || value.review.failure === undefined
+    ) {
+      context.addIssue({ code: 'custom', message: 'Review attention requires a visible structured failure' })
     }
   }
   const triggerKeys = value.triggerHits.map((hit) => `${hit.messageSeq}\u0000${hit.kind}\u0000${hit.ruleId}`)

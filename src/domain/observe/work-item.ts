@@ -252,13 +252,20 @@ export function mergeCaptureWorkItems(
 
   const hasTrigger = triggerHits.length > 0
   const progressed = [existing, incoming].filter(item => (
-    item.learning !== undefined || !['CAPTURED', 'RESOLVED_NO_SIGNAL'].includes(item.processingState)
+    item.learning !== undefined
+    || item.review !== undefined
+    || !['CAPTURED', 'RESOLVED_NO_SIGNAL'].includes(item.processingState)
   ))
   if (
     progressed.length === 2
     && !sameJson(progressed[0]!.learning, progressed[1]!.learning)
   ) throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
-  const learningSnapshot = progressed[0]
+  const reviewSnapshots = progressed.filter(item => item.review !== undefined)
+  if (
+    reviewSnapshots.length === 2
+    && !sameJson(reviewSnapshots[0]!.review, reviewSnapshots[1]!.review)
+  ) throw new DomainError('IMMUTABLE_FIELD_CONFLICT')
+  const learningSnapshot = reviewSnapshots[0] ?? progressed[0]
   const mergedFacts: Omit<CaptureWorkItemV1, 'revision' | 'updatedAt'> = {
     schemaVersion: 1,
     workItemId: existing.workItemId,
@@ -274,6 +281,7 @@ export function mergeCaptureWorkItems(
     captureBlockers,
     processingState: learningSnapshot?.processingState ?? 'CAPTURED',
     ...(learningSnapshot?.learning === undefined ? {} : { learning: learningSnapshot.learning }),
+    ...(learningSnapshot?.review === undefined ? {} : { review: learningSnapshot.review }),
   }
 
   return materializeMergedFacts(mergedFacts, existing, incoming)

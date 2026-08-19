@@ -1,6 +1,6 @@
 # dsh-run2skill 项目路线
 
-状态：切片 A Observe 与切片 B Learn 已实现并通过固定 DSH baseline 集成验收；切片 C 独立 Design 正在评审
+状态：切片 A Observe 与切片 B Learn 已完成验收；切片 C Design 已接受，正在按 C1–C7 顺序实现
 更新时间：2026-08-20
 
 ## 1. 路线目标
@@ -105,7 +105,7 @@
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A Observe 与切片 B Learn 的独立 Design、逐 Issue 实现和集成验收已经完成。切片 C Design 已形成并等待阶段门，不提前铺开切片 D 的详细 Issues。
+状态：进行中；切片 A Observe 与切片 B Learn 已完成。切片 C Design 已通过 exact-HEAD 评审并合并，C1–C7 已按边界拆分；不提前铺开切片 D 的详细 Issues。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，实现 Issues 仍须等 Design 阶段门通过后创建。
+当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，实现边界由 Issues #34–#40 固定，当前只推进 C1。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
@@ -139,7 +139,7 @@ Design → Review → Issues → Feature Branch → Implementation
 
 每条切片都要形成可运行、可验证的纵向能力，不以一批孤立模块代替端到端证据。不得直接 push `main`。
 
-Slice A/B 已逐 Issue 合并并完成集成验收。当前推进顺序是：形成并评审切片 C Design → 冻结后只拆 C 的实现 Issues → 逐 Issue 实现与验收。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
+Slice A/B 已逐 Issue 合并并完成集成验收。当前推进顺序是：C1 → C2 → C3 → C4 → C5 → C6 → C7；前一 Issue 完成后才实现下一 Issue。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
 
 ### 阶段 6：v0.1 集成验证
 
