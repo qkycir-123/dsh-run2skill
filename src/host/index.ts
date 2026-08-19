@@ -21,6 +21,7 @@ import type {
 } from '../adapters/dsh-session/types.js'
 import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
 import { registerObserveSummaryRpc, type ObserveSummaryHostConnection } from '../adapters/dsh-connection/observe-summary-rpc.js'
+import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/proposal-review-rpc.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
@@ -263,7 +264,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     scopeDisposers.delete(agent)
   })
 
-  const disposeRpc = registerObserveSummaryRpc(context.connection, () => {
+  const readSummary = (): ObserveSummaryV1 => {
     const domain = factory.currentDomain
     return domain === undefined
       ? unavailableSummary(lifecycle, notices)
@@ -273,7 +274,19 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
           notices,
           compatibility: 'COMPATIBLE',
         })
-  })
+  }
+  const disposeRpc = registerObserveSummaryRpc(
+    context.connection,
+    readSummary,
+    createProposalReviewRpcHandler(() => factory.currentDomain, () => {
+      const summary = readSummary()
+      return {
+        status: summary.status,
+        recoveryLag: summary.recoveryLag,
+        ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
+      }
+    }),
+  )
 
   await lifecycle.start()
   return async () => {
