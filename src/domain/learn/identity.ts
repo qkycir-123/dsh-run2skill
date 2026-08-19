@@ -4,7 +4,7 @@ import type { ExperienceRecordV1, LearningProposalV1 } from './schemas.js'
 type ExperienceFacts = Omit<ExperienceRecordV1, 'experienceId'>
 type ProposalFacts = Omit<LearningProposalV1, 'learningProposalId'>
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (value !== null && typeof value === 'object') {
     const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
