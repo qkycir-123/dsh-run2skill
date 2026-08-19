@@ -30,7 +30,7 @@ export class DurableCaptureCoordinator {
     try {
       result = await this.store.persist(item)
     } catch (error) {
-      this.notices.record({
+      this.notices.recordUnsaved({
         healthCode: 'WORK_ITEM_WRITE_FAILED',
         sessionId: item.signalKey.rootSessionId,
         turnEndSeq: item.signalKey.turnEndSeq,

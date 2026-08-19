@@ -6,6 +6,7 @@
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-home-paths": "workspace:^",
     "@deepseek-ai/dsh-client-connection": "workspace:^",
+    "@deepseek-ai/dsh-client-runtime": "workspace:^",
     "@deepseek-ai/dsh-client-ui-conversation": "workspace:^",
     "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
     "@deepseek-ai/dsh-host-webserver": "workspace:^",
@@ -20,6 +21,7 @@
     "@deepseek-ai/dsh-storage-json": "workspace:^",
     "@deepseek-ai/dsh-storage-sqlite": "workspace:^",
     "@deepseek-ai/dsh-workspace": "workspace:^",
+    "react": "^18.2.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

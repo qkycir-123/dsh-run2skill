@@ -29,12 +29,29 @@ describe('RuntimeNotices', () => {
 
   it('clears all unsaved notices for a signal after its WorkItem is durable', () => {
     const notices = new RuntimeNotices()
-    notices.record({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-1', turnEndSeq: 13 })
-    notices.record({ healthCode: 'REDACTION_UNAVAILABLE', sessionId: 'session-1', turnEndSeq: 13 })
+    notices.recordUnsaved({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-1', turnEndSeq: 13 })
+    notices.recordUnsaved({ healthCode: 'REDACTION_UNAVAILABLE', sessionId: 'session-1', turnEndSeq: 13 })
 
     notices.clearSignal('session-1', 13)
 
     expect(notices.list()).toEqual([])
+  })
+
+  it('keeps generic health separate from confirmed unsaved signals', () => {
+    const notices = new RuntimeNotices()
+    notices.record({ healthCode: 'INGRESS_SATURATED', sessionId: 'session-1', turnEndSeq: 13 })
+    notices.recordUnsaved({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-2', turnEndSeq: 14 })
+
+    expect(notices.list().map(notice => notice.kind)).toEqual(['HEALTH', 'UNSAVED_SIGNAL'])
+    expect(notices.unsavedCompletenessKnown()).toBe(true)
+  })
+
+  it('remembers when bounded retention evicts an unsaved signal', () => {
+    const notices = new RuntimeNotices({ limit: 1 })
+    notices.recordUnsaved({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'session-1', turnEndSeq: 13 })
+    notices.record({ healthCode: 'SESSION_LOG_UNAVAILABLE', sessionId: 'session-2' })
+
+    expect(notices.unsavedCompletenessKnown()).toBe(false)
   })
 
   it('aggregates recovery health per session', () => {
