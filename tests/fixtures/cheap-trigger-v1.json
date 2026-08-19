@@ -223,6 +223,42 @@
       "sourceKind": "user",
       "text": "请 explain 如何保存这个 workflow。",
       "expectedKinds": []
+    },
+    {
+      "id": "en-contrastive-save",
+      "sourceKind": "user",
+      "text": "Do not save this draft but please save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-em-dash-contrastive-save",
+      "sourceKind": "user",
+      "text": "Do not save this draft — please save this workflow as a Skill.",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "zh-contrastive-save",
+      "sourceKind": "user",
+      "text": "不要保存草稿而是把这个流程保存成 Skill。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
+      "id": "en-cross-sentence-workflow-negative",
+      "sourceKind": "user",
+      "text": "For future planning, this note is background. The build process failed.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-cross-sentence-correction-negative",
+      "sourceKind": "user",
+      "text": "不对。以后再讨论天气。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-general-descriptive-constraint-negative",
+      "sourceKind": "user",
+      "text": "For this project, the database always stores timestamps.",
+      "expectedKinds": []
     }
   ]
 }

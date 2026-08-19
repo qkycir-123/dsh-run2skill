@@ -89,22 +89,35 @@ function firstMatchIndex(text: string, patterns: readonly RegExp[]): number | un
 function textClauses(
   text: string,
   splitCommas: boolean,
+  splitContrasts = false,
 ): Array<{ text: string; start: number }> {
   const clauses: Array<{ text: string; start: number }> = []
-  const pattern = splitCommas ? /[^。！？.!?;；,，]+/gu : /[^。！？.!?;；]+/gu
-  for (const match of text.matchAll(pattern)) {
-    const raw = match[0]
+  const delimiter = splitContrasts
+    ? /[。！？.!?;；,，]|\b(?:but|instead)\b|而是|但是|—|–/giu
+    : splitCommas
+      ? /[。！？.!?;；,，]/gu
+      : /[。！？.!?;；]/gu
+  let start = 0
+  for (const match of text.matchAll(delimiter)) {
+    const raw = text.slice(start, match.index)
     const leadingWhitespace = raw.length - raw.trimStart().length
     const clause = raw.trim()
     if (clause.length > 0) {
-      clauses.push({ text: clause, start: (match.index ?? 0) + leadingWhitespace })
+      clauses.push({ text: clause, start: start + leadingWhitespace })
     }
+    start = (match.index ?? 0) + match[0].length
+  }
+  const raw = text.slice(start)
+  const leadingWhitespace = raw.length - raw.trimStart().length
+  const clause = raw.trim()
+  if (clause.length > 0) {
+    clauses.push({ text: clause, start: start + leadingWhitespace })
   }
   return clauses
 }
 
 function firstExplicitSaveIndex(text: string): number | undefined {
-  for (const clause of textClauses(text, true)) {
+  for (const clause of textClauses(text, true, true)) {
     const candidateIndex = firstMatchIndex(clause.text, explicitSavePatterns)
     if (
       candidateIndex !== undefined
@@ -118,6 +131,21 @@ function firstExplicitSaveIndex(text: string): number | undefined {
   return undefined
 }
 
+function firstCorrectionIndex(text: string): number | undefined {
+  const clauses = textClauses(text, false)
+  for (const [index, clause] of clauses.entries()) {
+    const anchorIndex = firstMatchIndex(clause.text, correctionPatterns)
+    if (anchorIndex === undefined) continue
+    const candidates = [clause, clauses[index + 1]].filter((value) => value !== undefined)
+    if (candidates.some((candidate) => (
+      correctionBehavior.test(candidate.text) && persistentScope.test(candidate.text)
+    ))) {
+      return clause.start + anchorIndex
+    }
+  }
+  return undefined
+}
+
 function firstConstraintIndex(text: string): number | undefined {
   for (const clause of textClauses(text, false)) {
     const scopeIndex = firstMatchIndex(clause.text, constraintPatterns)
@@ -125,6 +153,19 @@ function firstConstraintIndex(text: string): number | undefined {
       scopeIndex !== undefined
       && constraintOperator.test(clause.text)
       && !constraintDescriptiveSubject.test(clause.text)
+    ) {
+      return clause.start + scopeIndex
+    }
+  }
+  return undefined
+}
+
+function firstWorkflowIndex(text: string): number | undefined {
+  for (const clause of textClauses(text, false)) {
+    const scopeIndex = firstMatchIndex(clause.text, workflowPatterns)
+    if (
+      scopeIndex !== undefined
+      && (processWords.test(clause.text) || hasOrderedSteps(clause.text))
     ) {
       return clause.start + scopeIndex
     }
@@ -152,12 +193,8 @@ function matchRules(text: string): MatchedRule[] {
       matchIndex: explicitSaveIndex,
     })
   }
-  const correctionIndex = firstMatchIndex(text, correctionPatterns)
-  if (
-    correctionIndex !== undefined
-    && correctionBehavior.test(text)
-    && persistentScope.test(text)
-  ) {
+  const correctionIndex = firstCorrectionIndex(text)
+  if (correctionIndex !== undefined) {
     matches.push({
       kind: 'CORRECTION',
       ruleId: 'ctv1.correction.anchor-behavior',
@@ -172,8 +209,8 @@ function matchRules(text: string): MatchedRule[] {
       matchIndex: constraintIndex,
     })
   }
-  const workflowIndex = firstMatchIndex(text, workflowPatterns)
-  if (workflowIndex !== undefined && (processWords.test(text) || hasOrderedSteps(text))) {
+  const workflowIndex = firstWorkflowIndex(text)
+  if (workflowIndex !== undefined) {
     matches.push({
       kind: 'WORKFLOW',
       ruleId: 'ctv1.workflow.reusable-process',

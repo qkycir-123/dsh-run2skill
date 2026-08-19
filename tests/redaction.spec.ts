@@ -122,6 +122,19 @@ describe('Sensitive Data Filter', () => {
   })
 
   it.each([
+    '{"client_secret":"synthetic-client-value"}',
+    '{"refresh_token":"synthetic-refresh-value"}',
+    '{"github_token":"synthetic-github-value"}',
+    '{"password":"synthetic-password-value"}',
+    "{'client_secret':'synthetic-client-value'}",
+  ])('redacts a quoted object credential assignment: %s', (assignment) => {
+    const result = preprocessSensitiveText(assignment)
+
+    expect(result.text).not.toContain('synthetic')
+    expect(result.redactionKinds).toContain('SECRET_ASSIGNMENT')
+  })
+
+  it.each([
     'sk-short-value',
     'tasksk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
   ])('does not redact an API-key near miss: %s', (value) => {

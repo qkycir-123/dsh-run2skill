@@ -92,6 +92,16 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     '[REDACTED]',
   )
   replace(
+    /"((?:(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))"(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    'SECRET_ASSIGNMENT',
+    (_match, key: string, separator: string) => `"${key.toLowerCase()}"${separator}"[REDACTED]"`,
+  )
+  replace(
+    /'((?:(?:[a-z][a-z0-9]*[_-])+(?:token|secret|password|credential|key)|password|passwd|pwd|token|secret|credential|api[_-]?key|access[_-]?key))'(\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/giu,
+    'SECRET_ASSIGNMENT',
+    (_match, key: string, separator: string) => `'${key.toLowerCase()}'${separator}'[REDACTED]'`,
+  )
+  replace(
     /\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gu,
     'SECRET_ASSIGNMENT',
     (match) => `${match.slice(0, match.indexOf('=') + 1)}[REDACTED]`,

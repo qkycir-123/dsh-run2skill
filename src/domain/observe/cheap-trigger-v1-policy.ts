@@ -17,12 +17,12 @@ export const CHEAP_TRIGGER_V1_POLICY = Object.freeze({
   },
   correction: {
     anchors: String.raw`(?:不对|错了|不是这样|更正|纠正|that's wrong|that is wrong|incorrect)`,
-    behaviorWords: String.raw`(?:以后|后续|必须|应该|不要|不得|不能|只允许|只能|先.+?(?:再|然后)|\b(?:from now on|going forward|must|should|never|always|instead)\b)`,
+    behaviorWords: String.raw`(?:必须|应该|不要|不得|不能|只允许|只能|先.+?(?:再|然后)|\b(?:must|should|never|always|instead)\b)`,
   },
   constraint: {
     persistentScope: String.raw`(?:以后|后续|从现在开始|这个项目|本项目|所有(?:文档|任务|回复)|每次|\b(?:from now on|going forward|for this project|all future|every time)\b)`,
     operators: String.raw`(?:必须|不得|禁止|不能|只允许|只能|务必|\b(?:must|never|only|always|prohibit|forbid|should always)\b)`,
-    descriptiveSubject: String.raw`\b(?:the|this|that)\s+(?:service|system|process|workflow|code|document)\s+(?:always|never)\b`,
+    descriptiveSubject: String.raw`\b(?:the|this|that|a|an)\s+[a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*){0,2}\s+(?:always|never)\b`,
   },
   workflow: {
     reusableScope: String.raw`(?:以后|后续|每次|遇到|当.+?时|\b(?:from now on|whenever|every time|for future|going forward)\b)`,
