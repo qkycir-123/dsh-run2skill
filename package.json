@@ -39,7 +39,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "evaluate": "vitest run tests/frozen-evaluation.spec.ts --reporter=verbose",
+    "evaluate": "vitest run tests/frozen-evaluation.spec.ts tests/learning-frozen-evaluation.spec.ts --reporter=verbose",
     "probe:crash": "pnpm run build && node probes/crash-matrix/probe.mjs .",
     "build": "tsdown",
     "pack:check": "pnpm run build && pnpm pack --pack-destination .probe-work/package",
