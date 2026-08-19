@@ -221,10 +221,10 @@ describe('BoundedGapScanner', () => {
     const first = await scanner.scanBatch()
     expect(first).toMatchObject({ status: 'MORE', processedEvents: GAP_SCAN_MAX_EVENTS })
     if (first.status !== 'MORE') throw new Error('expected a durable partial cursor')
-    expect(first.cursor.nextSeq).toBe(9_999)
+    expect(first.cursor.nextSeq).toBe(10_000)
 
     await expect(scanner.scanBatch()).resolves.toMatchObject({
-      status: 'COMPLETE', processedEvents: 3,
+      status: 'COMPLETE', processedEvents: 2,
     })
     expect(processTurn).toHaveBeenCalledTimes(3_334)
   })
@@ -251,5 +251,52 @@ describe('BoundedGapScanner', () => {
     expect(notices.list()).toContainEqual(expect.objectContaining({
       healthCode: 'ROOT_IDENTITY_UNAVAILABLE',
     }))
+  })
+
+  it('continues across batches when one complete Turn exceeds 10,000 events', async () => {
+    const events: DshSessionEvent[] = [
+      { type: 'turn/start', seq: 0, time: 10_000, data: { turn: 1 } },
+      ...Array.from({ length: 10_000 }, (_, index): DshSessionEvent => ({
+        type: 'assistant/chunk',
+        seq: index + 1,
+        time: 10_001 + index,
+        data: {},
+      })),
+      {
+        type: 'turn/end',
+        seq: 10_001,
+        time: 20_001,
+        data: { turn: 1, reason: { kind: 'completed' } },
+      },
+    ]
+    const persisted = persistenceFixture([{
+      header: header('session-long-turn'), revision: 'rev-long-turn', events,
+    }])
+    const domain = createMemoryRun2skillDomain()
+    const checkpoint = new WriteBehindCheckpoint(domain, { now: () => 0 })
+    await checkpoint.activate([])
+    const processTurn = vi.fn(async ({ progress }) => {
+      await checkpoint.observeCompletedRoot(progress)
+    })
+    const scanner = new BoundedGapScanner(
+      new DshSessionGapReader(persisted),
+      checkpoint,
+      { processTurn },
+      new RuntimeNotices({ now: () => 0 }),
+      { now: () => 0, heapUsed: () => 100 },
+    )
+
+    const first = await scanner.scanBatch()
+    expect(first).toMatchObject({ status: 'MORE', processedEvents: 10_000 })
+    if (first.status !== 'MORE') throw new Error('expected partial long-Turn recovery')
+    expect(first.cursor.nextSeq).toBe(10_000)
+    expect(processTurn).not.toHaveBeenCalled()
+
+    await expect(scanner.scanBatch()).resolves.toMatchObject({
+      status: 'COMPLETE', processedEvents: 2,
+    })
+    expect(processTurn).toHaveBeenCalledTimes(1)
+    expect(processTurn.mock.calls[0]?.[0].events).toHaveLength(10_002)
+    expect(Object.values(domain.global.get().sessions)[0]?.durableNextSeq).toBe(10_002)
   })
 })

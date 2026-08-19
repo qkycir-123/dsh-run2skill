@@ -49,6 +49,12 @@ interface RootSnapshot {
   readonly checkpoint: SessionCheckpointV1
 }
 
+interface PartialScan {
+  readonly revision: string
+  readonly durableNextSeq: number
+  readonly inspectedEvents: number
+}
+
 function tailNextSeq(events: readonly DshSessionEvent[]): number | undefined {
   if (events.length === 0) return 0
   for (let index = 0; index < events.length; index += 1) {
@@ -97,6 +103,7 @@ export class BoundedGapScanner {
   readonly #now
   readonly #heapUsed
   readonly #yieldNow
+  readonly #partialScans = new Map<string, PartialScan>()
 
   constructor(
     private readonly reader: DshSessionGapReader,
@@ -271,6 +278,7 @@ export class BoundedGapScanner {
       }
       if (current.durableNextSeq > tailNext) {
         await this.checkpoint.rollbackToDurableTail(root.lifecycleKey, tailNext)
+        this.#partialScans.delete(root.lifecycleKey)
         current = this.checkpoint.snapshot().sessions[root.lifecycleKey]
         if (current === undefined) throw new Error('Session checkpoint disappeared after rollback')
       }
@@ -279,22 +287,33 @@ export class BoundedGapScanner {
       const fromSeq = Math.max(current.activationFenceSeq, current.durableNextSeq)
       const remainingBudget = GAP_SCAN_MAX_EVENTS - processedEvents
       const suffix = read.events.filter((event) => event.seq >= fromSeq)
-      const window = suffix.slice(0, remainingBudget)
-      const lastTurnEndSeq = suffix.findLast((event) => event.type === 'turn/end')?.seq
+      const savedPartial = this.#partialScans.get(root.lifecycleKey)
+      const partial = savedPartial?.revision === root.snapshot.revision
+        && savedPartial.durableNextSeq === current.durableNextSeq
+        && savedPartial.inspectedEvents <= suffix.length
+        ? savedPartial
+        : undefined
+      if (savedPartial !== undefined && partial === undefined) {
+        this.#partialScans.delete(root.lifecycleKey)
+      }
+      const startOffset = partial?.inspectedEvents ?? 0
+      const window = suffix.slice(startOffset, startOffset + remainingBudget)
       processedEvents += window.length
       let turnSliceStart = 0
+      let lastCompletedOffset = -1
 
       for (let index = 0; index < window.length; index += 1) {
         const event = window[index]
         if (event?.type !== 'turn/end') continue
-        const turnEvents = window.slice(turnSliceStart, index + 1)
-        const hasLaterTurnEnd = event.seq !== lastTurnEndSeq
+        const absoluteIndex = startOffset + index
+        const turnEvents = suffix.slice(turnSliceStart, absoluteIndex + 1)
+        const hasUnscannedEvents = absoluteIndex + 1 < suffix.length
         const progress: SessionCheckpointV1 = {
           ...current,
           durableNextSeq: event.seq + 1,
           observedTailSeq: Math.max(current.observedTailSeq, observedTail(tailNext)),
           lastScannedAt: new Date(this.#now()).toISOString(),
-          ...(hasLaterTurnEnd ? {} : { headerRevision: root.snapshot.revision }),
+          ...(hasUnscannedEvents ? {} : { headerRevision: root.snapshot.revision }),
         }
         await this.sink.processTurn({
           header: read.header,
@@ -303,11 +322,26 @@ export class BoundedGapScanner {
           progress,
         })
         current = progress
-        turnSliceStart = index + 1
+        turnSliceStart = absoluteIndex + 1
+        lastCompletedOffset = absoluteIndex
       }
 
-      const exhaustedWindow = window.length < suffix.length
-      if (!exhaustedWindow) {
+      const inspectedThrough = startOffset + window.length
+      const exhaustedWindow = inspectedThrough < suffix.length
+      if (exhaustedWindow) {
+        const inspectedEvents = inspectedThrough - (lastCompletedOffset + 1)
+        this.#partialScans.set(root.lifecycleKey, {
+          revision: root.snapshot.revision,
+          durableNextSeq: current.durableNextSeq,
+          inspectedEvents,
+        })
+        await this.checkpoint.observeCompletedRoot({
+          ...current,
+          observedTailSeq: Math.max(current.observedTailSeq, observedTail(tailNext)),
+          lastScannedAt: new Date(this.#now()).toISOString(),
+        })
+      } else {
+        this.#partialScans.delete(root.lifecycleKey)
         const latest = this.checkpoint.snapshot().sessions[root.lifecycleKey] ?? current
         if (latest.headerRevision !== root.snapshot.revision) {
           await this.checkpoint.observeCompletedRoot({
@@ -339,7 +373,11 @@ export class BoundedGapScanner {
     }
     const cursor = {
       lifecycleKey: next.lifecycleKey,
-      nextSeq: state.sessions[next.lifecycleKey]?.durableNextSeq ?? 0,
+      nextSeq: this.#recoveryNextSeq(
+        next.lifecycleKey,
+        next.snapshot.revision,
+        state.sessions[next.lifecycleKey]?.durableNextSeq ?? 0,
+      ),
     }
     await this.checkpoint.setRecoveryCursor(cursor)
     return {
@@ -350,6 +388,14 @@ export class BoundedGapScanner {
       maxReadFromLatencyMs,
       peakHeapBytes,
     }
+  }
+
+  #recoveryNextSeq(lifecycleKey: string, revision: string, durableNextSeq: number): number {
+    const partial = this.#partialScans.get(lifecycleKey)
+    if (partial?.revision !== revision || partial.durableNextSeq !== durableNextSeq) {
+      return durableNextSeq
+    }
+    return durableNextSeq + partial.inspectedEvents
   }
 
   #record(healthCode: string, sessionId: string): void {
