@@ -4,7 +4,6 @@ import type { RedactionKind } from './schemas.js'
 export interface PreprocessedSensitiveText {
   text: string
   redactionKinds: RedactionKind[]
-  redactionCounts: Partial<Record<RedactionKind, number>>
 }
 
 function removeInvisibleControls(value: string): string {
@@ -65,7 +64,7 @@ function isSensitiveAssignmentKey(key: string): boolean {
 }
 
 export function preprocessSensitiveText(input: string): PreprocessedSensitiveText {
-  const counts: Partial<Record<RedactionKind, number>> = {}
+  const redactionKinds = new Set<RedactionKind>()
   let text = removeInvisibleControls(input).normalize('NFKC')
   text = removeFencedCodeAndQuotes(text)
 
@@ -75,7 +74,7 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     replacement: string | ((substring: string, ...args: string[]) => string),
   ): void => {
     text = text.replace(pattern, (...args: [string, ...string[]]) => {
-      counts[kind] = (counts[kind] ?? 0) + 1
+      redactionKinds.add(kind)
       return typeof replacement === 'string' ? replacement : replacement(...args)
     })
   }
@@ -86,7 +85,7 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
   ): void => {
     text = text.replace(pattern, (match, key: string, separator: string) => {
       if (!isSensitiveAssignmentKey(key)) return match
-      counts.SECRET_ASSIGNMENT = (counts.SECRET_ASSIGNMENT ?? 0) + 1
+      redactionKinds.add('SECRET_ASSIGNMENT')
       return format(key.toLowerCase(), separator)
     })
   }
@@ -133,7 +132,6 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
   text = text.replace(/\[redacted\]/gu, '[REDACTED]')
   return {
     text,
-    redactionKinds: REDACTION_KIND_ORDER.filter((kind) => (counts[kind] ?? 0) > 0),
-    redactionCounts: counts,
+    redactionKinds: REDACTION_KIND_ORDER.filter((kind) => redactionKinds.has(kind)),
   }
 }

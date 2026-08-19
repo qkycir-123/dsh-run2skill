@@ -195,7 +195,7 @@ blocked capture 后续重扫完整时必须收敛：确认有信号则同一 Wor
 - 明显 Secret 环境变量赋值；
 - URL userinfo 中的凭据。
 
-替换值统一为 `[REDACTED]`，并只保存 redaction kind/count，不保存命中的 secret 或其 hash。若过滤器异常，证据正文一律不落盘，WorkItem 标记 `REDACTION_UNAVAILABLE`。
+替换值统一为 `[REDACTED]`，EvidenceRef 只保存去重且规范排序的 redaction kind，不保存命中数量、secret 或其 hash。若过滤器异常，证据正文一律不落盘，WorkItem 标记 `REDACTION_UNAVAILABLE`。
 
 ## 7. Durable 数据契约
 

@@ -168,10 +168,9 @@ describe('cheap-trigger-v1', () => {
     })
   })
 
-  it('handles a maximum-size ordered-step near miss without regex backtracking', () => {
-    const prefix = 'for future '
-    const text = `${prefix}${'first '.repeat(Math.floor((64 * 1024 - prefix.length) / 6))}`
-      .padEnd(64 * 1024, 'x')
+  it('handles a maximum-size multi-clause near miss without regex backtracking', () => {
+    const clause = 'For future reference, the process was documented. '
+    const text = clause.repeat(Math.ceil((64 * 1024) / clause.length)).slice(0, 64 * 1024)
     const result = analyzeCheapTriggerV1([{ messageSeq: 1, sourceKind: 'user', text }])
 
     expect(result.status).toBe('COMPLETE')

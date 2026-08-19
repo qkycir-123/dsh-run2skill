@@ -2,7 +2,7 @@ import { CHEAP_TRIGGER_V1_POLICY, type TriggerKind } from './cheap-trigger-v1-po
 import { OBSERVE_LIMITS } from './constants.js'
 import { sha256Utf8 } from './hashing.js'
 import { preprocessSensitiveText, type PreprocessedSensitiveText } from './redaction.js'
-import type { CaptureBlocker, EvidenceRef, RedactionKind, TriggerHit } from './schemas.js'
+import type { CaptureBlocker, EvidenceRef, TriggerHit } from './schemas.js'
 
 export type CandidateSourceKind = 'user' | 'synthetic' | 'tool' | 'plugin'
 
@@ -20,7 +20,6 @@ interface CompleteTriggerAnalysis {
   status: 'COMPLETE'
   triggerHits: TriggerHit[]
   evidenceRefs: EvidenceRef[]
-  redactionCounts: Partial<Record<RedactionKind, number>>
 }
 
 interface IncompleteTriggerAnalysis {
@@ -36,6 +35,12 @@ interface MatchedRule {
   kind: TriggerKind
   ruleId: string
   matchIndex: number
+}
+
+interface TextClause {
+  text: string
+  start: number
+  end: number
 }
 
 const WORD_BOUNDARY = String.raw`(?:^|[\s，。！？,.!?;；:：])`
@@ -96,8 +101,8 @@ function textClauses(
   text: string,
   splitCommas: boolean,
   splitContrasts = false,
-): Array<{ text: string; start: number }> {
-  const clauses: Array<{ text: string; start: number }> = []
+): TextClause[] {
+  const clauses: TextClause[] = []
   const delimiter = splitContrasts
     ? /[。！？.!?;；,，]|\b(?:but|instead)\b|而是|但是|—|–/giu
     : splitCommas
@@ -109,7 +114,8 @@ function textClauses(
     const leadingWhitespace = raw.length - raw.trimStart().length
     const clause = raw.trim()
     if (clause.length > 0) {
-      clauses.push({ text: clause, start: start + leadingWhitespace })
+      const clauseStart = start + leadingWhitespace
+      clauses.push({ text: clause, start: clauseStart, end: clauseStart + clause.length })
     }
     start = (match.index ?? 0) + match[0].length
   }
@@ -117,13 +123,15 @@ function textClauses(
   const leadingWhitespace = raw.length - raw.trimStart().length
   const clause = raw.trim()
   if (clause.length > 0) {
-    clauses.push({ text: clause, start: start + leadingWhitespace })
+    const clauseStart = start + leadingWhitespace
+    clauses.push({ text: clause, start: clauseStart, end: clauseStart + clause.length })
   }
   return clauses
 }
 
-function firstExplicitSaveIndex(text: string): number | undefined {
-  for (const clause of textClauses(text, true, true)) {
+function explicitSaveIndices(clauses: readonly TextClause[]): number[] {
+  const matches: number[] = []
+  for (const clause of clauses) {
     const candidateIndex = firstMatchIndex(clause.text, explicitSavePatterns)
     if (
       candidateIndex !== undefined
@@ -131,14 +139,13 @@ function firstExplicitSaveIndex(text: string): number | undefined {
       && !explicitSaveNegation.test(clause.text)
       && !explicitSaveExplanation.test(clause.text)
     ) {
-      return clause.start + candidateIndex
+      matches.push(clause.start + candidateIndex)
     }
   }
-  return undefined
+  return matches
 }
 
-function firstCorrectionIndex(text: string): number | undefined {
-  const clauses = textClauses(text, false)
+function firstCorrectionIndex(clauses: readonly TextClause[]): number | undefined {
   for (const [index, clause] of clauses.entries()) {
     const anchorIndex = firstMatchIndex(clause.text, correctionPatterns)
     if (anchorIndex === undefined) continue
@@ -162,8 +169,8 @@ function isPersistentDirective(text: string, directive: RegExp): boolean {
     )
 }
 
-function firstConstraintIndex(text: string): number | undefined {
-  for (const clause of textClauses(text, false)) {
+function firstConstraintIndex(clauses: readonly TextClause[]): number | undefined {
+  for (const clause of clauses) {
     const scopeIndex = firstMatchIndex(clause.text, constraintPatterns)
     if (
       scopeIndex !== undefined
@@ -175,8 +182,11 @@ function firstConstraintIndex(text: string): number | undefined {
   return undefined
 }
 
-function firstWorkflowIndex(text: string): number | undefined {
-  for (const clause of textClauses(text, false)) {
+function firstWorkflowIndex(
+  clauses: readonly TextClause[],
+  saveIndices: readonly number[],
+): number | undefined {
+  for (const clause of clauses) {
     const scopeIndex = firstMatchIndex(clause.text, workflowPatterns)
     if (
       scopeIndex !== undefined
@@ -187,7 +197,7 @@ function firstWorkflowIndex(text: string): number | undefined {
           && (
             workflowDirective.test(clause.text)
             && !workflowDescriptiveDirective.test(clause.text)
-            || firstExplicitSaveIndex(clause.text) !== undefined
+            || saveIndices.some((index) => index >= clause.start && index < clause.end)
           )
         )
       )
@@ -210,7 +220,9 @@ function hasOrderedSteps(text: string): boolean {
 
 function matchRules(text: string): MatchedRule[] {
   const matches: MatchedRule[] = []
-  const explicitSaveIndex = firstExplicitSaveIndex(text)
+  const sentenceClauses = textClauses(text, false)
+  const saveIndices = explicitSaveIndices(textClauses(text, true, true))
+  const explicitSaveIndex = saveIndices[0]
   if (explicitSaveIndex !== undefined) {
     matches.push({
       kind: 'EXPLICIT_SAVE',
@@ -218,7 +230,7 @@ function matchRules(text: string): MatchedRule[] {
       matchIndex: explicitSaveIndex,
     })
   }
-  const correctionIndex = firstCorrectionIndex(text)
+  const correctionIndex = firstCorrectionIndex(sentenceClauses)
   if (correctionIndex !== undefined) {
     matches.push({
       kind: 'CORRECTION',
@@ -226,7 +238,7 @@ function matchRules(text: string): MatchedRule[] {
       matchIndex: correctionIndex,
     })
   }
-  const constraintIndex = firstConstraintIndex(text)
+  const constraintIndex = firstConstraintIndex(sentenceClauses)
   if (constraintIndex !== undefined) {
     matches.push({
       kind: 'CONSTRAINT',
@@ -234,7 +246,7 @@ function matchRules(text: string): MatchedRule[] {
       matchIndex: constraintIndex,
     })
   }
-  const workflowIndex = firstWorkflowIndex(text)
+  const workflowIndex = firstWorkflowIndex(sentenceClauses, saveIndices)
   if (workflowIndex !== undefined) {
     matches.push({
       kind: 'WORKFLOW',
@@ -265,15 +277,6 @@ function sliceUtf8Window(
   return { value: result, truncated: start > 0 || result.length < candidate.length }
 }
 
-function addRedactionCounts(
-  total: Partial<Record<RedactionKind, number>>,
-  next: Partial<Record<RedactionKind, number>>,
-): void {
-  for (const [kind, count] of Object.entries(next) as Array<[RedactionKind, number]>) {
-    total[kind] = (total[kind] ?? 0) + count
-  }
-}
-
 export function analyzeCheapTriggerV1(
   messages: readonly TriggerCandidateMessage[],
   options: TriggerAnalysisOptions = {},
@@ -302,7 +305,6 @@ export function analyzeCheapTriggerV1(
   const redact = options.redact ?? preprocessSensitiveText
   const triggerHits: TriggerHit[] = []
   const evidenceRefs: EvidenceRef[] = []
-  const redactionCounts: Partial<Record<RedactionKind, number>> = {}
 
   for (const message of messages) {
     if (message.sourceKind !== 'user') continue
@@ -318,7 +320,6 @@ export function analyzeCheapTriggerV1(
       }
     }
 
-    addRedactionCounts(redactionCounts, processed.redactionCounts)
     const matchedRules = matchRules(processed.text)
     for (const rule of matchedRules) {
       triggerHits.push({
@@ -354,5 +355,5 @@ export function analyzeCheapTriggerV1(
       - CHEAP_TRIGGER_V1_POLICY.kindOrder.indexOf(right.kind)
   })
 
-  return { status: 'COMPLETE', triggerHits, evidenceRefs, redactionCounts }
+  return { status: 'COMPLETE', triggerHits, evidenceRefs }
 }

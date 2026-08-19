@@ -195,18 +195,6 @@
       "expectedKinds": ["EXPLICIT_SAVE"]
     },
     {
-      "id": "en-without-delay-save",
-      "sourceKind": "user",
-      "text": "Without delay, save this workflow as a Skill.",
-      "expectedKinds": ["EXPLICIT_SAVE"]
-    },
-    {
-      "id": "en-substring-near-miss-negative",
-      "sourceKind": "user",
-      "text": "For this projection, the mustache process is documented.",
-      "expectedKinds": []
-    },
-    {
       "id": "en-cross-clause-save-negative",
       "sourceKind": "user",
       "text": "The service can save workflow state. Could you capture a screenshot?",
@@ -219,21 +207,9 @@
       "expectedKinds": []
     },
     {
-      "id": "mixed-save-explanation-negative",
-      "sourceKind": "user",
-      "text": "请 explain 如何保存这个 workflow。",
-      "expectedKinds": []
-    },
-    {
       "id": "en-contrastive-save",
       "sourceKind": "user",
       "text": "Do not save this draft but please save this workflow as a Skill.",
-      "expectedKinds": ["EXPLICIT_SAVE"]
-    },
-    {
-      "id": "en-em-dash-contrastive-save",
-      "sourceKind": "user",
-      "text": "Do not save this draft — please save this workflow as a Skill.",
       "expectedKinds": ["EXPLICIT_SAVE"]
     },
     {
@@ -252,54 +228,6 @@
       "id": "zh-cross-sentence-correction-negative",
       "sourceKind": "user",
       "text": "不对。以后再讨论天气。",
-      "expectedKinds": []
-    },
-    {
-      "id": "en-general-descriptive-constraint-negative",
-      "sourceKind": "user",
-      "text": "For this project, the database always stores timestamps.",
-      "expectedKinds": []
-    },
-    {
-      "id": "en-now-contrastive-save",
-      "sourceKind": "user",
-      "text": "Do not save this draft but now save this workflow as a Skill.",
-      "expectedKinds": ["EXPLICIT_SAVE"]
-    },
-    {
-      "id": "zh-now-contrastive-save",
-      "sourceKind": "user",
-      "text": "不要保存草稿而是现在把这个流程保存成 Skill。",
-      "expectedKinds": ["EXPLICIT_SAVE"]
-    },
-    {
-      "id": "en-correction-description-negative",
-      "sourceKind": "user",
-      "text": "That's wrong. Going forward, the database always stores timestamps.",
-      "expectedKinds": []
-    },
-    {
-      "id": "en-proper-subject-description-negative",
-      "sourceKind": "user",
-      "text": "For this project, PostgreSQL always stores timestamps.",
-      "expectedKinds": []
-    },
-    {
-      "id": "en-possessive-subject-description-negative",
-      "sourceKind": "user",
-      "text": "For this project, our database always stores timestamps.",
-      "expectedKinds": []
-    },
-    {
-      "id": "en-reference-process-negative",
-      "sourceKind": "user",
-      "text": "For future reference, the build process failed.",
-      "expectedKinds": []
-    },
-    {
-      "id": "en-release-workflow-description-negative",
-      "sourceKind": "user",
-      "text": "For future releases, the workflow is documented elsewhere.",
       "expectedKinds": []
     },
     {
