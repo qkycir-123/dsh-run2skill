@@ -49,6 +49,36 @@ const CurationV1Schema = z.object({
   }
 })
 
+/** Semantic fields accepted from the model; Host-owned identity and catalog facts are excluded. */
+export const ModelLearningOutputV1Schema = z.object({
+  experiences: z.array(z.object({
+    type: z.enum(['CORRECTION', 'CONSTRAINT', 'WORKFLOW']),
+    lesson: utf8Limited(4 * 1024),
+    persistenceScope: z.enum(['PROJECT', 'USER']),
+    evidenceStrength: z.literal('HIGH'),
+    supportingEvidence: z.array(SupportingEvidenceV1Schema).min(1).max(4),
+    contextSummary: utf8Limited(4 * 1024).optional(),
+  }).strict().superRefine((value, context) => {
+    const keys = value.supportingEvidence.map(item => `${item.messageSeq}\u0000${item.excerptDigest}`)
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({ code: 'custom', message: 'Supporting evidence must be unique' })
+    }
+  })).min(1).max(3),
+  proposal: z.object({
+    policyVersion: z.literal(LEARNING_POLICY_VERSION),
+    name: z.string().min(1).max(128).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    description: utf8Limited(2 * 1024),
+    whenToUse: utf8Limited(4 * 1024),
+    content: utf8Limited(32 * 1024),
+    invocation: z.object({
+      modelInvocable: z.literal(true),
+      userInvocable: z.literal(false),
+    }).strict(),
+    persistenceScope: z.enum(['PROJECT', 'USER']),
+    curation: CurationV1Schema,
+  }).strict(),
+}).strict()
+
 export const LearningProposalV1Schema = z.object({
   learningProposalId: z.string().regex(/^lp_[a-f0-9]{64}$/),
   policyVersion: z.literal(LEARNING_POLICY_VERSION),
@@ -135,6 +165,7 @@ export const LearningStateV1Schema = z.object({
 
 export type ExperienceRecordV1 = z.infer<typeof ExperienceRecordV1Schema>
 export type LearningProposalV1 = z.infer<typeof LearningProposalV1Schema>
+export type ModelLearningOutputV1 = z.infer<typeof ModelLearningOutputV1Schema>
 export type LearningFailureCode = z.infer<typeof LearningFailureCodeSchema>
 export type LearningFailureV1 = z.infer<typeof LearningFailureV1Schema>
 export type LearningCallV1 = z.infer<typeof LearningCallV1Schema>
