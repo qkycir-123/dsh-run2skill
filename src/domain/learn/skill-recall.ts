@@ -74,14 +74,14 @@ export function tokenizeForSkillRecall(value: string): string[] {
     result.push(token)
   }
   for (const match of normalized.matchAll(/[a-z0-9]+|[\p{Script=Han}]+/gu)) {
-    const token = match[0]
-    if (/^[\p{Script=Han}]+$/u.test(token)) {
-      const characters = [...token]
+    const term = match[0]
+    if (/^[\p{Script=Han}]+$/u.test(term)) {
+      const characters = [...term]
       for (let index = 0; index + 1 < characters.length; index += 1) {
         add(`${characters[index]}${characters[index + 1]}`)
       }
     } else {
-      add(token)
+      add(term)
     }
     if (result.length >= MAX_QUERY_TOKENS) break
   }
