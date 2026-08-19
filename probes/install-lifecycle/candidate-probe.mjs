@@ -91,18 +91,25 @@ async function reservePort() {
 }
 
 async function stop(child) {
-  if (child.exitCode !== null) return
+  const hasExited = () => child.exitCode !== null || child.signalCode !== null
+  if (hasExited()) return
   child.kill()
   await Promise.race([new Promise(resolveExit => child.once('exit', resolveExit)), delay(5_000)])
-  if (child.exitCode === null) child.kill('SIGKILL')
+  if (hasExited()) return
+  child.kill('SIGKILL')
+  await Promise.race([new Promise(resolveExit => child.once('exit', resolveExit)), delay(5_000)])
+  if (!hasExited()) throw new Error('candidate Web did not exit after SIGKILL')
 }
 
 async function waitForOutputClose(stream) {
-  if (stream.closed || stream.destroyed) return
-  await Promise.race([
-    new Promise(resolveClose => stream.once('close', resolveClose)),
-    delay(1_000),
+  if (stream.closed) return
+  const closed = await Promise.race([
+    new Promise(resolveClose => stream.once('close', () => resolveClose(true))),
+    delay(5_000, false),
   ])
+  if (!closed || !stream.closed) {
+    throw new Error('candidate Web output did not close')
+  }
 }
 
 const requireFromWeb = createRequire(join(clone, 'apps', 'web', 'package.json'))
@@ -133,7 +140,9 @@ async function observe(present) {
     const deadline = Date.now() + 60_000
     let html
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(safeFailure('candidate Web exited early', logs))
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(safeFailure('candidate Web exited early', logs))
+      }
       try {
         const response = await fetch(`${base}/`)
         if (response.ok) { html = await response.text(); break }

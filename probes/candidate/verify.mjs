@@ -29,11 +29,17 @@ const permittedSyntheticSecrets = new Set([
   'xoxb-1234567890-synthetic-slack-token',
 ])
 const permittedFixtureLocations = new Set([
+  ['package/lib/index.js', 'AUTHORIZATION', 1964],
+  ['probes/support/safe-diagnostics.mjs', 'AUTHORIZATION', 38],
   ['probes/support/safe-diagnostics.mjs', 'SECRET_ASSIGNMENT', 'provider_credential', 3],
+  ['src/domain/observe/redaction.ts', 'AUTHORIZATION', 109],
   ['tests/frozen-evaluation.spec.ts', 'SECRET_ASSIGNMENT', 'synthetic_secret', 71],
   ['tests/observe-summary-rpc.spec.ts', 'SECRET_ASSIGNMENT', 'token', 60],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 68],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 71],
+  ['tests/redaction.spec.ts', 'AUTHORIZATION', 10],
+  ['tests/redaction.spec.ts', 'AUTHORIZATION', 74],
+  ['tests/redaction.spec.ts', 'AUTHORIZATION', 76],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 24],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 49],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 59],
@@ -114,7 +120,8 @@ function scan(name, content) {
       const line = content.slice(0, match.index).split('\n').length
       const location = `${name}:${rule}:${String(line)}`
       const syntheticFixture = permittedSyntheticSecrets.has(value)
-        || value.includes('[REDACTED]')
+        || (rule === 'AUTHORIZATION'
+          && /^authorization\s*:\s*\[REDACTED\]$/iu.test(value.trim()))
         || /^authorization\s*:\s*["']?authorization["']?;?$/iu.test(value.trim())
         || permittedFixtureLocations.has(location)
       if (!syntheticFixture) findings.push(location)
@@ -131,7 +138,6 @@ function scan(name, content) {
       || (suffix === 'key' && parts.length > 1)
       || ['apikey', 'accesskey'].includes(normalized)
     if (!sensitive) continue
-    const value = match[0]
     const assignedValue = (match[2] ?? '').trim()
     const literalValue = assignedValue.replace(/^["']|["']$/gu, '')
     const coordinateKey = [
@@ -143,7 +149,7 @@ function scan(name, content) {
     ].includes(normalized)
     const selfDescribingConstant = literalValue.toLowerCase() === normalized
     const location = `${name}:SECRET_ASSIGNMENT:${normalized}:${String(line)}`
-    const safeFixture = value.includes('[REDACTED]')
+    const safeFixture = literalValue === '[REDACTED]'
       || permittedSyntheticSecrets.has(literalValue)
       || permittedFixtureLocations.has(location)
     if (!coordinateKey && !selfDescribingConstant && !safeFixture) {
@@ -158,6 +164,8 @@ const rejectedAssignmentSamples = [
   ['deepseek_' + 'key=ordinaryvalue123', 'SECRET_ASSIGNMENT'],
   ['api_' + 'key=/ordinary/value', 'SECRET_ASSIGNMENT'],
   ['Authori' + 'zation: Token ordinaryvalue123', 'AUTHORIZATION'],
+  ['pass' + 'word=[REDACTED]ordinaryvalue123', 'SECRET_ASSIGNMENT'],
+  ['Authori' + 'zation: Bearer [REDACTED]ordinaryvalue123', 'AUTHORIZATION'],
 ]
 for (const [sample, expectedRule] of rejectedAssignmentSamples) {
   assert.equal(
