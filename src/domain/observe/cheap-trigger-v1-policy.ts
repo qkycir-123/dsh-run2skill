@@ -1,20 +1,17 @@
-import { TRIGGER_POLICY_VERSION } from './constants.js'
+import { TRIGGER_KIND_ORDER, TRIGGER_POLICY_VERSION } from './constants.js'
 import type { TriggerHit } from './schemas.js'
 
 export type TriggerKind = TriggerHit['kind']
 
 export const CHEAP_TRIGGER_V1_POLICY = Object.freeze({
   version: TRIGGER_POLICY_VERSION,
-  kindOrder: [
-    'EXPLICIT_SAVE',
-    'CORRECTION',
-    'CONSTRAINT',
-    'WORKFLOW',
-  ] satisfies readonly TriggerKind[],
+  kindOrder: TRIGGER_KIND_ORDER satisfies readonly TriggerKind[],
   explicitSave: {
-    saveWords: String.raw`(?:保存|记录|记住|沉淀|存成|save|remember|capture)`,
-    targetWords: String.raw`(?:skill|技能|规则|流程|workflow|process|做法|reuse|复用)`,
-    fixedPhrases: String.raw`(?:记住这个(?:做法|流程|规则)|remember this)`,
+    saveWords: String.raw`(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)`,
+    targetWords: String.raw`(?:技能|规则|流程|做法|复用|\b(?:skill(?:s)?|workflow|process|reuse)\b)`,
+    fixedPhrases: String.raw`(?:记住这个(?:做法|流程|规则)|\bremember this\b)`,
+    requestContext: String.raw`(?:^|[。！？.!?]\s*)(?:(?:(?:(?:could|would) you please|please|can you|could you|would you)\s+)?\b(?:save|remember|capture)\b|i (?:want|need) you to \b(?:save|remember|capture)\b|(?:请|请把|把|将|帮我|麻烦).{0,24}(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)|(?:保存|记录|记住|沉淀|存成))`,
+    negation: String.raw`(?:\b(?:do not|don't|never|without)\b|不要|别|无需|不用|禁止).{0,32}(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)`,
     maxDistance: 64,
   },
   correction: {

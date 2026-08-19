@@ -63,6 +63,36 @@ describe('SignalKey', () => {
     expect(deriveTurnInstanceDigest({ ...boundaries, turnStartSeq: 9 })).not.toBe(digest)
   })
 
+  it('bounds message identity inputs before hashing', () => {
+    const oneKiBId = 'm'.repeat(1024)
+
+    expect(() => deriveTurnInstanceDigest({
+      ...boundaries,
+      directUserMessageIds: Array.from({ length: 1025 }, () => 'm'),
+    })).toThrow(RangeError)
+    expect(() => deriveTurnInstanceDigest({
+      ...boundaries,
+      directUserMessageIds: ['m'.repeat(1025)],
+    })).toThrow(RangeError)
+    expect(deriveTurnInstanceDigest({
+      ...boundaries,
+      directUserMessageIds: Array.from({ length: 256 }, () => oneKiBId),
+    })).toMatch(/^[a-f0-9]{64}$/)
+    expect(() => deriveTurnInstanceDigest({
+      ...boundaries,
+      directUserMessageIds: [
+        ...Array.from({ length: 256 }, () => oneKiBId),
+        'm',
+      ],
+    })).toThrow(RangeError)
+  })
+
+  it('bounds cwd identity by characters and UTF-8 bytes before hashing', () => {
+    expect(deriveSessionCwdDigest('p'.repeat(32 * 1024))).toMatch(/^[a-f0-9]{64}$/)
+    expect(() => deriveSessionCwdDigest('p'.repeat(32 * 1024 + 1))).toThrow(RangeError)
+    expect(() => deriveSessionCwdDigest('界'.repeat(10_923))).toThrow(RangeError)
+  })
+
   it('derives an opaque lifecycle key from stable header facts', () => {
     const lifecycle = {
       rootSessionId: 'session-with-private-looking-id',

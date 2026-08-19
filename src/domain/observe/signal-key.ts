@@ -1,4 +1,4 @@
-import { TRIGGER_POLICY_VERSION } from './constants.js'
+import { OBSERVE_LIMITS, TRIGGER_POLICY_VERSION } from './constants.js'
 import { sha256Utf8 } from './hashing.js'
 import {
   canonicalizeSignalKeyFacts,
@@ -34,6 +34,15 @@ function assertSafeCoordinate(value: number, name: string): void {
 }
 
 export function deriveSessionCwdDigest(cwd: string | undefined): string {
+  if (
+    cwd !== undefined
+    && (
+      cwd.length > OBSERVE_LIMITS.maxPathChars
+      || Buffer.byteLength(cwd, 'utf8') > OBSERVE_LIMITS.maxPathBytes
+    )
+  ) {
+    throw new RangeError('cwd exceeds the bounded path envelope')
+  }
   const taggedValue = cwd === undefined
     ? { status: 'missing' as const }
     : { status: 'present' as const, value: cwd }
@@ -45,6 +54,20 @@ export function deriveTurnInstanceDigest(facts: TurnInstanceFacts): string {
   assertSafeCoordinate(facts.turnStartTime, 'turnStartTime')
   assertSafeCoordinate(facts.turnEndSeq, 'turnEndSeq')
   assertSafeCoordinate(facts.turnEndTime, 'turnEndTime')
+
+  if (facts.directUserMessageIds.length > OBSERVE_LIMITS.maxDirectUserMessages) {
+    throw new RangeError('directUserMessageIds exceeds the message-count limit')
+  }
+  let identityBytes = 0
+  for (const messageId of facts.directUserMessageIds) {
+    if (messageId.length === 0 || messageId.length > OBSERVE_LIMITS.maxIdentityChars) {
+      throw new RangeError('direct user message ID exceeds the identity limit')
+    }
+    identityBytes += Buffer.byteLength(messageId, 'utf8')
+    if (identityBytes > OBSERVE_LIMITS.maxTurnIdentityBytes) {
+      throw new RangeError('direct user message IDs exceed the aggregate byte limit')
+    }
+  }
 
   const canonical = JSON.stringify({
     turnStartSeq: facts.turnStartSeq,

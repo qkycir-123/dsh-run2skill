@@ -1,5 +1,11 @@
 import { z } from 'zod'
-import { OBSERVE_LIMITS, TRIGGER_POLICY_VERSION } from './constants.js'
+import {
+  CAPTURE_BLOCKER_ORDER,
+  OBSERVE_LIMITS,
+  REDACTION_KIND_ORDER,
+  TRIGGER_KIND_ORDER,
+  TRIGGER_POLICY_VERSION,
+} from './constants.js'
 import { sha256Utf8 } from './hashing.js'
 import {
   deriveSessionLifecycleKeyFromFacts,
@@ -19,6 +25,16 @@ const isoDateTime = z.string().datetime({ offset: true })
 const healthCode = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)
 const identityString = z.string().min(1).max(OBSERVE_LIMITS.maxIdentityChars)
 
+function isCanonicallyOrdered<T>(
+  values: readonly T[],
+  compare: (left: T, right: T) => number,
+): boolean {
+  for (let index = 1; index < values.length; index += 1) {
+    if (compare(values[index - 1]!, values[index]!) > 0) return false
+  }
+  return true
+}
+
 export const TriggerPolicyVersionSchema = z.literal(TRIGGER_POLICY_VERSION)
 
 export const SignalKeySchema = z.object({
@@ -32,20 +48,13 @@ export const SignalKeySchema = z.object({
 }).strict()
 
 export const TriggerHitSchema = z.object({
-  kind: z.enum(['EXPLICIT_SAVE', 'CORRECTION', 'CONSTRAINT', 'WORKFLOW']),
+  kind: z.enum(TRIGGER_KIND_ORDER),
   messageSeq: safeNonNegativeInteger,
   ruleId: z.string().min(1).max(160),
   confidence: z.literal('HIGH'),
 }).strict()
 
-export const RedactionKindSchema = z.enum([
-  'PRIVATE_KEY',
-  'AUTHORIZATION',
-  'BEARER_TOKEN',
-  'API_KEY',
-  'SECRET_ASSIGNMENT',
-  'URL_CREDENTIAL',
-])
+export const RedactionKindSchema = z.enum(REDACTION_KIND_ORDER)
 
 export const EvidenceRefSchema = z.object({
   source: z.literal('USER_DIRECT'),
@@ -67,6 +76,11 @@ export const EvidenceRefSchema = z.object({
   if (new Set(value.redactionKinds).size !== value.redactionKinds.length) {
     context.addIssue({ code: 'custom', message: 'Redaction kinds must be unique' })
   }
+  if (!isCanonicallyOrdered(value.redactionKinds, (left, right) => (
+    REDACTION_KIND_ORDER.indexOf(left) - REDACTION_KIND_ORDER.indexOf(right)
+  ))) {
+    context.addIssue({ code: 'custom', message: 'Redaction kinds must use canonical order' })
+  }
 })
 
 const RootIdentitySchema = z.object({
@@ -78,7 +92,10 @@ const WorkspaceBindingSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('BOUND'),
     workspaceId: identityString,
-    canonicalPath: z.string().min(1).max(OBSERVE_LIMITS.maxPathChars),
+    canonicalPath: z.string().min(1).max(OBSERVE_LIMITS.maxPathChars).refine(
+      (value) => Buffer.byteLength(value, 'utf8') <= OBSERVE_LIMITS.maxPathBytes,
+      'Canonical path exceeds the byte limit',
+    ),
     observedAt: isoDateTime,
   }).strict(),
   z.object({
@@ -87,11 +104,7 @@ const WorkspaceBindingSchema = z.discriminatedUnion('status', [
   }).strict(),
 ])
 
-export const CaptureBlockerSchema = z.enum([
-  'TURN_BOUNDARY_INCOMPLETE',
-  'TEXT_LIMIT_EXCEEDED',
-  'REDACTION_UNAVAILABLE',
-])
+export const CaptureBlockerSchema = z.enum(CAPTURE_BLOCKER_ORDER)
 
 export const CaptureWorkItemV1Schema = z.object({
   schemaVersion: z.literal(1),
@@ -159,6 +172,23 @@ export const CaptureWorkItemV1Schema = z.object({
   }
   if (new Set(value.captureBlockers).size !== value.captureBlockers.length) {
     context.addIssue({ code: 'custom', message: 'Capture blockers must be unique' })
+  }
+  if (!isCanonicallyOrdered(value.triggerHits, (left, right) => (
+    left.messageSeq - right.messageSeq
+    || TRIGGER_KIND_ORDER.indexOf(left.kind) - TRIGGER_KIND_ORDER.indexOf(right.kind)
+    || left.ruleId.localeCompare(right.ruleId)
+  ))) {
+    context.addIssue({ code: 'custom', message: 'Trigger hits must use canonical order' })
+  }
+  if (!isCanonicallyOrdered(value.evidenceRefs, (left, right) => (
+    left.messageSeq - right.messageSeq || left.excerptDigest.localeCompare(right.excerptDigest)
+  ))) {
+    context.addIssue({ code: 'custom', message: 'Evidence references must use canonical order' })
+  }
+  if (!isCanonicallyOrdered(value.captureBlockers, (left, right) => (
+    CAPTURE_BLOCKER_ORDER.indexOf(left) - CAPTURE_BLOCKER_ORDER.indexOf(right)
+  ))) {
+    context.addIssue({ code: 'custom', message: 'Capture blockers must use canonical order' })
   }
   for (const [index, hit] of value.triggerHits.entries()) {
     if (hit.messageSeq > value.signalKey.turnEndSeq) {

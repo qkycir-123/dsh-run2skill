@@ -1,5 +1,9 @@
-import { CHEAP_TRIGGER_V1_POLICY } from './cheap-trigger-v1-policy.js'
-import { OBSERVE_LIMITS } from './constants.js'
+import {
+  CAPTURE_BLOCKER_ORDER,
+  OBSERVE_LIMITS,
+  REDACTION_KIND_ORDER,
+  TRIGGER_KIND_ORDER,
+} from './constants.js'
 import { DomainError } from './errors.js'
 import {
   CaptureWorkItemV1Schema,
@@ -9,12 +13,6 @@ import {
   type TriggerHit,
 } from './schemas.js'
 import { canonicalizeSignalKey } from './signal-key.js'
-
-const BLOCKER_ORDER: readonly CaptureBlocker[] = [
-  'TURN_BOUNDARY_INCOMPLETE',
-  'TEXT_LIMIT_EXCEEDED',
-  'REDACTION_UNAVAILABLE',
-]
 
 function parseWorkItem(value: CaptureWorkItemV1): CaptureWorkItemV1 {
   const parsed = CaptureWorkItemV1Schema.safeParse(value)
@@ -49,7 +47,7 @@ function mergeTriggerHits(left: readonly TriggerHit[], right: readonly TriggerHi
   }
   return [...hits.values()].sort((a, b) => (
     a.messageSeq - b.messageSeq
-    || CHEAP_TRIGGER_V1_POLICY.kindOrder.indexOf(a.kind) - CHEAP_TRIGGER_V1_POLICY.kindOrder.indexOf(b.kind)
+    || TRIGGER_KIND_ORDER.indexOf(a.kind) - TRIGGER_KIND_ORDER.indexOf(b.kind)
     || a.ruleId.localeCompare(b.ruleId)
   ))
 }
@@ -64,7 +62,9 @@ function mergeEvidenceRefs(left: readonly EvidenceRef[], right: readonly Evidenc
     }
     evidence.set(key, current === undefined ? next : {
       ...current,
-      redactionKinds: [...new Set([...current.redactionKinds, ...next.redactionKinds])].sort(),
+      redactionKinds: REDACTION_KIND_ORDER.filter((kind) => (
+        current.redactionKinds.includes(kind) || next.redactionKinds.includes(kind)
+      )),
       truncated: current.truncated || next.truncated,
     })
   }
@@ -90,7 +90,7 @@ function mergeBlockers(
   right: readonly CaptureBlocker[],
 ): CaptureBlocker[] {
   const rightSet = new Set(right)
-  return BLOCKER_ORDER.filter((blocker) => left.includes(blocker) && rightSet.has(blocker))
+  return CAPTURE_BLOCKER_ORDER.filter((blocker) => left.includes(blocker) && rightSet.has(blocker))
 }
 
 function bindingRank(binding: CaptureWorkItemV1['workspaceBinding']): number {
@@ -145,6 +145,34 @@ function canonicalSnapshot(value: CaptureWorkItemV1): string {
   return JSON.stringify(value)
 }
 
+function materializeMergedFacts(
+  mergedFacts: Omit<CaptureWorkItemV1, 'revision' | 'updatedAt'>,
+  left: CaptureWorkItemV1,
+  right: CaptureWorkItemV1,
+): CaptureWorkItemV1 {
+  const matchesLeft = sameJson(mergedFacts, withoutRevisionFacts(left))
+  const matchesRight = sameJson(mergedFacts, withoutRevisionFacts(right))
+  if (matchesLeft && matchesRight) return preferSnapshot(left, right)
+
+  const matchingSnapshot = matchesLeft ? left : matchesRight ? right : undefined
+  const otherSnapshot = matchingSnapshot === left ? right : left
+  if (
+    matchingSnapshot !== undefined
+    && matchingSnapshot.revision >= otherSnapshot.revision
+    && compareIsoDateTime(matchingSnapshot.updatedAt, otherSnapshot.updatedAt) >= 0
+  ) {
+    return matchingSnapshot
+  }
+
+  return parseWorkItem({
+    ...mergedFacts,
+    revision: Math.max(left.revision, right.revision) + 1,
+    updatedAt: compareIsoDateTime(left.updatedAt, right.updatedAt) >= 0
+      ? left.updatedAt
+      : right.updatedAt,
+  })
+}
+
 function mergeResolvedWithIncomplete(
   resolved: CaptureWorkItemV1,
   incomplete: CaptureWorkItemV1,
@@ -161,21 +189,10 @@ function mergeResolvedWithIncomplete(
     resolved.workspaceBinding,
     incomplete.workspaceBinding,
   )
-  if (
-    sameJson(workspaceBinding, resolved.workspaceBinding)
-    && resolved.revision >= incomplete.revision
-  ) {
-    return resolved
-  }
-
-  return parseWorkItem({
-    ...resolved,
-    revision: Math.max(resolved.revision, incomplete.revision) + 1,
-    updatedAt: compareIsoDateTime(resolved.updatedAt, incomplete.updatedAt) >= 0
-      ? resolved.updatedAt
-      : incomplete.updatedAt,
+  return materializeMergedFacts({
+    ...withoutRevisionFacts(resolved),
     workspaceBinding,
-  })
+  }, resolved, incomplete)
 }
 
 export function mergeCaptureWorkItems(
@@ -198,19 +215,10 @@ export function mergeCaptureWorkItems(
         existing.workspaceBinding,
         incoming.workspaceBinding,
       )
-      const matchesExisting = sameJson(workspaceBinding, existing.workspaceBinding)
-      const matchesIncoming = sameJson(workspaceBinding, incoming.workspaceBinding)
-      if (matchesExisting && matchesIncoming) return preferSnapshot(existing, incoming)
-      if (matchesExisting) return existing
-      if (matchesIncoming) return incoming
-      return parseWorkItem({
-        ...preferSnapshot(existing, incoming),
-        revision: Math.max(existing.revision, incoming.revision) + 1,
-        updatedAt: compareIsoDateTime(existing.updatedAt, incoming.updatedAt) >= 0
-          ? existing.updatedAt
-          : incoming.updatedAt,
+      return materializeMergedFacts({
+        ...withoutRevisionFacts(preferSnapshot(existing, incoming)),
         workspaceBinding,
-      })
+      }, existing, incoming)
     }
     return existing.processingState === 'RESOLVED_NO_SIGNAL'
       ? mergeResolvedWithIncomplete(existing, incoming)
@@ -247,19 +255,5 @@ export function mergeCaptureWorkItems(
     processingState: 'CAPTURED',
   }
 
-  const existingFacts = withoutRevisionFacts(existing)
-  const incomingFacts = withoutRevisionFacts(incoming)
-  if (sameJson(mergedFacts, existingFacts) && sameJson(mergedFacts, incomingFacts)) {
-    return preferSnapshot(existing, incoming)
-  }
-  if (sameJson(mergedFacts, existingFacts)) return existing
-  if (sameJson(mergedFacts, incomingFacts)) return incoming
-
-  return parseWorkItem({
-    ...mergedFacts,
-    revision: Math.max(existing.revision, incoming.revision) + 1,
-    updatedAt: compareIsoDateTime(existing.updatedAt, incoming.updatedAt) >= 0
-      ? existing.updatedAt
-      : incoming.updatedAt,
-  })
+  return materializeMergedFacts(mergedFacts, existing, incoming)
 }

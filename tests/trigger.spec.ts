@@ -49,27 +49,27 @@ describe('cheap-trigger-v1', () => {
     {
       kind: 'URL_CREDENTIAL',
       secret: 'synthetic%0Aurl%2Fpassword',
-      text: 'https://user:synthetic%0Aurl%2Fpassword@example.invalid/path\nremember this workflow',
+      text: 'Remember this workflow.\nhttps://user:synthetic%0Aurl%2Fpassword@example.invalid/path',
     },
     {
       kind: 'AUTHORIZATION',
       secret: 'synthetic-response',
-      text: 'Authorization: Digest username="demo", response="synthetic-response"\nremember this workflow',
+      text: 'Remember this workflow.\nAuthorization: Digest username="demo", response="synthetic-response"',
     },
     {
       kind: 'SECRET_ASSIGNMENT',
       secret: 'synthetic-zero-width-secret',
-      text: 'tok\u200Ben=synthetic-zero-width-secret\nremember this workflow',
+      text: 'Remember this workflow.\ntok\u200Ben=synthetic-zero-width-secret',
     },
     {
       kind: 'API_KEY',
       secret: 'ghp_abcdefghijklmnopqrstuvwxyz123456',
-      text: 'ghp_abcdefghijklmnopqrstuvwxyz123456\nremember this workflow',
+      text: 'Remember this workflow.\nghp_abcdefghijklmnopqrstuvwxyz123456',
     },
     {
       kind: 'API_KEY',
       secret: 'sk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
-      text: 'sk-abcdefghijklmnopqrstuvwxyz123456789012345678901234\nremember this workflow',
+      text: 'Remember this workflow.\nsk-abcdefghijklmnopqrstuvwxyz123456789012345678901234',
     },
   ])('keeps $kind secrets out of durable evidence', ({ kind, secret, text }) => {
     const result = analyzeCheapTriggerV1([{ messageSeq: 1, sourceKind: 'user', text }])

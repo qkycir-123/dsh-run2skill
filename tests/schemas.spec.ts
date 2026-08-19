@@ -96,6 +96,36 @@ describe('versioned domain schemas', () => {
     })).toThrow()
   })
 
+  it('rejects non-canonical repeated-field ordering', () => {
+    const item = makeWorkItem()
+    const constraintHit = {
+      kind: 'CONSTRAINT' as const,
+      messageSeq: item.triggerHits[0]!.messageSeq,
+      ruleId: 'ctv1.constraint.persistent-operator',
+      confidence: 'HIGH' as const,
+    }
+
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      triggerHits: [constraintHit, item.triggerHits[0]],
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      evidenceRefs: [{
+        ...item.evidenceRefs[0]!,
+        redactionKinds: ['API_KEY', 'PRIVATE_KEY'],
+      }],
+    })).toThrow()
+    expect(() => CaptureWorkItemV1Schema.parse({
+      ...item,
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'INCOMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: ['TEXT_LIMIT_EXCEEDED', 'TURN_BOUNDARY_INCOMPLETE'],
+    })).toThrow()
+  })
+
   it('accepts GlobalV1 without storing raw paths or text', () => {
     const lifecycle = {
       rootSessionId: 'session-1',

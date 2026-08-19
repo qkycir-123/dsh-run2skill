@@ -1,3 +1,4 @@
+import { REDACTION_KIND_ORDER } from './constants.js'
 import type { RedactionKind } from './schemas.js'
 
 export interface PreprocessedSensitiveText {
@@ -5,15 +6,6 @@ export interface PreprocessedSensitiveText {
   redactionKinds: RedactionKind[]
   redactionCounts: Partial<Record<RedactionKind, number>>
 }
-
-const REDACTION_KIND_ORDER: readonly RedactionKind[] = [
-  'PRIVATE_KEY',
-  'AUTHORIZATION',
-  'BEARER_TOKEN',
-  'API_KEY',
-  'SECRET_ASSIGNMENT',
-  'URL_CREDENTIAL',
-]
 
 function removeInvisibleControls(value: string): string {
   let result = ''

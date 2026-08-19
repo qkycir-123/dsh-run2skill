@@ -50,6 +50,11 @@ const explicitSaveReverse = new RegExp(
   'iu',
 )
 const explicitSaveFixed = new RegExp(CHEAP_TRIGGER_V1_POLICY.explicitSave.fixedPhrases, 'iu')
+const explicitSaveRequestContext = new RegExp(
+  CHEAP_TRIGGER_V1_POLICY.explicitSave.requestContext,
+  'iu',
+)
+const explicitSaveNegation = new RegExp(CHEAP_TRIGGER_V1_POLICY.explicitSave.negation, 'iu')
 const correctionAnchor = new RegExp(
   `${WORD_BOUNDARY}${CHEAP_TRIGGER_V1_POLICY.correction.anchors}${WORD_END}`,
   'iu',
@@ -86,7 +91,11 @@ function hasOrderedSteps(text: string): boolean {
 function matchRules(text: string): MatchedRule[] {
   const matches: MatchedRule[] = []
   const explicitSaveIndex = firstMatchIndex(text, explicitSavePatterns)
-  if (explicitSaveIndex !== undefined) {
+  if (
+    explicitSaveIndex !== undefined
+    && explicitSaveRequestContext.test(text)
+    && !explicitSaveNegation.test(text)
+  ) {
     matches.push({
       kind: 'EXPLICIT_SAVE',
       ruleId: 'ctv1.explicit-save.save-target',

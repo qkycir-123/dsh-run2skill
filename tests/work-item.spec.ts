@@ -112,6 +112,67 @@ describe('CaptureWorkItemV1 monotonic merge', () => {
     expect(mergeCaptureWorkItems(forward, blocked)).toEqual(forward)
   })
 
+  it('advances revision when lower-revision triggered facts dominate newer metadata', () => {
+    const blocked = makeWorkItem({
+      revision: 8,
+      updatedAt: '2026-08-19T00:00:08.000Z',
+      captureReason: 'SCAN_INCOMPLETE',
+      scanStatus: 'INCOMPLETE',
+      triggerHits: [],
+      evidenceRefs: [],
+      captureBlockers: ['TEXT_LIMIT_EXCEEDED'],
+    })
+    const triggered = makeWorkItem({ revision: 2 })
+
+    const forward = mergeCaptureWorkItems(blocked, triggered)
+    const reverse = mergeCaptureWorkItems(triggered, blocked)
+
+    expect(forward).toEqual(reverse)
+    expect(forward.revision).toBe(9)
+    expect(forward.updatedAt).toBe(blocked.updatedAt)
+    expect(forward.captureReason).toBe('CHEAP_TRIGGER')
+  })
+
+  it('advances revision when lower-revision workspace facts dominate', () => {
+    const unavailable = makeWorkItem({
+      revision: 8,
+      updatedAt: '2026-08-19T00:00:08.000Z',
+      workspaceBinding: { status: 'UNAVAILABLE', observedAt: '2026-08-19T00:00:08.000Z' },
+    })
+    const bound = makeWorkItem({
+      revision: 2,
+      workspaceBinding: {
+        status: 'BOUND',
+        workspaceId: 'workspace-1',
+        canonicalPath: 'D:\\workspace',
+        observedAt: '2026-08-19T00:00:02.000Z',
+      },
+    })
+
+    const forward = mergeCaptureWorkItems(unavailable, bound)
+    const reverse = mergeCaptureWorkItems(bound, unavailable)
+
+    expect(forward).toEqual(reverse)
+    expect(forward.revision).toBe(9)
+    expect(forward.workspaceBinding).toEqual(bound.workspaceBinding)
+  })
+
+  it('rejects duplicate delivery with non-canonical repeated fields', () => {
+    const item = makeWorkItem()
+    const nonCanonical = makeWorkItem({
+      triggerHits: [{
+        kind: 'CONSTRAINT',
+        messageSeq: 11,
+        ruleId: 'ctv1.constraint.persistent-operator',
+        confidence: 'HIGH',
+      }, item.triggerHits[0]!],
+    })
+
+    expect(() => mergeCaptureWorkItems(nonCanonical, structuredClone(nonCanonical))).toThrowError(
+      expect.objectContaining({ code: 'INVALID_WORK_ITEM' }),
+    )
+  })
+
   it('rejects an ID collision with a different SignalKey without leaking values', () => {
     const existing = makeWorkItem()
     const conflicting = makeWorkItem({

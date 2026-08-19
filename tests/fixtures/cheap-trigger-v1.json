@@ -145,6 +145,42 @@
       "sourceKind": "user",
       "text": "不对，这次应该更新 README。",
       "expectedKinds": []
+    },
+    {
+      "id": "en-negated-save-negative",
+      "sourceKind": "user",
+      "text": "Do not save this workflow as a Skill.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-negated-save-negative",
+      "sourceKind": "user",
+      "text": "不要把这个流程保存成 Skill。",
+      "expectedKinds": []
+    },
+    {
+      "id": "mixed-negated-save-negative",
+      "sourceKind": "user",
+      "text": "请不要 save this workflow as a Skill。",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-descriptive-save-negative",
+      "sourceKind": "user",
+      "text": "The service saves workflow state to disk.",
+      "expectedKinds": []
+    },
+    {
+      "id": "en-explanation-save-negative",
+      "sourceKind": "user",
+      "text": "This document explains how to save a workflow.",
+      "expectedKinds": []
+    },
+    {
+      "id": "zh-descriptive-save-negative",
+      "sourceKind": "user",
+      "text": "这个文档记录了保存流程的原理。",
+      "expectedKinds": []
     }
   ]
 }
