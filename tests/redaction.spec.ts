@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { preprocessSensitiveText } from '../src/domain/observe/redaction.js'
+import {
+  preprocessPersistentText,
+  preprocessSensitiveText,
+} from '../src/domain/observe/redaction.js'
 
 describe('Sensitive Data Filter', () => {
   it('normalizes Unicode before redacting authorization values', () => {
@@ -41,6 +44,16 @@ describe('Sensitive Data Filter', () => {
     const result = preprocessSensitiveText('> remember this workflow\n```text\nsave as skill\n```\nordinary request')
 
     expect(result.text).toBe('ordinary request')
+  })
+
+  it('preserves safe Markdown while scanning quoted and fenced persistent text', () => {
+    const safe = '# Keep Case\n\n```text\nENV_VAR only\n```'
+    expect(preprocessPersistentText(safe)).toEqual({ text: safe, redactionKinds: [] })
+
+    const secret = 'synthetic-persistent-value'
+    const unsafe = preprocessPersistentText(`\`\`\`json\n{"clientSecret":"${secret}"}\n\`\`\``)
+    expect(unsafe.text).not.toContain(secret)
+    expect(unsafe.redactionKinds).toContain('SECRET_ASSIGNMENT')
   })
 
   it('normalizes encoded URL userinfo before redacting it', () => {

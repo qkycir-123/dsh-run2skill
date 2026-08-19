@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,6 +23,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
+import { recallExistingSkills } from '../src/domain/learn/skill-recall.js'
 
 const temporaryDirectories: string[] = []
 
@@ -260,6 +262,40 @@ async function disposeWorkspaceAndSkills(mount: Awaited<ReturnType<typeof mountW
 }
 
 describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
+  it('keeps scoped-only Skills behind the exact borrowed Agent view', async () => {
+    const ctx = new Context()
+    const skillRegistryFiber = await ctx.plugin(SkillRegistry)
+    const preset = createScope(ctx, { preset: 'run2skill-probe' })
+    const scopedSkills = preset.ctx.get('skills')
+    if (scopedSkills === undefined) throw new Error('scoped Skill registry unavailable')
+    scopedSkills.register({
+      name: 'scoped-review',
+      description: 'Review code changes.',
+      whenToUse: 'Use for code review.',
+      source: 'preset-probe',
+      content: '# Scoped review\n\nReview the exact changes.',
+    })
+    const exactAgent = {}
+    bindScopeParent(exactAgent, scopeOf(preset.ctx) as object)
+    const exactView = { cwd: '/contract/project', scope: exactAgent }
+    try {
+      expect((await ctx.skills.snapshot()).skills.map(skill => skill.name)).not.toContain('scoped-review')
+      const result = await recallExistingSkills(ctx.skills, exactView, 'code review')
+      expect(result.status).toBe('AVAILABLE')
+      if (result.status !== 'AVAILABLE') return
+      expect(result.observation.candidates).toHaveLength(1)
+      expect(result.observation.candidates[0]).toMatchObject({
+        name: 'scoped-review',
+        persistenceScope: 'UNKNOWN',
+        writable: false,
+        content: '# Scoped review\n\nReview the exact changes.',
+      })
+    } finally {
+      await preset.dispose()
+      await skillRegistryFiber.dispose()
+    }
+  })
+
   it('uses complete snapshots, project rank, exact bodies, hot invalidation, and composition-owned roots', async () => {
     const base = await freshDirectory('dsh-run2skill-skill-root-')
     const project = join(base, 'project')
@@ -293,6 +329,7 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
       expect(initial.complete).toBe(true)
       expect(initial.skills.map(skill => skill.name)).toEqual(['same-skill', 'user-only'])
       expect(initial.skills.find(skill => skill.name === 'same-skill')).toMatchObject({
+        provider: 'filesystem',
         source: 'project-dsh',
         description: 'Project wins',
       })

@@ -63,11 +63,14 @@ function isSensitiveAssignmentKey(key: string): boolean {
   return ['apikey', 'accesskey'].includes(normalized)
 }
 
-export function preprocessSensitiveText(input: string): PreprocessedSensitiveText {
+function processSensitiveText(
+  input: string,
+  options: { stripNonAuthoritative: boolean; normalizeOutput: boolean },
+): PreprocessedSensitiveText {
   const redactionKinds = new Set<RedactionKind>()
   const assignmentTailMarker = '\u0000'
   let text = removeInvisibleControls(input).normalize('NFKC')
-  text = removeFencedCodeAndQuotes(text)
+  if (options.stripNonAuthoritative) text = removeFencedCodeAndQuotes(text)
 
   const replace = (
     pattern: RegExp,
@@ -89,7 +92,7 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
       const unquotedTail = value.startsWith('"') || value.startsWith("'")
         ? ''
         : assignmentTailMarker
-      return `${format(key.toLowerCase(), separator)}${unquotedTail}`
+      return `${format(options.normalizeOutput ? key.toLowerCase() : key, separator)}${unquotedTail}`
     })
   }
 
@@ -136,10 +139,19 @@ export function preprocessSensitiveText(input: string): PreprocessedSensitiveTex
     '',
   )
 
-  text = text.replace(/\s+/gu, ' ').trim().toLowerCase()
-  text = text.replace(/\[redacted\]/gu, '[REDACTED]')
+  if (options.normalizeOutput) text = text.replace(/\s+/gu, ' ').trim().toLowerCase()
+  text = text.replace(/\[redacted\]/giu, '[REDACTED]')
   return {
     text,
     redactionKinds: REDACTION_KIND_ORDER.filter((kind) => redactionKinds.has(kind)),
   }
+}
+
+export function preprocessSensitiveText(input: string): PreprocessedSensitiveText {
+  return processSensitiveText(input, { stripNonAuthoritative: true, normalizeOutput: true })
+}
+
+/** Redact text that may be persisted or sent to a model without discarding quoted/code material. */
+export function preprocessPersistentText(input: string): PreprocessedSensitiveText {
+  return processSensitiveText(input, { stripNonAuthoritative: false, normalizeOutput: false })
 }
