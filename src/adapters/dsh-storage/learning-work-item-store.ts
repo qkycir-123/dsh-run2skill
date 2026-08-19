@@ -50,6 +50,11 @@ export class LearningWorkItemStore {
         throw new LearningStoreError('INVALID_LEARNING_STATE')
       }
       const previous = current.learning
+      const claimedAt = this.#now()
+      if (
+        previous?.nextEligibleAt !== undefined
+        && Date.parse(previous.nextEligibleAt) > Date.parse(claimedAt)
+      ) throw new LearningStoreError('INVALID_LEARNING_STATE')
       const attempt = (previous?.attempt ?? 0) + 1
       if (attempt > 3) throw new LearningStoreError('INVALID_LEARNING_STATE')
       return {
@@ -59,7 +64,7 @@ export class LearningWorkItemStore {
           policyVersion: 'learning-v1',
           attempt,
           requestBudgetUsed: previous?.requestBudgetUsed ?? 0,
-          claimedAt: this.#now(),
+          claimedAt,
           calls: previous?.calls ?? [],
           ...(previous?.modelRoute === undefined ? {} : { modelRoute: previous.modelRoute }),
         },
@@ -99,6 +104,10 @@ export class LearningWorkItemStore {
   ): Promise<CaptureWorkItemV1> {
     return this.#update(workItemId, expectedRevision, (current) => {
       const learning = this.#analyzing(current)
+      if (
+        learning.requestBudgetUsed === 0
+        || !learning.calls.some(call => call.outcome === 'SUCCEEDED')
+      ) throw new LearningStoreError('INVALID_LEARNING_STATE')
       return {
         ...current,
         processingState: 'LEARNED',

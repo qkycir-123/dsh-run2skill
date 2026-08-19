@@ -185,6 +185,16 @@ export const CaptureWorkItemV1Schema = z.object({
   if (['ANALYZING', 'LEARNED', 'NEEDS_ATTENTION'].includes(value.processingState) && value.learning === undefined) {
     context.addIssue({ code: 'custom', message: 'Learning states require learning facts' })
   }
+  if (value.processingState === 'CAPTURED' && value.learning !== undefined) {
+    if (
+      value.learning.claimedAt !== undefined
+      || value.learning.experiences !== undefined
+      || value.learning.proposal !== undefined
+      || value.learning.publicationOutcome !== undefined
+    ) {
+      context.addIssue({ code: 'custom', message: 'Captured items cannot retain active or committed result facts' })
+    }
+  }
   if (value.processingState === 'ANALYZING' && value.learning !== undefined) {
     if (value.learning.claimedAt === undefined || value.learning.proposal !== undefined) {
       context.addIssue({ code: 'custom', message: 'Analyzing items require a claim and no committed result' })
@@ -196,6 +206,8 @@ export const CaptureWorkItemV1Schema = z.object({
       || value.learning.proposal === undefined
       || value.learning.failure !== undefined
       || value.learning.publicationOutcome !== undefined
+      || value.learning.requestBudgetUsed === 0
+      || !value.learning.calls.some(call => call.outcome === 'SUCCEEDED')
     ) {
       context.addIssue({ code: 'custom', message: 'Learned items require one successful committed result' })
     } else {

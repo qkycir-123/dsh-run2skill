@@ -112,4 +112,20 @@ describe('Slice B durable learning schemas', () => {
       learning: { policyVersion: 'learning-v1', attempt: 0, requestBudgetUsed: 0, calls: [] },
     })).success).toBe(false)
   })
+
+  it('rejects committed or active result facts while an item is captured', () => {
+    const result = { experiences: [experience()], proposal: proposal() }
+    expect(CaptureWorkItemV1Schema.safeParse(makeWorkItem({
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1, calls: [],
+        ...result,
+      },
+    })).success).toBe(false)
+    expect(CaptureWorkItemV1Schema.safeParse(makeWorkItem({
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 0, calls: [],
+        claimedAt: '2026-08-20T00:00:00.000Z',
+      },
+    })).success).toBe(false)
+  })
 })

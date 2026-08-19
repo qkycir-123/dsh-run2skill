@@ -14,6 +14,8 @@ describe('LearningWorkItemStore', () => {
 
     const claimed = await store.claim(item.workItemId, 1)
     expect(claimed).toMatchObject({ revision: 2, processingState: 'ANALYZING', learning: { attempt: 1 } })
+    await expect(store.complete(item.workItemId, claimed.revision, makeLearningResult(item)))
+      .rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
     const reserved = await store.reserveRequest(item.workItemId, 2)
     expect(reserved.learning?.requestBudgetUsed).toBe(1)
     const called = await store.recordCall(item.workItemId, 3, {
@@ -40,12 +42,16 @@ describe('LearningWorkItemStore', () => {
     const domain = createMemoryRun2skillDomain()
     const item = makeWorkItem()
     domain.workItems.set(item.workItemId, item)
-    const store = new LearningWorkItemStore(domain)
+    let now = '2026-08-20T00:00:00.000Z'
+    const store = new LearningWorkItemStore(domain, () => now)
     const claimed = await store.claim(item.workItemId, 1)
     const retry = await store.fail(item.workItemId, claimed.revision, {
       code: 'SESSION_LOG_UNAVAILABLE', retryable: true, occurredAt: '2026-08-20T00:00:01.000Z',
     }, '2026-08-20T00:00:05.000Z')
     expect(retry).toMatchObject({ processingState: 'CAPTURED', learning: { nextEligibleAt: '2026-08-20T00:00:05.000Z' } })
+    await expect(store.claim(item.workItemId, retry.revision))
+      .rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+    now = '2026-08-20T00:00:05.000Z'
     const reclaimed = await store.claim(item.workItemId, retry.revision)
     const terminal = await store.fail(item.workItemId, reclaimed.revision, {
       code: 'LEARNING_GUARD_REJECTED', retryable: false, occurredAt: '2026-08-20T00:00:06.000Z',
@@ -81,6 +87,9 @@ describe('LearningWorkItemStore', () => {
     const capture = new DurableCaptureStore(domain)
     let current = await learning.claim(item.workItemId, 1)
     current = await learning.reserveRequest(item.workItemId, current.revision)
+    current = await learning.recordCall(item.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED',
+    })
     current = await learning.complete(item.workItemId, current.revision, makeLearningResult(item))
 
     const replay = await capture.persist(item)
