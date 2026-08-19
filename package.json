@@ -16,10 +16,12 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
+    "react": "^18.2.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
     "oxlint": "1.76.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
