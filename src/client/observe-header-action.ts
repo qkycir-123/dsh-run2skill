@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createElement,
   useEffect,
   useMemo,
@@ -14,6 +15,8 @@ import {
   type ObserveSummaryCall,
   type ObserveSummaryClientState,
 } from './observe-summary-poller.js'
+import type { ProposalReviewCall } from './proposal-inbox.js'
+import { ProposalInboxHeaderAction } from './proposal-inbox-view.js'
 
 export interface ObserveSummaryClientConnection {
   readonly rpc: {
@@ -28,18 +31,32 @@ export interface ObserveSummaryClientConnection {
 
 export interface ObserveSummaryClientContext {
   readonly connection: ObserveSummaryClientConnection
+  readonly workspaces: {
+    readonly list: {
+      getSnapshot(): {
+        readonly items: readonly {
+          readonly workspaceId: string
+          readonly sessionIds: readonly string[]
+        }[]
+      }
+    }
+  }
   readonly slots: {
     inject(name: string, install: () => () => void): void
     register(options: {
       readonly name: string
       readonly id: string
       readonly order: number
-      readonly inject: { readonly callSummary: ObserveSummaryCall }
-    }, component: typeof ObserveHeaderAction): () => void
+      readonly inject: {
+        readonly callSummary: ObserveSummaryCall
+        readonly callReview: ProposalReviewCall
+        readonly getWorkspaceId: (sessionId: string) => string
+      }
+    }, component: typeof Run2skillHeaderAction): () => void
   }
 }
 
-export const inject = ['connection', 'slots'] as const
+export const inject = ['connection', 'slots', 'workspaces'] as const
 
 function summaryFacts(state: Extract<ObserveSummaryClientState, { summary: unknown }>): string[] {
   const { summary } = state
@@ -112,6 +129,21 @@ export function ObserveHeaderAction({ callSummary }: { readonly callSummary: Obs
   return createElement(ObserveStatusPill, { state })
 }
 
+export function Run2skillHeaderAction(props: {
+  readonly sessionId: string
+  readonly callSummary: ObserveSummaryCall
+  readonly callReview: ProposalReviewCall
+  readonly getWorkspaceId: (sessionId: string) => string
+}): ReactElement {
+  return createElement(Fragment, null,
+  createElement(ObserveHeaderAction, { callSummary: props.callSummary }),
+  createElement(ProposalInboxHeaderAction, {
+    workspaceId: props.getWorkspaceId(props.sessionId),
+    callReview: props.callReview,
+  }),
+  )
+}
+
 export function applyObserveSummaryClient(ctx: ObserveSummaryClientContext): void {
   const callSummary: ObserveSummaryCall = async (payload, signal) => await ctx.connection.rpc.call(
     RUN2SKILL_RPC_CHANNEL,
@@ -119,13 +151,22 @@ export function applyObserveSummaryClient(ctx: ObserveSummaryClientContext): voi
     payload,
     signal,
   )
+  const callReview: ProposalReviewCall = async (endpoint, payload, signal) => await ctx.connection.rpc.call(
+    RUN2SKILL_RPC_CHANNEL,
+    endpoint,
+    payload,
+    signal,
+  )
+  const getWorkspaceId = (sessionId: string): string => ctx.workspaces.list.getSnapshot().items
+    .find(workspace => workspace.sessionIds.includes(sessionId))?.workspaceId
+    ?? sessionId
   ctx.slots.inject(
     'conversation.session.header.actions',
     () => ctx.slots.register({
       name: 'conversation.session.header.actions',
       id: 'run2skill-observe-summary',
       order: 30,
-      inject: { callSummary },
-    }, ObserveHeaderAction),
+      inject: { callSummary, callReview, getWorkspaceId },
+    }, Run2skillHeaderAction),
   )
 }

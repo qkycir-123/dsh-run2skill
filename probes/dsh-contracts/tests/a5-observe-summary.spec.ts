@@ -137,6 +137,9 @@ describe('A5 Observe Summary on the pinned DSH Web seam', () => {
     ctx.provide('connection', {
       rpc: { call: async () => ({ ok: true, value: null }) },
     } as never)
+    ctx.provide('workspaces', {
+      list: { getSnapshot: () => ({ items: [] }) },
+    } as never)
     const fiber = ctx.plugin({
       inject: [...clientInject],
       apply: (scope: Context) => {
