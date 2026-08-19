@@ -17,7 +17,11 @@ import {
   deriveExperienceId,
   deriveLearningProposalId,
 } from '../learn/index.js'
-import { ReviewStateV1Schema } from '../review/index.js'
+import {
+  ReviewStateV1Schema,
+  deriveProposalId,
+  proposalFactsOf,
+} from '../review/index.js'
 
 const safeNonNegativeInteger = z.number().refine(
   (value) => Number.isSafeInteger(value) && value >= 0,
@@ -270,6 +274,12 @@ export const CaptureWorkItemV1Schema = z.object({
     }
   }
   if (value.review !== undefined && value.learning?.proposal !== undefined) {
+    if (
+      value.review.proposal.proposalId
+      !== deriveProposalId(value.workItemId, proposalFactsOf(value.review.proposal))
+    ) {
+      context.addIssue({ code: 'custom', path: ['review', 'proposal', 'proposalId'], message: 'Review Proposal id does not match its WorkItem facts' })
+    }
     if (value.review.proposal.sourceLearningProposalId !== value.learning.proposal.learningProposalId) {
       context.addIssue({ code: 'custom', path: ['review', 'proposal'], message: 'Review must bind the committed Learning Proposal' })
     }

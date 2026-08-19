@@ -54,8 +54,11 @@ export const RootBindingV1Schema = z.discriminatedUnion('state', [
     context.addIssue({ code: 'custom', path: ['source'], message: 'Root source must match scope' })
   }
   if (value.state === 'ABSENT') {
-    const expected = value.scope === 'PROJECT' ? ['.dsh', 'skills'] : ['skills']
-    if (value.missingSegments.join('\0') !== expected.join('\0')) {
+    const segments = value.missingSegments.join('\0')
+    const allowed = value.scope === 'PROJECT'
+      ? new Set(['.dsh\0skills', 'skills'])
+      : new Set(['skills'])
+    if (!allowed.has(segments)) {
       context.addIssue({ code: 'custom', path: ['missingSegments'], message: 'Missing root segments are not fixed for scope' })
     }
   }
@@ -161,6 +164,12 @@ const ProposalSnapshotFactsV1Schema = z.object({
       && value.actionBinding.expectedAbsence.catalogObservationDigest !== value.catalogObservationDigest
     ) {
       context.addIssue({ code: 'custom', path: ['actionBinding', 'expectedAbsence'], message: 'Expected absence must use the Proposal catalog observation' })
+    }
+    if (
+      value.actionBinding.kind === 'MERGE'
+      && value.actionBinding.baseBinding.catalogObservationDigest !== value.catalogObservationDigest
+    ) {
+      context.addIssue({ code: 'custom', path: ['actionBinding', 'baseBinding'], message: 'MERGE Base must use the Proposal catalog observation' })
     }
   } else if (
     value.actionBinding.coveringCandidateBinding.catalogObservationDigest
