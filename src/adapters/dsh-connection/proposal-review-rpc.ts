@@ -67,9 +67,15 @@ const summaryResponseSchema = z.object({
   status: z.enum(['READY', 'RECOVERING', 'DEGRADED', 'INCOMPATIBLE']),
   recoveryLag: z.boolean(),
   lastHealthCode: z.string().regex(/^[A-Z0-9_]+$/).optional(),
-  pendingReview: z.number().int().nonnegative(),
-  publishing: z.number().int().nonnegative(),
-  needsAttention: z.number().int().nonnegative(),
+  queue: z.discriminatedUnion('completeness', [
+    z.object({
+      completeness: z.literal('KNOWN'),
+      pendingReview: z.number().int().nonnegative(),
+      publishing: z.number().int().nonnegative(),
+      needsAttention: z.number().int().nonnegative(),
+    }).strict(),
+    z.object({ completeness: z.literal('UNKNOWN') }).strict(),
+  ]),
 }).strict()
 
 const detailResponseSchema = z.object({
@@ -178,11 +184,22 @@ export function createProposalReviewRpcHandler(
     const parsed = schema.safeParse(payload)
     if (!parsed.success) return error('bad-request')
     if (signal.aborted) return error('cancelled')
-    const domain = getDomain()
-    if (domain === undefined) return error('internal')
-
     if (endpoint === PROPOSAL_SUMMARY_ENDPOINT) {
       const request = summaryRequestSchema.parse(payload)
+      let health: ReturnType<typeof readHealth>
+      try {
+        health = readHealth()
+      } catch {
+        return error('internal')
+      }
+      const domain = getDomain()
+      if (domain === undefined) {
+        return { ok: true, value: summaryResponseSchema.parse({
+          apiVersion: 1,
+          ...health,
+          queue: { completeness: 'UNKNOWN' },
+        }) }
+      }
       const items = [...domain.table('work_items').entries()].map(([, item]) => item).filter(item => (
         item.review !== undefined
         && item.processingState !== 'TERMINAL'
@@ -191,20 +208,20 @@ export function createProposalReviewRpcHandler(
           || item.review.proposal.workspaceBinding?.workspaceId === request.workspaceId
         )
       ))
-      let health: ReturnType<typeof readHealth>
-      try {
-        health = readHealth()
-      } catch {
-        return error('internal')
-      }
       return { ok: true, value: summaryResponseSchema.parse({
         apiVersion: 1,
         ...health,
-        pendingReview: items.filter(item => item.processingState === 'READY_FOR_REVIEW').length,
-        publishing: items.filter(item => item.processingState === 'PUBLISHING').length,
-        needsAttention: items.filter(item => item.processingState === 'NEEDS_ATTENTION').length,
+        queue: {
+          completeness: 'KNOWN',
+          pendingReview: items.filter(item => item.processingState === 'READY_FOR_REVIEW').length,
+          publishing: items.filter(item => item.processingState === 'PUBLISHING').length,
+          needsAttention: items.filter(item => item.processingState === 'NEEDS_ATTENTION').length,
+        },
       }) }
     }
+
+    const domain = getDomain()
+    if (domain === undefined) return error('internal')
 
     if (endpoint === PROPOSALS_LIST_ENDPOINT) {
       const request = listRequestSchema.parse(payload)

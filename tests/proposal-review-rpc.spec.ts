@@ -122,9 +122,7 @@ describe('Proposal Review RPC', () => {
         apiVersion: 1,
         status: 'READY',
         recoveryLag: false,
-        pendingReview: 2,
-        publishing: 0,
-        needsAttention: 0,
+        queue: { completeness: 'KNOWN', pendingReview: 2, publishing: 0, needsAttention: 0 },
       },
     })
     const degradedHandler = createProposalReviewRpcHandler(
@@ -155,6 +153,31 @@ describe('Proposal Review RPC', () => {
         proposal: { proposalId: currentProposal.proposalId, exactSkillBytes: currentProposal.exactSkillBytes },
       },
     })
+  })
+
+  it('returns Host health with explicitly unknown queue counts while durable state is unavailable', async () => {
+    const getDomain = vi.fn(() => undefined)
+    const readHealth = vi.fn(() => ({
+      status: 'RECOVERING' as const,
+      recoveryLag: true,
+      lastHealthCode: 'STORAGE_RECOVERING',
+    }))
+    const handler = createProposalReviewRpcHandler(getDomain, readHealth)
+
+    await expect(handler(PROPOSAL_SUMMARY_ENDPOINT, {
+      apiVersion: 1, workspaceId: 'workspace-fixture',
+    }, new AbortController().signal)).resolves.toEqual({
+      ok: true,
+      value: {
+        apiVersion: 1,
+        status: 'RECOVERING',
+        recoveryLag: true,
+        lastHealthCode: 'STORAGE_RECOVERING',
+        queue: { completeness: 'UNKNOWN' },
+      },
+    })
+    expect(readHealth).toHaveBeenCalledTimes(1)
+    expect(getDomain).toHaveBeenCalledTimes(1)
   })
 
   it('applies approve idempotently and rejects stale or malformed mutations', async () => {
