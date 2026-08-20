@@ -444,16 +444,16 @@ describe('recoverable Purge saga', () => {
     const receipt = await service.confirm(preview.previewId, preview.digest)
 
     const final = domain.global.get()
-    const scopeKey = deriveProjectPurgeScopeIdentityDigest(binding)
+    const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
     expect(receipt.state).toBe('COMPLETED')
     expect(final.purgeJournal).toBeUndefined()
-    expect(final.completedPurgeFences?.projects[scopeKey]).toMatchObject({
+    expect(final.completedPurgeFences?.projects[scopeIdentityDigest]).toMatchObject({
       schemaVersion: 1,
       scope: 'PROJECT',
       purgeId: receipt.purgeId,
       hideBefore: preview.hideBefore,
       completedAt: new Date(NOW).toISOString(),
-      scopeIdentityDigest: scopeKey,
+      scopeIdentityDigest,
     })
     const verifying = writes.findLastIndex(value => value.purgeJournal?.phase === 'VERIFYING')
     expect(verifying).toBeGreaterThanOrEqual(0)
@@ -536,11 +536,11 @@ describe('recoverable Purge saga', () => {
 
   it('allows existing scope at the 1024 limit and rejects a new PROJECT before preview or journal', async () => {
     const domain = createMemoryRun2skillDomain()
-    const scopeKey = deriveProjectPurgeScopeIdentityDigest(binding)
+    const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
     const projects = Object.fromEntries(Array.from(
       { length: MAX_COMPLETED_PROJECT_PURGE_FENCES },
       (_, index) => {
-        const digest = index === 0 ? scopeKey : index.toString(16).padStart(64, '0')
+        const digest = index === 0 ? scopeIdentityDigest : index.toString(16).padStart(64, '0')
         return [digest, {
           schemaVersion: 1 as const,
           scope: 'PROJECT' as const,
