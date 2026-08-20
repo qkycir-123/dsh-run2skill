@@ -139,7 +139,11 @@ Design → Review → Issues → Feature Branch → Implementation
 
 每条切片都要形成可运行、可验证的纵向能力，不以一批孤立模块代替端到端证据。不得直接 push `main`。
 
-Slice A/B 已逐 Issue 合并并完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 已完成；当前顺序为 #48 纯插件 root-contract 修正 → C7。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
+每个 Issue 先做一次简短范围审计；行为修改测试先行，并实现已批准范围内的最小闭环。稳定 HEAD 保留 typecheck、lint 和完整单元测试，直接相关的真实 DSH probe 在该 HEAD 运行。重型完整 DSH build、跨平台矩阵、安装生命周期和全量 crash/compatibility matrix 只在改动直接影响对应边界，或进入稳定发布候选时集中运行，不在每个修复 push 后机械重复。
+
+实现后只做一次简化自审，不使用 Compound Engineering、多角色或跨模型流程。PR 在稳定的精确 HEAD 上接受一次只读 `gpt-5.6-sol` / `high` 审查：P0/P1 阻塞；P2 仅在可复现且影响当前 Issue 验收、安全、用户数据、写错目录或主流程可用时阻塞；其余 P2/P3 建 GitHub backlog，不为字面 `CLEAN` 无限循环。只有修复阻塞 finding 的 push 才要求新的 exact-HEAD 审查；CI、必要探针和审查均无阻塞 finding 后，直接转 Ready 并 squash merge。需求或架构变化仍交由维护者决策，流程简化不改变产品范围。
+
+Slice A/B 已逐 Issue 合并并完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 已完成，#48 已完成；C7 尚未启动。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
 
 ### 阶段 6：v0.1 集成验证
 
