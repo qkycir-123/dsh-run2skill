@@ -22,7 +22,7 @@ import {
   type ObserveSummaryClientContext,
 } from '../src/client/observe-header-action.ts'
 import { ProposalInboxController } from '../src/client/proposal-inbox.ts'
-import { ProposalInboxPanel } from '../src/client/proposal-inbox-view.ts'
+import { ProposalInboxHeaderAction, ProposalInboxPanel } from '../src/client/proposal-inbox-view.ts'
 
 function fakeWebServer(routes: WebRoute[], upgrades: WebUpgradeRoute[]): Pick<
   WebServer,
@@ -207,9 +207,10 @@ describe('A5 Observe Summary on the pinned DSH Web seam', () => {
         }))
       })
 
-      const isolated = host.querySelector('[aria-hidden="true"]')
+      const isolated = host.querySelector('[inert]')
       const alert = host.querySelector<HTMLElement>('[role="alertdialog"]')
       expect(isolated?.getAttribute('inert')).toBe('')
+      expect(isolated?.getAttribute('aria-hidden')).toBe('true')
       expect(document.activeElement?.textContent).toBe('取消')
 
       const escaped = document.createElement('button')
@@ -227,6 +228,60 @@ describe('A5 Observe Summary on the pinned DSH Web seam', () => {
       await act(async () => { root.unmount() })
       expect(document.activeElement).toBe(before)
       controller.dispose()
+      dom.window.close()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('contains focus in the main Inbox and restores its Header trigger on close', async () => {
+    const dom = new JSDOM('<!doctype html><html><body></body></html>')
+    vi.stubGlobal('window', dom.window)
+    vi.stubGlobal('document', dom.window.document)
+    vi.stubGlobal('Node', dom.window.Node)
+    vi.stubGlobal('HTMLElement', dom.window.HTMLElement)
+    vi.stubGlobal('navigator', dom.window.navigator)
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const outside = document.createElement('button')
+    const host = document.createElement('div')
+    document.body.append(outside, host)
+    const root = createRoot(host)
+
+    try {
+      await act(async () => {
+        root.render(createElement(ProposalInboxHeaderAction, {
+          workspaceId: 'workspace-fixture',
+          callReview: async (calledEndpoint) => calledEndpoint === 'summary'
+            ? {
+                ok: true,
+                value: {
+                  apiVersion: 1,
+                  status: 'READY',
+                  recoveryLag: false,
+                  queue: { completeness: 'KNOWN', pendingReview: 0, publishing: 0, needsAttention: 0 },
+                },
+              }
+            : { ok: true, value: { apiVersion: 1, items: [] } },
+        }))
+      })
+      const trigger = host.querySelector<HTMLElement>('[data-run2skill-proposal-trigger]')
+      trigger?.focus()
+      await act(async () => {
+        trigger?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      })
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]')
+      const close = dialog?.querySelector<HTMLElement>('[data-initial-focus]')
+      expect(host.querySelector('[data-run2skill-proposal-backdrop]')).not.toBeNull()
+      expect(document.activeElement).toBe(close)
+
+      outside.focus()
+      expect(document.activeElement).toBe(close)
+
+      await act(async () => {
+        close?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+      })
+      expect(document.activeElement).toBe(trigger)
+    } finally {
+      await act(async () => { root.unmount() })
       dom.window.close()
       vi.unstubAllGlobals()
     }

@@ -73,11 +73,19 @@ function useDialogFocus(
 ): void {
   useEffect(() => {
     if (!open) return
+    if (typeof document === 'undefined') return
     const dialog = dialogRef.current
     const initial = dialog?.querySelector<HTMLElement>('[data-initial-focus]')
       ?? dialog?.querySelector<HTMLElement>(focusableSelector)
+    const recapture = (event: FocusEvent) => {
+      if (dialog !== null && event.target instanceof Node && !dialog.contains(event.target)) initial?.focus()
+    }
+    document.addEventListener('focusin', recapture, true)
     initial?.focus()
-    return () => { triggerRef.current?.focus() }
+    return () => {
+      document.removeEventListener('focusin', recapture, true)
+      triggerRef.current?.focus()
+    }
   }, [dialogRef, open, triggerRef])
 }
 
@@ -163,7 +171,18 @@ export function ProposalInboxPanel(props: {
 }): ReactElement {
   const { controller, state } = props
   const contentBlocked = proposalInboxContentBlocked(state.mutationPending, props.rejectConfirm)
-  return createElement('div', {
+  return createElement(Fragment, null,
+  createElement('div', {
+    'aria-hidden': true,
+    'data-run2skill-proposal-backdrop': true,
+    style: {
+      position: 'fixed',
+      inset: 0,
+      zIndex: 999,
+      background: 'rgb(0 0 0 / 35%)',
+    },
+  }),
+  createElement('div', {
     ref: props.dialogRef,
     role: 'dialog',
     'aria-modal': true,
@@ -253,6 +272,7 @@ export function ProposalInboxPanel(props: {
         },
       })
     : null,
+  ),
   )
 }
 
