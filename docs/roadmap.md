@@ -143,7 +143,7 @@ Design → Review → Issues → Feature Branch → Implementation
 
 实现后只做一次简化自审，不使用 Compound Engineering、多角色或跨模型流程。PR 在稳定的精确 HEAD 上接受一次只读 `gpt-5.6-sol` / `high` 审查：P0/P1 阻塞；P2 仅在可复现且影响当前 Issue 验收、安全、用户数据、写错目录或主流程可用时阻塞；其余 P2/P3 建 GitHub backlog，不为字面 `CLEAN` 无限循环。只有修复阻塞 finding 的 push 才要求新的 exact-HEAD 审查；CI、必要探针和审查均无阻塞 finding 后，直接转 Ready 并 squash merge。需求或架构变化仍交由维护者决策，流程简化不改变产品范围。
 
-Slice A/B/C 已逐 Issue 完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 → #48 → C7 已完成。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
+Slice A/B/C 已逐 Issue 完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 → #48 → C7 已完成。切片 D Design 已获批，按其中冻结的 D1 → D2 → D3 → D4 → D5 顺序执行；新的实现细节仍只在对应 Issue 开始前细化。
 
 ### 阶段 6：v0.1 集成验证
 

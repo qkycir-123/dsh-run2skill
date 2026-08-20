@@ -287,7 +287,7 @@ PURGE_INCOMPATIBLE
 仍保持一个 package、两个入口：Host 根导出与 `./client`。发布候选必须验证：
 
 - `dsh.bundle.patch` 与 `dsh.client` metadata 正确；
-- tarball 只包含运行必需文件、LICENSE 和公开文档，不含 `.probe-work`、本机路径、token、私有转交材料或 DSH 源码；
+- tarball 只包含运行必需文件、LICENSE 和公开文档，不含开发期临时产物、机器相关路径、凭据、私有材料或 DSH 源码；
 - peer/runtime 依赖和兼容 DSH baseline 明确；
 - README 提供从 GitHub clone/build/install 的最短路径，以及 disable/upgrade/uninstall；
 - 卸载后已发布 Skill 继续被 stock DSH 发现和使用；run2skill 自有数据默认保留，用户若要删除须卸载前主动 Purge；
@@ -323,7 +323,7 @@ PURGE_INCOMPATIBLE
 6. add/disable/upgrade/uninstall 后 stock DSH 仍可启动；
 7. 切片 C 四个黄金场景回归不变。
 
-真实模型仅用于最终补充探针，并按本机工作区规则取得凭据；主要验收必须由 keyless fixture 和可复现 DSH 组合探针完成。
+真实模型仅用于最终补充探针，并只使用运行环境显式配置的 Provider 凭据；凭据不得进入源码、fixture、日志或发布产物。主要验收必须由 keyless fixture 和可复现 DSH 组合探针完成。
 
 ## 12. Issue 切分建议
 
