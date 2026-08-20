@@ -20,6 +20,11 @@ import { makeLearnedWorkItem } from './support/review-fixture.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { proposalRefOf } from '../src/domain/review/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import {
+  StockDshRootContractResolver,
+  deriveStockResolutionContractDigest,
+  type StockSkillRuntimeConfiguration,
+} from '../src/adapters/dsh-skills/stock-root-contract.js'
 
 type View = { readonly cwd: string }
 
@@ -31,11 +36,14 @@ const skillFilePath = join(bundlePath, 'SKILL.md')
 const userHome = resolve('fixture-dsh-home')
 const userRoot = join(userHome, 'skills')
 
+function samePath(left: string, right: string): boolean {
+  return resolve(left) === resolve(right)
+}
+
 function snapshot(overrides: Partial<SkillCatalogSnapshotProjection> = {}): SkillCatalogSnapshotProjection {
   return {
     complete: true,
     skills: [],
-    roots: [{ provider: 'filesystem', source: 'project-dsh', path: root }],
     ...overrides,
   }
 }
@@ -76,10 +84,31 @@ function workspaceFacts(overrides: Partial<WorkspaceRevalidationPort> = {}): Wor
 function proposalBuilder(
   skills: SkillCatalogPort<View>,
   facts: PublicationFactsPort = publicationFacts(),
-  options: ProposalSnapshotBuilderOptions = {},
+  options: ProposalSnapshotBuilderOptions<View> = {},
   workspaces: WorkspaceRevalidationPort = workspaceFacts(),
 ): ProposalSnapshotBuilder<View> {
-  return new ProposalSnapshotBuilder(skills, facts, workspaces, options)
+  const resolver = new StockDshRootContractResolver({
+    environment: { DSH_HOME: userHome },
+    homeDirectory: () => resolve('unused-home'),
+  })
+  const configuration: StockSkillRuntimeConfiguration = {
+    profile: 'web',
+    presetId: 'standard',
+    providerName: 'filesystem',
+    includeDefaultRoots: true,
+    customSkillDirs: [],
+  }
+  return new ProposalSnapshotBuilder(skills, facts, workspaces, {
+    ...options,
+    rootContract: options.rootContract ?? {
+      resolve: input => resolver.resolve({
+        scope: input.scope,
+        configuration,
+        ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
+      }),
+      deriveResolutionContractDigest: deriveStockResolutionContractDigest,
+    },
+  })
 }
 
 async function learnedFor(
@@ -279,14 +308,6 @@ describe('ProposalSnapshotBuilder', () => {
 
   it.each([
     ['CATALOG_INCOMPLETE', snapshot({ complete: false })],
-    ['ROOT_OBSERVATION_UNAVAILABLE', snapshot({ roots: undefined })],
-    ['ROOT_BINDING_AMBIGUOUS', snapshot({ roots: [
-      { provider: 'filesystem', source: 'project-dsh', path: root },
-      { provider: 'filesystem', source: 'project-dsh', path: root },
-    ] })],
-    ['ROOT_BINDING_AMBIGUOUS', snapshot({ roots: [
-      { provider: 'filesystem', source: 'project-dsh', path: join(workspace, 'other-skills') },
-    ] })],
   ] as const)('fails closed with %s', async (failureCode, nextSnapshot) => {
     const stable = snapshot()
     const initialSkills = catalog(() => stable)
@@ -295,6 +316,21 @@ describe('ProposalSnapshotBuilder', () => {
 
     await expect(builder.build(item, { cwd: workspace })).resolves.toEqual({
       status: 'UNAVAILABLE', failureCode,
+    })
+  })
+
+  it('fails closed when the stock runtime configuration is unsupported', async () => {
+    const skills = catalog(() => snapshot())
+    const item = await learnedFor(skills, { decision: 'CREATE', rationale: 'Create it.' })
+    const builder = proposalBuilder(skills, publicationFacts(), {
+      rootContract: {
+        resolve: () => ({ status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' }),
+        deriveResolutionContractDigest: () => { throw new Error('must not derive') },
+      },
+    })
+
+    await expect(builder.build(item, { cwd: workspace })).resolves.toEqual({
+      status: 'UNAVAILABLE', failureCode: 'ROOT_CONTRACT_UNSUPPORTED',
     })
   })
 
@@ -381,32 +417,42 @@ describe('ProposalSnapshotBuilder', () => {
   })
 
   it('binds USER targets only to the effective DSH Home', async () => {
-    const current = snapshot({
-      roots: [{ provider: 'filesystem', source: 'user-dsh', path: userRoot }],
-    })
+    const current = snapshot()
     const skills = catalog(() => current)
     const item = withUserScope(await learnedFor(skills, { decision: 'CREATE', rationale: 'Create user Skill.' }))
     const facts = publicationFacts({
-      observeRoot: async () => ({
-        status: 'ABSENT',
-        canonicalExistingAncestorPath: userHome,
-        ancestorIdentityDigest: 'a'.repeat(64),
-        missingSegments: ['skills'],
-      }),
+      observeRoot: async path => samePath(path, userHome)
+        ? {
+            status: 'EXISTING',
+            canonicalRootPath: userHome,
+            rootIdentityDigest: 'd'.repeat(64),
+          }
+        : {
+            status: 'ABSENT',
+            canonicalExistingAncestorPath: userHome,
+            ancestorIdentityDigest: 'd'.repeat(64),
+            missingSegments: ['skills'],
+          },
     })
-    await expect(proposalBuilder(skills, facts).build(item, { cwd: workspace }))
-      .resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' })
 
     const result = await proposalBuilder(skills, facts, {
-      effectiveDshHome: userHome,
       now: () => '2026-08-20T00:00:00.000Z',
     }).build(item, { cwd: workspace })
     expect(result).toMatchObject({
       status: 'READY',
       proposal: {
         persistenceScope: 'USER',
+        dshHomeBinding: {
+          resolutionKind: 'ENVIRONMENT',
+          canonicalPath: userHome,
+          identityDigest: 'd'.repeat(64),
+        },
         actionBinding: {
-          rootBinding: { source: 'user-dsh', declaredRootPath: userRoot, missingSegments: ['skills'] },
+          rootBinding: {
+            expectedSource: 'user-dsh',
+            declaredRootPath: userRoot,
+            missingSegments: ['skills'],
+          },
           targetBinding: { bundlePath: join(userRoot, skillName) },
         },
       },

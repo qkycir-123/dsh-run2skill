@@ -31,8 +31,8 @@ function exactCatalog(item: Awaited<ReturnType<typeof approvedItem>>): SkillCata
     description: proposal.description,
     whenToUse: proposal.whenToUse,
     invocation: proposal.invocation,
-    provider: binding.rootBinding.provider,
-    source: binding.rootBinding.source,
+    provider: binding.rootBinding.expectedProvider,
+    source: binding.rootBinding.expectedSource,
   }
   return {
     async snapshot() { return { skills: [summary], complete: true } },

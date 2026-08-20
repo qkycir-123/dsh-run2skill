@@ -1,6 +1,6 @@
 # dsh-run2skill v0.1 Contract Probe 证据台账
 
-状态：既有基线探针轮次已完成；stock-DSH 纯插件 root probe 为 NOT_RUN
+状态：既有基线探针轮次与 stock-DSH 纯插件 root probe 已完成
 更新时间：2026-08-20
 DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
@@ -40,7 +40,7 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 | CP-SKL-001 | snapshot complete、cwd/scope、rank、get、skills/change、热回读 | PASS（Windows） | Slice C 的 catalog 门已解除 |
 | CP-ROOT-001 | Workspace/project-dsh 与 effective DSH Home/user-dsh 组合 parity | PARTIAL（Windows；历史） | 证明默认组合算法；不再等待 provider roots API |
 | CP-ROOT-002 | 候选 DSH roots API 实验 | HISTORICAL（曾在 Windows PASS） | 已放弃的历史实验；不是默认门禁或生产证据 |
-| CP-ROOT-003 | stock DSH 纯插件 root contract、PROJECT/USER 写入与原生 exact readback | NOT_RUN | Issue #48/C7 前必须取得运行证据 |
+| CP-ROOT-003 | stock DSH 纯插件 root contract、PROJECT/USER 写入与原生 exact readback | PASS（Windows） | Issue #48 的 root-contract 运行门已解除；不替代 C7 |
 | CP-PUB-001 | Windows/Linux CREATE/MERGE CAS、race、crash、路径逃逸与恢复 | PASS（Windows + WSL/Linux） | Slice C 的文件 CAS 门已解除 |
 | CP-WEB-001 | 外部双面插件、header slot、loopback RPC、远程/cross-origin 拒绝 | PASS（Windows） | Slice C 的 Web seam 门已解除 |
 | CP-INS-001 | add、web profile、disable、upgrade、uninstall及 Skill 保留 | PASS（Windows probe package） | 包形态契约通过；Alpha 候选必须复跑 |
@@ -85,7 +85,7 @@ Probe run ID
 4. CP-WEB-001：证明 Human Review 的本机信任边界；
 5. CP-PUB-001：在前述身份事实成立后验证发布 CAS；
 6. CP-INS-001：验证完整安装生命周期；
-7. CP-ROOT-003：Issue #48 实现后，在固定 stock DSH baseline 验证纯插件发布 root contract，再进入 C7。
+7. CP-ROOT-003：已在固定 stock DSH baseline 验证纯插件发布 root contract；C7 仍作为独立最终验收。
 
 ## 7. 运行记录
 
@@ -181,17 +181,17 @@ Probe run ID
 
 ### CP-ROOT-003
 
-状态：NOT_RUN
-环境：固定、clean、未修改的 DSH `99f6f02`（`0.1.0-rc.7`）；官方 `web` profile；不得使用 fork、未合并 API 或本地 patch。
+状态：PASS（Windows）
+环境：固定、clean、未修改的 DSH `99f6f02`（`0.1.0-rc.7`）；Windows NT 10.0.26200.0 x64；Node v24.18.0；pnpm 11.19.0；stock `web` profile 的标准 filesystem 组合；未使用 fork、未合并 API 或本地 patch。
 输入：默认 filesystem provider；`includeDefaultRoots=true`；已注册 Workspace；显式 effective DSH Home；PROJECT/USER 的 existing 与 absent root；CREATE/MERGE Approval；另含 custom root、`includeDefaultRoots=false`、重命名 provider/自定义 preset 的不支持配置。
 预期：版本化 contract 精确解析 PROJECT `<workspace>/.dsh/skills` 和 USER `<DSH_HOME>/skills`；MERGE 绑定现有 `get().path`，CREATE 绑定标准目标与双重 absence；CAS/journal 后 complete snapshot 的原生 filesystem winner 精确匹配 provider/source/path，exact `get()` 返回审核内容；不支持配置只能 lookup 并进入 `NEEDS_ATTENTION`；卸载插件后 USER Skill 仍可用。
-步骤：由 Issue #48 提供 production-backed runner，在独立 DSH Home/Workspace 中覆盖 PROJECT/USER CREATE、MERGE、absent root、配置漂移、readback mismatch 和卸载后原生加载。
-实际：尚未运行。
-失败注入：incomplete snapshot、Base/absence race、Workspace/DSH Home identity 变化、link/reparse escape、unsupported config、provider/source/path/content mismatch。
-证据命令：由 Issue #48 添加并在实现 PR 固定；当前不得引用历史 candidate runner 代替。
+步骤：runner 从受保护 source 创建 fresh disposable clone，复制当前 production source 与 probe，挂载真实 Storage/Workspace/Skill Registry/filesystem provider；分别执行 PROJECT CREATE、PROJECT MERGE、USER CREATE、USER MERGE 的 Proposal build、immutable Approval、C5 CAS/journal、complete snapshot 与 exact `get()`；USER CREATE 后销毁并重新挂载 stock Skill Registry/filesystem，验证普通 Skill 文件仍被原生加载。
+实际：9 tests 全部通过。四条发布路径都只产生 `RootBindingV2`，没有 `snapshot.roots` 或 root `observationDigest`；PROJECT/USER winner 分别为 `filesystem/project-dsh` 与 `filesystem/user-dsh`，path 和 content 与批准目标一致；配置漂移进入 `NEEDS_ATTENTION` 且目标保持 absent；provider remount 后 USER Skill 仍由 stock filesystem provider 返回。runner 前后确认受保护 DSH source HEAD/status 不变，并输出 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。
+失败注入：批准后 preset 漂移到不支持值；重命名 provider；关闭 default roots；custom roots；custom preset。Catalog incomplete、Base/absence race、link/reparse escape 与 readback mismatch 继续由既有 unit/CP-PUB-001 门覆盖，不把未在本 runner 注入的分支冒充为本次运行事实。
+证据命令：`powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <path-to-clean-dsh-checkout>`；固定 baseline 结果为 1 个文件、9 个测试通过，结尾为 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。
 清理：只删除探针自己的临时 Workspace、DSH Home 和构建产物；不修改 DSH checkout。
-结论：NOT_RUN；不得写为 PASS。
-架构影响：#48 与 C7 的前置运行门。
+结论：Issue #48 的 stock-root contract 与原生 readback 运行门已解除。该 PASS 不宣称 C7 黄金路径、Settings/Purge、rc.8 或发布候选完整安装验收完成。
+架构影响：移除候选 roots API 的生产前置；C7 可在 #48 合并后独立恢复，但未由本 Issue 启动。
 
 ### CP-WEB-001
 

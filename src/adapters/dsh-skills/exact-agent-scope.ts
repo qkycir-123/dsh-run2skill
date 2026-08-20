@@ -11,7 +11,12 @@ export interface AgentScopeProjection {
       readonly id: string
       readonly createdAt: number
       readonly cwd?: string | undefined
+      readonly agentPreset?: string | undefined
     }
+    readonly events?: readonly {
+      readonly type: string
+      readonly data?: unknown
+    }[] | undefined
   }
 }
 

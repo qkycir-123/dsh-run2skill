@@ -181,8 +181,8 @@ describe('ApprovalPublicationSaga', () => {
     const publication = item.publication!
     const lineage = materializeLineage({
       scope: proposal.persistenceScope,
-      provider: binding.rootBinding.provider,
-      source: binding.rootBinding.source,
+      provider: binding.rootBinding.expectedProvider,
+      source: binding.rootBinding.expectedSource,
       skillName: proposal.name,
       canonicalTargetPath: binding.targetBinding.skillFilePath,
       targetIdentityDigest: publication.targetIdentityDigest,
@@ -334,10 +334,11 @@ describe('ApprovalPublicationSaga', () => {
           rootBinding: {
             state: 'ABSENT',
             scope: 'PROJECT',
-            provider: 'filesystem',
-            source: 'project-dsh',
-            resolverVersion: 'root-resolver-v1',
-            observationDigest: 'a'.repeat(64),
+            expectedProvider: 'filesystem',
+            expectedSource: 'project-dsh',
+            resolverVersion: 'stock-root-resolver-v2',
+            rootContractVersion: 'stock-dsh-web-default-roots-v1',
+            resolutionContractDigest: 'a'.repeat(64),
             declaredRootPath: rootPath,
             canonicalExistingAncestorPath: observed.canonicalExistingAncestorPath,
             ancestorIdentityDigest: observed.ancestorIdentityDigest,

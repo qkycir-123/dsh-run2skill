@@ -329,8 +329,8 @@ export class ApprovalPublicationSaga {
     })
     return materializeLineage({
       scope: proposal.persistenceScope,
-      provider: binding.rootBinding.provider,
-      source: binding.rootBinding.source,
+      provider: binding.rootBinding.expectedProvider,
+      source: binding.rootBinding.expectedSource,
       skillName: proposal.name,
       canonicalTargetPath: binding.targetBinding.skillFilePath,
       targetIdentityDigest: publication.targetIdentityDigest,

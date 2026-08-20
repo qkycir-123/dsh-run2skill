@@ -34,13 +34,6 @@ export interface SkillDefinitionProjection extends SkillSummaryProjection {
 export interface SkillCatalogSnapshotProjection {
   readonly skills: readonly SkillSummaryProjection[]
   readonly complete: boolean
-  readonly roots?: readonly SkillCatalogRootProjection[] | undefined
-}
-
-export interface SkillCatalogRootProjection {
-  readonly provider: string
-  readonly source: string
-  readonly path: string
 }
 
 export interface SkillCatalogPort<TView extends object> {
@@ -68,7 +61,6 @@ export interface LoadedSkillCandidate {
 export interface SkillRecallObservation {
   readonly catalogObservationDigest: string
   readonly catalogSkills: readonly SkillSummaryProjection[]
-  readonly roots?: readonly SkillCatalogRootProjection[] | undefined
   readonly candidates: readonly LoadedSkillCandidate[]
 }
 
@@ -238,7 +230,6 @@ export async function recallExistingSkills<TView extends object>(
   const observation = {
     catalogObservationDigest: deriveSkillCatalogObservationDigest(snapshot.skills),
     catalogSkills: sanitizeCatalogSkills(snapshot.skills),
-    ...(snapshot.roots === undefined ? {} : { roots: snapshot.roots.map(root => ({ ...root })) }),
     candidates,
   }
   return { status: 'AVAILABLE', observation }

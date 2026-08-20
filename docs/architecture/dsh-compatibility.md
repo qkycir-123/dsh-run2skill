@@ -1,6 +1,6 @@
 # DSH 兼容性基线
 
-状态：Architecture 级源码核验与既有基线探针轮次已完成；纯插件 stock-root 探针尚未运行
+状态：Architecture 级源码核验、既有基线探针轮次与纯插件 stock-root 探针已完成
 核验日期：2026-08-20
 
 ## 1. 上游来源
@@ -90,12 +90,13 @@ packages/subagent/
 - loopback RPC 的 Host/Origin 拒绝顺序、外部 Client manifest 和 Session header action slot；
 - Windows 与 WSL/Linux 上的 CREATE/MERGE hard-link no-replace、竞争、进程崩溃恢复、junction/symlink 防逃逸和 backup finalization。
 - 外部双面包在真实 Web profile 的 add、Host/Client 激活、禁用、升级、卸载，以及卸载后的原生 Skill 保留。
+- stock root contract 的 PROJECT/USER CREATE/MERGE、absent root、配置漂移 fail-closed、原生 filesystem winner 与 exact `get()` 回读。
 
 完整输入、环境、结果和运行命令见 `docs/architecture/contract-probes.md`。基线探针轮次已完成；进入对应纵向切片时仍须遵守以下剩余边界：
 
 - Session 取消、重复事件和 workspace identity 的精确解析；
 - `ctx.skills` 的 scope layer 和并发失效边界；
-- ADR-0001 的 stock configuration root contract、PROJECT/USER 精确写入和原生 Registry exact readback；Issue #48 完成并运行新探针前不得宣称 C7 通过；
+- ADR-0001 的 stock configuration root contract 已由 CP-ROOT-003 取得运行证据；该结果不等同于 C7 最终黄金验收；
 - `ctx.settings` namespace、默认值、冲突和 live update；
 - 真实 dsh-run2skill 发布候选包必须重复 Host/Client、profile、安装、禁用、升级和卸载验收。
 

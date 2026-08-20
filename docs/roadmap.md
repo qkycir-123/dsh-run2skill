@@ -99,9 +99,9 @@
 - DSH Web plugin 挂载、浏览器信任边界和 Host/Client 通信；
 - run2skill 异常不会阻塞 DSH Agent。
 
-结果：Session、Storage、LLM、Skill、Web、Publication CAS 和安装生命周期已取得运行证据。CP-ROOT-001 的默认组合 parity 历史证据仍为 PARTIAL，但“等待 provider roots API”已被 ADR-0001 取代。新的 stock-DSH 纯插件 CP-ROOT-003 尚未运行，不得写为 PASS。
+结果：Session、Storage、LLM、Skill、Web、Publication CAS 和安装生命周期已取得运行证据。CP-ROOT-001 的默认组合 parity 历史证据仍为 PARTIAL，但“等待 provider roots API”已被 ADR-0001 取代；stock-DSH 纯插件 CP-ROOT-003 已在固定 baseline 通过。
 
-阶段门：Slice A/B 所需的底层契约已有运行证据，且两条切片均已完成验收；Slice C Design 与 C1–C6 已完成。C7 前必须先由 #48 移除候选 roots API 生产依赖，并在 stock、clean、未修改 baseline 上通过 CP-ROOT-003。
+阶段门：Slice A/B 所需的底层契约已有运行证据，且两条切片均已完成验收；Slice C Design 与 C1–C6 已完成。#48 已移除候选 roots API 生产依赖并通过 CP-ROOT-003；C7 仍需在独立 #40 中执行最终黄金验收。
 
 ### 阶段 4：纵向切片与 Issues
 

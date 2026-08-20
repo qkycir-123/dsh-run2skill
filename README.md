@@ -2,7 +2,7 @@
 
 `dsh-run2skill` 是一个正在开发的 DSH-native、local-first 插件。它从真实 DeepSeek Harness 工作中识别用户明确教出的可复用行为，形成有证据的 Skill Proposal，经人工审核和安全校验后发布为原生 DSH Skill。
 
-当前状态：**切片 A/B 已完成验收，切片 C Design 已接受且 C1–C6 已合并**。Review UI、immutable Approval、publication CAS/journal、Registry exact readback 与 Lineage 已实现；但当前实现仍依赖已放弃的候选 roots API 形状。C7 暂停，先由 [#48](https://github.com/qkycir-123/dsh-run2skill/issues/48) 迁移为 stock DSH 纯插件 root contract 并取得尚未运行的固定 baseline 证据。
+当前状态：**切片 A/B 已完成验收，切片 C Design 已接受且 C1–C6 已合并**。Review UI、immutable Approval、publication CAS/journal、Registry exact readback 与 Lineage 已实现；[#48](https://github.com/qkycir-123/dsh-run2skill/issues/48) 已将生产绑定迁移为 stock DSH 纯插件 root contract，并在固定、clean、未修改的 baseline 上取得 CP-ROOT-003 运行证据。C7 仍是独立最终验收边界，未由 #48 提前启动。
 
 ## 项目边界
 

@@ -22,11 +22,6 @@ const definitionSchema = summarySchema.extend({ content: z.string() })
 
 const snapshotSchema = z.object({
   skills: z.array(summarySchema),
-  roots: z.array(z.object({
-    provider: z.string().min(1),
-    source: z.string().min(1),
-    path: z.string().min(1),
-  })).optional(),
   complete: z.boolean(),
 })
 

@@ -18,7 +18,9 @@ export function createInitialGlobalV1(): GlobalV1 {
 
 export const run2skillDomainSpec = {
   name: 'run2skill_v1',
-  version: 1,
+  // Pre-alpha schema break: legacy candidate-root approvals are intentionally not
+  // opened under the stock-contract schema. Development data is rebuilt once.
+  version: 2,
   global: {
     schema: GlobalV1Schema,
     initial: createInitialGlobalV1(),

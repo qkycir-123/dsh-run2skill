@@ -39,7 +39,7 @@ describe('PublicationSagaStore', () => {
     const publication = approved.publication!
     const lineage = materializeLineage({
       scope: proposal.persistenceScope,
-      provider: proposal.actionBinding.kind === 'DISCARD' ? 'invalid' : proposal.actionBinding.rootBinding.provider,
+      provider: proposal.actionBinding.kind === 'DISCARD' ? 'invalid' : proposal.actionBinding.rootBinding.expectedProvider,
       source: 'project-dsh',
       skillName: proposal.name,
       canonicalTargetPath: proposal.actionBinding.kind === 'DISCARD'

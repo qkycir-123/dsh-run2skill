@@ -4,14 +4,14 @@ import {
   recallExistingSkills,
   type LoadedSkillCandidate,
   type SkillCatalogPort,
-  type SkillCatalogRootProjection,
   type SkillRecallObservation,
 } from '../../domain/learn/index.js'
-import { canonicalJson } from '../../domain/learn/identity.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { preprocessPersistentText } from '../../domain/observe/redaction.js'
 import {
+  ROOT_CONTRACT_VERSION_V2,
+  ROOT_RESOLVER_VERSION_V2,
   materializeProposalSnapshot,
   type ProposalSnapshotFactsV1,
   type ProposalSnapshotV1,
@@ -54,12 +54,51 @@ export interface WorkspaceRevalidationPort {
   resolve(path: string): Promise<WorkspaceRevalidation>
 }
 
+export interface RootContractResolutionProjection {
+  readonly status: 'SUPPORTED'
+  readonly expectedProvider: 'filesystem'
+  readonly expectedSource: 'project-dsh' | 'user-dsh'
+  readonly resolverVersion: typeof ROOT_RESOLVER_VERSION_V2
+  readonly rootContractVersion: typeof ROOT_CONTRACT_VERSION_V2
+  readonly declaredRootPath: string
+  readonly dshHome?: {
+    readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+    readonly declaredPath: string
+  } | undefined
+}
+
+export type RootContractScopeIdentity =
+  | { readonly kind: 'WORKSPACE'; readonly workspaceId: string; readonly canonicalPath: string }
+  | {
+    readonly kind: 'DSH_HOME'
+    readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+    readonly canonicalPath: string
+    readonly identityDigest: string
+  }
+
+export interface PublicationRootContractPort<TView extends object> {
+  resolve(input: {
+    readonly scope: 'PROJECT' | 'USER'
+    readonly workspaceBinding?: { readonly workspaceId: string; readonly canonicalPath: string } | undefined
+    readonly view: TView
+  }): RootContractResolutionProjection | {
+    readonly status: 'UNSUPPORTED'
+    readonly code: 'ROOT_CONTRACT_UNSUPPORTED' | 'WORKSPACE_BINDING_UNAVAILABLE'
+  }
+  deriveResolutionContractDigest(
+    resolution: RootContractResolutionProjection,
+    identity: RootContractScopeIdentity,
+  ): string
+}
+
 export type ProposalBuildFailureCode =
   | 'CATALOG_INCOMPLETE'
   | 'CATALOG_CHANGED'
   | 'ROOT_OBSERVATION_UNAVAILABLE'
+  | 'ROOT_CONTRACT_UNSUPPORTED'
   | 'ROOT_BINDING_AMBIGUOUS'
   | 'WORKSPACE_BINDING_UNAVAILABLE'
+  | 'DSH_HOME_BINDING_UNAVAILABLE'
   | 'CANDIDATE_UNAVAILABLE'
   | 'CURATION_CONFLICT'
   | 'TARGET_FACTS_UNAVAILABLE'
@@ -73,13 +112,11 @@ export type ProposalBuildResult =
   | { readonly status: 'READY'; readonly proposal: ProposalSnapshotV1 }
   | { readonly status: 'UNAVAILABLE'; readonly failureCode: ProposalBuildFailureCode }
 
-export interface ProposalSnapshotBuilderOptions {
+export interface ProposalSnapshotBuilderOptions<TView extends object> {
   readonly now?: () => string
-  readonly effectiveDshHome?: string
+  readonly rootContract?: PublicationRootContractPort<TView>
 }
 
-const FILESYSTEM_PROVIDER = 'filesystem'
-const ROOT_RESOLVER_VERSION = 'root-resolver-v1'
 const MAX_BASE_BYTES = 64 * 1024
 const MARKDOWN_HEADING = /^#{1,6}\s+\S/mu
 type RootBinding = Extract<
@@ -114,15 +151,6 @@ function hasFormatControls(value: string): boolean {
   return false
 }
 
-function rootObservationDigest(roots: readonly SkillCatalogRootProjection[]): string {
-  const ordered = roots.map(root => ({ ...root })).sort((left, right) => (
-    left.provider.localeCompare(right.provider)
-    || left.source.localeCompare(right.source)
-    || left.path.localeCompare(right.path)
-  ))
-  return sha256Utf8(canonicalJson({ complete: true, roots: ordered }))
-}
-
 function candidateFor(
   observation: SkillRecallObservation,
   candidateKey: string | undefined,
@@ -135,19 +163,19 @@ export class ProposalSnapshotBuilder<TView extends object> {
   readonly #publicationFacts: PublicationFactsPort
   readonly #workspaces: WorkspaceRevalidationPort
   readonly #now: () => string
-  readonly #effectiveDshHome: string | undefined
+  readonly #rootContract: PublicationRootContractPort<TView> | undefined
 
   constructor(
     skills: SkillCatalogPort<TView>,
     publicationFacts: PublicationFactsPort,
     workspaces: WorkspaceRevalidationPort,
-    options: ProposalSnapshotBuilderOptions = {},
+    options: ProposalSnapshotBuilderOptions<TView> = {},
   ) {
     this.#skills = skills
     this.#publicationFacts = publicationFacts
     this.#workspaces = workspaces
     this.#now = options.now ?? (() => new Date().toISOString())
-    this.#effectiveDshHome = options.effectiveDshHome
+    this.#rootContract = options.rootContract
   }
 
   async build(item: CaptureWorkItemV1, view: TView): Promise<ProposalBuildResult> {
@@ -194,7 +222,6 @@ export class ProposalSnapshotBuilder<TView extends object> {
     const createdAt = approved?.createdAt ?? this.#now()
     const workspaceBinding = await this.#revalidateWorkspace(item, learned.persistenceScope, createdAt)
     if ('failureCode' in workspaceBinding) return unavailable(workspaceBinding.failureCode)
-
     const exactSkillBytes = renderCanonicalSkill(learned)
     if (
       hasFormatControls(exactSkillBytes)
@@ -253,22 +280,30 @@ export class ProposalSnapshotBuilder<TView extends object> {
       }, approved)
     }
 
+    const contract = await this.#resolveRootContract(
+      learned.persistenceScope,
+      workspaceBinding.value,
+      view,
+      createdAt,
+    )
+    if ('failureCode' in contract) return unavailable(contract.failureCode)
+    const writableFacts = {
+      ...commonFacts,
+      ...(contract.dshHomeBinding === undefined ? {} : { dshHomeBinding: contract.dshHomeBinding }),
+    }
+
     const approvedRoot = approved?.actionBinding.kind === 'CREATE' || approved?.actionBinding.kind === 'MERGE'
       ? approved.actionBinding.rootBinding
       : undefined
     const target = this.#resolveTarget(
-      workspaceBinding.value?.canonicalPath,
-      learned.persistenceScope,
       learned.name,
-      observation,
-      approvedRoot,
+      contract.resolution.declaredRootPath,
     )
-    if ('failureCode' in target) return unavailable(target.failureCode)
     const rootBinding = await this.#bindRoot(
-      target.root,
       target.expectedRoot,
       learned.persistenceScope,
-      observation.roots!,
+      contract.resolution,
+      contract.resolutionContractDigest,
       approvedRoot,
     )
     if ('failureCode' in rootBinding) return unavailable(rootBinding.failureCode)
@@ -284,7 +319,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
       )
       if ('failureCode' in entries) return unavailable(entries.failureCode)
       return this.#materialize(item.workItemId, {
-        ...commonFacts,
+        ...writableFacts,
         kind: 'CREATE',
         actionBinding: {
           kind: 'CREATE',
@@ -328,7 +363,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
       || preprocessPersistentText(base.text).redactionKinds.length > 0
     ) return unavailable('UNSAFE_SKILL')
     return this.#materialize(item.workItemId, {
-      ...commonFacts,
+      ...writableFacts,
       kind: 'MERGE',
       actionBinding: {
         kind: 'MERGE',
@@ -349,42 +384,19 @@ export class ProposalSnapshotBuilder<TView extends object> {
   }
 
   #resolveTarget(
-    projectWorkspacePath: string | undefined,
-    scope: 'PROJECT' | 'USER',
     name: string,
-    observation: SkillRecallObservation,
-    approvedRoot?: RootBinding,
-  ):
-    | {
-      readonly root: SkillCatalogRootProjection
-      readonly expectedRoot: string
-      readonly bundlePath: string
-      readonly skillFilePath: string
-      readonly flatSkillFilePath: string
-      readonly binding: { readonly skillName: string; readonly bundlePath: string; readonly skillFilePath: string }
-    }
-    | { readonly failureCode: ProposalBuildFailureCode } {
-    if (observation.roots === undefined) return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
-    const base = scope === 'PROJECT'
-      ? projectWorkspacePath
-      : approvedRoot === undefined
-        ? this.#effectiveDshHome
-        : undefined
-    if (base === undefined && approvedRoot === undefined) return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
-    const source = scope === 'PROJECT' ? 'project-dsh' : 'user-dsh'
-    const expectedRoot = approvedRoot?.declaredRootPath
-      ?? (scope === 'PROJECT' ? join(base!, '.dsh', 'skills') : join(base!, 'skills'))
-    const matches = observation.roots.filter(root => (
-      root.provider === FILESYSTEM_PROVIDER
-      && root.source === source
-      && samePath(root.path, expectedRoot)
-    ))
-    if (matches.length !== 1) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
+    expectedRoot: string,
+  ): {
+    readonly expectedRoot: string
+    readonly bundlePath: string
+    readonly skillFilePath: string
+    readonly flatSkillFilePath: string
+    readonly binding: { readonly skillName: string; readonly bundlePath: string; readonly skillFilePath: string }
+  } {
     const bundlePath = join(expectedRoot, name)
     const skillFilePath = join(bundlePath, 'SKILL.md')
     const flatSkillFilePath = join(expectedRoot, `${name}.md`)
     return {
-      root: matches[0]!,
       expectedRoot,
       bundlePath,
       skillFilePath,
@@ -394,10 +406,10 @@ export class ProposalSnapshotBuilder<TView extends object> {
   }
 
   async #bindRoot(
-    root: SkillCatalogRootProjection,
     expectedRoot: string,
     scope: 'PROJECT' | 'USER',
-    roots: readonly SkillCatalogRootProjection[],
+    contract: RootContractResolutionProjection,
+    resolutionContractDigest: string,
     approved?: RootBinding,
   ): Promise<
     | { readonly value: RootBinding }
@@ -405,32 +417,36 @@ export class ProposalSnapshotBuilder<TView extends object> {
   > {
     let observed: ObservedRoot
     try {
-      observed = await this.#publicationFacts.observeRoot(root.path)
+      observed = await this.#publicationFacts.observeRoot(expectedRoot)
     } catch {
       return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
     }
     if (observed.status === 'UNAVAILABLE') return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
     const common = {
       scope,
-      provider: FILESYSTEM_PROVIDER,
-      source: (scope === 'PROJECT' ? 'project-dsh' : 'user-dsh') as 'project-dsh' | 'user-dsh',
-      resolverVersion: ROOT_RESOLVER_VERSION,
-      observationDigest: rootObservationDigest(roots),
-      declaredRootPath: root.path,
+      expectedProvider: contract.expectedProvider,
+      expectedSource: contract.expectedSource,
+      resolverVersion: contract.resolverVersion,
+      rootContractVersion: contract.rootContractVersion,
+      resolutionContractDigest,
+      declaredRootPath: contract.declaredRootPath,
     }
     if (approved !== undefined && (
       approved.scope !== common.scope
-      || approved.provider !== common.provider
-      || approved.source !== common.source
+      || approved.expectedProvider !== common.expectedProvider
+      || approved.expectedSource !== common.expectedSource
       || approved.resolverVersion !== common.resolverVersion
-      || approved.observationDigest !== common.observationDigest
+      || approved.rootContractVersion !== common.rootContractVersion
+      || approved.resolutionContractDigest !== common.resolutionContractDigest
       || !samePath(approved.declaredRootPath, common.declaredRootPath)
     )) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
     if (observed.status === 'EXISTING') {
       if (!samePath(observed.canonicalRootPath, expectedRoot)) {
         return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
       }
-      if (approved?.state === 'ABSENT') return { value: approved }
+      if (approved?.state === 'ABSENT') {
+        return { value: approved }
+      }
       const current: RootBinding = {
         ...common,
         state: 'EXISTING',
@@ -475,6 +491,87 @@ export class ProposalSnapshotBuilder<TView extends object> {
       return { value: approved }
     }
     return { value: current }
+  }
+
+  async #resolveRootContract(
+    scope: 'PROJECT' | 'USER',
+    workspaceBinding: {
+      readonly workspaceId: string
+      readonly canonicalPath: string
+      readonly observedAt: string
+    } | undefined,
+    view: TView,
+    observedAt: string,
+  ): Promise<
+    | {
+      readonly resolution: RootContractResolutionProjection
+      readonly resolutionContractDigest: string
+      readonly dshHomeBinding?: {
+        readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+        readonly canonicalPath: string
+        readonly identityDigest: string
+        readonly observedAt: string
+      } | undefined
+    }
+    | { readonly failureCode: ProposalBuildFailureCode }
+  > {
+    if (this.#rootContract === undefined) return { failureCode: 'ROOT_CONTRACT_UNSUPPORTED' }
+    const resolution = this.#rootContract.resolve({
+      scope,
+      ...(workspaceBinding === undefined
+        ? {}
+        : { workspaceBinding: {
+            workspaceId: workspaceBinding.workspaceId,
+            canonicalPath: workspaceBinding.canonicalPath,
+          } }),
+      view,
+    })
+    if (resolution.status === 'UNSUPPORTED') return { failureCode: resolution.code }
+    let identity: RootContractScopeIdentity
+    let dshHomeBinding: {
+      readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+      readonly canonicalPath: string
+      readonly identityDigest: string
+      readonly observedAt: string
+    } | undefined
+    if (scope === 'PROJECT') {
+      if (workspaceBinding === undefined) return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
+      identity = {
+        kind: 'WORKSPACE',
+        workspaceId: workspaceBinding.workspaceId,
+        canonicalPath: workspaceBinding.canonicalPath,
+      }
+    } else {
+      const home = resolution.dshHome
+      if (home === undefined) return { failureCode: 'DSH_HOME_BINDING_UNAVAILABLE' }
+      let observedHome: ObservedRoot
+      try {
+        observedHome = await this.#publicationFacts.observeRoot(home.declaredPath)
+      } catch {
+        return { failureCode: 'DSH_HOME_BINDING_UNAVAILABLE' }
+      }
+      if (
+        observedHome.status !== 'EXISTING'
+        || !samePath(observedHome.canonicalRootPath, home.declaredPath)
+      ) return { failureCode: 'DSH_HOME_BINDING_UNAVAILABLE' }
+      dshHomeBinding = {
+        resolutionKind: home.resolutionKind,
+        canonicalPath: observedHome.canonicalRootPath,
+        identityDigest: observedHome.rootIdentityDigest,
+        observedAt,
+      }
+      identity = {
+        kind: 'DSH_HOME',
+        resolutionKind: home.resolutionKind,
+        canonicalPath: observedHome.canonicalRootPath,
+        identityDigest: observedHome.rootIdentityDigest,
+      }
+    }
+    return {
+      resolution,
+      resolutionContractDigest: this.#rootContract.deriveResolutionContractDigest(resolution, identity),
+      ...(dshHomeBinding === undefined ? {} : { dshHomeBinding }),
+    }
   }
 
   async #observeTargetEntries(

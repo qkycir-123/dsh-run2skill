@@ -1,4 +1,4 @@
-import type { RootBindingV1 } from '../../domain/review/index.js'
+import type { RootBindingV2 } from '../../domain/review/index.js'
 
 export type PublicationKind = 'CREATE' | 'MERGE'
 
@@ -50,9 +50,9 @@ export function verifyFinalizedTransaction(input: {
   readonly expectedRootIdentityDigest: string
 }): Promise<boolean>
 export function preparePublicationRoot(input: {
-  readonly binding: RootBindingV1
+  readonly binding: RootBindingV2
   readonly verifyIdentity: (canonicalPath: string, identityDigest: string) => Promise<boolean>
-  readonly verifyParity: (binding: RootBindingV1, canonicalRoot: string) => Promise<boolean>
+  readonly verifyParity: (binding: RootBindingV2, canonicalRoot: string) => Promise<boolean>
   readonly crashAt?: string
 }): Promise<RootPreparation>
 export function createBundle(input: {

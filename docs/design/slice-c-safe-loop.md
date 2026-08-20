@@ -22,7 +22,7 @@ LEARNED
 
 本切片不允许用浏览器内容、模型建议、默认路径或普通覆盖写入替代 Host 权威事实。`APPROVED` 只表示用户授权；只有写盘、热刷新和精确回读全部成立，才记录 `PUBLISHED`。
 
-切片 C 的生产闭环采用 `docs/adr/0001-stock-dsh-publication-root-contract.md`：只支持固定 baseline 官方 `web` profile 的默认 filesystem roots，不依赖 DSH fork、未合并 roots API 或本地 patch。C1–C6 已合并，但现有实现仍携带候选 `snapshot.roots` 绑定；独立 Issue #48 必须先迁移为版本化纯插件 contract，之后 C7 才执行最终验收。配置、身份或 exact readback 无法证明时，Proposal 进入 `NEEDS_ATTENTION`。
+切片 C 的生产闭环采用 `docs/adr/0001-stock-dsh-publication-root-contract.md`：只支持固定 baseline 官方 `web` profile 的默认 filesystem roots，不依赖 DSH fork、未合并 roots API 或本地 patch。C1–C6 已合并，Issue #48 已把候选 `snapshot.roots` 绑定迁移为版本化纯插件 contract 并通过 CP-ROOT-003；C7 之后仍独立执行最终验收。配置、身份或 exact readback 无法证明时，Proposal 进入 `NEEDS_ATTENTION`。
 
 ## 2. 范围与阶段门
 
@@ -213,7 +213,7 @@ Similarity 只排序 shortlist，不能直接作出任何终态。
 
 ### 6.2 版本化 stock DSH root contract
 
-Issue #48 将当前候选 snapshot-roots 绑定迁移为 `RootBindingV2`。contract 只接受固定兼容性 baseline 的官方 `web` profile、默认 filesystem provider 和 `includeDefaultRoots=true`：
+Issue #48 已将候选 snapshot-roots 绑定迁移为 `RootBindingV2`。contract 只接受固定兼容性 baseline 的官方 `web` profile、默认 filesystem provider 和 `includeDefaultRoots=true`：
 
 - PROJECT：重新解析 `workspaceRegistry` 的 canonical Workspace，并追加固定 `.dsh/skills`；
 - USER：使用与目标 DSH 组合相同的有效 DSH Home resolution，并追加固定 `skills`；
@@ -424,7 +424,7 @@ src/client/                     # Inbox/Review UI
 
 ### 11.3 固定 DSH probes
 
-- stock baseline 纯插件 root contract：证明 PROJECT/USER、absent root、unsupported config、MERGE existing path、原生 provider/source/path 与 exact readback；当前状态为 NOT_RUN，Issue #48 实现后执行；
+- CP-ROOT-003：stock baseline 纯插件 root contract 已证明 PROJECT/USER、absent root、unsupported config、MERGE existing path、原生 provider/source/path 与 exact readback；该 PASS 只解除 #48 门，不替代 C7；
 - 旧候选上游 roots 探针仅保留为已放弃的历史实验，不再是默认门禁或生产证据；
 - CP-PUB-001：Windows + WSL/Linux missing-root first CREATE、CREATE/MERGE race、crash、junction/symlink；
 - CP-WEB-001：真实 web profile、loopback fence、Host/Client slot；
@@ -477,7 +477,7 @@ src/client/                     # Inbox/Review UI
 
    四个黄金场景、故障注入、secret 阻断与跨重启证据；只做验收修复，不提前实现 D。
 
-C7 当前暂停。在 C6 与 C7 之间先完成独立 Issue #48：迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据。该 Issue 不承担 C7 最终产品验收。
+C7 在 #48 合并前保持暂停。独立 Issue #48 已迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据；该 Issue 仍不承担 C7 最终产品验收。
 
 ## 13. 已知取舍
 

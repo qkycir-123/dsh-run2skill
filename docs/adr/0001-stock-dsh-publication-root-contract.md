@@ -28,6 +28,10 @@ v0.1 生产发布只支持固定兼容性 baseline 的官方 `web` profile 和�
 
 ## 验证与后果
 
-独立实现 Issue [#48](https://github.com/qkycir-123/dsh-run2skill/issues/48) 必须在 C7 前把当前候选 `snapshot.roots`/`observationDigest` 绑定迁移到该版本化 contract。验收使用固定、clean、未修改的 DSH baseline，覆盖 PROJECT/USER 的 CREATE、MERGE、absent root、配置不匹配、完整 Registry winner 和 exact `get()` 回读。该 stock-DSH 探针尚未运行，不得记录为 PASS。
+独立实现 Issue [#48](https://github.com/qkycir-123/dsh-run2skill/issues/48) 已在 C7 前把候选 `snapshot.roots`/`observationDigest` 绑定迁移到该版本化 contract。CP-ROOT-003 已在固定、clean、未修改的 DSH baseline 上覆盖 PROJECT/USER 的 CREATE、MERGE、absent root、配置不匹配、完整 Registry winner 和 exact `get()` 回读；可复现证据见 Contract Probe 台账。
 
 该决定不改变 C5/C6 的 CAS、crash recovery、immutable Approval、Review/Publication 分离或 exact readback，也不新增 rollback、自有 provider、sentinel 或其他子系统。
+
+## Pre-alpha 数据切换
+
+`RootBindingV1` 的已批准数据依赖已放弃的候选观察，不能安全补造 `RootBindingV2` 的 contract、Workspace/DSH Home identity 或用户授权。项目尚未发布 alpha，因此本次只把现有 `run2skill_v1` Storage Domain version 提升到 2，让旧开发数据明确 version mismatch、停止加载并由开发者在保留原介质备份后一次性重建；不自动发布、改写或伪造旧 Approval。该窄切换不建立通用迁移框架，正式升级迁移仍留给 Slice D 的独立 Migration ADR 与验收。

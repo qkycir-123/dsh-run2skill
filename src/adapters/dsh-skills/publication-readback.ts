@@ -28,8 +28,8 @@ function exactLoadedSkill(
   return loaded.name === proposal.name
     && loaded.description === proposal.description
     && loaded.whenToUse === proposal.whenToUse
-    && loaded.provider === binding.rootBinding.provider
-    && loaded.source === binding.rootBinding.source
+    && loaded.provider === binding.rootBinding.expectedProvider
+    && loaded.source === binding.rootBinding.expectedSource
     && samePath(loaded.path, binding.targetBinding.skillFilePath)
     && loaded.content === expectedBody
     && loaded.invocation?.modelInvocable === proposal.invocation.modelInvocable
@@ -87,8 +87,8 @@ export class DshPublicationReadbackAdapter<TView extends object> implements Publ
           const winner = snapshot.skills.find(skill => skill.name === proposal.name)
           if (
             winner !== undefined
-            && winner.provider === binding.rootBinding.provider
-            && winner.source === binding.rootBinding.source
+            && winner.provider === binding.rootBinding.expectedProvider
+            && winner.source === binding.rootBinding.expectedSource
           ) {
             const loaded = await this.#skills.get(proposal.name, view)
             if (exactLoadedSkill(loaded, item, expectedBody)) {
