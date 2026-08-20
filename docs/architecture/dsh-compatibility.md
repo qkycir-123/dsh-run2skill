@@ -1,7 +1,7 @@
 # DSH 兼容性基线
 
-状态：Architecture 级源码核验、既有基线探针轮次与纯插件 stock-root 探针已完成
-核验日期：2026-08-20
+状态：Architecture 级源码核验、既有基线探针轮次、纯插件 stock-root 与 `0.1.0-alpha` schema/package freeze 已完成
+核验日期：2026-08-21
 
 ## 1. 上游来源
 
@@ -111,6 +111,7 @@ packages/subagent/
 - 当前仍固定 `0.1.0-rc.7` / `99f6f02`；本次不升级 baseline。`0.1.0-rc.8` 由后续独立兼容性验证决定，不能随本次文档修订自动采纳。
 - 若上游更改默认分支，应在兼容性评审中更新名称，不得依赖永久存在的 `master`。
 - 不兼容时安全停用受影响的学习或发布能力，不得影响 DSH 主 Agent。
+- `0.1.0-alpha` 的 durable domain/record freeze、JSON/SQLite restart 与升级/降级规则见 [`storage-schema.md`](storage-schema.md)；mismatch 不得解释为空库或触发自动清理。
 
 ## 7. Baseline 更新协议
 

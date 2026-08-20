@@ -62,6 +62,7 @@
 - `docs/product/prd.md`：产品行为、范围和验收。
 - `docs/product/requirements-review.md`：需求评审发现、维护者决策和落实追踪。
 - `docs/architecture/dsh-compatibility.md`：DSH baseline、源码事实和升级协议。
+- `docs/architecture/storage-schema.md`：首个公开 Alpha 的 durable schema freeze、兼容边界和迁移门。
 - `docs/architecture/architecture-input.md`：Architecture Baseline 的固定输入和待回答问题。
 - `docs/architecture/baseline.md`：获批的模块职责与稳定技术契约。
 - `docs/adr/`：重要且窄的架构决定；不得覆盖 PRD。

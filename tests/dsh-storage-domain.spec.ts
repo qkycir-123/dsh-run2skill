@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { run2skillDomainSpec } from '../src/adapters/dsh-storage/domain.js'
+import {
+  RUN2SKILL_ALPHA_SCHEMA_CONTRACT,
+  run2skillDomainSpec,
+} from '../src/adapters/dsh-storage/domain.js'
 
 describe('run2skill_v1 domain contract', () => {
-  it('keeps review state inside the approved v1 WorkItem storage surface', () => {
+  it('freezes the first public alpha storage identity and record versions', () => {
+    expect(RUN2SKILL_ALPHA_SCHEMA_CONTRACT).toEqual({
+      release: '0.1.0-alpha',
+      dshBaselineCommit: '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca',
+      domainName: 'run2skill_v1',
+      domainVersion: 2,
+      globalSchemaVersion: 1,
+      workItemSchemaVersion: 1,
+      lineageSchemaVersion: 1,
+    })
     expect(run2skillDomainSpec.name).toBe('run2skill_v1')
     expect(run2skillDomainSpec.version).toBe(2)
     expect(Object.keys(run2skillDomainSpec.tables)).toEqual(['work_items', 'lineages'])
@@ -12,5 +24,11 @@ describe('run2skill_v1 domain contract', () => {
       sessions: {},
       checkpoint: { dirty: false, pendingSessionCount: 0 },
     })
+  })
+
+  it('fails closed on incompatible Global, WorkItem, and Lineage record versions', () => {
+    expect(run2skillDomainSpec.global.schema.safeParse({ schemaVersion: 999 }).success).toBe(false)
+    expect(run2skillDomainSpec.tables.work_items.valueSchema.safeParse({ schemaVersion: 999 }).success).toBe(false)
+    expect(run2skillDomainSpec.tables.lineages.valueSchema.safeParse({ schemaVersion: 999 }).success).toBe(false)
   })
 })

@@ -16,6 +16,8 @@ $work = Join-Path $repoRoot ".probe-work\install-$id"
 $clone = Join-Path $work 'deepseek-harness'
 $lifecycle = Join-Path $work 'lifecycle'
 $candidateLifecycle = Join-Path $work 'candidate-lifecycle'
+$packageArchive = Join-Path $work 'package-archive'
+$packageExtract = Join-Path $work 'package-extract'
 $installLog = Join-Path $work 'pnpm-install.log'
 $buildLog = Join-Path $work 'dsh-build.log'
 
@@ -35,9 +37,18 @@ Push-Location $repoRoot
 try {
   & pnpm run build
   if ($LASTEXITCODE -ne 0) { throw 'Candidate package build failed' }
+  New-Item -ItemType Directory -Path $packageArchive | Out-Null
+  & pnpm pack --pack-destination $packageArchive
+  if ($LASTEXITCODE -ne 0) { throw 'Candidate package pack failed' }
 } finally {
   Pop-Location
 }
+$tarballs = @(Get-ChildItem -LiteralPath $packageArchive -Filter '*.tgz' -File)
+if ($tarballs.Count -ne 1) { throw 'Candidate pack must produce exactly one tarball' }
+New-Item -ItemType Directory -Path $packageExtract | Out-Null
+& tar -xzf $tarballs[0].FullName -C $packageExtract
+if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the candidate tarball' }
+$candidatePackage = (Resolve-Path (Join-Path $packageExtract 'package')).Path
 git clone --local --no-hardlinks $dshPath $clone
 if ($LASTEXITCODE -ne 0) { throw 'Unable to create the disposable DSH clone' }
 git -C $clone checkout --detach $ExpectedDshHead
@@ -70,7 +81,7 @@ try {
 
 & node $probe $clone $fixtures $lifecycle
 if ($LASTEXITCODE -ne 0) { throw "Install lifecycle probe failed: $LASTEXITCODE" }
-& node $candidateProbe $clone $repoRoot $candidateLifecycle
+& node $candidateProbe $clone $candidatePackage $candidateLifecycle
 if ($LASTEXITCODE -ne 0) { throw "Candidate install lifecycle probe failed: $LASTEXITCODE" }
 
 Assert-DshUnmodified

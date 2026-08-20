@@ -2,6 +2,14 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  name?: string
+  version?: string
+  private?: boolean
+  description?: string
+  license?: string
+  repository?: { type?: string; url?: string }
+  bugs?: { url?: string }
+  homepage?: string
   main?: string
   exports?: Record<string, unknown>
   files?: string[]
@@ -20,6 +28,22 @@ const patch = readPortableText('../cordis.patch.yml')
 const workspace = readPortableText('../pnpm-workspace.yaml')
 
 describe('published package contract', () => {
+  it('pins the first public alpha identity and portable repository metadata', () => {
+    expect(manifest).toMatchObject({
+      name: 'dsh-run2skill',
+      version: '0.1.0-alpha',
+      description: 'A DSH-native, local-first Run to Skill plugin',
+      license: 'MIT',
+      repository: {
+        type: 'git',
+        url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
+      },
+      bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
+      homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
+    })
+    expect(manifest.private).not.toBe(true)
+  })
+
   it('exports Host and Client faces and declares the thin Web bundle layer', () => {
     expect(manifest.main).toBe('./lib/index.js')
     expect(manifest.exports).toMatchObject({
@@ -27,7 +51,7 @@ describe('published package contract', () => {
       './client': { default: './lib/client.js' },
       './package.json': './package.json',
     })
-    expect(manifest.files).toEqual(['lib', 'cordis.patch.yml'])
+    expect(manifest.files).toEqual(['lib', 'cordis.patch.yml', 'README.md', 'LICENSE'])
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7',
     })

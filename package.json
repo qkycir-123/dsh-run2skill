@@ -1,9 +1,16 @@
 {
   "name": "dsh-run2skill",
-  "version": "0.0.0-dev",
+  "version": "0.1.0-alpha",
   "description": "A DSH-native, local-first Run to Skill plugin",
   "license": "MIT",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qkycir-123/dsh-run2skill.git"
+  },
+  "bugs": {
+    "url": "https://github.com/qkycir-123/dsh-run2skill/issues"
+  },
+  "homepage": "https://github.com/qkycir-123/dsh-run2skill#readme",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -19,7 +26,9 @@
   },
   "files": [
     "lib",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
