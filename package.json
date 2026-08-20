@@ -39,6 +39,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "test:publication": "node --test probes/publication-cas/probe.spec.mjs",
     "evaluate": "vitest run tests/frozen-evaluation.spec.ts tests/learning-frozen-evaluation.spec.ts --reporter=verbose",
     "probe:crash": "pnpm run build && node probes/crash-matrix/probe.mjs .",
     "build": "tsdown",
@@ -46,7 +47,7 @@
     "verify:candidate": "pnpm run build && pnpm run evaluate && node probes/crash-matrix/probe.mjs . && node probes/candidate/verify.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings src tests probes/candidate probes/support vitest.config.ts tsdown.config.ts",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run test:publication"
   },
   "dependencies": {
     "react": "^18.2.0",
