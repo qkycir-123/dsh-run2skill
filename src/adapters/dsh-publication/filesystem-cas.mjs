@@ -943,10 +943,8 @@ export async function recoverTransaction({ root, txid }) {
       record = await nextRecord(record, 'BACKUP_RESERVED', {
         backupReservationIdentityDigest: backupFacts.identityDigest,
       })
-    } else if (!record.backupReservationIdentityDigest && backupFacts) {
-      record = await nextRecord(record, 'BACKUP_RESERVED', {
-        backupReservationIdentityDigest: backupFacts.identityDigest,
-      })
+    } else if (!record.backupReservationIdentityDigest) {
+      return conflict(record, 'recovery_observed_unknown_merge_state')
     }
     await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     if (!await fileMatches(

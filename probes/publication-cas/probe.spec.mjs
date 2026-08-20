@@ -353,6 +353,45 @@ test('process-crash recovery completes CREATE and MERGE from hashes, not timesta
     assert.equal(await readFile(join(root, name, `.run2skill-${txid}.backup`), 'utf8'), base)
     assert.equal((await finalizeTransaction({ root, txid, confirmedExactReadback: true })).status, 'finalized')
   }
+
+  const tornName = 'crash-merge-torn-reservation'
+  const tornTxid = 'crash-merge-torn-reservation-tx'
+  const tornBase = '# torn reservation base\n'
+  const tornNext = '# torn reservation next\n'
+  const tornTarget = await seedBundle(root, tornName, tornBase)
+  const tornConfig = join(root, `${tornTxid}.json`)
+  await writeFile(tornConfig, JSON.stringify({
+    kind: 'MERGE',
+    root,
+    name: tornName,
+    txid: tornTxid,
+    expectedHash: sha256(tornBase),
+    nextBytes: tornNext,
+    crashAt: 'merge-after-backup-reservation',
+  }))
+  await runCrashWorker(tornConfig)
+
+  const tornJournalDir = join(root, probeInternals.JOURNAL_DIR)
+  const tornJournalEntries = (await readdir(tornJournalDir))
+    .filter(entry => entry.startsWith(`${tornTxid}.`))
+  const reservedEntry = await Promise.all(tornJournalEntries.map(async entry => ({
+    entry,
+    record: JSON.parse(await readFile(join(tornJournalDir, entry), 'utf8')),
+  }))).then(entries => entries.find(({ record }) => record.state === 'BACKUP_RESERVED'))
+  assert.ok(reservedEntry)
+  await rm(join(tornJournalDir, reservedEntry.entry))
+
+  const tornPaths = probeInternals.targetPaths(root, tornName, tornTxid)
+  const reservationBytes = await readFile(tornPaths.backup)
+  await rename(tornPaths.backup, join(root, 'saved-torn-reservation'))
+  await writeFile(tornPaths.backup, reservationBytes, { flag: 'wx' })
+
+  const tornRecovery = await recoverTransaction({ root, txid: tornTxid })
+  assert.equal(tornRecovery.status, 'conflict')
+  assert.equal(tornRecovery.code, 'recovery_observed_unknown_merge_state')
+  assert.equal(await readFile(tornTarget, 'utf8'), tornBase)
+  assert.equal(await readFile(tornPaths.stage, 'utf8'), tornNext)
+  assert.deepEqual(await readFile(tornPaths.backup), reservationBytes)
 })
 
 test('path traversal and symlink or junction escape fail closed', async (t) => {
