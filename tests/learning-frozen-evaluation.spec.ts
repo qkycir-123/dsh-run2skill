@@ -242,7 +242,7 @@ async function runPipeline(
     now: () => Date.parse(OBSERVED_AT),
     sleep: async () => {},
   })
-  await worker.run(session.item, new AbortController().signal)
+  await worker.run(session.item, new AbortController().signal, { automaticLearning: true })
   return domain.workItems.get(session.item.workItemId)!
 }
 

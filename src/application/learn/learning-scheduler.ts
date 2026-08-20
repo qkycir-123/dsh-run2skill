@@ -1,5 +1,10 @@
 import type { RuntimeNotices } from '../capture/runtime-notices.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
+import {
+  permitsLearning,
+  type AutomaticLearningPolicyPort,
+  type AutomaticLearningSnapshot,
+} from '../automatic-learning-policy.js'
 
 export const LEARNING_GLOBAL_CONCURRENCY = 2
 export const LEARNING_DISPOSE_TIMEOUT_MS = 2_000
@@ -15,12 +20,17 @@ export interface LearningSchedulerStore {
 
 export interface LearningWorkerPort {
   canResolveScope(item: CaptureWorkItemV1): boolean
-  run(item: CaptureWorkItemV1, signal: AbortSignal): Promise<void>
+  run(
+    item: CaptureWorkItemV1,
+    signal: AbortSignal,
+    settings: AutomaticLearningSnapshot,
+  ): Promise<void>
 }
 
 export interface LearningSchedulerOptions {
   readonly store: LearningSchedulerStore
   readonly worker: LearningWorkerPort
+  readonly policy: AutomaticLearningPolicyPort
   readonly notices: RuntimeNotices
   readonly now?: () => number
 }
@@ -39,6 +49,7 @@ export class LearningScheduler {
   readonly #store
   readonly #worker
   readonly #notices
+  readonly #policy
   readonly #now
   readonly #active = new Map<string, ActiveLearning>()
   #started = false
@@ -50,6 +61,7 @@ export class LearningScheduler {
   constructor(options: LearningSchedulerOptions) {
     this.#store = options.store
     this.#worker = options.worker
+    this.#policy = options.policy
     this.#notices = options.notices
     this.#now = options.now ?? Date.now
   }
@@ -106,14 +118,16 @@ export class LearningScheduler {
         const activeSessions = new Set(
           [...this.#active.values()].map(active => active.sessionId),
         )
+        const settings = this.#policy.snapshot()
         for (const item of candidates) {
           if (this.#active.size >= LEARNING_GLOBAL_CONCURRENCY) break
           if (
             this.#active.has(item.workItemId)
             || activeSessions.has(item.signalKey.rootSessionId)
+            || !permitsLearning(item, settings)
           ) continue
           activeSessions.add(item.signalKey.rootSessionId)
-          this.#launch(item)
+          this.#launch(item, settings)
         }
       } while (this.#wakeRequested && !this.#disposed)
       this.#scheduleNext()
@@ -123,10 +137,10 @@ export class LearningScheduler {
     }
   }
 
-  #launch(item: CaptureWorkItemV1): void {
+  #launch(item: CaptureWorkItemV1, settings: AutomaticLearningSnapshot): void {
     const controller = new AbortController()
     const promise = Promise.resolve().then(async () => {
-      await this.#worker.run(item, controller.signal)
+      await this.#worker.run(item, controller.signal, settings)
     }).catch(() => {
       this.#notice('LEARNING_WORKER_FAILED', item)
     }).finally(() => {

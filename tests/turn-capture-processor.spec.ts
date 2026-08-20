@@ -6,6 +6,7 @@ import { RuntimeNotices } from '../src/application/capture/runtime-notices.js'
 import { WriteBehindCheckpoint } from '../src/application/capture/write-behind-checkpoint.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import type { SessionCheckpointV1 } from '../src/domain/observe/schemas.js'
+import { analyzeCheapTriggerV1 } from '../src/domain/observe/trigger.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 
 const header = {
@@ -44,11 +45,15 @@ function progress(): SessionCheckpointV1 {
   }
 }
 
-async function setup(resolveWorkspace = vi.fn(async () => ({
+async function setup(
+  resolveWorkspace = vi.fn(async () => ({
   status: 'BOUND' as const,
   workspaceId: 'workspace-1',
   canonicalPath: 'D:/work/demo',
-}))) {
+  })),
+  automaticLearning = true,
+  analyze = analyzeCheapTriggerV1,
+) {
   const domain = createMemoryRun2skillDomain()
   const checkpoint = new WriteBehindCheckpoint(domain)
   await checkpoint.activate([{ ...progress(), durableNextSeq: 10, observedTailSeq: 9 }])
@@ -59,7 +64,13 @@ async function setup(resolveWorkspace = vi.fn(async () => ({
     domain,
     checkpoint,
     notices,
-    processor: new TurnCaptureProcessor(coordinator, notices, { resolve: resolveWorkspace }),
+    processor: new TurnCaptureProcessor(
+      coordinator,
+      notices,
+      { resolve: resolveWorkspace },
+      { snapshot: () => ({ automaticLearning }) },
+      analyze,
+    ),
     resolveWorkspace,
   }
 }
@@ -110,6 +121,57 @@ describe('TurnCaptureProcessor', () => {
       sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
     })
     expect(fixture.checkpoint.snapshot().sessions[lifecycleKey]?.durableNextSeq).toBe(13)
+  })
+
+  it('does not create an ordinary triggered WorkItem while Automatic Learning is OFF', async () => {
+    const fixture = await setup(undefined, false)
+
+    await fixture.processor.processTurn({
+      header,
+      events: turn('这个项目以后必须统一使用 pnpm。'),
+      turnEndSeq: 12,
+      progress: progress(),
+    })
+
+    expect(fixture.domain.table('work_items').size).toBe(0)
+    expect(fixture.checkpoint.snapshot().checkpoint.dirty).toBe(true)
+  })
+
+  it('keeps explicit save durable while Automatic Learning is OFF', async () => {
+    const fixture = await setup(undefined, false)
+
+    await fixture.processor.processTurn({
+      header,
+      events: turn('把这个流程保存成 Skill。'),
+      turnEndSeq: 12,
+      progress: progress(),
+    })
+
+    const item = [...fixture.domain.table('work_items').entries()][0]?.[1]
+    expect(item?.triggerHits.some(hit => hit.kind === 'EXPLICIT_SAVE')).toBe(true)
+    expect(item?.processingState).toBe('CAPTURED')
+  })
+
+  it('keeps an incomplete metadata record and closes it when a later OFF scan finds only ordinary triggers', async () => {
+    let attempt = 0
+    const fixture = await setup(undefined, false, (messages, options) => {
+      attempt += 1
+      return attempt === 1
+        ? { status: 'INCOMPLETE', captureBlockers: ['REDACTION_UNAVAILABLE'], triggerHits: [], evidenceRefs: [] }
+        : analyzeCheapTriggerV1(messages, options)
+    })
+    const input = {
+      header,
+      events: turn('这个项目以后必须统一使用 pnpm。'),
+      turnEndSeq: 12,
+      progress: progress(),
+    } as const
+
+    await fixture.processor.processTurn(input)
+    expect([...fixture.domain.table('work_items').entries()][0]?.[1]).toMatchObject({
+      scanStatus: 'COMPLETE', processingState: 'RESOLVED_NO_SIGNAL', triggerHits: [],
+    })
+    expect(fixture.domain.writeLog.filter(entry => entry === 'work_items')).toHaveLength(2)
   })
 
   it('persists metadata only when trigger scanning exceeds its text bound', async () => {

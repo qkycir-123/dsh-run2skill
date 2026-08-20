@@ -29,7 +29,10 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-runtime"
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-api-remotes"
       ]
     }
   },
@@ -50,6 +53,7 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run test:publication"
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1",
     "react": "^18.2.0",
     "zod": "^4.4.3"
   },

@@ -2,9 +2,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
 import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
+
+function settingsService(): DshSettingsPort {
+  return {
+    register<T>(_namespace: string, schema: (value?: T | null) => T) {
+      const value = schema({} as T)
+      return { get: () => value, watch: () => () => {} }
+    },
+  }
+}
 
 function learningServices() {
   return {
+    settings: settingsService(),
     llm: {
       async resolveModelInfo() { return { context: { contextWindow: 16_384 } } },
       async *stream() {
@@ -34,9 +45,9 @@ describe('Host plugin assembly', () => {
       'connection',
       'llm',
       'skills',
+      'settings',
       'agentPresets',
     ])
-    expect(inject).not.toContain('settings')
   })
 
   it('registers ingress before recovery and exposes one durable captured item', async () => {

@@ -11,6 +11,9 @@ importers:
       '@deepseek-ai/dsh-agent-presets':
         specifier: 0.1.0-rc.7
         version: 0.1.0-rc.7(c0f9f44edab94cddae92cd4b4f319bab)
+      '@deepseek-ai/schemastery':
+        specifier: 3.18.1
+        version: 3.18.1
       react:
         specifier: ^18.2.0
         version: 18.3.1
