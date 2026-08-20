@@ -124,4 +124,4 @@ dsh plugin --profile web remove dsh-run2skill
 
 ## 开源许可
 
-采用 MIT License，详见 [LICENSE](LICENSE)。
+采用 MIT License，详见 [LICENSE](LICENSE)。Client bundle 内嵌依赖的许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

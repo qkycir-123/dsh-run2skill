@@ -59,7 +59,7 @@ CP-ROOT-003 是默认生产门禁。production-backed runner 使用本页固定�
 
 历史候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca` 曾验证候选 `snapshot.roots` API；对应测试与 runner 路线已移除，只在证据台账保留历史结论，不是兼容性门禁、生产依赖或 CP-ROOT-003 的替代证据。
 
-`pnpm run evaluate` 会同时运行 Observe 与 Learning 的版本化冻结评测；Learning 评测只输出 case id 和聚合指标，不输出样本正文。`pnpm run verify:candidate` 还会精确锁定候选包的 7 个文件，核对 package/manifest/bundle metadata，并对真实 tarball、仓库和合成运行日志执行 secret、本机路径与 redaction 门。
+`pnpm run evaluate` 会同时运行 Observe 与 Learning 的版本化冻结评测；Learning 评测只输出 case id 和聚合指标，不输出样本正文。`pnpm run verify:candidate` 还会精确锁定候选包的 8 个文件，核对 package/manifest/bundle metadata 与内嵌依赖的第三方许可 notice，并对真实 tarball、仓库和合成运行日志执行 secret、本机路径与 redaction 门。
 
 ## 证据边界
 

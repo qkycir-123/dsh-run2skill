@@ -42,6 +42,7 @@ async function stage(version) {
   await cp(join(candidate, 'cordis.patch.yml'), join(root, 'cordis.patch.yml'))
   await cp(join(candidate, 'README.md'), join(root, 'README.md'))
   await cp(join(candidate, 'LICENSE'), join(root, 'LICENSE'))
+  await cp(join(candidate, 'THIRD_PARTY_NOTICES.md'), join(root, 'THIRD_PARTY_NOTICES.md'))
   const manifest = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8'))
   await writeFile(join(root, 'package.json'), JSON.stringify({ ...manifest, version }, null, 2))
   const archiveDirectory = join(archives, version)

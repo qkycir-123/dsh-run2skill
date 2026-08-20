@@ -18,6 +18,7 @@ const expectedPackageFiles = [
   'LICENSE',
   'package.json',
   'README.md',
+  'THIRD_PARTY_NOTICES.md',
 ]
 const permittedSyntheticSecrets = new Set([
   'ghp_abcdefghijklmnopqrstuvwxyz123456',
@@ -229,7 +230,7 @@ assert.deepEqual({
   version: '0.1.0-alpha',
   private: undefined,
   license: 'MIT',
-  files: ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE'],
+  files: ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'],
   repository: {
     type: 'git',
     url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
@@ -261,6 +262,10 @@ assert.equal(
   '- insert:\n    - id: run2skill\n      name: dsh-run2skill\n',
   'candidate bundle patch does not match the package identity',
 )
+const thirdPartyNotices = run('tar', ['-xOf', tarballPath, 'package/THIRD_PARTY_NOTICES.md'])
+assert.match(thirdPartyNotices, /Zod 4\.4\.3/u)
+assert.match(thirdPartyNotices, /Copyright \(c\) 2025 Colin McDonnell/u)
+assert.match(thirdPartyNotices, /The above copyright notice and this permission notice/u)
 
 const tracked = run('git', ['ls-files', '-z']).split('\0').filter(Boolean)
 const findings = []
@@ -320,6 +325,7 @@ assert.equal(safeLog.includes('runtime-charlie'), false)
 assert.equal(isSafeDiagnosticOutput(safeLog), true)
 
 console.log(`CANDIDATE_PACKAGE_FILES=${String(packageFiles.length)}`)
+console.log('CANDIDATE_THIRD_PARTY_LICENSES=PASS')
 console.log('CANDIDATE_METADATA=PASS')
 console.log('CANDIDATE_LOCAL_PATH_SCAN=PASS')
 console.log('CANDIDATE_SECRET_SCAN=PASS')
