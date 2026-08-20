@@ -47,6 +47,15 @@
 - PRD 黄金场景是端到端验收路径，不能替代更低层测试。
 - 所有结论必须匹配项目精确 HEAD 和记录的 DSH baseline。
 
+## Issue 开发与 PR 评审
+
+- 每个 Issue 开始前只做一次简短范围审计，明确目标、非目标和必须留给后续 Issue 的内容；需求或架构变化必须交由维护者决策，不得借流程简化扩大或缩减已批准范围。
+- 行为修改采用测试先行，并按已批准的 PRD、Architecture、Slice Design 和当前 Issue 实现最小闭环；不得提前实现后续 Issue。
+- 稳定 HEAD 必须通过 typecheck、lint 和完整单元测试。直接相关的真实 DSH probe 在该稳定 HEAD 运行；重型完整 DSH build、跨平台矩阵、安装生命周期和全量 crash/compatibility matrix 只在当前改动直接影响对应边界，或进入稳定发布候选时集中运行，不在每个修复 push 后机械重复。
+- 实现后只做一次简化自审，不调用 Compound Engineering，不增加多角色或跨模型流程。
+- PR 创建后，在实现与验证已稳定的精确 HEAD 上运行一次只读 `gpt-5.6-sol` / `high` 审查。P0/P1 finding 阻塞；P2 只有在可复现且影响当前 Issue 验收、安全、用户数据、写错目录或主流程可用时才阻塞；其他 P2/P3 建 GitHub backlog，不为字面 `CLEAN` 无限循环。
+- 只有修复阻塞 finding 的 push 才强制重新运行同规格 exact-HEAD 审查。CI、必要探针和审查均无阻塞 finding 后，PR 直接转 Ready 并 squash merge。
+
 ## 文档职责
 
 - `docs/roadmap.md`：阶段顺序、阶段门和交付物。
