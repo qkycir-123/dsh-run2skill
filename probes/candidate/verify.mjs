@@ -94,7 +94,7 @@ const permittedFixtureLocations = new Set([
   ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 82],
   ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 87],
   ['tests/trigger.spec.ts', 'SECRET_ASSIGNMENT', 'service_credential', 138],
-  ['tests/turn-capture-processor.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 70],
+  ['tests/turn-capture-processor.spec.ts', 'SECRET_ASSIGNMENT', 'secret', 81],
 ].map(parts => parts.join(':')))
 const secretRules = [
   ['PRIVATE_KEY', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu],

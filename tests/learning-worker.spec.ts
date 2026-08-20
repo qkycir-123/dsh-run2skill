@@ -128,7 +128,7 @@ describe('LearningWorker', () => {
   it('orchestrates the exact Session, Agent scope, Skill view, Envelope, guard, and durable result', async () => {
     const { item, domain, learn, snapshot, onCompleted, worker } = setup()
 
-    await worker.run(item, new AbortController().signal)
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(item.workItemId)).toMatchObject({
       processingState: 'LEARNED',
@@ -153,7 +153,7 @@ describe('LearningWorker', () => {
   it('persists a retryable pre-model failure without consuming request budget', async () => {
     const { item, domain, worker } = setup({ sessionAvailable: false })
 
-    await worker.run(item, new AbortController().signal)
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(item.workItemId)).toMatchObject({
       processingState: 'CAPTURED',
@@ -169,7 +169,7 @@ describe('LearningWorker', () => {
   it('does not strand ANALYZING when the restricted client throws', async () => {
     const { item, domain, worker } = setup({ learnThrows: true })
 
-    await worker.run(item, new AbortController().signal)
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(item.workItemId)).toMatchObject({
       processingState: 'CAPTURED',
@@ -184,7 +184,7 @@ describe('LearningWorker', () => {
   it('keeps the effective model route with a failed durable call', async () => {
     const { item, domain, worker } = setup({ modelFails: true })
 
-    await worker.run(item, new AbortController().signal)
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(item.workItemId)).toMatchObject({
       processingState: 'CAPTURED',
@@ -199,7 +199,7 @@ describe('LearningWorker', () => {
   it('retries an incomplete Skill catalog with the frozen bounded delays', async () => {
     const { item, domain, learn, snapshot, sleeps, worker } = setup({ catalogIncompleteCalls: 3 })
 
-    await worker.run(item, new AbortController().signal)
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(snapshot).toHaveBeenCalledTimes(4)
     expect(sleeps).toEqual([250, 1_000, 4_000])
@@ -209,14 +209,14 @@ describe('LearningWorker', () => {
 
   it('fails closed when the exact Agent scope is unavailable or the Core guard rejects', async () => {
     const missing = setup({ registerScope: false })
-    await missing.worker.run(missing.item, new AbortController().signal)
+    await missing.worker.run(missing.item, new AbortController().signal, { automaticLearning: true })
     expect(missing.domain.workItems.get(missing.item.workItemId)).toMatchObject({
       processingState: 'NEEDS_ATTENTION',
       learning: { failure: { code: 'AGENT_SCOPE_UNAVAILABLE', retryable: false } },
     })
 
     const rejected = setup({ resultScope: 'USER' })
-    await rejected.worker.run(rejected.item, new AbortController().signal)
+    await rejected.worker.run(rejected.item, new AbortController().signal, { automaticLearning: true })
     expect(rejected.domain.workItems.get(rejected.item.workItemId)).toMatchObject({
       processingState: 'NEEDS_ATTENTION',
       learning: { failure: { code: 'LEARNING_GUARD_REJECTED', retryable: false } },
@@ -235,7 +235,7 @@ describe('LearningWorker', () => {
     domain = built.domain
     itemId = built.item.workItemId
 
-    await built.worker.run(built.item, new AbortController().signal)
+    await built.worker.run(built.item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(itemId)).toMatchObject({
       processingState: 'CAPTURED',

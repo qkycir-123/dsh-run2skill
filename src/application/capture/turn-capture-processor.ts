@@ -7,6 +7,8 @@ import {
 } from '../../domain/observe/schemas.js'
 import { buildSignalKey, deriveWorkItemId } from '../../domain/observe/signal-key.js'
 import { analyzeCheapTriggerV1 } from '../../domain/observe/trigger.js'
+import type { AutomaticLearningPolicyPort } from '../automatic-learning-policy.js'
+import { permitsLearning } from '../automatic-learning-policy.js'
 import type { DurableCaptureCoordinator } from './durable-capture-coordinator.js'
 import type { RuntimeNotices } from './runtime-notices.js'
 
@@ -36,6 +38,8 @@ export class TurnCaptureProcessor {
     private readonly coordinator: DurableCaptureCoordinator,
     private readonly notices: RuntimeNotices,
     private readonly workspace: WorkspaceBindingPort,
+    private readonly automaticLearning: AutomaticLearningPolicyPort,
+    private readonly analyze: typeof analyzeCheapTriggerV1 = analyzeCheapTriggerV1,
   ) {}
 
   async processTurn(input: DurableTurnInput): Promise<void> {
@@ -74,11 +78,12 @@ export class TurnCaptureProcessor {
       turnEndSeq: observation.turnEndSeq,
       turnInstanceDigest: observation.turnInstanceDigest,
     })
-    const analysis = analyzeCheapTriggerV1(observation.directUserMessages.map((message) => ({
+    const messages = observation.directUserMessages.map((message) => ({
       messageSeq: message.messageSeq,
       sourceKind: 'user' as const,
       text: message.textBlocks.join('\n'),
-    })))
+    }))
+    let analysis = this.analyze(messages)
     const base = {
       schemaVersion: 1 as const,
       revision: 1,
@@ -107,10 +112,14 @@ export class TurnCaptureProcessor {
         captureBlockers: analysis.captureBlockers,
         processingState: 'CAPTURED',
       }), input.progress)
-      return
+      analysis = this.analyze(messages)
+      if (analysis.status === 'INCOMPLETE') return
     }
 
-    if (analysis.triggerHits.length > 0) {
+    if (
+      analysis.triggerHits.length > 0
+      && permitsLearning(analysis.triggerHits, this.automaticLearning.snapshot())
+    ) {
       const workspaceBinding = await this.#workspaceBinding(input.header.cwd, timestamp)
       await this.coordinator.capture(CaptureWorkItemV1Schema.parse({
         ...base,

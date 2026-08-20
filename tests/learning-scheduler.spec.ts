@@ -9,7 +9,12 @@ import type { CaptureWorkItemV1 } from '../src/domain/observe/schemas.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
-function queuedItem(sessionId: string, turnEndSeq: number, marker: string): CaptureWorkItemV1 {
+function queuedItem(
+  sessionId: string,
+  turnEndSeq: number,
+  marker: string,
+  kind: 'EXPLICIT_SAVE' | 'CONSTRAINT' = 'EXPLICIT_SAVE',
+): CaptureWorkItemV1 {
   return makeWorkItem({
     signalKey: {
       ...makeWorkItem().signalKey,
@@ -18,6 +23,18 @@ function queuedItem(sessionId: string, turnEndSeq: number, marker: string): Capt
       turnEndSeq,
       turnInstanceDigest: marker.repeat(64),
     },
+    triggerHits: [{
+      kind,
+      messageSeq: turnEndSeq,
+      ruleId: kind === 'EXPLICIT_SAVE'
+        ? 'ctv1.explicit-save.save-target'
+        : 'ctv1.constraint.persistent-operator',
+      confidence: 'HIGH',
+    }],
+    evidenceRefs: [{
+      ...makeWorkItem().evidenceRefs[0]!,
+      messageSeq: turnEndSeq,
+    }],
   })
 }
 
@@ -32,6 +49,14 @@ function storePort(candidates: CaptureWorkItemV1[]) {
     nextEligibleAt: vi.fn((_now: string): string | undefined => undefined),
   }
   return port
+}
+
+function policy(initial = true) {
+  let automaticLearning = initial
+  return {
+    snapshot: () => Object.freeze({ automaticLearning }),
+    set: (value: boolean) => { automaticLearning = value },
+  }
 }
 
 describe('LearningScheduler', () => {
@@ -60,7 +85,7 @@ describe('LearningScheduler', () => {
       },
     }
     const scheduler = new LearningScheduler({
-      store, worker, notices: new RuntimeNotices(), now: () => Date.parse('2026-08-20T00:00:00.000Z'),
+      store, worker, policy: policy(), notices: new RuntimeNotices(), now: () => Date.parse('2026-08-20T00:00:00.000Z'),
     })
 
     await scheduler.start()
@@ -93,6 +118,7 @@ describe('LearningScheduler', () => {
       })
       const scheduler = new LearningScheduler({
         store,
+        policy: policy(),
         worker: { canResolveScope: () => true, run },
         notices: new RuntimeNotices(),
         now: () => now,
@@ -116,6 +142,7 @@ describe('LearningScheduler', () => {
     const run = vi.fn(async () => undefined)
     const scheduler = new LearningScheduler({
       store,
+      policy: policy(),
       worker: { canResolveScope: () => true, run },
       notices: new RuntimeNotices(),
     })
@@ -141,6 +168,7 @@ describe('LearningScheduler', () => {
     const run = vi.fn(async () => undefined)
     const scheduler = new LearningScheduler({
       store,
+      policy: policy(),
       worker: { canResolveScope: () => true, run },
       notices: new RuntimeNotices(),
     })
@@ -163,6 +191,7 @@ describe('LearningScheduler', () => {
       const started = Promise.withResolvers<void>()
       const scheduler = new LearningScheduler({
         store,
+        policy: policy(),
         worker: {
           canResolveScope: () => true,
           run: async (_item, signal) => {
@@ -191,5 +220,43 @@ describe('LearningScheduler', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('pauses ordinary queued work OFF, runs explicit work, resumes ON, and freezes each launch snapshot', async () => {
+    const ordinary = queuedItem('session-a', 10, '1', 'CONSTRAINT')
+    const explicit = queuedItem('session-b', 11, '2')
+    const store = storePort([ordinary, explicit])
+    const settings = policy(false)
+    const launched: Array<{ id: string; automaticLearning: boolean }> = []
+    const explicitGate = Promise.withResolvers<void>()
+    const ordinaryGate = Promise.withResolvers<void>()
+    const scheduler = new LearningScheduler({
+      store,
+      policy: settings,
+      notices: new RuntimeNotices(),
+      worker: {
+        canResolveScope: () => true,
+        run: async (item, _signal, snapshot) => {
+          launched.push({ id: item.workItemId, automaticLearning: snapshot.automaticLearning })
+          store.remaining = store.remaining.filter(candidate => candidate.workItemId !== item.workItemId)
+          await (item.workItemId === explicit.workItemId ? explicitGate.promise : ordinaryGate.promise)
+        },
+      },
+    })
+
+    await scheduler.start()
+    await vi.waitFor(() => expect(launched).toEqual([{
+      id: explicit.workItemId, automaticLearning: false,
+    }]))
+    settings.set(true)
+    scheduler.wake()
+    await vi.waitFor(() => expect(launched).toHaveLength(2))
+    expect(launched[1]).toEqual({ id: ordinary.workItemId, automaticLearning: true })
+    settings.set(false)
+    expect(launched[1]?.automaticLearning).toBe(true)
+
+    explicitGate.resolve()
+    ordinaryGate.resolve()
+    await scheduler.dispose()
   })
 })

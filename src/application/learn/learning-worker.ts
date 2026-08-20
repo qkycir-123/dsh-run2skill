@@ -29,6 +29,7 @@ import {
 } from '../../domain/learn/index.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
+import type { AutomaticLearningSnapshot } from '../automatic-learning-policy.js'
 
 export const LEARNING_ANALYSIS_DEADLINE_MS = 125_000
 const RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const
@@ -157,7 +158,11 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
     return this.#scopes.resolve(item).status === 'AVAILABLE'
   }
 
-  async run(candidate: CaptureWorkItemV1, signal: AbortSignal): Promise<void> {
+  async run(
+    candidate: CaptureWorkItemV1,
+    signal: AbortSignal,
+    _settings: AutomaticLearningSnapshot,
+  ): Promise<void> {
     if (signal.aborted) return
     const controller = new AbortController()
     let deadlineExpired = false

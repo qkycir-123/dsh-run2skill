@@ -126,7 +126,19 @@ async function browserExecutable() {
   throw new Error('No Chromium-compatible browser executable is installed')
 }
 
-async function observe(present) {
+async function waitForAutomaticLearningSetting(expected) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    try {
+      const settings = await readFile(join(home, 'settings.yaml'), 'utf8')
+      if (settings.includes(`run2skill:\n  automaticLearning: ${String(expected)}`)) return
+    } catch { /* wait for the native settings commit */ }
+    await delay(100)
+  }
+  throw new Error('native run2skill settings write did not become durable')
+}
+
+async function observe(present, expectedAutomaticLearning) {
   const port = await reservePort()
   const base = `http://127.0.0.1:${String(port)}`
   const child = spawn(process.execPath, [bin, 'web', '--port', String(port)], {
@@ -179,6 +191,32 @@ async function observe(present) {
       await page.goto(`${base}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
       await delay(2_000)
       assert.equal(errors.filter(error => /run2skill/iu.test(error)).length, 0)
+      const onboarding = page.locator('[class*="onboardingOverlay"]')
+      if (await onboarding.count() > 0) {
+        await onboarding.getByRole('button').click()
+        await onboarding.waitFor({ state: 'detached', timeout: 15_000 })
+      }
+      const acknowledgeNotice = page.getByRole('button', { name: /^(Continue|继续)$/ })
+      if (await acknowledgeNotice.count() > 0) await acknowledgeNotice.click()
+      const deferSetup = page.getByRole('button', { name: /^(Configure later|稍后配置)$/ })
+      const setupVisible = await deferSetup.waitFor({ timeout: 10_000 })
+        .then(() => true, () => false)
+      if (setupVisible) await deferSetup.click()
+      await page.getByRole('button', { name: /^(Settings|设置)$/ }).click()
+      const dialog = page.getByRole('dialog', { name: /^(Settings|设置)$/ })
+      await dialog.getByRole('button', { name: /^(Plugins|插件)$/ }).click()
+      const card = dialog.locator('[data-run2skill-settings-card]')
+      await card.waitFor({ timeout: 10_000 })
+      await card.getByRole('button', { name: /run2skill/i }).click()
+      const toggle = card.getByRole('checkbox', { name: 'Automatic Learning' })
+      assert.equal(await toggle.isChecked(), expectedAutomaticLearning)
+      if (expectedAutomaticLearning) {
+        const mutation = page.waitForResponse(response => response.url().endsWith('/api/settings.mutate'))
+        await toggle.click()
+        const mutationBody = await (await mutation).json()
+        assert.equal(mutationBody.result?.ok, true, 'native settings mutation was rejected')
+        await waitForAutomaticLearningSetting(false)
+      }
     }
   } finally {
     await browser?.close()
@@ -196,7 +234,7 @@ console.log('CP_INS_A6_STAGE=add')
 await dsh(['plugin', '--profile', 'web', 'add', v1])
 assert.ok((await manifest()).dsh.profile.bundles.includes(packageName))
 assert.ok((await dsh(['--profile', 'web', '--dump-config'])).stdout.includes('id: run2skill'))
-await observe(true)
+await observe(true, true)
 
 console.log('CP_INS_A6_STAGE=disable')
 await writeFile(patchPath, '- id: run2skill\n  disabled: true\n')
@@ -207,7 +245,7 @@ await writeFile(patchPath, '[]\n')
 await dsh(['plugin', '--profile', 'web', 'add', v2])
 const installedManifest = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
 assert.equal(installedManifest.version, '0.0.0-a6.2')
-await observe(true)
+await observe(true, false)
 
 const storageEntries = await readdir(join(home, 'storages'))
 assert.ok(storageEntries.some(entry => /run2skill/iu.test(entry)), 'run2skill domain was not retained')

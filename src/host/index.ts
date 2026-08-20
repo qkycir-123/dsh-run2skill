@@ -28,6 +28,7 @@ import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-s
 import { DshWorkspaceBindingResolver, type DshWorkspaceRegistryPort } from '../adapters/dsh-workspace/binding.js'
 import { BoundedGapScanner } from '../application/capture/bounded-gap-scanner.js'
 import { DurableCaptureCoordinator } from '../application/capture/durable-capture-coordinator.js'
+import { IncompleteCaptureRetrier } from '../application/capture/incomplete-capture-retrier.js'
 import {
   RecoveryLifecycle,
   type RecoveryRuntime,
@@ -65,6 +66,11 @@ import {
 } from '../adapters/dsh-skills/stock-root-contract.js'
 import { stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
+import {
+  registerAutomaticLearningSettings,
+  type AutomaticLearningSettingsPolicy,
+  type DshSettingsPort,
+} from '../adapters/dsh-settings/automatic-learning.js'
 
 export {
   PublicationConflict,
@@ -86,6 +92,7 @@ export const inject = [
   'connection',
   'llm',
   'skills',
+  'settings',
   'agentPresets',
 ] as const
 
@@ -110,6 +117,7 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly connection: ObserveSummaryHostConnection
   readonly llm: DshLlmPort
   readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
+  readonly settings: DshSettingsPort
   readonly agentPresets: Parameters<typeof resolvePinnedStockPresetConfiguration>[0]
   on(
     event: string,
@@ -138,6 +146,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     private readonly context: Run2skillHostContext,
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
+    private readonly automaticLearning: AutomaticLearningSettingsPolicy,
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
       async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
@@ -319,18 +328,37 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         notices: this.notices,
         onCompleted: stageLearned,
       })
-      const scheduler = new LearningScheduler({ store: learningStore, worker, notices: this.notices })
+      const scheduler = new LearningScheduler({
+        store: learningStore,
+        worker,
+        policy: this.automaticLearning,
+        notices: this.notices,
+      })
       this.currentScheduler = scheduler
       const coordinator = new DurableCaptureCoordinator(store, checkpoint, this.notices)
       const processor = new TurnCaptureProcessor(
         coordinator,
         this.notices,
         workspaceResolver,
+        this.automaticLearning,
       )
       const scanner = new BoundedGapScanner(reader, checkpoint, processor, this.notices)
+      const incompleteRetrier = new IncompleteCaptureRetrier(
+        reader,
+        store,
+        checkpoint,
+        processor,
+        this.notices,
+      )
+      await incompleteRetrier.retryBatch()
       const checkpointTimer = setInterval(() => {
         void checkpoint.flushIfDue().catch(() => {
           this.notices.record({ healthCode: 'CHECKPOINT_WRITE_FAILED', sessionId: 'global' })
+        })
+        void incompleteRetrier.retryBatch().then((result) => {
+          if (result.resolved > 0) scheduler.wake()
+        }).catch(() => {
+          this.notices.record({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'global' })
         })
       }, 30_000)
 
@@ -448,10 +476,14 @@ function unavailableSummary(lifecycle: RecoveryLifecycle, notices: RuntimeNotice
 }
 
 export async function apply(context: Run2skillHostContext): Promise<() => Promise<void>> {
+  const automaticLearning = registerAutomaticLearningSettings(context.settings)
   const notices = new RuntimeNotices()
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
-  const factory = new Run2skillRuntimeFactory(context, notices, scopes)
+  const factory = new Run2skillRuntimeFactory(context, notices, scopes, automaticLearning)
+  const stopWatchingSettings = automaticLearning.watch((next, previous) => {
+    if (!previous.automaticLearning && next.automaticLearning) factory.wakeLearning()
+  })
   const lifecycle = new RecoveryLifecycle(factory, candidateKey, notices)
   const ingress = new SessionCoordinateIngress(
     candidate => { lifecycle.accept(candidate) },
@@ -506,9 +538,15 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     }, { onPublicationRequested: () => { factory.wakePublication() } }),
   )
 
-  await lifecycle.start()
+  try {
+    await lifecycle.start()
+  } catch (error) {
+    stopWatchingSettings()
+    throw error
+  }
   return async () => {
     accepting = false
+    stopWatchingSettings()
     try {
       await disposeRpc()
     } finally {
