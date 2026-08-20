@@ -265,6 +265,10 @@ describe('Purge native settings UI', () => {
     await controller.confirm()
     expect(controller.snapshot().inProgressReceipt).toMatchObject({ state: 'IN_PROGRESS', phase: 'HIDING' })
     expect(poll.timerDelay()).toBe(2_000)
+    poll.tick()
+    await controller.whenIdle()
+    expect(controller.snapshot().inProgressReceipt).toBeUndefined()
+    expect(controller.snapshot().announcement).toBe('PROJECT run2skill 数据清理完成。')
     controller.dispose()
   })
 

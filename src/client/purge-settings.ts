@@ -159,6 +159,10 @@ function completionAnnouncement(scope: PurgeScope | undefined, receipt: PurgeRec
   return `${subject}清理完成：${String(receipt.deletedWorkItems)} 条待处理数据，${String(receipt.deletedLineages)} 条发布沿袭记录。`
 }
 
+function polledCompletionAnnouncement(scope: PurgeScope | undefined): string {
+  return `${scope === undefined ? '' : `${scope} `}run2skill 数据清理完成。`
+}
+
 function errorAnnouncement(error: PurgeClientError, durableBoundary = false): string {
   if (error.code === 'PURGE_PREVIEW_STALE') return '清理预览已失效，请重新预览后确认。'
   if (error.code === 'PURGE_BUSY') {
@@ -390,11 +394,19 @@ export class PurgeSettingsController {
       try {
         const status = parseValue(statusSchema, await this.call('purge/status', { apiVersion: 1 }, abort.signal))
         if (this.#disposed || abort.signal.aborted) return
+        const completed = status.state === 'IDLE' && (
+          this.#state.status?.state === 'IN_PROGRESS'
+          || this.#state.inProgressReceipt?.state === 'IN_PROGRESS'
+        )
         this.#publish({
           ...this.#state,
           statusPhase: 'READY',
           status,
           inProgressReceipt: status.state === 'IDLE' ? undefined : this.#state.inProgressReceipt,
+          previewScope: completed ? undefined : this.#state.previewScope,
+          announcement: completed
+            ? polledCompletionAnnouncement(this.#state.previewScope)
+            : this.#state.announcement,
         })
       } catch {
         if (this.#disposed || abort.signal.aborted) return
