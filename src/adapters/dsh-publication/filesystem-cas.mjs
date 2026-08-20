@@ -190,6 +190,146 @@ async function observeDirectoryIdentity(path, label) {
   ]))
 }
 
+export async function observePublicationRoot(path) {
+  if (!isAbsolute(path)) return { status: 'UNAVAILABLE' }
+  let current = resolve(path)
+  const missingSegments = []
+  while (true) {
+    const stat = await statOrNull(current)
+    if (stat === null) {
+      const parent = dirname(current)
+      if (parent === current) return { status: 'UNAVAILABLE' }
+      missingSegments.unshift(basename(current))
+      current = parent
+      continue
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return { status: 'UNAVAILABLE' }
+    let canonical
+    try {
+      canonical = await realpath(current)
+    } catch {
+      return { status: 'UNAVAILABLE' }
+    }
+    if (!samePath(canonical, current)) return { status: 'UNAVAILABLE' }
+    const identityDigest = await observeDirectoryIdentity(canonical, 'Observed publication root')
+    return missingSegments.length === 0
+      ? {
+          status: 'EXISTING',
+          canonicalRootPath: canonical,
+          rootIdentityDigest: identityDigest,
+        }
+      : {
+          status: 'ABSENT',
+          canonicalExistingAncestorPath: canonical,
+          ancestorIdentityDigest: identityDigest,
+          missingSegments,
+        }
+  }
+}
+
+export async function observePublicationEntry(path) {
+  const stat = await statOrNull(path)
+  if (stat === null) return { status: 'ABSENT' }
+  if (stat.isSymbolicLink()) return { status: 'LINK' }
+  if (stat.isFile()) return { status: 'FILE' }
+  if (stat.isDirectory()) return { status: 'DIRECTORY' }
+  return { status: 'OTHER' }
+}
+
+export async function readPublicationText(path, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) return { status: 'UNAVAILABLE' }
+  const before = await identityStatOrNull(path)
+  if (!before || before.isSymbolicLink() || !before.isFile() || before.size > BigInt(maxBytes)) {
+    return { status: 'UNAVAILABLE' }
+  }
+  const identityDigest = regularFileIdentityDigest(before)
+  const bytes = await readFile(path)
+  const after = await identityStatOrNull(path)
+  if (
+    !after
+    || after.isSymbolicLink()
+    || !after.isFile()
+    || regularFileIdentityDigest(after) !== identityDigest
+    || bytes.byteLength > maxBytes
+  ) return { status: 'UNAVAILABLE' }
+  try {
+    return { status: 'AVAILABLE', text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+  } catch {
+    return { status: 'UNAVAILABLE' }
+  }
+}
+
+export async function verifyPublicationDirectoryIdentity(path, expectedIdentityDigest) {
+  try {
+    return await observeDirectoryIdentity(path, 'Publication identity') === expectedIdentityDigest
+  } catch {
+    return false
+  }
+}
+
+async function requirePublicationRootIdentity(root, expectedIdentityDigest) {
+  try {
+    if (await observeDirectoryIdentity(root, 'Publication root') === expectedIdentityDigest) return
+  } catch {
+    // Normalize an unobservable root to the same fail-closed durable fact.
+  }
+  throw new PublicationConflict(
+    'root_identity_changed',
+    'Publication root directory identity changed',
+  )
+}
+
+export async function verifyFinalizedTransaction({
+  root,
+  name,
+  txid,
+  expectedHash,
+  expectedRootIdentityDigest,
+}) {
+  if (!HASH_PATTERN.test(expectedHash) || !HASH_PATTERN.test(expectedRootIdentityDigest)) return false
+  try {
+    validateIdentity(name, txid)
+    const rootReal = await ensureRoot(root)
+    await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
+    const finalizedMismatch = async () => {
+      await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
+      return false
+    }
+    const paths = targetPaths(rootReal, name, txid)
+    const targetDirIdentity = await observeBundleDirectory(paths)
+    const target = await observeRegularFile(paths.target)
+    if (target?.hash !== expectedHash) {
+      await finalizedMismatch()
+      throw new PublicationConflict('readback_changed', 'Final target no longer matches approved bytes')
+    }
+    if (
+      await statOrNull(paths.stage) !== null
+      || await statOrNull(paths.backup) !== null
+      || await statOrNull(paths.claim) !== null
+    ) return await finalizedMismatch()
+    const journalDir = await ensureJournalDirectory(rootReal)
+    const journalIdentity = await observeDirectoryIdentity(journalDir, 'Publication journal')
+    if ((await readdir(journalDir)).some(entry => entry.startsWith(`${txid}.`))) {
+      return await finalizedMismatch()
+    }
+    const confirmed = await observeRegularFile(paths.target)
+    const stable = confirmed?.hash === expectedHash
+      && confirmed.identityDigest === target.identityDigest
+      && await observeBundleDirectory(paths) === targetDirIdentity
+      && await observeDirectoryIdentity(journalDir, 'Publication journal') === journalIdentity
+    if (!stable) return await finalizedMismatch()
+    await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
+    return true
+  } catch (caught) {
+    if (
+      caught instanceof PublicationConflict
+      && /unsafe|changed|mismatch|identity|parity/u.test(caught.code)
+    ) throw caught
+    await requirePublicationRootIdentity(root, expectedRootIdentityDigest)
+    return false
+  }
+}
+
 function allowedMissingSegments(binding) {
   const joined = binding.missingSegments.join('\0')
   return binding.scope === 'PROJECT'

@@ -10,6 +10,7 @@ import {
   createProposalReviewRpcHandler,
 } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
+import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-saga-store.js'
 import { deriveExperienceId, deriveLearningProposalId } from '../src/domain/learn/index.js'
 import { CaptureWorkItemV1Schema, type CaptureWorkItemV1 } from '../src/domain/observe/schemas.js'
 import { materializeProposalSnapshot, proposalRefOf } from '../src/domain/review/index.js'
@@ -194,13 +195,19 @@ describe('Proposal Review RPC', () => {
       workItemRevision: staged.item.revision,
       proposalRef: ref,
     }
-    const handler = createProposalReviewRpcHandler(() => domain)
+    const onPublicationRequested = vi.fn()
+    const handler = createProposalReviewRpcHandler(
+      () => domain,
+      undefined,
+      { onPublicationRequested },
+    )
 
     const approved = await handler(PROPOSALS_APPROVE_ENDPOINT, request, new AbortController().signal)
     expect(approved).toMatchObject({
       ok: true,
       value: { changed: true, processingState: 'PUBLISHING', reviewDecision: 'APPROVED' },
     })
+    expect(onPublicationRequested).toHaveBeenCalledWith(item.workItemId)
     await expect(handler(PROPOSALS_APPROVE_ENDPOINT, request, new AbortController().signal))
       .resolves.toMatchObject({ ok: true, value: { changed: false, processingState: 'PUBLISHING' } })
 
@@ -212,6 +219,51 @@ describe('Proposal Review RPC', () => {
       await expect(handler(PROPOSALS_APPROVE_ENDPOINT, payload, new AbortController().signal))
         .resolves.toMatchObject({ ok: false, error: { code: expect.stringMatching(/bad-request|conflict/) } })
     }
+  })
+
+  it('retries only a retryable failed publication and wakes the durable saga', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const reviews = new ProposalReviewStore(domain)
+    const staged = await reviews.stage(item.workItemId, item.revision, makeCreateProposalSnapshot(item))
+    const approved = await reviews.approve(
+      item.workItemId,
+      staged.item.revision,
+      proposalRefOf(staged.item.review!.proposal),
+    )
+    const publication = new PublicationSagaStore(domain)
+    const failed = await publication.fail(
+      item.workItemId,
+      'PUBLISH_FAILED',
+      'READBACK_TIMEOUT',
+      true,
+    )
+    const wake = vi.fn()
+    const handler = createProposalReviewRpcHandler(() => domain, undefined, {
+      onPublicationRequested: wake,
+    })
+
+    const retryRequest = {
+      apiVersion: 1,
+      workItemId: failed.workItemId,
+      workItemRevision: failed.revision,
+      proposalRef: proposalRefOf(failed.review!.proposal),
+    }
+    await expect(handler(PROPOSALS_RETRY_ENDPOINT, retryRequest, new AbortController().signal))
+      .resolves.toMatchObject({
+      ok: true,
+      value: { changed: true, processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' },
+    })
+    await expect(handler(PROPOSALS_RETRY_ENDPOINT, retryRequest, new AbortController().signal))
+      .resolves.toMatchObject({
+        ok: true,
+        value: { changed: false, processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' },
+      })
+    expect(wake).toHaveBeenCalledWith(item.workItemId)
+    expect(wake).toHaveBeenCalledTimes(2)
+    expect(domain.workItems.get(item.workItemId)?.publication?.attemptCount).toBe(2)
+    expect(approved.item.review?.reviewDecision).toBe('APPROVED')
   })
 
   it('requires reject confirmation and supports DISCARD confirm or one retry', async () => {

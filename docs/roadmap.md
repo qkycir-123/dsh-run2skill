@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，实现边界由 Issues #34–#40 固定，当前只推进 C1。
+当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，实现边界由 Issues #34–#40 固定。C1–C5 已完成，当前只推进 C6；C7 继续保留最终集成验收边界。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 

@@ -1,4 +1,5 @@
 import type { CaptureWorkItemV1, GlobalV1 } from '../../domain/observe/schemas.js'
+import type { LineageV1 } from '../../domain/publication/index.js'
 
 export interface Run2skillTable<K extends string, V> {
   get(key: K): V | undefined
@@ -17,6 +18,7 @@ export interface Run2skillDomain {
     set(value: GlobalV1): Promise<void>
   }
   table(name: 'work_items'): Run2skillTable<string, CaptureWorkItemV1>
+  table(name: 'lineages'): Run2skillTable<string, LineageV1>
   close(): Promise<void>
 }
 

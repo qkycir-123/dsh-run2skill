@@ -12,6 +12,10 @@ const summarySchema = z.object({
   source: z.string().min(1),
   provider: z.string().min(1),
   path: z.string().min(1).optional(),
+  invocation: z.object({
+    modelInvocable: z.boolean(),
+    userInvocable: z.boolean(),
+  }).strict().optional(),
 })
 
 const definitionSchema = summarySchema.extend({ content: z.string() })

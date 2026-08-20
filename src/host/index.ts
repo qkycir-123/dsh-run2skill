@@ -44,6 +44,18 @@ import {
 } from '../application/learn/index.js'
 import { ObserveSummaryV1Schema, type ObserveSummaryV1 } from '../domain/observe/observe-summary.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
+import { normalize, resolve } from 'node:path'
+import { NodePublicationFactsAdapter } from '../adapters/dsh-publication/publication-facts.js'
+import { C5PublicationFileSystemAdapter } from '../adapters/dsh-publication/publication-filesystem.js'
+import { PublicationSagaStore } from '../adapters/dsh-storage/publication-saga-store.js'
+import { ProposalSnapshotBuilder } from '../application/curation/index.js'
+import {
+  ApprovalPublicationSaga,
+  ApprovedProposalRevalidator,
+  PublicationScheduler,
+} from '../application/publication/index.js'
+import { DshPublicationReadbackAdapter } from '../adapters/dsh-skills/publication-readback.js'
+import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
 
 export {
   PublicationConflict,
@@ -54,6 +66,7 @@ export {
   recoverTransaction,
 } from '../adapters/dsh-publication/filesystem-cas.mjs'
 export { PublicationTargetSingleFlight } from '../adapters/dsh-publication/target-single-flight.js'
+export * from '../application/publication/index.js'
 
 export const name = 'run2skill'
 export const inject = [
@@ -106,6 +119,7 @@ function candidateKey(candidate: TurnIngressCandidate): string {
 class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentDomain: Run2skillDomain | undefined
   currentScheduler: LearningScheduler | undefined
+  currentPublicationScheduler: PublicationScheduler | undefined
 
   constructor(
     private readonly context: Run2skillHostContext,
@@ -117,6 +131,10 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     this.currentScheduler?.wake()
   }
 
+  wakePublication(): void {
+    this.currentPublicationScheduler?.wake()
+  }
+
   async open(): Promise<RecoveryRuntime> {
     const domain = await openRun2skillDomain(this.context)
     this.currentDomain = domain
@@ -125,11 +143,60 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
       const store = new DurableCaptureStore(domain)
       const learningStore = new LearningWorkItemStore(domain)
+      const skillCatalog = new DshSkillCatalogAdapter(this.context.skills)
+      const workspaceResolver = new DshWorkspaceBindingResolver(this.context.workspaceRegistry)
+      const publicationAbort = new AbortController()
+      const publicationView = (item: CaptureWorkItemV1): LearningSkillView<Run2skillAgent> | undefined => {
+        const scope = this.scopes.resolve(item)
+        return scope.status === 'UNAVAILABLE'
+          ? undefined
+          : {
+              ...(scope.cwd === undefined ? {} : { cwd: scope.cwd }),
+              scope: scope.agent,
+              signal: publicationAbort.signal,
+            }
+      }
+      const publicationFacts = new NodePublicationFactsAdapter()
+      const proposalBuilder = new ProposalSnapshotBuilder(
+        skillCatalog,
+        publicationFacts,
+        workspaceResolver,
+      )
+      const publicationStore = new PublicationSagaStore(domain)
+      const publicationSaga = new ApprovalPublicationSaga({
+        store: publicationStore,
+        revalidation: new ApprovedProposalRevalidator(proposalBuilder, publicationView),
+        fileSystem: new C5PublicationFileSystemAdapter({
+          verifyParity: async (binding, canonicalRoot, item) => {
+            const view = publicationView(item)
+            if (view === undefined) return false
+            const snapshot = await skillCatalog.snapshot(view)
+            if (!snapshot.complete || snapshot.roots === undefined) return false
+            const matches = snapshot.roots.filter(root => (
+              root.provider === binding.provider
+              && root.source === binding.source
+              && sameHostPath(root.path, binding.declaredRootPath)
+              && sameHostPath(root.path, canonicalRoot)
+            ))
+            return matches.length === 1
+          },
+        }),
+        readback: new DshPublicationReadbackAdapter(skillCatalog, publicationView),
+      })
+      const publicationScheduler = new PublicationScheduler({
+        store: publicationStore,
+        worker: publicationSaga,
+        eligible: item => publicationView(item) !== undefined,
+        onError: () => {
+          this.notices.record({ healthCode: 'PUBLICATION_WORKER_FAILED', sessionId: 'global' })
+        },
+      })
+      this.currentPublicationScheduler = publicationScheduler
       const worker = new LearningWorker({
         store: learningStore,
         sessionReader: reader,
         scopes: this.scopes,
-        skills: new DshSkillCatalogAdapter(this.context.skills),
+        skills: skillCatalog,
         client: new RestrictedLearningClient(this.context.llm),
         notices: this.notices,
       })
@@ -139,7 +206,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const processor = new TurnCaptureProcessor(
         coordinator,
         this.notices,
-        new DshWorkspaceBindingResolver(this.context.workspaceRegistry),
+        workspaceResolver,
       )
       const scanner = new BoundedGapScanner(reader, checkpoint, processor, this.notices)
       const checkpointTimer = setInterval(() => {
@@ -211,23 +278,39 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           closed = true
           clearInterval(checkpointTimer)
           if (this.currentScheduler === scheduler) this.currentScheduler = undefined
+          if (this.currentPublicationScheduler === publicationScheduler) {
+            this.currentPublicationScheduler = undefined
+          }
+          publicationAbort.abort()
           if (this.currentDomain === domain) this.currentDomain = undefined
           try {
-            await scheduler.dispose()
+            await publicationScheduler.dispose()
           } finally {
-            await domain.close()
+            try {
+              await scheduler.dispose()
+            } finally {
+              await domain.close()
+            }
           }
         },
       }
+      await publicationScheduler.start()
       await scheduler.start()
       return runtime
     } catch (error) {
       this.currentScheduler = undefined
+      this.currentPublicationScheduler = undefined
       if (this.currentDomain === domain) this.currentDomain = undefined
       await domain.close()
       throw error
     }
   }
+}
+
+function sameHostPath(left: string, right: string): boolean {
+  const a = normalize(resolve(left))
+  const b = normalize(resolve(right))
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 function unavailableSummary(lifecycle: RecoveryLifecycle, notices: RuntimeNotices): ObserveSummaryV1 {
@@ -263,6 +346,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
       try {
         scopeDisposers.set(agent, scopes.register(agent))
         factory.wakeLearning()
+        factory.wakePublication()
       } catch {
         notices.record({ healthCode: 'AGENT_SCOPE_UNAVAILABLE', sessionId: agent.id || 'global' })
       }
@@ -295,7 +379,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
         recoveryLag: summary.recoveryLag,
         ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
       }
-    }),
+    }, { onPublicationRequested: () => { factory.wakePublication() } }),
   )
 
   await lifecycle.start()

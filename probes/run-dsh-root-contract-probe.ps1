@@ -1,0 +1,75 @@
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$DshSource
+)
+
+$ErrorActionPreference = 'Stop'
+$expectedCommit = '0fdc7a42a03693c41290d10af1725775af6598ca'
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$DshSource = (Resolve-Path -LiteralPath $DshSource).Path
+
+function Invoke-GitCapture {
+  param([string[]]$Arguments, [string]$WorkingDirectory)
+  $result = & git -C $WorkingDirectory @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "git $($Arguments -join ' ') failed: $result"
+  }
+  return ($result | Out-String).Trim()
+}
+
+$sourceHeadBefore = Invoke-GitCapture -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $DshSource
+$sourceStatusBefore = Invoke-GitCapture -Arguments @('status', '--porcelain') -WorkingDirectory $DshSource
+if ($sourceHeadBefore -ne $expectedCommit) {
+  throw "Candidate DSH HEAD is $sourceHeadBefore; expected $expectedCommit"
+}
+if ($sourceStatusBefore.Length -ne 0) {
+  throw "Candidate DSH source is not clean: $sourceStatusBefore"
+}
+
+$runId = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
+$runRoot = Join-Path (Join-Path $projectRoot '.probe-work') "candidate-$runId"
+$cloneRoot = Join-Path $runRoot 'deepseek-harness'
+New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+
+Write-Output "DSH_CANDIDATE_HEAD=$sourceHeadBefore"
+Write-Output 'DSH_CANDIDATE_STATUS=clean'
+Write-Output "PROBE_RUN_ID=$runId"
+
+& git clone --local --no-hardlinks --no-checkout $DshSource $cloneRoot
+if ($LASTEXITCODE -ne 0) { throw 'Failed to create disposable candidate DSH clone.' }
+& git -C $cloneRoot checkout --detach $expectedCommit
+if ($LASTEXITCODE -ne 0) { throw 'Failed to check out the pinned candidate DSH commit.' }
+
+$probeRoot = Join-Path $cloneRoot 'packages\run2skill\contract-probes'
+$probeTests = Join-Path $probeRoot 'tests'
+$probeSupport = Join-Path $probeTests 'support'
+New-Item -ItemType Directory -Path $probeSupport -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\tests\c6-publication.spec.ts') -Destination $probeTests
+foreach ($supportFile in @('learning-fixture.ts', 'memory-run2skill-domain.ts', 'review-fixture.ts', 'work-item-fixture.ts')) {
+  Copy-Item -LiteralPath (Join-Path $projectRoot "tests\support\$supportFile") -Destination $probeSupport
+}
+Copy-Item -LiteralPath (Join-Path $projectRoot 'src') -Destination (Join-Path $probeRoot 'src') -Recurse
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\vitest.config.ts') -Destination (Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts')
+
+Push-Location $cloneRoot
+try {
+  & pnpm install --frozen-lockfile
+  if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed in the disposable candidate DSH clone.' }
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\package.json') -Destination (Join-Path $probeRoot 'package.json')
+  & pnpm install --no-frozen-lockfile --ignore-scripts --filter '@dsh-run2skill/contract-probes'
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to link the disposable candidate probe workspace package.' }
+  & pnpm exec vitest run --config run2skill.probe.vitest.config.ts
+  if ($LASTEXITCODE -ne 0) { throw 'Candidate root contract probe failed.' }
+} finally {
+  Pop-Location
+}
+
+$sourceHeadAfter = Invoke-GitCapture -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $DshSource
+$sourceStatusAfter = Invoke-GitCapture -Arguments @('status', '--porcelain') -WorkingDirectory $DshSource
+if ($sourceHeadAfter -ne $sourceHeadBefore -or $sourceStatusAfter -ne $sourceStatusBefore) {
+  throw 'The candidate DSH source changed while probes were running.'
+}
+
+Write-Output 'DSH_CANDIDATE_SOURCE_AFTER=unchanged'
+Write-Output 'CANDIDATE_ROOT_CONTRACT_PROBE=PASS'

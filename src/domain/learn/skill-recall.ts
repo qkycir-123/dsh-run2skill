@@ -21,6 +21,10 @@ export interface SkillSummaryProjection {
   readonly source: string
   readonly provider: string
   readonly path?: string | undefined
+  readonly invocation?: {
+    readonly modelInvocable: boolean
+    readonly userInvocable: boolean
+  } | undefined
 }
 
 export interface SkillDefinitionProjection extends SkillSummaryProjection {

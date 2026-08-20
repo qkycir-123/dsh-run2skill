@@ -120,3 +120,39 @@ export function makeDiscardProposalSnapshot(item = makeLearnedWorkItem()) {
     },
   })
 }
+
+export function makeMergeProposalSnapshot(item = makeLearnedWorkItem()) {
+  const create = makeCreateProposalSnapshot(item)
+  if (create.actionBinding.kind !== 'CREATE') throw new Error('expected CREATE fixture')
+  const { proposalId: _proposalId, digest: _digest, ...facts } = create
+  const baseBytes = create.exactSkillBytes.replace('# Generated file hygiene', '# Existing file hygiene')
+  return materializeProposalSnapshot(item.workItemId, {
+    ...facts,
+    kind: 'MERGE',
+    actionBinding: {
+      kind: 'MERGE',
+      rootBinding: {
+        state: 'EXISTING',
+        scope: 'PROJECT',
+        provider: 'filesystem',
+        source: 'project-dsh',
+        resolverVersion: 'root-resolver-v1',
+        observationDigest: 'a'.repeat(64),
+        declaredRootPath: 'D:\\workspace\\.dsh\\skills',
+        canonicalRootPath: 'D:\\workspace\\.dsh\\skills',
+        rootIdentityDigest: 'b'.repeat(64),
+      },
+      targetBinding: create.actionBinding.targetBinding,
+      baseBinding: {
+        candidateKey: `cand_${'d'.repeat(64)}`,
+        provider: 'filesystem',
+        source: 'project-dsh',
+        path: create.actionBinding.targetBinding.skillFilePath,
+        exactBytes: baseBytes,
+        bytesDigest: sha256Utf8(baseBytes),
+        catalogObservationDigest: create.catalogObservationDigest,
+        observedAt: '2026-08-20T00:00:00.000Z',
+      },
+    },
+  })
+}

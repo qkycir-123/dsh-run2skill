@@ -37,7 +37,8 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 | CP-STO-001 | Storage Domain、durable pending、重启、写序列和错误 | PASS（Windows） | Slice A 的 Storage 门已解除 |
 | CP-LLM-001 | inherit-session one-shot stream、usage、cancel、结构化修复、无 Tools | PASS（Windows） | Slice B 的 LLM 门已解除 |
 | CP-SKL-001 | snapshot complete、cwd/scope、rank、get、skills/change、热回读 | PASS（Windows） | Slice C 的 catalog 门已解除 |
-| CP-ROOT-001 | Workspace/project-dsh 与 effective DSH Home/user-dsh root parity | PARTIAL（Windows） | 手工组合通过；目标 session-scoped provider 的实际 writable root 尚无公开查询证据 |
+| CP-ROOT-001 | Workspace/project-dsh 与 effective DSH Home/user-dsh root parity | PARTIAL（Windows） | 固定 baseline 无 provider root 查询；publication 继续 fail closed |
+| CP-ROOT-002 | 候选 root contract、生产 saga 与 Registry exact readback | PASS（Windows；候选 commit） | 仅证明候选接口可闭环；不提升固定兼容性 baseline |
 | CP-PUB-001 | Windows/Linux CREATE/MERGE CAS、race、crash、路径逃逸与恢复 | PASS（Windows + WSL/Linux） | Slice C 的文件 CAS 门已解除 |
 | CP-WEB-001 | 外部双面插件、header slot、loopback RPC、远程/cross-origin 拒绝 | PASS（Windows） | Slice C 的 Web seam 门已解除 |
 | CP-INS-001 | add、web profile、disable、upgrade、uninstall及 Skill 保留 | PASS（Windows probe package） | 包形态契约通过；Alpha 候选必须复跑 |
@@ -152,6 +153,28 @@ Probe run ID
 清理：同 CP-SES-001。  
 结论：由同一组合层持有 configured dshHome，并同时传给 Root Resolver 与 Skill provider 的方案可行。CP-WEB-001/CP-INS-001 已证明外部插件能进入真实 Web profile 并取得相关服务，但 `ctx.skills` 仍不公开 session-scoped provider 的实际 writable root；仅凭候选路径不能证明最终发布目标。  
 架构影响：确认 Baseline 12.1 的 PROJECT 算法和 12.2 的显式配置候选；在 Slice C 取得“实际 provider root + Registry 精确回读”前，PROJECT/USER publication 继续 fail closed，故聚合状态保持 PARTIAL。
+
+### CP-ROOT-002
+
+状态：PASS（Windows；开发候选证据）。
+
+环境：DSH 候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca`；该 checkout 独立、clean，未替换固定 baseline。
+
+输入：一个 `.git` project、尚不存在的 `.dsh/skills`、真实 filesystem Skill provider，以及经 immutable Approval 建立的 CREATE publication。
+
+预期：同一次 complete snapshot 明确给出 `filesystem/project-dsh` root；生产 C5 CAS 写入后，DSH watcher/catalog 选中同 provider/source/path，exact `get()` 返回一致 metadata、invocation 与正文；只有随后 Lineage durable commit 才能形成 `PUBLISHED`。
+
+实际：候选 snapshot 给出精确 project root；生产 `ApprovalPublicationSaga` 完成 CAS、bounded Registry exact readback、Lineage r1 和最终 outcome；1 个真实候选组合测试通过，候选源前后 HEAD/status 不变。
+
+失败注入：root 初始缺失，由 C5 安全创建；固定 baseline 的 CP-ROOT-001 继续验证 `roots` 不可用并保持发布锁。
+
+证据命令：`powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <path-to-clean-candidate-checkout>`。
+
+清理：runner 只操作 Git 忽略的 disposable clone 和测试临时目录。
+
+结论：root contract 足以支持 C6 生产闭环，但在该接口进入正式、重新固定的 DSH baseline 前，本项目不得把候选证据描述为默认可发布。
+
+架构影响：解除实现可行性疑问，不解除 CP-ROOT-001 的兼容性锁；C7 仍需在最终目标 baseline 重跑黄金场景。
 
 ### CP-WEB-001
 

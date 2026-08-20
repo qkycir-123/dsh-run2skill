@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import { ProposalReviewStore, ProposalReviewStoreError } from '../dsh-storage/proposal-review-store.js'
+import { PublicationSagaStore, PublicationSagaStoreError } from '../dsh-storage/publication-saga-store.js'
 import type { Run2skillDomain } from '../dsh-storage/types.js'
 import { ExperienceRecordV1Schema } from '../../domain/learn/index.js'
-import { EvidenceRefSchema } from '../../domain/observe/schemas.js'
+import { EvidenceRefSchema, type CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 import {
   ProposalRefV1Schema,
   ProposalSnapshotV1Schema,
@@ -129,7 +130,7 @@ function offsetOf(cursor: string | undefined): number | undefined {
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
-function mutationReceipt(result: Awaited<ReturnType<ProposalReviewStore['approve']>>) {
+function mutationReceipt(result: { readonly item: CaptureWorkItemV1; readonly changed: boolean }) {
   const review = result.item.review!
   return receiptSchema.parse({
     apiVersion: 1,
@@ -144,6 +145,16 @@ function mutationReceipt(result: Awaited<ReturnType<ProposalReviewStore['approve
 }
 
 function mappedStoreError(value: unknown): ObserveRpcResult<never> {
+  if (value instanceof PublicationSagaStoreError) {
+    switch (value.code) {
+      case 'PUBLICATION_WORK_ITEM_NOT_FOUND': return error('not-found')
+      case 'PUBLICATION_REVISION_CONFLICT':
+      case 'STALE_PROPOSAL_REF': return error('conflict')
+      case 'INVALID_PUBLICATION_STATE':
+      case 'LINEAGE_CONFLICT':
+      case 'PUBLICATION_RETRY_LIMIT': return error('invalid-state')
+    }
+  }
   if (!(value instanceof ProposalReviewStoreError)) return error('internal')
   switch (value.code) {
     case 'REVIEW_WORK_ITEM_NOT_FOUND': return error('not-found')
@@ -154,6 +165,10 @@ function mappedStoreError(value: unknown): ObserveRpcResult<never> {
   }
 }
 
+export interface ProposalReviewRpcOptions {
+  readonly onPublicationRequested?: (workItemId: string) => void
+}
+
 export function createProposalReviewRpcHandler(
   getDomain: () => Run2skillDomain | undefined,
   readHealth: () => {
@@ -161,8 +176,10 @@ export function createProposalReviewRpcHandler(
     readonly recoveryLag: boolean
     readonly lastHealthCode?: string | undefined
   } = () => ({ status: 'READY', recoveryLag: false }),
+  options: ProposalReviewRpcOptions = {},
 ): ObserveSummaryRpcHandler {
   const stores = new WeakMap<Run2skillDomain, ProposalReviewStore>()
+  const publicationStores = new WeakMap<Run2skillDomain, PublicationSagaStore>()
   return async (endpoint, payload, signal) => {
     if (!requestFits(payload)) return error('bad-request')
     const schema = endpoint === PROPOSAL_SUMMARY_ENDPOINT
@@ -295,13 +312,62 @@ export function createProposalReviewRpcHandler(
       stores.set(domain, store)
     }
     try {
-      const result = endpoint === PROPOSALS_APPROVE_ENDPOINT
-        ? await store.approve(request.workItemId, request.workItemRevision, request.proposalRef)
-        : endpoint === PROPOSALS_REJECT_ENDPOINT
+      let result: { readonly item: CaptureWorkItemV1; readonly changed: boolean }
+      if (endpoint === PROPOSALS_APPROVE_ENDPOINT) {
+        result = await store.approve(request.workItemId, request.workItemRevision, request.proposalRef)
+      } else if (endpoint === PROPOSALS_RETRY_ENDPOINT) {
+        const current = domain.table('work_items').get(request.workItemId)
+        const currentRef = current?.review === undefined
+          ? undefined
+          : proposalRefOf(current.review.proposal)
+        const sameProposal = currentRef !== undefined
+          && currentRef.proposalId === request.proposalRef.proposalId
+          && currentRef.revision === request.proposalRef.revision
+          && currentRef.digest === request.proposalRef.digest
+        if (
+          current?.review?.reviewDecision === 'APPROVED'
+          && current.review.publicationOutcome === 'PUBLISH_FAILED'
+        ) {
+          let publications = publicationStores.get(domain)
+          if (publications === undefined) {
+            publications = new PublicationSagaStore(domain)
+            publicationStores.set(domain, publications)
+          }
+          result = {
+            item: await publications.retry(
+              request.workItemId,
+              request.workItemRevision,
+              request.proposalRef,
+            ),
+            changed: true,
+          }
+        } else if (
+          current?.processingState === 'PUBLISHING'
+          && current.review?.reviewDecision === 'APPROVED'
+          && current.review.publicationOutcome === 'PENDING_REVIEW'
+          && (current.publication?.attemptCount ?? 0) > 1
+          && sameProposal
+        ) {
+          result = { item: current, changed: false }
+        } else {
+          result = await store.requestCoverageRetry(
+            request.workItemId,
+            request.workItemRevision,
+            request.proposalRef,
+          )
+        }
+      } else {
+        result = endpoint === PROPOSALS_REJECT_ENDPOINT
           ? await store.reject(request.workItemId, request.workItemRevision, request.proposalRef)
-          : endpoint === PROPOSALS_RETRY_ENDPOINT
-            ? await store.requestCoverageRetry(request.workItemId, request.workItemRevision, request.proposalRef)
-            : await store.confirmCoverage(request.workItemId, request.workItemRevision, request.proposalRef)
+          : await store.confirmCoverage(request.workItemId, request.workItemRevision, request.proposalRef)
+      }
+      if (result.item.processingState === 'PUBLISHING') {
+        try {
+          options.onPublicationRequested?.(result.item.workItemId)
+        } catch {
+          // The approval is durable; a failed wake must not rewrite the RPC result.
+        }
+      }
       return { ok: true, value: mutationReceipt(result) }
     } catch (caught) {
       return mappedStoreError(caught)

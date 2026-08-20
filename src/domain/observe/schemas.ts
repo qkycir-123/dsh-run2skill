@@ -22,6 +22,7 @@ import {
   deriveProposalId,
   proposalFactsOf,
 } from '../review/index.js'
+import { PublicationStateV1Schema } from '../publication/index.js'
 
 const safeNonNegativeInteger = z.number().refine(
   (value) => Number.isSafeInteger(value) && value >= 0,
@@ -144,6 +145,7 @@ export const CaptureWorkItemV1Schema = z.object({
   ]),
   learning: LearningStateV1Schema.optional(),
   review: ReviewStateV1Schema.optional(),
+  publication: PublicationStateV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.workItemId !== deriveWorkItemIdFromFacts(value.signalKey)) {
     context.addIssue({ code: 'custom', message: 'WorkItem ID does not match SignalKey' })
@@ -187,7 +189,7 @@ export const CaptureWorkItemV1Schema = z.object({
     ) {
       context.addIssue({ code: 'custom', message: 'Resolved no-signal items must be complete and empty' })
     }
-    if (value.learning !== undefined || value.review !== undefined) {
+    if (value.learning !== undefined || value.review !== undefined || value.publication !== undefined) {
       context.addIssue({ code: 'custom', message: 'Resolved no-signal items cannot have learning or review facts' })
     }
   }
@@ -206,6 +208,12 @@ export const CaptureWorkItemV1Schema = z.object({
   }
   if (['CAPTURED', 'ANALYZING', 'LEARNED'].includes(value.processingState) && value.review !== undefined) {
     context.addIssue({ code: 'custom', message: 'Pre-review states cannot retain review facts' })
+  }
+  if (value.publication !== undefined && value.review?.reviewDecision !== 'APPROVED') {
+    context.addIssue({ code: 'custom', path: ['publication'], message: 'Publication facts require an approved Review' })
+  }
+  if (['CAPTURED', 'ANALYZING', 'LEARNED', 'READY_FOR_REVIEW'].includes(value.processingState) && value.publication !== undefined) {
+    context.addIssue({ code: 'custom', path: ['publication'], message: 'Pre-publication states cannot retain publication facts' })
   }
   if (value.processingState === 'ANALYZING' && value.learning !== undefined) {
     if (value.learning.claimedAt === undefined || value.learning.proposal !== undefined) {
@@ -294,7 +302,11 @@ export const CaptureWorkItemV1Schema = z.object({
     }
   }
   if (value.processingState === 'PUBLISHING') {
-    if (value.review?.reviewDecision !== 'APPROVED' || value.review.publicationOutcome !== 'PENDING_REVIEW') {
+    if (
+      value.review?.reviewDecision !== 'APPROVED'
+      || value.review.publicationOutcome !== 'PENDING_REVIEW'
+      || value.publication === undefined
+    ) {
       context.addIssue({ code: 'custom', message: 'Publishing items require an approved pending publication' })
     }
   }

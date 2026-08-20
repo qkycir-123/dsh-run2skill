@@ -67,6 +67,7 @@ export type ProposalBuildFailureCode =
   | 'TARGET_FORMAT_UNSUPPORTED'
   | 'BASE_UNAVAILABLE'
   | 'UNSAFE_SKILL'
+  | 'APPROVAL_FACTS_CHANGED'
 
 export type ProposalBuildResult =
   | { readonly status: 'READY'; readonly proposal: ProposalSnapshotV1 }
@@ -153,7 +154,28 @@ export class ProposalSnapshotBuilder<TView extends object> {
     if (item.processingState !== 'LEARNED' || item.learning?.proposal === undefined) {
       return unavailable('CURATION_CONFLICT')
     }
-    const learned = item.learning.proposal
+    return await this.#build(item, view)
+  }
+
+  async revalidateApproved(item: CaptureWorkItemV1, view: TView): Promise<ProposalBuildResult> {
+    const approved = item.review?.proposal
+    if (
+      item.processingState !== 'PUBLISHING'
+      || item.review?.reviewDecision !== 'APPROVED'
+      || item.review.publicationOutcome !== 'PENDING_REVIEW'
+      || item.learning?.proposal === undefined
+      || approved === undefined
+      || approved.actionBinding.kind === 'DISCARD'
+    ) return unavailable('CURATION_CONFLICT')
+    return await this.#build(item, view, approved)
+  }
+
+  async #build(
+    item: CaptureWorkItemV1,
+    view: TView,
+    approved?: ProposalSnapshotV1,
+  ): Promise<ProposalBuildResult> {
+    const learned = item.learning!.proposal!
     const recalled = await recallExistingSkills(
       this.#skills,
       view,
@@ -169,7 +191,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
       )
     ) return unavailable('CATALOG_CHANGED')
 
-    const createdAt = this.#now()
+    const createdAt = approved?.createdAt ?? this.#now()
     const workspaceBinding = await this.#revalidateWorkspace(item, learned.persistenceScope, createdAt)
     if ('failureCode' in workspaceBinding) return unavailable(workspaceBinding.failureCode)
 
@@ -184,7 +206,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
 
     const commonFacts = {
       schemaVersion: 1 as const,
-      revision: 1,
+      revision: approved?.revision ?? 1,
       createdAt,
       sourceLearningProposalId: learned.learningProposalId,
       kind: learned.curation.decision,
@@ -228,17 +250,27 @@ export class ProposalSnapshotBuilder<TView extends object> {
             observedAt: createdAt,
           },
         },
-      })
+      }, approved)
     }
 
+    const approvedRoot = approved?.actionBinding.kind === 'CREATE' || approved?.actionBinding.kind === 'MERGE'
+      ? approved.actionBinding.rootBinding
+      : undefined
     const target = this.#resolveTarget(
       workspaceBinding.value?.canonicalPath,
       learned.persistenceScope,
       learned.name,
       observation,
+      approvedRoot,
     )
     if ('failureCode' in target) return unavailable(target.failureCode)
-    const rootBinding = await this.#bindRoot(target.root, target.expectedRoot, learned.persistenceScope, observation.roots!)
+    const rootBinding = await this.#bindRoot(
+      target.root,
+      target.expectedRoot,
+      learned.persistenceScope,
+      observation.roots!,
+      approvedRoot,
+    )
     if ('failureCode' in rootBinding) return unavailable(rootBinding.failureCode)
 
     if (learned.curation.decision === 'CREATE') {
@@ -267,7 +299,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
             flatSkillFilePathAbsent: true,
           },
         },
-      })
+      }, approved)
     }
 
     const candidate = candidateFor(observation, learned.curation.candidateKey)
@@ -313,7 +345,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
           observedAt: createdAt,
         },
       },
-    })
+    }, approved)
   }
 
   #resolveTarget(
@@ -321,6 +353,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
     scope: 'PROJECT' | 'USER',
     name: string,
     observation: SkillRecallObservation,
+    approvedRoot?: RootBinding,
   ):
     | {
       readonly root: SkillCatalogRootProjection
@@ -334,10 +367,13 @@ export class ProposalSnapshotBuilder<TView extends object> {
     if (observation.roots === undefined) return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
     const base = scope === 'PROJECT'
       ? projectWorkspacePath
-      : this.#effectiveDshHome
-    if (base === undefined) return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
+      : approvedRoot === undefined
+        ? this.#effectiveDshHome
+        : undefined
+    if (base === undefined && approvedRoot === undefined) return { failureCode: 'WORKSPACE_BINDING_UNAVAILABLE' }
     const source = scope === 'PROJECT' ? 'project-dsh' : 'user-dsh'
-    const expectedRoot = scope === 'PROJECT' ? join(base, '.dsh', 'skills') : join(base, 'skills')
+    const expectedRoot = approvedRoot?.declaredRootPath
+      ?? (scope === 'PROJECT' ? join(base!, '.dsh', 'skills') : join(base!, 'skills'))
     const matches = observation.roots.filter(root => (
       root.provider === FILESYSTEM_PROVIDER
       && root.source === source
@@ -362,6 +398,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
     expectedRoot: string,
     scope: 'PROJECT' | 'USER',
     roots: readonly SkillCatalogRootProjection[],
+    approved?: RootBinding,
   ): Promise<
     | { readonly value: RootBinding }
     | { readonly failureCode: ProposalBuildFailureCode }
@@ -381,16 +418,33 @@ export class ProposalSnapshotBuilder<TView extends object> {
       observationDigest: rootObservationDigest(roots),
       declaredRootPath: root.path,
     }
+    if (approved !== undefined && (
+      approved.scope !== common.scope
+      || approved.provider !== common.provider
+      || approved.source !== common.source
+      || approved.resolverVersion !== common.resolverVersion
+      || approved.observationDigest !== common.observationDigest
+      || !samePath(approved.declaredRootPath, common.declaredRootPath)
+    )) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
     if (observed.status === 'EXISTING') {
       if (!samePath(observed.canonicalRootPath, expectedRoot)) {
         return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
       }
-      return { value: {
+      if (approved?.state === 'ABSENT') return { value: approved }
+      const current: RootBinding = {
         ...common,
         state: 'EXISTING',
         canonicalRootPath: observed.canonicalRootPath,
         rootIdentityDigest: observed.rootIdentityDigest,
-      } }
+      }
+      if (
+        approved?.state === 'EXISTING'
+        && (
+          !samePath(approved.canonicalRootPath, current.canonicalRootPath)
+          || approved.rootIdentityDigest !== current.rootIdentityDigest
+        )
+      ) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
+      return { value: approved ?? current }
     }
     const allowedMissingSegments = scope === 'PROJECT'
       ? [['.dsh', 'skills'], ['skills']]
@@ -401,13 +455,26 @@ export class ProposalSnapshotBuilder<TView extends object> {
     if (!samePath(join(observed.canonicalExistingAncestorPath, ...observed.missingSegments), expectedRoot)) {
       return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
     }
-    return { value: {
+    const current: RootBinding = {
       ...common,
       state: 'ABSENT',
       canonicalExistingAncestorPath: observed.canonicalExistingAncestorPath,
       ancestorIdentityDigest: observed.ancestorIdentityDigest,
       missingSegments: [...observed.missingSegments],
-    } }
+    }
+    if (approved !== undefined) {
+      if (approved.state !== 'ABSENT') return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
+      const remaining = approved.missingSegments.slice(-observed.missingSegments.length)
+      if (
+        !sameOrdered(remaining, observed.missingSegments)
+        || !samePath(
+          join(approved.canonicalExistingAncestorPath, ...approved.missingSegments),
+          expectedRoot,
+        )
+      ) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
+      return { value: approved }
+    }
+    return { value: current }
   }
 
   async #observeTargetEntries(
@@ -479,9 +546,17 @@ export class ProposalSnapshotBuilder<TView extends object> {
     }
   }
 
-  #materialize(workItemId: string, facts: ProposalSnapshotFactsV1): ProposalBuildResult {
+  #materialize(
+    workItemId: string,
+    facts: ProposalSnapshotFactsV1,
+    approved?: ProposalSnapshotV1,
+  ): ProposalBuildResult {
     try {
-      return { status: 'READY', proposal: materializeProposalSnapshot(workItemId, facts) }
+      const proposal = materializeProposalSnapshot(workItemId, facts)
+      if (approved !== undefined && JSON.stringify(proposal) !== JSON.stringify(approved)) {
+        return unavailable('APPROVAL_FACTS_CHANGED')
+      }
+      return { status: 'READY', proposal }
     } catch {
       return unavailable('CURATION_CONFLICT')
     }
