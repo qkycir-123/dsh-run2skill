@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { C5PublicationFileSystemAdapter } from '../src/adapters/dsh-publication/publication-filesystem.js'
@@ -368,13 +368,20 @@ describe('ApprovalPublicationSaga', () => {
         now: fixedNow,
       })
 
-      await expect(saga.run(approved.item.workItemId)).resolves.toMatchObject({
+      const completed = await saga.run(approved.item.workItemId)
+      expect(completed).toMatchObject({
         review: { publicationOutcome: 'PUBLISHED' },
       })
+      const rootIdentityDigest = completed.publication!.journal.find(event => (
+        event.stage === 'ROOT_PREPARED'
+        && event.attemptId === approved.item.publication!.activeAttemptId
+      ))?.observedHash
+      if (rootIdentityDigest === undefined) throw new Error('expected durable root identity')
       expect(await readFile(skillFilePath, 'utf8')).toBe(proposal.exactSkillBytes)
       await expect(fileSystem.finalize({
         proposal,
         attemptId: approved.item.publication!.activeAttemptId,
+        rootIdentityDigest,
       })).resolves.toMatchObject({ status: 'finalized' })
       await writeFile(
         join(bundlePath, `.run2skill-${approved.item.publication!.activeAttemptId}.backup`),
@@ -383,6 +390,17 @@ describe('ApprovalPublicationSaga', () => {
       await expect(fileSystem.finalize({
         proposal,
         attemptId: approved.item.publication!.activeAttemptId,
+        rootIdentityDigest,
+      })).rejects.toMatchObject({ code: 'journal_missing' })
+
+      await rename(rootPath, join(workspace, 'original-skills-root'))
+      await mkdir(join(rootPath, '.run2skill-publication'), { recursive: true })
+      await mkdir(bundlePath, { recursive: true })
+      await writeFile(skillFilePath, proposal.exactSkillBytes)
+      await expect(fileSystem.finalize({
+        proposal,
+        attemptId: approved.item.publication!.activeAttemptId,
+        rootIdentityDigest,
       })).rejects.toMatchObject({ code: 'journal_missing' })
     } finally {
       await rm(workspace, { recursive: true, force: true })

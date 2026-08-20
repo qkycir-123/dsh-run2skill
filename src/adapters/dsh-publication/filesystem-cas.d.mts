@@ -47,6 +47,7 @@ export function verifyFinalizedTransaction(input: {
   readonly name: string
   readonly txid: string
   readonly expectedHash: string
+  readonly expectedRootIdentityDigest: string
 }): Promise<boolean>
 export function preparePublicationRoot(input: {
   readonly binding: RootBindingV1

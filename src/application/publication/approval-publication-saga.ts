@@ -52,6 +52,7 @@ export interface PublicationFileSystemPort {
   finalize(input: {
     readonly proposal: ProposalSnapshotV1
     readonly attemptId: string
+    readonly rootIdentityDigest: string
   }): Promise<PublicationFileSystemResult>
 }
 
@@ -344,7 +345,11 @@ export class ApprovalPublicationSaga {
       const filesystemAttemptId = item.publication!.journal.find(event => (
         event.stage === 'TARGET_INSTALLED'
       ))?.attemptId
-      if (filesystemAttemptId === undefined) {
+      const rootIdentityDigest = item.publication!.journal.find(event => (
+        event.stage === 'ROOT_PREPARED'
+        && event.attemptId === filesystemAttemptId
+      ))?.observedHash
+      if (filesystemAttemptId === undefined || rootIdentityDigest === undefined) {
         return await this.#store.fail(
           item.workItemId,
           'PUBLISH_FAILED',
@@ -355,6 +360,7 @@ export class ApprovalPublicationSaga {
       const finalized = await this.#fileSystem.finalize({
         proposal,
         attemptId: filesystemAttemptId,
+        rootIdentityDigest,
       })
       if (finalized.status === 'conflict') return await this.#failConflict(item, finalized.code ?? 'unknown')
       if (finalized.status !== 'finalized') {

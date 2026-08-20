@@ -267,11 +267,20 @@ export async function verifyPublicationDirectoryIdentity(path, expectedIdentityD
   }
 }
 
-export async function verifyFinalizedTransaction({ root, name, txid, expectedHash }) {
-  if (!HASH_PATTERN.test(expectedHash)) return false
+export async function verifyFinalizedTransaction({
+  root,
+  name,
+  txid,
+  expectedHash,
+  expectedRootIdentityDigest,
+}) {
+  if (!HASH_PATTERN.test(expectedHash) || !HASH_PATTERN.test(expectedRootIdentityDigest)) return false
   try {
     validateIdentity(name, txid)
     const rootReal = await ensureRoot(root)
+    if (await observeDirectoryIdentity(rootReal, 'Publication root') !== expectedRootIdentityDigest) {
+      return false
+    }
     const paths = targetPaths(rootReal, name, txid)
     const targetDirIdentity = await observeBundleDirectory(paths)
     const target = await observeRegularFile(paths.target)
@@ -289,6 +298,7 @@ export async function verifyFinalizedTransaction({ root, name, txid, expectedHas
       && confirmed.identityDigest === target.identityDigest
       && await observeBundleDirectory(paths) === targetDirIdentity
       && await observeDirectoryIdentity(journalDir, 'Publication journal') === journalIdentity
+      && await observeDirectoryIdentity(rootReal, 'Publication root') === expectedRootIdentityDigest
   } catch {
     return false
   }

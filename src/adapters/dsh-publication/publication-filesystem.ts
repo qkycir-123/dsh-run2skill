@@ -100,6 +100,7 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
   async finalize(input: {
     readonly proposal: ProposalSnapshotV1
     readonly attemptId: string
+    readonly rootIdentityDigest: string
   }): Promise<PublicationFileSystemResult> {
     const binding = writableBinding(input.proposal)
     try {
@@ -117,6 +118,7 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
           name: input.proposal.name,
           txid: input.attemptId,
           expectedHash: input.proposal.skillBytesDigest,
+          expectedRootIdentityDigest: input.rootIdentityDigest,
         })
       ) return { status: 'finalized', txid: input.attemptId }
       throw caught
