@@ -89,7 +89,29 @@ async function writeExistingSkill(root: string): Promise<void> {
   ].join('\n'))
 }
 
-async function mountStockDsh(base: string, dshHome: string, agentsHome: string) {
+interface FileSystemCompositionOverrides {
+  readonly includeDefaultRoots?: boolean | undefined
+  readonly customSkillDirs?: readonly string[] | undefined
+}
+
+function fileSystemOptions(
+  agentsHome: string,
+  overrides: FileSystemCompositionOverrides = {},
+) {
+  return {
+    agentsHome,
+    watch: true,
+    watchUsePolling: true,
+    watchStabilityThresholdMs: 20,
+    watchPollIntervalMs: 10,
+    ...overrides,
+    ...(overrides.customSkillDirs === undefined
+      ? {}
+      : { customSkillDirs: [...overrides.customSkillDirs] }),
+  }
+}
+
+async function mountStockDsh(base: string, agentsHome: string) {
   const ctx = new Context()
   const storageFiber = await ctx.plugin(Storage)
   const sqliteFiber = await ctx.plugin(StorageSqlite, { path: join(base, 'storage.db') })
@@ -98,28 +120,18 @@ async function mountStockDsh(base: string, dshHome: string, agentsHome: string) 
   const persistenceFiber = await ctx.plugin(SqliteSessionPersistence, { path: join(base, 'sessions.db') })
   const workspaceFiber = await ctx.plugin(WorkspaceRegistry)
   let skillRegistryFiber = await ctx.plugin(SkillRegistry)
-  let skillFileSystemFiber = await ctx.plugin(SkillFileSystem, {
-    dshHome,
-    agentsHome,
-    watch: true,
-    watchUsePolling: true,
-    watchStabilityThresholdMs: 20,
-    watchPollIntervalMs: 10,
-  })
+  let skillFileSystemFiber = await ctx.plugin(SkillFileSystem, fileSystemOptions(agentsHome))
   return {
     ctx,
+    async remountFileSystem(overrides: FileSystemCompositionOverrides) {
+      await skillFileSystemFiber.dispose()
+      skillFileSystemFiber = await ctx.plugin(SkillFileSystem, fileSystemOptions(agentsHome, overrides))
+    },
     async remountSkills() {
       await skillFileSystemFiber.dispose()
       await skillRegistryFiber.dispose()
       skillRegistryFiber = await ctx.plugin(SkillRegistry)
-      skillFileSystemFiber = await ctx.plugin(SkillFileSystem, {
-        dshHome,
-        agentsHome,
-        watch: true,
-        watchUsePolling: true,
-        watchStabilityThresholdMs: 20,
-        watchPollIntervalMs: 10,
-      })
+      skillFileSystemFiber = await ctx.plugin(SkillFileSystem, fileSystemOptions(agentsHome))
     },
     async dispose() {
       await skillFileSystemFiber.dispose()
@@ -220,14 +232,8 @@ async function learnedFor(
   return scope === 'USER' ? withUserScope(learned) : learned
 }
 
-function rootContract(
-  dshHome: string,
-  configuration: StockSkillRuntimeConfiguration,
-): PublicationRootContractPort<SkillView> {
-  const resolver = new StockDshRootContractResolver({
-    environment: { DSH_HOME: dshHome },
-    homeDirectory: () => join(dshHome, 'unused-default'),
-  })
+function rootContract(configuration: StockSkillRuntimeConfiguration): PublicationRootContractPort<SkillView> {
+  const resolver = new StockDshRootContractResolver()
   return {
     resolve: input => resolver.resolve({
       scope: input.scope,
@@ -241,7 +247,6 @@ function rootContract(
 function makeBuilder(
   skills: DshSkillCatalogAdapter<SkillView>,
   workspaceRegistry: DshWorkspaceRegistryPort,
-  dshHome: string,
   configuration = standardConfiguration,
 ) {
   return new ProposalSnapshotBuilder(
@@ -250,7 +255,7 @@ function makeBuilder(
     new DshWorkspaceBindingResolver(workspaceRegistry),
     {
       now: () => '2026-08-20T02:00:00.000Z',
-      rootContract: rootContract(dshHome, configuration),
+      rootContract: rootContract(configuration),
     },
   )
 }
@@ -267,16 +272,29 @@ async function setupCase(scope: Scope, decision: Decision) {
     ? join(canonicalProject, '.dsh', 'skills')
     : join(dshHome, 'skills')
   if (decision === 'MERGE') await writeExistingSkill(root)
-  const mount = await mountStockDsh(base, dshHome, agentsHome)
+  const previousDshHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dshHome
+  const restoreDshHome = () => {
+    if (previousDshHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousDshHome
+  }
+  let mount: Awaited<ReturnType<typeof mountStockDsh>>
+  try {
+    mount = await mountStockDsh(base, agentsHome)
+  } catch (caught) {
+    restoreDshHome()
+    throw caught
+  }
   try {
     const workspace = await mount.ctx.workspaceRegistry.create(canonicalProject)
     const view = { cwd: workspace.path }
     const skills = new DshSkillCatalogAdapter<SkillView>(mount.ctx.skills)
-    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, dshHome)
+    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry)
     const learned = await learnedFor(skills, view, workspace.id, scope, decision)
-    return { base, dshHome, mount, workspace, view, skills, builder, learned, root }
+    return { base, dshHome, mount, workspace, view, skills, builder, learned, root, restoreDshHome }
   } catch (caught) {
     await mount.dispose()
+    restoreDshHome()
     throw caught
   }
 }
@@ -369,6 +387,7 @@ async function publish(scope: Scope, decision: Decision, verifyRemount: boolean)
     }
   } finally {
     await setup.mount.dispose()
+    setup.restoreDshHome()
   }
 }
 
@@ -382,7 +401,12 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
     await publish(scope, decision, remount)
   }, 30_000)
 
-  it('fails closed with NEEDS_ATTENTION when the approved stock configuration no longer matches', async () => {
+  it.each([
+    ['renamed provider', 'provider'],
+    ['disabled defaults', 'defaults'],
+    ['custom roots', 'roots'],
+    ['custom preset', 'preset'],
+  ] as const)('fails closed with NEEDS_ATTENTION for %s drift', async (_label, drift) => {
     const setup = await setupCase('PROJECT', 'CREATE')
     try {
       const built = await setup.builder.build(setup.learned, setup.view)
@@ -396,10 +420,21 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
         staged.item.revision,
         proposalRefOf(built.proposal),
       )
-      const mismatched = makeBuilder(setup.skills, setup.mount.ctx.workspaceRegistry, setup.dshHome, {
+      const customRoot = join(setup.base, 'custom-skills')
+      if (drift === 'defaults') {
+        await setup.mount.remountFileSystem({ includeDefaultRoots: false })
+      } else if (drift === 'roots') {
+        await mkdir(customRoot, { recursive: true })
+        await setup.mount.remountFileSystem({ customSkillDirs: [customRoot] })
+      }
+      const configuration: StockSkillRuntimeConfiguration = {
         ...standardConfiguration,
-        presetId: 'minimal',
-      })
+        ...(drift === 'provider' ? { providerName: 'run2skill-filesystem' } : {}),
+        ...(drift === 'defaults' ? { includeDefaultRoots: false } : {}),
+        ...(drift === 'roots' ? { customSkillDirs: [customRoot] } : {}),
+        ...(drift === 'preset' ? { presetId: 'team-preset' } : {}),
+      }
+      const mismatched = makeBuilder(setup.skills, setup.mount.ctx.workspaceRegistry, configuration)
       const publicationView = () => setup.view
       const saga = new ApprovalPublicationSaga({
         store: new PublicationSagaStore(domain),
@@ -418,6 +453,7 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
       )).resolves.toEqual({ status: 'ABSENT' })
     } finally {
       await setup.mount.dispose()
+      setup.restoreDshHome()
     }
   }, 30_000)
 
