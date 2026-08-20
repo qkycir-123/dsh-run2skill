@@ -64,6 +64,8 @@ export const RootBindingV1Schema = z.discriminatedUnion('state', [
   }
 })
 
+export type RootBindingV1 = z.infer<typeof RootBindingV1Schema>
+
 const TargetBindingV1Schema = z.object({
   skillName,
   bundlePath: path,

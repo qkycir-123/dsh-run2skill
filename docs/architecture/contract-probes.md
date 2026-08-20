@@ -171,12 +171,12 @@ Probe run ID
 
 状态：PASS（Windows + WSL/Linux）  
 环境：Windows 10.0.26200、Node v24.18.0；WSL2/Linux 6.18.33.2 x86_64、Node v22.23.2。两个平台都在各自原生临时目录执行文件系统动作。  
-输入：两个竞争 CREATE、stale MERGE Base、两处外部编辑竞争、三个真实子进程崩溃窗口、路径遍历、Windows junction/Linux symlink，以及 Registry 回读前的 backup finalization。  
+输入：两个竞争 CREATE、stale MERGE Base、两处外部编辑竞争、五个真实子进程崩溃窗口、路径遍历、Windows junction/Linux symlink，以及 Registry 回读前的 backup finalization。
 预期：CREATE 最多一个成功；stale/unseen change 不被覆盖；进程崩溃后按 stage/backup/target 哈希恢复；逃逸路径 fail closed；backup 只在 exact readback 后清理。  
 步骤：CREATE 以 bundle directory 独占 claim；stage 文件 fsync 后以同文件系统 hard-link no-replace 安装；MERGE 将当前 target 移到唯一 backup 并复核 approved Base，再以同一 no-replace 原语安装；每个状态写 append-only journal；子进程分别在 CREATE staged、MERGE backup moved、MERGE installed-before-journal 时直接 exit(86)，父进程只依据有效 journal 和文件哈希恢复。  
-实际：Windows 5/5、Linux 5/5。竞争 CREATE 恰好一个 written、一个 conflict；Base 或 target 在切换窗口改变时用户 bytes 原样保留；三个进程崩溃窗口全部恢复到 exact approved bytes，MERGE backup 保留；`../`、junction 和 symlink 全部在写入外部目录前拒绝；target 在模拟 Registry readback 前改变时 finalize 拒绝且 backup/journal 均保留。  
-失败注入：并发 CREATE；错误 Base；rename 前用户修改；backup move 后外部 target 出现；三处 `process.exit(86)`；junction/symlink；readback 前 target 变化。  
-证据命令：`powershell -File probes/run-publication-contract-probe.ps1`；如需指定非默认 WSL，再传入 `-WslDistribution <name>`。两端均输出 5 tests passed，最后输出 `CP_PUB_001=PASS`。该探针只验证跨平台文件 CAS 原语，不读取或修改 DSH checkout。  
+实际：Windows 8/8、Linux 8/8。竞争 CREATE 恰好一个 written、一个 conflict；缺失 root 在逐层创建中崩溃后可安全续跑且不删除并发用户文件；Base 或 target 在切换窗口改变时用户 bytes 原样保留；bundle identity 被替换时 CREATE/MERGE/recovery/finalize 全部停止；backup 缺失观察后的竞争者 bytes 原样保留；进程崩溃窗口恢复到 exact approved bytes 或安全 conflict，MERGE backup 保留；相对 root、`../`、journal/target junction 和 symlink 全部在写入外部目录前拒绝；unknown hash 停止且保留原物；hash-chain journal 有固定上限并忽略 torn newest record；target 在模拟 Registry readback 前改变时 finalize 拒绝且 backup/journal 均保留。
+失败注入：并发 CREATE；错误 Base；rename 前用户修改；backup move 后外部 target 出现；bundle directory swap；backup absence 后竞争；真实 `process.exit(86)`；junction/symlink；readback 前 target 变化。
+证据命令：`powershell -File probes/run-publication-contract-probe.ps1`；如需指定非默认 WSL，再传入 `-WslDistribution <name>`。两端均输出 8 tests passed，最后输出 `CP_PUB_001=PASS`。该探针直接执行 `src/adapters/dsh-publication` 的生产原语，不读取或修改 DSH checkout。
 清理：每个测试只删除带固定随机前缀的 OS 临时目录；探针不写 DSH 源码，也不写真实 Skill root。  
 结论：候选 CAS 协议在 Node 的 Windows 与 Linux 文件系统原语上成立。最终安装必须使用 hard-link no-replace 或等价且经同等验证的原语，普通 rename/atomic replace 不能替代；MERGE backup 必须保留到 Registry exact readback。证据覆盖进程崩溃，不声称抵抗掉电或存储设备失效。  
 架构影响：Baseline 13.4 从候选方案收敛为已验证的 no-replace + append-only journal 协议；Slice C 的文件 CAS 探针门解除，但完整发布仍受 CP-ROOT-001 的实际 provider root 与 Registry 精确回读锁约束。

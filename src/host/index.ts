@@ -45,6 +45,16 @@ import {
 import { ObserveSummaryV1Schema, type ObserveSummaryV1 } from '../domain/observe/observe-summary.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
 
+export {
+  PublicationConflict,
+  createBundle,
+  finalizeTransaction,
+  mergeBundle,
+  preparePublicationRoot,
+  recoverTransaction,
+} from '../adapters/dsh-publication/filesystem-cas.mjs'
+export { PublicationTargetSingleFlight } from '../adapters/dsh-publication/target-single-flight.js'
+
 export const name = 'run2skill'
 export const inject = [
   'sessions',
