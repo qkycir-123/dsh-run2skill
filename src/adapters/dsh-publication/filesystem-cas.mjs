@@ -291,28 +291,38 @@ export async function verifyFinalizedTransaction({
     validateIdentity(name, txid)
     const rootReal = await ensureRoot(root)
     await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
+    const finalizedMismatch = async () => {
+      await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
+      return false
+    }
     const paths = targetPaths(rootReal, name, txid)
     const targetDirIdentity = await observeBundleDirectory(paths)
     const target = await observeRegularFile(paths.target)
-    if (target?.hash !== expectedHash) return false
+    if (target?.hash !== expectedHash) return await finalizedMismatch()
     if (
       await statOrNull(paths.stage) !== null
       || await statOrNull(paths.backup) !== null
       || await statOrNull(paths.claim) !== null
-    ) return false
+    ) return await finalizedMismatch()
     const journalDir = await ensureJournalDirectory(rootReal)
     const journalIdentity = await observeDirectoryIdentity(journalDir, 'Publication journal')
-    if ((await readdir(journalDir)).some(entry => entry.startsWith(`${txid}.`))) return false
+    if ((await readdir(journalDir)).some(entry => entry.startsWith(`${txid}.`))) {
+      return await finalizedMismatch()
+    }
     const confirmed = await observeRegularFile(paths.target)
     const stable = confirmed?.hash === expectedHash
       && confirmed.identityDigest === target.identityDigest
       && await observeBundleDirectory(paths) === targetDirIdentity
       && await observeDirectoryIdentity(journalDir, 'Publication journal') === journalIdentity
-    if (!stable) return false
+    if (!stable) return await finalizedMismatch()
     await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
     return true
   } catch (caught) {
-    if (caught instanceof PublicationConflict && caught.code === 'root_identity_changed') throw caught
+    if (
+      caught instanceof PublicationConflict
+      && /unsafe|changed|mismatch|identity|parity/u.test(caught.code)
+    ) throw caught
+    await requirePublicationRootIdentity(root, expectedRootIdentityDigest)
     return false
   }
 }

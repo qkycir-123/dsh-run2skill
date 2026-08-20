@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { C5PublicationFileSystemAdapter } from '../src/adapters/dsh-publication/publication-filesystem.js'
@@ -366,9 +366,6 @@ describe('ApprovalPublicationSaga', () => {
           if (matches && replaceRootAfterIdentityCheck) {
             replaceRootAfterIdentityCheck = false
             await rename(rootPath, join(workspace, 'original-skills-root'))
-            await mkdir(join(rootPath, '.run2skill-publication'), { recursive: true })
-            await mkdir(bundlePath, { recursive: true })
-            await writeFile(skillFilePath, proposal.exactSkillBytes)
           }
           return matches
         },
