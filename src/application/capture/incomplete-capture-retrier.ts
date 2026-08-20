@@ -30,9 +30,10 @@ export class IncompleteCaptureRetrier {
     if (this.#running !== undefined) return this.#running
     const running = this.#retryBatch(signal)
     this.#running = running
-    void running.finally(() => {
+    const clear = () => {
       if (this.#running === running) this.#running = undefined
-    })
+    }
+    void running.then(clear, clear)
     return running
   }
 

@@ -59,6 +59,50 @@ function persistence(): SessionPersistencePort {
 }
 
 describe('IncompleteCaptureRetrier', () => {
+  it('does not create an unhandled rejection when a bounded retry fails', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const notices = new RuntimeNotices()
+    const checkpoint = new WriteBehindCheckpoint(domain)
+    await checkpoint.activate([{ ...progress(), durableNextSeq: 10, observedTailSeq: 9 }])
+    const store = new DurableCaptureStore(domain)
+    const coordinator = new DurableCaptureCoordinator(store, checkpoint, notices)
+    const incompleteProcessor = new TurnCaptureProcessor(
+      coordinator,
+      notices,
+      { resolve: async () => ({ status: 'UNREGISTERED' }) },
+      { snapshot: () => ({ automaticLearning: true }) },
+      () => ({
+        status: 'INCOMPLETE', captureBlockers: ['REDACTION_UNAVAILABLE'],
+        triggerHits: [], evidenceRefs: [],
+      }),
+    )
+    await incompleteProcessor.processTurn({ header, events, turnEndSeq: 12, progress: progress() })
+    const failingProcessor = new TurnCaptureProcessor(
+      coordinator,
+      notices,
+      { resolve: async () => ({ status: 'UNREGISTERED' }) },
+      { snapshot: () => ({ automaticLearning: true }) },
+      () => { throw new Error('synthetic retry failure') },
+    )
+    const retrier = new IncompleteCaptureRetrier(
+      new DshSessionGapReader(persistence()),
+      store,
+      checkpoint,
+      failingProcessor,
+      notices,
+    )
+    const unhandled: unknown[] = []
+    const captureUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', captureUnhandled)
+    try {
+      await expect(retrier.retryBatch()).rejects.toThrow('synthetic retry failure')
+      await new Promise<void>(resolve => setImmediate(resolve))
+    } finally {
+      process.off('unhandledRejection', captureUnhandled)
+    }
+    expect(unhandled).toEqual([])
+  })
+
   it('recovers an explicit save after repeated incomplete scans and a runtime restart', async () => {
     const domain = createMemoryRun2skillDomain()
     let attempts = 0
