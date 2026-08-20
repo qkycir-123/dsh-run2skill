@@ -15,6 +15,11 @@ function learningServices() {
       async snapshot() { return { skills: [], complete: true } },
       async get() { return undefined },
     },
+    agentPresets: {
+      composedPreset() { return undefined },
+      async resolve(id: string) { return { id, trust: 'system' as const } },
+      async read() { return '' },
+    },
   }
 }
 
@@ -29,6 +34,7 @@ describe('Host plugin assembly', () => {
       'connection',
       'llm',
       'skills',
+      'agentPresets',
     ])
     expect(inject).not.toContain('settings')
   })

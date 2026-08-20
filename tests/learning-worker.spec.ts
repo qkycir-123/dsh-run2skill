@@ -106,6 +106,7 @@ function setup(options: {
     complete: ++snapshotCalls > (options.catalogIncompleteCalls ?? 0),
   }))
   const sleeps: number[] = []
+  const onCompleted = vi.fn(async () => undefined)
   const worker = new LearningWorker({
     store,
     sessionReader,
@@ -118,13 +119,14 @@ function setup(options: {
     notices: new RuntimeNotices({ now: () => Date.parse(NOW) }),
     now: () => Date.parse(NOW),
     sleep: async milliseconds => { sleeps.push(milliseconds) },
+    onCompleted,
   })
-  return { fixture, item, domain, store, scopes, client, learn, snapshot, sleeps, worker }
+  return { fixture, item, domain, store, scopes, client, learn, snapshot, sleeps, onCompleted, worker }
 }
 
 describe('LearningWorker', () => {
   it('orchestrates the exact Session, Agent scope, Skill view, Envelope, guard, and durable result', async () => {
-    const { item, domain, learn, snapshot, worker } = setup()
+    const { item, domain, learn, snapshot, onCompleted, worker } = setup()
 
     await worker.run(item, new AbortController().signal)
 
@@ -142,6 +144,10 @@ describe('LearningWorker', () => {
     expect(request.envelope).toContain('USER_EVIDENCE')
     expect(request.envelope).not.toContain('future-provider')
     expect(snapshot.mock.calls[0]?.[0]).toMatchObject({ cwd: 'D:\\canonical-workspace' })
+    expect(onCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      workItemId: item.workItemId,
+      processingState: 'LEARNED',
+    }))
   })
 
   it('persists a retryable pre-model failure without consuming request budget', async () => {

@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest'
 import {
   STOCK_DSH_BASELINE_COMMIT,
   StockDshRootContractResolver,
+  StockSkillRuntimeConfigurationCache,
   deriveStockResolutionContractDigest,
+  resolvePinnedStockPresetConfiguration,
   resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
 import { RootBindingV2Schema } from '../src/domain/review/index.js'
+import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 
 const workspace = resolve('stock-contract-workspace')
 const dshHome = resolve('stock-contract-dsh-home')
@@ -26,6 +29,45 @@ function configuration(
 }
 
 describe('stock DSH root contract', () => {
+  it('retains the exact pre-step configuration after the standing mount leaves its observation window', async () => {
+    const agent = { ctx: {} }
+    let mounted = true
+    const expected = configuration()
+    const cache = new StockSkillRuntimeConfigurationCache(async candidate => (
+      candidate === agent && mounted ? expected : undefined
+    ))
+
+    await expect(cache.capture(agent)).resolves.toEqual(expected)
+    mounted = false
+
+    await expect(cache.capture(agent)).resolves.toBeUndefined()
+    expect(cache.get(agent)).toEqual(expected)
+    cache.release(agent)
+    expect(cache.get(agent)).toBeUndefined()
+  })
+
+  it('accepts only an exact trusted pinned stock preset when module-local mount state is unavailable', async () => {
+    const agent = { ctx: {} }
+    const content = '- id: skill-filesystem\n  name: stock\n'
+    const service = {
+      composedPreset: (ctx: object) => ctx === agent.ctx ? 'standard' : undefined,
+      resolve: async () => ({ id: 'standard', trust: 'system' as const }),
+      read: async () => content,
+    }
+    const digests = { standard: sha256Utf8(content), code: 'f'.repeat(64) }
+
+    await expect(resolvePinnedStockPresetConfiguration(service, agent, digests))
+      .resolves.toEqual(configuration())
+    await expect(resolvePinnedStockPresetConfiguration({
+      ...service,
+      read: async () => `${content}# drift\n`,
+    }, agent, digests)).resolves.toBeUndefined()
+    await expect(resolvePinnedStockPresetConfiguration({
+      ...service,
+      resolve: async () => ({ id: 'standard', trust: 'user' as const }),
+    }, agent, digests)).resolves.toBeUndefined()
+  })
+
   it('derives the exact filesystem configuration from the stock fiber mounted for one Agent generation', async () => {
     const configuredHome = resolve('configured-dsh-home')
     const customRoot = resolve('custom-skills')

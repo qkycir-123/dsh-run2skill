@@ -91,15 +91,17 @@ describe('Observe Header action', () => {
       id: 'run2skill-observe-summary',
     }), expect.any(Function))
     const options = register.mock.calls[0]?.[0] as {
-      inject: {
+      inject: () => {
         callReview(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
         getWorkspaceId(sessionId: string): string
       }
     }
-    expect(options.inject.getWorkspaceId('session-a')).toBe('workspace-a')
-    expect(options.inject.getWorkspaceId('unbound-session')).toBe('unbound-session')
+    expect(options.inject).toBeTypeOf('function')
+    const face = options.inject()
+    expect(face.getWorkspaceId('session-a')).toBe('workspace-a')
+    expect(face.getWorkspaceId('unbound-session')).toBe('unbound-session')
     const signal = new AbortController().signal
-    await options.inject.callReview('proposals/list', { apiVersion: 1 }, signal)
+    await face.callReview('proposals/list', { apiVersion: 1 }, signal)
     expect(context.connection.rpc.call).toHaveBeenCalledWith(
       '/run2skill', 'proposals/list', { apiVersion: 1 }, signal,
     )

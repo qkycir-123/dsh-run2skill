@@ -1,6 +1,6 @@
 # 切片 C Design：最小安全闭环
 
-状态：已接受；C1–C6 已合并；C7 暂停，先完成纯插件 root-contract 修正 #48
+状态：已接受并验收；C1–C7 与纯插件 root-contract 修正 #48 已完成
 设计日期：2026-08-20
 对应 Issue：#31
 前置契约：已接受的 PRD、Architecture Baseline、切片 A/B，以及 CP-SKL-001、CP-PUB-001、CP-WEB-001 运行证据
@@ -478,7 +478,7 @@ src/client/                     # Inbox/Review UI
 
    四个黄金场景、故障注入、secret 阻断与跨重启证据；只做验收修复，不提前实现 D。
 
-C7 在 #48 合并前保持暂停。独立 Issue #48 已迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据；该 Issue 仍不承担 C7 最终产品验收。
+C7 曾在 #48 合并前保持暂停。独立 Issue #48 已迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据；随后 C7 在 #40 完成最终产品验收，证据见 `docs/evidence/slice-c-acceptance.md`。
 
 ## 13. 已知取舍
 

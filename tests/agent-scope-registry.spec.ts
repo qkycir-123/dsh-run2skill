@@ -53,4 +53,19 @@ describe('ExactAgentScopeRegistry', () => {
     release()
     expect(registry.resolve(item)).toEqual({ status: 'UNAVAILABLE' })
   })
+
+  it('borrows a unique active scope only from the same canonical cwd for restart recovery', () => {
+    const registry = new ExactAgentScopeRegistry<object>()
+    const current = agent('current-session', 300, 'D:\\repo\\project')
+    const release = registry.register(current)
+
+    expect(registry.resolveUniqueCwd('D:\\repo\\project\\.')).toMatchObject({
+      status: 'AVAILABLE', agent: current, cwd: 'D:\\repo\\project',
+    })
+    expect(registry.resolveUniqueCwd('D:\\repo\\other')).toEqual({ status: 'UNAVAILABLE' })
+
+    registry.register(agent('concurrent-session', 400, 'D:\\repo\\project'))
+    expect(registry.resolveUniqueCwd('D:\\repo\\project')).toEqual({ status: 'UNAVAILABLE' })
+    release()
+  })
 })

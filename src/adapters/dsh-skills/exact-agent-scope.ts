@@ -3,6 +3,7 @@ import {
   deriveSessionCwdDigest,
   deriveSessionLifecycleKey,
 } from '../../domain/observe/signal-key.js'
+import { normalize, resolve } from 'node:path'
 
 export interface AgentScopeProjection {
   readonly id: string
@@ -65,6 +66,20 @@ export class ExactAgentScopeRegistry<TAgent extends object> {
     return entry === undefined
       ? { status: 'UNAVAILABLE' }
       : { status: 'AVAILABLE', lifecycleKey, ...entry }
+  }
+
+  resolveUniqueCwd(cwd: string): AgentScopeResolution<TAgent> {
+    const expected = normalize(resolve(cwd))
+    const matches = [...this.scopes.entries()].filter(([, entry]) => {
+      if (entry.cwd === undefined) return false
+      const actual = normalize(resolve(entry.cwd))
+      return process.platform === 'win32'
+        ? actual.toLowerCase() === expected.toLowerCase()
+        : actual === expected
+    })
+    if (matches.length !== 1) return { status: 'UNAVAILABLE' }
+    const [lifecycleKey, entry] = matches[0]!
+    return { status: 'AVAILABLE', lifecycleKey, ...entry }
   }
 
   clear(): void {
