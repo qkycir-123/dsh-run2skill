@@ -229,7 +229,7 @@ Architecture Baseline 必须把以下风险映射到测试层级：
 - secret、prompt-injection-like 内容和安全渲染；
 - Web accessibility 和 browser trust；
 - 安装、升级、禁用、卸载；
-- 三个黄金场景和冻结评测集；
+- 四个黄金场景和冻结评测集；
 - 当前 baseline 与最新上游预警兼容性。
 
 必须区分 unit、integration、contract probe 和 end-to-end 证据，不能只依赖黄金场景。

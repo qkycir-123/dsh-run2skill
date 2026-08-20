@@ -1,6 +1,6 @@
 # 切片 C Design：最小安全闭环
 
-状态：待评审
+状态：已接受；C1–C6 已合并；C7 暂停，先完成纯插件 root-contract 修正 #48
 设计日期：2026-08-20
 对应 Issue：#31
 前置契约：已接受的 PRD、Architecture Baseline、切片 A/B，以及 CP-SKL-001、CP-PUB-001、CP-WEB-001 运行证据
@@ -22,7 +22,7 @@ LEARNED
 
 本切片不允许用浏览器内容、模型建议、默认路径或普通覆盖写入替代 Host 权威事实。`APPROVED` 只表示用户授权；只有写盘、热刷新和精确回读全部成立，才记录 `PUBLISHED`。
 
-当前固定 DSH baseline 没有公开 session-scoped provider roots。为解除 CP-ROOT-001，已拆前置 Issue #32，并在 DSH fork 的 `0fdc7a42a03693c41290d10af1725775af6598ca` 提供候选上游契约。该 commit 不是本项目的生产 baseline，也不会作为本地 patch 随插件发布。运行时若 root observation 缺失、不完整或有歧义，Proposal 只能进入 `NEEDS_ATTENTION`，PROJECT/USER publication 均保持关闭。
+切片 C 的生产闭环采用 `docs/adr/0001-stock-dsh-publication-root-contract.md`：只支持固定 baseline 官方 `web` profile 的默认 filesystem roots，不依赖 DSH fork、未合并 roots API 或本地 patch。C1–C6 已合并，但现有实现仍携带候选 `snapshot.roots` 绑定；独立 Issue #48 必须先迁移为版本化纯插件 contract，之后 C7 才执行最终验收。配置、身份或 exact readback 无法证明时，Proposal 进入 `NEEDS_ATTENTION`。
 
 ## 2. 范围与阶段门
 
@@ -30,11 +30,11 @@ LEARNED
 
 - 把模型给出的 `LearningProposalV1` 重新绑定为 Host-owned immutable `ProposalSnapshotV1`；
 - 用完整 Effective Catalog 完成 CREATE、MERGE 或需用户确认的 DISCARD 策展；
-- 证明 PROJECT/USER workspace、provider root、source 和 exact target；
+- 证明 PROJECT/USER Workspace/DSH Home、版本化默认 root contract、文件身份和 exact target；
 - durable Review Decision、Publication Outcome、Journal 和 Lineage revision；
 - 本机可信的 Proposal Inbox、详情、Approve、Reject 和 Retry；
 - CREATE/MERGE compare-exchange、target 串行、崩溃恢复和精确回读；
-- CREATE、MERGE、Base Conflict 三个黄金场景的真实 DSH 证据。
+- CREATE PROJECT、MERGE、Base Conflict、CREATE USER 四个黄金场景的真实 DSH 证据。
 
 ### 2.2 明确非目标
 
@@ -43,7 +43,7 @@ LEARNED
 - 不实现 Purge、Settings UI、完整 History、Rollback UI 或 retention；
 - 不实现 source-control publication，不运行 `git add/commit/push`；
 - 不修改、vendor 或 runtime patch DSH，不复制 Skill Registry；
-- 不把候选上游 commit 伪装成已经发布的 DSH 公共契约；
+- 不依赖 DSH fork、未合并 roots API、本地 patch、自有 Skill provider 或 sentinel 探测；
 - 不提前实现切片 D 的安装、升级、迁移和产品化硬化。
 
 ### 2.3 进入实现的阶段门
@@ -55,9 +55,9 @@ Design 合并后才拆切片 C 实现 Issues。每个 Issue 仍执行轻量流�
 CREATE/MERGE Proposal 只有同时满足下列事实，才能进入 `PENDING_REVIEW`：
 
 1. `ctx.skills.snapshot()` 是 `complete: true`；
-2. root observation 属于同一次完整 snapshot；
-3. 恰好一个受支持的 filesystem provider root 与 scope/source/canonical path 匹配；
-4. PROJECT workspace identity 或 USER DSH Home identity 可重新验证；
+2. 版本化官方默认 root contract、resolver version/digest 与受支持的 baseline/profile/config 匹配；
+3. PROJECT workspace identity 或 USER DSH Home identity 可重新验证；
+4. MERGE 的完整 Catalog winner 由原生 filesystem provider 提供，source/path 与标准 root 精确匹配；CREATE 的批准目标精确位于标准 root；
 5. CREATE expected-absence 或 MERGE exact Base 可证明；
 6. canonical Skill bytes 已由 Host 生成并通过格式与 secret Guard。
 
@@ -69,7 +69,7 @@ CREATE/MERGE Proposal 只有同时满足下列事实，才能进入 `PENDING_REV
 
 1. **模型 Proposal 不是可批准 Proposal。** `LearningProposalV1` 只含语义建议；Host 必须重新计算 curation、root、target、Base/absence、最终 bytes 和 digest。
 2. **Snapshot 一旦可见即不可变。** 任何内容、证据、Scope、workspace、root、target、Base 或 absence 改变，都创建新的 proposal revision/digest；旧 Approval 永久失效。
-3. **root 观察与 Catalog 共用完整性。** 只接受同一次 `complete: true` snapshot 的 root facts；不把环境变量、默认目录或既有 candidate path 外推成 writable root。
+3. **root 证明采用版本化 stock contract。** PROJECT 从 DSH Workspace identity 解析，USER 从有效 DSH Home 解析；MERGE 使用现有 `get().path`，CREATE 使用已批准标准目标。最终仍由 `complete: true` 原生 Registry exact readback 证明，不由 run2skill 自证。
 4. **Review 与 Publication 是两列事实。** `APPROVED` 不改写为失败；发布失败只更新独立 outcome 和 journal。
 5. **Client 只提交引用和意图。** Approve/Reject/Retry 只携带严格 schema 的 `ProposalRef` 与确认值，绝不回传替代内容。
 6. **同一 target 单飞。** Host 以 canonical target path 串行化发布；后到者必须重新检查 Base/absence。
@@ -88,8 +88,9 @@ sequenceDiagram
     participant P as Publication Service
 
     W->>H: LearningProposalV1 + Experiences
-    H->>S: complete snapshot + roots + exact candidates
-    alt observation/root/Base 不可证明
+    H->>S: complete snapshot + exact candidates
+    H->>H: resolve versioned stock root contract
+    alt contract/identity/Base 不可证明
         H->>R: NEEDS_ATTENTION（不生成可批准快照）
     else 全部事实可证明
         H->>R: immutable ProposalSnapshot(PENDING_REVIEW)
@@ -124,6 +125,7 @@ name, description, whenToUse, invocation
 exactSkillBytes, skillBytesDigest, rendererVersion, schemaVersion
 persistenceScope
 workspaceBinding?                 # PROJECT 必填
+dshHomeBinding?                   # USER 必填
 actionBinding:
   CREATE: rootBinding + targetBinding + expectedAbsence
   MERGE:  rootBinding + targetBinding + baseBinding
@@ -137,7 +139,7 @@ catalogObservationDigest
 - CREATE 只能有 `rootBinding + targetBinding + expectedAbsence`；
 - MERGE 只能有 `rootBinding + targetBinding + baseBinding`；
 - DISCARD 不含 writable root 或写入目标，必须绑定证明覆盖的完整 candidate identity、exact bytes 和 digest；
-- `rootBinding` 是 6.2 定义的 `EXISTING | ABSENT` 判别联合；声明 root、现存祖先和固定缺失片段都是 immutable Proposal digest 的一部分；
+- `rootBinding` 是 6.2 定义的 `EXISTING | ABSENT` 判别联合；contract version/digest、声明 root、现存祖先和固定缺失片段都是 immutable Proposal digest 的一部分；
 - exact bytes 使用版本化 deterministic renderer；
 - digest 是上述授权事实的 canonical JSON SHA-256，不包含可变 UI 字段；
 - 相同事实重放得到相同 proposalId/digest，不增加 Store revision；
@@ -209,39 +211,22 @@ Host 使用 B3 的确定性 recall 取得少量完整 candidate，再验证模�
 
 Similarity 只排序 shortlist，不能直接作出任何终态。
 
-### 6.2 root observation 最小契约
+### 6.2 版本化 stock DSH root contract
 
-DSH Adapter 只消费下列只读形状：
+Issue #48 将当前候选 snapshot-roots 绑定迁移为 `RootBindingV2`。contract 只接受固定兼容性 baseline 的官方 `web` profile、默认 filesystem provider 和 `includeDefaultRoots=true`：
 
-```ts
-interface SkillCatalogRoot {
-  provider: string
-  source: string
-  path: string
-}
+- PROJECT：重新解析 `workspaceRegistry` 的 canonical Workspace，并追加固定 `.dsh/skills`；
+- USER：使用与目标 DSH 组合相同的有效 DSH Home resolution，并追加固定 `skills`；
+- MERGE：完整 Catalog winner 的原生 filesystem provider、`project-dsh`/`user-dsh` source 和 `ctx.skills.get().path` 必须与标准 root 一致；
+- CREATE：标准目标、Catalog expected-absence 和文件 expected-absence 一并进入 immutable Approval；
+- custom roots、`includeDefaultRoots=false`、重命名 provider、自定义 preset 或无法重建的配置仍可参与 lookup，但 publication 进入 `NEEDS_ATTENTION`。
 
-interface SkillCatalogSnapshot {
-  complete: boolean
-  roots?: readonly SkillCatalogRoot[]
-}
-```
-
-判断规则：
-
-- `roots` 缺失：`ROOT_OBSERVATION_UNAVAILABLE`；
-- `complete: false`：可展示候选，不能形成可批准快照；
-- 目标 provider/source/path 匹配 0 个或多个：`ROOT_BINDING_AMBIGUOUS`；
-- 已存在 root 必须经同一 DSH filesystem abstraction 的 canonical/realpath 能力验证；尚未创建的 root 使用 6.3 的固定祖先绑定与安全创建协议；
-- PROJECT 还必须与 `workspaceRegistry` 的 canonical workspace + `/.dsh/skills` 一致；
-- USER 必须与 composition 中有效 DSH Home + `/skills` 一致；
-- source 只接受 `project-dsh` 或 `user-dsh`，provider 只接受已验证 filesystem provider；
-- API 存在不代表目录可写，publication 前仍执行 containment、link/reparse 和权限 Guard。
-
-`RootBindingV1` 必须把已存在与尚未创建的 root 分开：
+`RootBindingV2` 必须把已存在与尚未创建的 root 分开：
 
 ```text
 common:
-  scope, provider, source, resolverVersion, observationDigest
+  scope, expectedProvider, expectedSource
+  resolverVersion, rootContractVersion, resolutionContractDigest
   declaredRootPath
 
 EXISTING:
@@ -254,27 +239,27 @@ ABSENT:
   missingSegments                  # 只能是固定允许片段
 ```
 
-`declaredRootPath` 必须精确等于 root observation 的 provider-local path。`rootIdentityDigest`/`ancestorIdentityDigest` 来自 filesystem abstraction 的不透明稳定 identity 的 canonical digest；实现不得解析 identity。PROJECT 的 `missingSegments` 只能是相对 canonical workspace 的 `.dsh`、`skills` 子序列，USER 只能是相对 effective DSH Home 的 `skills`。空数组非法：已经存在的 root 必须使用 `EXISTING`。
+`resolutionContractDigest` 覆盖 contract/resolver version、baseline/profile/config、Workspace 或 DSH Home identity、expected provider/source 和 declared root。`rootIdentityDigest`/`ancestorIdentityDigest` 来自 filesystem abstraction 的不透明稳定 identity 的 canonical digest；实现不得解析 identity。PROJECT 的 `missingSegments` 只能是相对 canonical workspace 的 `.dsh`、`skills` 子序列，USER 只能是相对 effective DSH Home 的 `skills`。空数组非法：已经存在的 root 必须使用 `EXISTING`。
 
-插件对旧 DSH 保持兼容：观察不到 `roots` 时 Agent 继续工作、学习事实仍保留，但发布 fail closed。上游 API 合并并进入新的固定 DSH baseline 前，项目只能记录开发证据，不能发布 `v0.1.0-alpha`。
+root contract 只证明被用户批准的写入目标；它不自证 DSH 已加载。PUBLISHED 仍必须由未修改 DSH 的 complete snapshot、原生 filesystem winner 和 exact `get(path/content)` 回读确认。不得用 run2skill 自有 provider 或 sentinel 替代该证明。
 
 ### 6.3 absent root 与 exact target
 
-root observation 即使目录尚未创建也能证明 provider 配置，但不能伪造 `realpath` 结果。首次 CREATE 按以下固定协议准备 root：
+版本化 contract 可以批准尚未创建的标准目录，但不能伪造 `realpath` 结果。首次 CREATE 按以下固定协议准备 root：
 
 1. PROJECT 只允许从已重新验证的 canonical workspace 追加固定片段 `.dsh/skills`；USER 只允许从已验证的 effective DSH Home 追加固定片段 `skills`；
 2. 找到最近的已存在批准祖先，验证其 canonical identity 和 containment；
 3. 对每个缺失固定片段执行非递归、单层 `mkdir`，每步前后 `lstat`，拒绝 symlink、junction、reparse point、文件或未知类型；
 4. 遇到并发 `EEXIST` 只重新观察；只有同一 canonical parent 下的普通目录才可继续；
-5. root 创建后执行 `realpath`/containment 与 provider root parity 复核，再允许 claim Skill bundle；
+5. root 创建后执行 `realpath`/containment 与 resolution contract 复核，再允许 claim Skill bundle；
 6. journal 记录 `ROOT_PREPARED` 及创建的固定片段。崩溃最多留下空的 `.dsh`/`skills` 目录；恢复不删除非空目录，也不把未知路径当成已批准 root；
 7. 任一 ancestor 在操作前后身份变化、越界或成为链接时停止并进入 `NEEDS_ATTENTION`。
 
-Approve 时必须重新计算完整 `RootBindingV1`：
+Approve 时必须重新计算完整 `RootBindingV2`：
 
-- `EXISTING -> EXISTING` 只有 root identity、canonical path 和 provider observation 全部相同时可继续；
+- `EXISTING -> EXISTING` 只有 root identity、canonical path 和 resolution contract 全部相同时可继续；
 - `ABSENT -> ABSENT` 只有 ancestor identity、declared path 和 missing segments 全部相同时可继续；
-- `ABSENT -> EXISTING` 只允许 declared root 已由并发方创建为同一批准祖先下的普通目录，且逐段无 link/reparse、canonical containment 与 provider parity 全部成立；
+- `ABSENT -> EXISTING` 只允许 declared root 已由并发方创建为同一批准祖先下的普通目录，且逐段无 link/reparse、canonical containment 与 resolution contract 全部成立；
 - 其他变化均为 `NEEDS_ATTENTION`，不得用新计算的 binding 替换已批准 digest。
 
 安全创建完成后的 `EXISTING` 事实写入 journal；它是当前 attempt 的派生磁盘事实，不回写或改变 immutable Proposal。后续 retry 仍以原 `ABSENT` Approval 和 journal 共同恢复，不能伪造一个新 Approval。
@@ -311,7 +296,7 @@ Settings 与 Purge endpoints 留给切片 D。请求 envelope 版本化、严格
 
 ### 7.3 Review 内容
 
-CREATE 必须展示 Why learned、过滤 Evidence、Strength、Session/Turn 坐标、Scope、Proposal revision/digest、workspace、root、exact target、expected-absence 和完整 raw bytes。
+CREATE 必须展示 Why learned、过滤 Evidence、Strength、Session/Turn 坐标、Scope、Proposal revision/digest、PROJECT Workspace 或 USER effective DSH Home identity、root、exact target、expected-absence 和完整 raw bytes。
 
 MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化 bidi/zero-width/control 字符；raw 视图展示真正批准的 exact bytes。两者都只用 text node/`pre`，不执行 HTML、不加载嵌入资源、不自动激活链接。
 
@@ -332,8 +317,8 @@ MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化
 
 1. compare ProposalRef；
 2. durable `APPROVED + PUBLISHING`；
-3. 重新验证 workspace/root/target；
-4. 重新取得 `complete: true` Catalog 与 roots；
+3. 重新验证 PROJECT Workspace 或 USER effective DSH Home、root、target；
+4. 重新取得 `complete: true` Catalog，并重算版本化 root contract；
 5. 重算 renderer bytes/digest；
 6. 依次执行 source/scope、path、link/reparse、absence/Base、format、secret、writability Guard；
 7. append journal；
@@ -384,7 +369,7 @@ MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化
 
 | 故障 | Agent | Proposal / Publication |
 |---|---|---|
-| Catalog/root 不完整 | 不阻断 | `NEEDS_ATTENTION`，不生成可批准 snapshot |
+| Catalog/contract/identity 不完整 | 不阻断 | `NEEDS_ATTENTION`，不生成可批准 snapshot |
 | stale ProposalRef | 不阻断 | conflict；无状态变化 |
 | Base/absence 失效 | 不阻断 | 保留 `APPROVED`，Outcome=`NEEDS_REFRESH` |
 | path/link/secret/format/权限失败 | 不阻断 | 保留 `APPROVED`，Outcome=`NEEDS_ATTENTION` |
@@ -402,7 +387,7 @@ MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化
 src/domain/review/              # snapshot、digest、状态转换、DTO schema
 src/application/curation/      # Host-owned curation 与 snapshot builder
 src/application/publication/   # approve saga、recovery、readback
-src/adapters/dsh-skills/        # complete snapshot/root/get adapter
+src/adapters/dsh-skills/        # complete snapshot/get 与 stock root resolver adapter
 src/adapters/dsh-publication/   # path guards、CAS filesystem、journal facts
 src/adapters/dsh-connection/    # review RPC
 src/adapters/dsh-storage/       # WorkItem review fields、Lineage store
@@ -412,7 +397,7 @@ src/client/                     # Inbox/Review UI
 约束：
 
 - Domain 不导入 DSH、Cordis、Node fs 或 React；
-- DSH root/snapshot/get 只出现在 `dsh-skills` adapter；
+- DSH root resolution/snapshot/get 只出现在 `dsh-skills` adapter；
 - Node filesystem 只出现在 publication adapter；
 - Client 不导入 Store、filesystem 或 publication service；
 - 继续使用现有 `run2skill_v1` domain 的 `work_items`、`lineages` 和 `global`，不新增数据库或第二个 backend。
@@ -422,7 +407,7 @@ src/client/                     # Inbox/Review UI
 ### 11.1 Unit
 
 - Proposal canonicalization、digest、互斥 Base/absence 与非法状态转换；
-- RootBinding `EXISTING/ABSENT` canonical digest、批准时合法转化，以及 roots 缺失/incomplete/0 match/multi match/source/path mismatch；
+- RootBinding `EXISTING/ABSENT` canonical digest、批准时合法转化，以及 unsupported profile/config、incomplete catalog、identity/source/path mismatch；
 - CREATE/MERGE/DISCARD Core Curation hard positives/negatives；
 - renderer、Skill parse、secret、path traversal、containment、link/reparse Guards；
 - stale ProposalRef、重复 Approve/Reject/Retry 幂等；
@@ -439,29 +424,30 @@ src/client/                     # Inbox/Review UI
 
 ### 11.3 固定 DSH probes
 
-- 当前 baseline：证明旧 API 缺少 roots 时 publication fail closed，Agent/Learning 不受阻；
-- 候选上游 root contract：证明空 root、PROJECT/USER parity、deterministic roots 和 incomplete 语义；
+- stock baseline 纯插件 root contract：证明 PROJECT/USER、absent root、unsupported config、MERGE existing path、原生 provider/source/path 与 exact readback；当前状态为 NOT_RUN，Issue #48 实现后执行；
+- 旧候选上游 roots 探针仅保留为已放弃的历史实验，不再是默认门禁或生产证据；
 - CP-PUB-001：Windows + WSL/Linux missing-root first CREATE、CREATE/MERGE race、crash、junction/symlink；
 - CP-WEB-001：真实 web profile、loopback fence、Host/Client slot；
 - exact `skills/change`、complete snapshot 和 `get()` 热回读。
 
-候选上游探针是开发证据，不把官方尚未合并的 API 记为固定 baseline。采用新 DSH baseline 时必须重新记录 commit 并复跑受影响契约。
+采用新 DSH baseline 时必须重新记录 commit 并复跑受影响契约；不得用新上游预警结果静默替换当前 baseline。
 
 ### 11.4 黄金验收
 
 1. CREATE · PROJECT：用户约束 -> Review -> `<project>/.dsh/skills/<name>/SKILL.md` -> r1 -> 无重启精确回读；
 2. MERGE：同 Scope 可写 Skill -> Base + Diff Review -> r2 -> 新行为可发现；
 3. Base Conflict：Review 后手工修改 -> 保留 APPROVED -> `NEEDS_REFRESH` -> 新 ProposalRef；
-4. 插件故障注入不阻断 DSH 正常 Turn；
-5. Skill 含 synthetic secret 时必定阻止发布。
+4. CREATE · USER：跨项目长期规则 -> `<DSH_HOME>/skills` -> 原生 Registry 精确回读 -> 卸载后仍可用；
+5. 插件故障注入不阻断 DSH 正常 Turn；
+6. Skill 含 synthetic secret 时必定阻止发布。
 
 ### 11.5 门禁
 
 每个实现 PR 至少运行 `pnpm run typecheck`、`pnpm run lint`、完整 `pnpm run test` 和该 Issue 必要探针。切片验收 PR 额外运行 candidate verify、production audit、真实 DSH 黄金路径和 exact-HEAD CI。
 
-## 12. Design 后 Issue 拆分
+## 12. Design 后 Issue 拆分与当前进度
 
-只在本 Design exact-HEAD CLEAN 并合并后创建：
+本 Design 已接受；C1–C6 已按顺序合并：
 
 1. **C1 — immutable ProposalSnapshot 与 durable Review 状态**
 
@@ -489,19 +475,19 @@ src/client/                     # Inbox/Review UI
 
 7. **C7 — Slice C 真实 DSH 黄金验收**
 
-   CREATE、MERGE、Base Conflict、故障注入、secret 阻断与跨重启证据；只做验收修复，不提前实现 D。
+   四个黄金场景、故障注入、secret 阻断与跨重启证据；只做验收修复，不提前实现 D。
 
-若上游 root API 在 C2 前仍未可用，C2 可以合并“缺失即 fail closed”的兼容实现和候选契约探针，但 C6 不得在固定 baseline 开启真实 publication，C7 也不得宣称切片完成。
+C7 当前暂停。在 C6 与 C7 之间先完成独立 Issue #48：迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据。该 Issue 不承担 C7 最终产品验收。
 
 ## 13. 已知取舍
 
 - v0.1 选择 polling 而非自定义 push transport，以减少 Host/Client 状态面；
 - full snapshot Lineage 比 delta 占用更多空间，但让审核、冲突和恢复更可验证；
-- root API 使用只读 observation，不要求 DSH 提供写接口或 writable 承诺；权限仍由 publication 当下验证；
+- root contract 使用 stock 配置与 Host 可验证身份，不要求 DSH 提供 roots/write API 或 writable 承诺；权限仍由 publication 当下验证；
 - 不完整 Catalog 牺牲即时性换取不误覆盖；
 - 磁盘写入后回读失败不自动回滚，避免把已审核内容替换为可能已变化的旧 Base；
-- Slice C 保留 7 个顺序 Issue，因为 Web Review、文件 CAS 和回读 saga 是不同风险边界；不为“架构完整”再拆额外基础设施。
+- Slice C 原有 7 个顺序 Issue 保持；#48 是 C7 前针对已识别生产前提错误的独立修正，不新增子系统。
 
 ## 14. 接受记录
 
-本文只细化已冻结 PRD 与 Architecture，不改变 v0.1 产品范围。维护者已授权在不扩大范围的前提下代为判断切片 C 的实现拆分；本 Design 仍必须通过仓库门禁、CI 和 exact-HEAD 独立审查后才视为接受。
+本文只细化已冻结 PRD 与 Architecture，不改变 v0.1 产品范围。该 Design 已通过评审并被接受；C1–C6 已合并。2026-08-20 的窄修订只替换 root 生产前提并同步进度，不削弱 CAS、恢复、不可变 Approval、Review/Publication 分离或 exact readback。

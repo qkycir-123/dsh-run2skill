@@ -27,6 +27,7 @@
 ## DSH 集成
 
 - 本项目不得修改或 patch DSH。
+- v0.1 生产能力不得以 DSH fork、未合并的 DSH 变更、未发布 API 或本地 patch 为前置条件。
 - 所有 DSH 专有调用必须收敛到薄 Adapter；Core 领域逻辑不得直接依赖不稳定的 DSH 实现细节。
 - 每条兼容性声明必须绑定 `docs/architecture/dsh-compatibility.md` 中的精确 commit。上游 `origin/master` 只是更新信号，不会自动成为新 baseline。
 - DSH baseline 变化会使受影响的证据和测试失效。采纳前必须重新核验 Session、Skill、LLM、Settings、Web、插件加载和热刷新契约。

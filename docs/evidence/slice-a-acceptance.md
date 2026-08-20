@@ -36,3 +36,5 @@ Slice A 已形成最小可运行闭环：单个双面包可安装到 DSH Web pro
 - Slice A 的 `CAPTURED` 只是内部已记录状态，不是 Proposal，也不是“已保存为 Skill”。
 - CP-ROOT-001 仍限制 PROJECT/USER publication；Slice C 解除前不得发布 Skill。
 - v0.1 Alpha 尚未发布；下一步是 Slice B 独立 Design，而不是提前实现切片 C/D。
+
+以上“未解除约束/下一步”记录的是 Slice A 验收时状态；当前路线以 `docs/roadmap.md` 为准，历史验收结论不据此重写。

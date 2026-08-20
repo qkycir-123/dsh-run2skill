@@ -1,6 +1,6 @@
 # dsh-run2skill 项目路线
 
-状态：切片 A Observe 与切片 B Learn 已完成验收；切片 C Design 已接受，正在按 C1–C7 顺序实现
+状态：切片 A/B 已验收，切片 C Design 已接受且 C1–C6 已合并；C7 暂停，先完成纯插件 root-contract 修正 #48
 更新时间：2026-08-20
 
 ## 1. 路线目标
@@ -47,7 +47,7 @@
 - 核验并发、幂等、重复触发、Reject 抑制和崩溃恢复语义；
 - 核验 PROJECT/USER 证据门槛；
 - 核验 Secret、权限、路径、外部内容和数据最小化边界；
-- 使三个黄金场景和质量门槛可测试；
+- 使当时定义的三个黄金场景和质量门槛可测试；2026-08-20 窄修订补充 USER 黄金场景；
 - 用固定 DSH baseline 核验需求依赖的源码事实；
 - 明确 DSH 上游更新和兼容策略；
 - 确认可移植的项目协作规则。
@@ -99,13 +99,13 @@
 - DSH Web plugin 挂载、浏览器信任边界和 Host/Client 通信；
 - run2skill 异常不会阻塞 DSH Agent。
 
-结果：Session、Storage、LLM、Skill、Web、Publication CAS 和安装生命周期已取得运行证据。CP-ROOT-001 仍为 PARTIAL；它没有被包装成成功，而是形成明确发布锁：目标 session-scoped provider 的 root parity 和 Registry 精确回读成立前，PROJECT/USER publication 都不得启用。
+结果：Session、Storage、LLM、Skill、Web、Publication CAS 和安装生命周期已取得运行证据。CP-ROOT-001 的默认组合 parity 历史证据仍为 PARTIAL，但“等待 provider roots API”已被 ADR-0001 取代。新的 stock-DSH 纯插件 CP-ROOT-003 尚未运行，不得写为 PASS。
 
-阶段门：Slice A/B 所需的底层契约已有运行证据，且两条切片均已完成验收；剩余不确定性已转换为 fail-closed 产品约束，而不是生产 workaround。Slice C 仍必须先独立设计，并在允许 publication 前解除 root publication 锁。
+阶段门：Slice A/B 所需的底层契约已有运行证据，且两条切片均已完成验收；Slice C Design 与 C1–C6 已完成。C7 前必须先由 #48 移除候选 roots API 生产依赖，并在 stock、clean、未修改 baseline 上通过 CP-ROOT-003。
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A Observe 与切片 B Learn 已完成。切片 C Design 已通过 exact-HEAD 评审并合并，C1–C7 已按边界拆分；不提前铺开切片 D 的详细 Issues。
+状态：进行中；切片 A/B 已验收。切片 C Design 已接受，C1–C6 已合并；C7 保持最终验收边界，当前先推进独立修正 #48；不提前铺开切片 D 的详细 Issues。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，实现边界由 Issues #34–#40 固定。C1–C5 已完成，当前只推进 C6；C7 继续保留最终集成验收边界。
+当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C6（#34–#39）已完成。#48 只修正纯插件 root contract，完成后才恢复 C7（#40）最终集成验收。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
@@ -139,13 +139,13 @@ Design → Review → Issues → Feature Branch → Implementation
 
 每条切片都要形成可运行、可验证的纵向能力，不以一批孤立模块代替端到端证据。不得直接 push `main`。
 
-Slice A/B 已逐 Issue 合并并完成集成验收。当前推进顺序是：C1 → C2 → C3 → C4 → C5 → C6 → C7；前一 Issue 完成后才实现下一 Issue。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
+Slice A/B 已逐 Issue 合并并完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 已完成；当前顺序为 #48 纯插件 root-contract 修正 → C7。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
 
 ### 阶段 6：v0.1 集成验证
 
 集中验证：
 
-- CREATE、MERGE、Base Conflict 三个黄金场景；
+- CREATE PROJECT、MERGE、Base Conflict、CREATE USER 四个黄金场景；
 - Proposal 跨重启持久化；
 - Manual Edit、多 Session 并发、重复触发和 crash recovery；
 - LLM、Store、Web、Publication 失败时的 fail-open；

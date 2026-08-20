@@ -31,7 +31,6 @@ pnpm --version
 ```powershell
 powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1
-powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <candidate-dsh-source>
 powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 ```
 
@@ -41,7 +40,23 @@ powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1 -WslDistribution <distribution-name>
 ```
 
-第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第三条只接受含 Skill provider root contract 的固定候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca`，验证生产 saga 写入、完整 catalog、winner 与 exact `get()` 回读，应结束于 `CANDIDATE_ROOT_CONTRACT_PROBE=PASS`；它是开发证据，不会静默提升兼容性 baseline。第四条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
+第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第三条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
+
+## stock DSH 纯插件 root probe（待实现）
+
+CP-ROOT-003 是新的默认生产门禁。Issue #48 将提供 production-backed runner；它必须使用本页固定的 clean、未修改 baseline，不得要求 DSH fork、未合并 roots API 或本地 patch。验收至少覆盖：
+
+- PROJECT/USER 的标准默认 roots、existing/absent root、CREATE/MERGE；
+- Workspace/DSH Home identity、版本化 contract digest、文件 identity/expected-absence；
+- CAS/journal 后由原生 filesystem provider/source/path winner 和 exact `get()` content 回读确认；
+- incomplete snapshot、配置漂移、custom roots、`includeDefaultRoots=false`、重命名 provider/自定义 preset 均 fail closed；
+- 卸载插件后已发布 USER Skill 仍由 stock DSH 使用。
+
+该 runner 尚不存在、尚未运行，当前状态必须保持 `NOT_RUN`。
+
+## 已放弃的历史实验
+
+`probes/run-dsh-root-contract-probe.ps1` 只接受历史候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca`，曾验证候选 `snapshot.roots` API。该实验不在默认命令中，不是兼容性门禁、生产依赖或 CP-ROOT-003 的替代证据。
 
 `pnpm run evaluate` 会同时运行 Observe 与 Learning 的版本化冻结评测；Learning 评测只输出 case id 和聚合指标，不输出样本正文。`pnpm run verify:candidate` 还会精确锁定候选包的 7 个文件，并对仓库、包内容和合成运行日志执行敏感信息门。
 
