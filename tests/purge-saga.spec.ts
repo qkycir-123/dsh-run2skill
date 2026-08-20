@@ -18,6 +18,8 @@ import { WriteBehindCheckpoint } from '../src/application/capture/write-behind-c
 import { LearningWorkItemStore } from '../src/adapters/dsh-storage/learning-work-item-store.js'
 import { DurableCaptureStore } from '../src/adapters/dsh-storage/durable-capture-store.js'
 import { HostMutationGate } from '../src/application/host-mutation-gate.js'
+import { makeLearningResult } from './support/learning-fixture.js'
+import { deriveExperienceId, deriveLearningProposalId } from '../src/domain/learn/index.js'
 
 const NOW = Date.parse('2026-08-21T00:00:00.000Z')
 const PROJECT = join(process.cwd(), '.probe-work', 'purge-saga-project')
@@ -56,6 +58,40 @@ function oldProjectItem(turn: number, processingState: 'CAPTURED' | 'PUBLISHING'
     },
     processingState,
   })
+}
+
+async function prepareAnalyzingLearning(store: LearningWorkItemStore, item: ReturnType<typeof oldProjectItem>) {
+  let current = await store.claim(item.workItemId, item.revision)
+  current = await store.reserveRequest(item.workItemId, current.revision, {
+    provider: 'target-provider', model: 'target-model',
+  })
+  return await store.recordCall(item.workItemId, current.revision, {
+    requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED',
+  })
+}
+
+function userLearningResult(item: ReturnType<typeof oldProjectItem>) {
+  const projectResult = makeLearningResult(item)
+  const { experienceId: _experienceId, ...experienceFacts } = {
+    ...projectResult.experiences[0]!,
+    persistenceScope: 'USER' as const,
+  }
+  const experience = {
+    experienceId: deriveExperienceId(item.workItemId, experienceFacts),
+    ...experienceFacts,
+  }
+  const { learningProposalId: _proposalId, ...proposalFacts } = {
+    ...projectResult.proposal,
+    persistenceScope: 'USER' as const,
+    supportingExperienceIds: [experience.experienceId],
+  }
+  return {
+    experiences: [experience],
+    proposal: {
+      learningProposalId: deriveLearningProposalId(item.workItemId, proposalFacts),
+      ...proposalFacts,
+    },
+  }
 }
 
 function projectLineage() {
@@ -297,6 +333,82 @@ describe('recoverable Purge saga', () => {
     expect(domain.workItems.has(item.workItemId)).toBe(false)
 
     await expect(lateWrite).rejects.toMatchObject({ code: 'PURGED_WORK_ITEM' })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+  })
+
+  it('rejects a late Learning completion that would enter the purged scope', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = oldProjectItem(13)
+    domain.workItems.set(item.workItemId, item)
+    const visibility = new PurgeVisibility(domain)
+    const gate = new HostMutationGate()
+    const learning = new LearningWorkItemStore(
+      domain,
+      () => '2026-08-20T00:00:10.000Z',
+      visibility,
+      operation => gate.run(operation),
+    )
+    const current = await prepareAnalyzingLearning(learning, item)
+    let markHidden!: () => void
+    const hidden = new Promise<void>(resolve => { markHidden = resolve })
+    let continuePurge!: () => void
+    const purgeCanContinue = new Promise<void>(resolve => { continuePurge = resolve })
+    const service = new PurgeService(domain, { async resolve() { return { scope: 'USER' } } }, {
+      now: () => NOW,
+      async onHidden(journal) {
+        visibility.remember(journal)
+        markHidden()
+        await purgeCanContinue
+      },
+    })
+    const preview = await service.preview('USER')
+    expect(preview.workItemCount).toBe(0)
+
+    const confirmation = gate.run(async () => await service.confirm(preview.previewId, preview.digest))
+    await hidden
+    const completion = learning.complete(item.workItemId, current.revision, userLearningResult(item))
+    continuePurge()
+    await confirmation
+
+    await expect(completion).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+    expect(domain.workItems.get(item.workItemId)?.learning?.proposal).toBeUndefined()
+  })
+
+  it('does not let a late USER Learning completion escape a PROJECT purge', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = oldProjectItem(14)
+    domain.workItems.set(item.workItemId, item)
+    const visibility = new PurgeVisibility(domain)
+    const gate = new HostMutationGate()
+    const learning = new LearningWorkItemStore(
+      domain,
+      () => '2026-08-20T00:00:10.000Z',
+      visibility,
+      operation => gate.run(operation),
+    )
+    const current = await prepareAnalyzingLearning(learning, item)
+    let markHidden!: () => void
+    const hidden = new Promise<void>(resolve => { markHidden = resolve })
+    let continuePurge!: () => void
+    const purgeCanContinue = new Promise<void>(resolve => { continuePurge = resolve })
+    const service = new PurgeService(domain, resolver, {
+      now: () => NOW,
+      async onHidden(journal) {
+        visibility.remember(journal)
+        markHidden()
+        await purgeCanContinue
+      },
+    })
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+    expect(preview.workItemCount).toBe(1)
+
+    const confirmation = gate.run(async () => await service.confirm(preview.previewId, preview.digest))
+    await hidden
+    const completion = learning.complete(item.workItemId, current.revision, userLearningResult(item))
+    continuePurge()
+    await confirmation
+
+    await expect(completion).rejects.toMatchObject({ code: 'LEARNING_WORK_ITEM_NOT_FOUND' })
     expect(domain.workItems.has(item.workItemId)).toBe(false)
   })
 })

@@ -240,7 +240,12 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         visibility,
         operation => this.mutationGate.run(operation),
       )
-      const learningStore = new LearningWorkItemStore(domain, undefined, visibility)
+      const learningStore = new LearningWorkItemStore(
+        domain,
+        undefined,
+        visibility,
+        operation => this.mutationGate.run(operation),
+      )
       const skillCatalog = new DshSkillCatalogAdapter(this.context.skills)
       const workspaceResolver = new DshWorkspaceBindingResolver(this.context.workspaceRegistry)
       const publicationAbort = new AbortController()

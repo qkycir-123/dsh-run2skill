@@ -35,16 +35,19 @@ export class LearningWorkItemStore {
   readonly #table
   readonly #now
   readonly #visibility
+  readonly #runMutation
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
     domain: Run2skillDomain,
     now: (() => string) | undefined = undefined,
     visibility: PurgeVisibility = new PurgeVisibility(domain),
+    runMutation: <T>(operation: () => Promise<T>) => Promise<T> = operation => operation(),
   ) {
     this.#table = domain.table('work_items')
     this.#now = now ?? (() => new Date().toISOString())
     this.#visibility = visibility
+    this.#runMutation = runMutation
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
@@ -185,7 +188,7 @@ export class LearningWorkItemStore {
     expectedRevision: number,
     facts: LearningResultFacts,
   ): Promise<CaptureWorkItemV1> {
-    return this.#update(workItemId, expectedRevision, (current) => {
+    return this.#runMutation(async () => await this.#update(workItemId, expectedRevision, (current) => {
       const learning = this.#analyzing(current)
       if (
         learning.requestBudgetUsed === 0
@@ -203,7 +206,7 @@ export class LearningWorkItemStore {
           proposal: facts.proposal,
         },
       }
-    })
+    }))
   }
 
   fail(
@@ -342,6 +345,9 @@ export class LearningWorkItemStore {
           throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
         }
         const next = transform(current)
+        if (this.#visibility.workItemWasPurged(next)) {
+          throw new LearningStoreError('INVALID_LEARNING_STATE')
+        }
         return CaptureWorkItemV1Schema.parse({
           ...next,
           revision: current.revision + 1,
@@ -361,11 +367,17 @@ export class LearningWorkItemStore {
       if (this.#table.get(workItemId) === undefined) {
         throw new LearningStoreError('LEARNING_WORK_ITEM_NOT_FOUND')
       }
-      return await this.#table.update(workItemId, (current) => CaptureWorkItemV1Schema.parse({
-        ...transform(current),
-        revision: current.revision + 1,
-        updatedAt: this.#now(),
-      }))
+      return await this.#table.update(workItemId, (current) => {
+        const next = transform(current)
+        if (this.#visibility.workItemWasPurged(next)) {
+          throw new LearningStoreError('INVALID_LEARNING_STATE')
+        }
+        return CaptureWorkItemV1Schema.parse({
+          ...next,
+          revision: current.revision + 1,
+          updatedAt: this.#now(),
+        })
+      })
     })
     this.#tail = operation.then(() => {}, () => {})
     return operation
