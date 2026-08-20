@@ -232,8 +232,6 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const checkpoint = new WriteBehindCheckpoint(domain)
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
       const visibility = new PurgeVisibility(domain)
-      const activePurge = visibility.active()
-      if (activePurge !== undefined) visibility.remember(activePurge)
       const store = new DurableCaptureStore(
         domain,
         undefined,
@@ -401,8 +399,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         resolve: async (scope, workspaceId) => await this.resolvePurgeScope(scope, workspaceId),
       }
       const purgeService = new PurgeService(domain, scopeResolver, {
-        onHidden: (journal) => {
-          visibility.remember(journal)
+        onHidden: () => {
           scheduler.abortMatching(item => !visibility.workItemVisible(item))
           scheduler.wake()
           this.currentCurationWake?.()

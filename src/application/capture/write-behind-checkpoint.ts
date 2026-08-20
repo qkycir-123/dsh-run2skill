@@ -245,10 +245,17 @@ export class WriteBehindCheckpoint {
   }
 
   async #commit(committed: GlobalV1): Promise<GlobalV1> {
-    const { purgeJournal: _staleJournal, ...checkpointState } = committed
+    const {
+      purgeJournal: _staleJournal,
+      completedPurgeFences: _staleCompletedPurgeFences,
+      ...checkpointState
+    } = committed
     return await this.#global.update(current => GlobalV1Schema.parse({
       ...checkpointState,
       ...(current.purgeJournal === undefined ? {} : { purgeJournal: current.purgeJournal }),
+      ...(current.completedPurgeFences === undefined
+        ? {}
+        : { completedPurgeFences: current.completedPurgeFences }),
     }))
   }
 }

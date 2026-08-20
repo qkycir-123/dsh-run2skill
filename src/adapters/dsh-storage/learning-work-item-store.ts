@@ -51,7 +51,8 @@ export class LearningWorkItemStore {
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
-    return this.#table.get(workItemId)
+    const item = this.#table.get(workItemId)
+    return item !== undefined && this.#visibility.workItemVisible(item) ? item : undefined
   }
 
   listEligible(now: string): CaptureWorkItemV1[] {
@@ -341,6 +342,9 @@ export class LearningWorkItemStore {
         throw new LearningStoreError('LEARNING_WORK_ITEM_NOT_FOUND')
       }
       return await this.#table.update(workItemId, (current) => {
+        if (!this.#visibility.workItemVisible(current)) {
+          throw new LearningStoreError('INVALID_LEARNING_STATE')
+        }
         if (current.revision !== expectedRevision) {
           throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
         }
@@ -368,6 +372,9 @@ export class LearningWorkItemStore {
         throw new LearningStoreError('LEARNING_WORK_ITEM_NOT_FOUND')
       }
       return await this.#table.update(workItemId, (current) => {
+        if (!this.#visibility.workItemVisible(current)) {
+          throw new LearningStoreError('INVALID_LEARNING_STATE')
+        }
         const next = transform(current)
         if (this.#visibility.workItemWasPurged(next)) {
           throw new LearningStoreError('INVALID_LEARNING_STATE')

@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyLineageForPurge,
   classifyWorkItemForPurge,
+  completedFencesHideLineage,
+  deriveProjectPurgeScopeIdentityDigest,
   type ProjectPurgeScopeBindingV1,
 } from '../src/domain/purge/index.js'
 import {
@@ -134,5 +136,40 @@ describe('Purge scope truth table', () => {
       HIDE_BEFORE,
     )).toBe('KEEP_NEW')
     expect(classifyLineageForPurge(await lineage('USER'), { scope: 'USER' }, HIDE_BEFORE)).toBe('DELETE')
+  })
+
+  it('matches completed fences by minimal durable scope identity digest', async () => {
+    const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(projectBinding)
+    const fences = {
+      schemaVersion: 1 as const,
+      user: {
+        schemaVersion: 1 as const,
+        scope: 'USER' as const,
+        purgeId: `purge_${'1'.repeat(64)}`,
+        completedAt: HIDE_BEFORE,
+        hideBefore: HIDE_BEFORE,
+      },
+      projects: {
+        [scopeIdentityDigest]: {
+          schemaVersion: 1 as const,
+          scope: 'PROJECT' as const,
+          purgeId: `purge_${'2'.repeat(64)}`,
+          completedAt: HIDE_BEFORE,
+          hideBefore: HIDE_BEFORE,
+          scopeIdentityDigest,
+        },
+      },
+    }
+
+    expect(completedFencesHideLineage(await lineage('PROJECT'), fences)).toBe(true)
+    expect(completedFencesHideLineage(
+      await lineage('PROJECT', join(PROJECT, 'lookalike', '.dsh', 'skills')),
+      fences,
+    )).toBe(false)
+    expect(completedFencesHideLineage(
+      await lineage('PROJECT', ROOT, '2026-08-20T12:00:00.001Z'),
+      fences,
+    )).toBe(false)
+    expect(completedFencesHideLineage(await lineage('USER'), fences)).toBe(true)
   })
 })

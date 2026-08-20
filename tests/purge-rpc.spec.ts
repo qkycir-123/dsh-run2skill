@@ -2,7 +2,10 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createPurgeRpcHandler } from '../src/adapters/dsh-connection/purge-rpc.js'
 import { PurgeService } from '../src/application/purge/index.js'
-import type { ProjectPurgeScopeBindingV1 } from '../src/domain/purge/index.js'
+import {
+  MAX_COMPLETED_PROJECT_PURGE_FENCES,
+  type ProjectPurgeScopeBindingV1,
+} from '../src/domain/purge/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 
 const project = join(process.cwd(), '.probe-work', 'purge-rpc')
@@ -69,5 +72,37 @@ describe('Purge RPC v1', () => {
     aborted.abort()
     await expect(handler('purge/status', { apiVersion: 1 }, aborted.signal))
       .resolves.toMatchObject({ ok: false, error: { code: 'cancelled' } })
+  })
+
+  it('returns PURGE_FENCE_LIMIT without writing a journal', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const projects = Object.fromEntries(Array.from(
+      { length: MAX_COMPLETED_PROJECT_PURGE_FENCES },
+      (_, index) => {
+        const digest = index.toString(16).padStart(64, '0')
+        return [digest, {
+          schemaVersion: 1 as const,
+          scope: 'PROJECT' as const,
+          purgeId: `purge_${digest}`,
+          completedAt: '2026-08-20T00:00:00.000Z',
+          hideBefore: '2026-08-20T00:00:00.000Z',
+          scopeIdentityDigest: digest,
+        }]
+      },
+    ))
+    await domain.global.set({
+      ...domain.global.get(),
+      completedPurgeFences: { schemaVersion: 1, projects },
+    })
+    const service = new PurgeService(domain, { async resolve() { return binding } })
+    const handler = createPurgeRpcHandler(service)
+
+    await expect(handler('purge/preview', {
+      apiVersion: 1, scope: 'PROJECT', workspaceId: binding.workspaceId,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PURGE_FENCE_LIMIT', details: {} },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
   })
 })

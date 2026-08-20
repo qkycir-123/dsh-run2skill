@@ -4,6 +4,7 @@ import {
   GlobalV1Schema,
   SignalKeySchema,
 } from '../src/domain/observe/schemas.js'
+import { MAX_COMPLETED_PROJECT_PURGE_FENCES } from '../src/domain/purge/index.js'
 import { deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
@@ -246,6 +247,66 @@ describe('versioned domain schemas', () => {
     expect(() => GlobalV1Schema.parse({
       ...base,
       checkpoint: { dirty: false, pendingSessionCount: 1 },
+    })).toThrow()
+  })
+
+  it('accepts exactly 1024 path-free completed PROJECT fences and rejects overflow', () => {
+    const base = {
+      schemaVersion: 1 as const,
+      activeTriggerPolicyVersion: 'cheap-trigger-v1' as const,
+      sessions: {},
+      health: { counts: {} },
+      recovery: { recoveryLag: false },
+      checkpoint: { dirty: false, pendingSessionCount: 0 },
+    }
+    const projects = Object.fromEntries(Array.from(
+      { length: MAX_COMPLETED_PROJECT_PURGE_FENCES },
+      (_, index) => {
+        const digest = index.toString(16).padStart(64, '0')
+        return [digest, {
+          schemaVersion: 1 as const,
+          scope: 'PROJECT' as const,
+          purgeId: `purge_${digest}`,
+          completedAt: '2026-08-21T00:00:00.000Z',
+          hideBefore: '2026-08-21T00:00:00.000Z',
+          scopeIdentityDigest: digest,
+        }]
+      },
+    ))
+    const exact = {
+      ...base,
+      completedPurgeFences: {
+        schemaVersion: 1 as const,
+        user: {
+          schemaVersion: 1 as const,
+          scope: 'USER' as const,
+          purgeId: `purge_${'f'.repeat(64)}`,
+          completedAt: '2026-08-21T00:00:00.000Z',
+          hideBefore: '2026-08-21T00:00:00.000Z',
+        },
+        projects,
+      },
+    }
+
+    expect(GlobalV1Schema.parse(exact)).toEqual(exact)
+    expect(JSON.stringify(exact.completedPurgeFences)).not.toContain('\\')
+    const overflowDigest = 'f'.repeat(64)
+    expect(() => GlobalV1Schema.parse({
+      ...exact,
+      completedPurgeFences: {
+        ...exact.completedPurgeFences,
+        projects: {
+          ...projects,
+          [overflowDigest]: {
+            schemaVersion: 1,
+            scope: 'PROJECT',
+            purgeId: `purge_${overflowDigest}`,
+            completedAt: '2026-08-21T00:00:00.000Z',
+            hideBefore: '2026-08-21T00:00:00.000Z',
+            scopeIdentityDigest: overflowDigest,
+          },
+        },
+      },
     })).toThrow()
   })
 })

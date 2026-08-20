@@ -8,8 +8,13 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openRun2skillDomain } from '../src/adapters/dsh-storage/domain.js'
+import { DurableCaptureStore } from '../src/adapters/dsh-storage/durable-capture-store.js'
+import { PurgeVisibility } from '../src/adapters/dsh-storage/purge-visibility.js'
 import { PurgeService } from '../src/application/purge/index.js'
-import type { ProjectPurgeScopeBindingV1 } from '../src/domain/purge/index.js'
+import {
+  deriveProjectPurgeScopeIdentityDigest,
+  type ProjectPurgeScopeBindingV1,
+} from '../src/domain/purge/index.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
 const cleanup = new Set<string>()
@@ -104,10 +109,25 @@ describe('D2 Purge on stock DSH Storage Domain', () => {
       await expect(restarted.recover()).resolves.toMatchObject({ state: 'COMPLETED' })
       expect(second.domain.table('work_items').get(item.workItemId)).toBeUndefined()
       expect(second.domain.global.get().purgeJournal).toBeUndefined()
+      const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
+      expect(second.domain.global.get().completedPurgeFences?.projects[scopeIdentityDigest])
+        .toMatchObject({ scope: 'PROJECT', hideBefore: preview.hideBefore, scopeIdentityDigest })
+    } finally {
+      await dispose(second)
+    }
+
+    const third = await mount(mediumPath, backend)
+    try {
+      const restartedStore = new DurableCaptureStore(
+        third.domain,
+        undefined,
+        new PurgeVisibility(third.domain),
+      )
+      await expect(restartedStore.persist(item)).rejects.toMatchObject({ code: 'PURGED_WORK_ITEM' })
       expect(await readFile(sessionLog, 'utf8')).toBe(sessionBytes)
       expect(await readFile(publishedSkill, 'utf8')).toBe(skillBytes)
     } finally {
-      await dispose(second)
+      await dispose(third)
     }
   })
 })

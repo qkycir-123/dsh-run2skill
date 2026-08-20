@@ -12,6 +12,10 @@ import {
   materializeLineage,
 } from '../src/domain/publication/index.js'
 import type { ProjectPurgeScopeBindingV1, PurgePhaseV1 } from '../src/domain/purge/index.js'
+import {
+  MAX_COMPLETED_PROJECT_PURGE_FENCES,
+  deriveProjectPurgeScopeIdentityDigest,
+} from '../src/domain/purge/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 import { WriteBehindCheckpoint } from '../src/application/capture/write-behind-checkpoint.js'
@@ -296,6 +300,23 @@ describe('recoverable Purge saga', () => {
     await domain.global.set({ ...domain.global.get(), purgeJournal: undefined })
     await checkpoint.activate([session('checkpoint-two', 2)])
     expect(domain.global.get().purgeJournal).toBeUndefined()
+    const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
+    const completedPurgeFences = {
+      schemaVersion: 1 as const,
+      projects: {
+        [scopeIdentityDigest]: {
+          schemaVersion: 1 as const,
+          scope: 'PROJECT' as const,
+          purgeId: journal.purgeId,
+          completedAt: new Date(NOW).toISOString(),
+          hideBefore: journal.hideBefore,
+          scopeIdentityDigest,
+        },
+      },
+    }
+    await domain.global.set({ ...domain.global.get(), completedPurgeFences })
+    await checkpoint.activate([session('checkpoint-three', 3)])
+    expect(domain.global.get().completedPurgeFences).toEqual(completedPurgeFences)
   })
 
   it('serializes capture writes with Purge and rejects a late recreation after the journal clears', async () => {
@@ -316,8 +337,7 @@ describe('recoverable Purge saga', () => {
     const purgeCanContinue = new Promise<void>(resolve => { continuePurge = resolve })
     const service = new PurgeService(domain, resolver, {
       now: () => NOW,
-      async onHidden(journal) {
-        visibility.remember(journal)
+      async onHidden() {
         markHidden()
         await purgeCanContinue
       },
@@ -355,8 +375,7 @@ describe('recoverable Purge saga', () => {
     const purgeCanContinue = new Promise<void>(resolve => { continuePurge = resolve })
     const service = new PurgeService(domain, { async resolve() { return { scope: 'USER' } } }, {
       now: () => NOW,
-      async onHidden(journal) {
-        visibility.remember(journal)
+      async onHidden() {
         markHidden()
         await purgeCanContinue
       },
@@ -393,8 +412,7 @@ describe('recoverable Purge saga', () => {
     const purgeCanContinue = new Promise<void>(resolve => { continuePurge = resolve })
     const service = new PurgeService(domain, resolver, {
       now: () => NOW,
-      async onHidden(journal) {
-        visibility.remember(journal)
+      async onHidden() {
         markHidden()
         await purgeCanContinue
       },
@@ -410,5 +428,169 @@ describe('recoverable Purge saga', () => {
 
     await expect(completion).rejects.toMatchObject({ code: 'LEARNING_WORK_ITEM_NOT_FOUND' })
     expect(domain.workItems.has(item.workItemId)).toBe(false)
+  })
+
+  it('atomically persists a completed fence while clearing the active journal', async () => {
+    const { domain } = populatedDomain()
+    const writes: ReturnType<typeof domain.global.get>[] = []
+    const setGlobal = domain.global.set.bind(domain.global)
+    domain.global.set = async value => {
+      writes.push(structuredClone(value))
+      await setGlobal(value)
+    }
+    const service = new PurgeService(domain, resolver, { now: () => NOW })
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+
+    const receipt = await service.confirm(preview.previewId, preview.digest)
+
+    const final = domain.global.get()
+    const scopeKey = deriveProjectPurgeScopeIdentityDigest(binding)
+    expect(receipt.state).toBe('COMPLETED')
+    expect(final.purgeJournal).toBeUndefined()
+    expect(final.completedPurgeFences?.projects[scopeKey]).toMatchObject({
+      schemaVersion: 1,
+      scope: 'PROJECT',
+      purgeId: receipt.purgeId,
+      hideBefore: preview.hideBefore,
+      completedAt: new Date(NOW).toISOString(),
+      scopeIdentityDigest: scopeKey,
+    })
+    const verifying = writes.findLastIndex(value => value.purgeJournal?.phase === 'VERIFYING')
+    expect(verifying).toBeGreaterThanOrEqual(0)
+    expect(writes[verifying + 1]).toMatchObject({
+      purgeJournal: undefined,
+      completedPurgeFences: { schemaVersion: 1 },
+    })
+  })
+
+  it('rebuilds PROJECT visibility from durable fences and permits only new turns', async () => {
+    const { domain } = populatedDomain()
+    const service = new PurgeService(domain, resolver, { now: () => NOW })
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+    await service.confirm(preview.previewId, preview.digest)
+
+    const restartedVisibility = new PurgeVisibility(domain)
+    const restartedStore = new DurableCaptureStore(domain, undefined, restartedVisibility)
+    await expect(restartedStore.persist(oldProjectItem(19)))
+      .rejects.toMatchObject({ code: 'PURGED_WORK_ITEM' })
+    const fresh = oldProjectItem(16)
+    const afterBoundary = {
+      ...fresh,
+      createdAt: '2026-08-21T00:00:00.001Z',
+      updatedAt: '2026-08-21T00:00:00.001Z',
+    }
+    await expect(restartedStore.persist(afterBoundary)).resolves.toMatchObject({ changed: true })
+  })
+
+  it('rebuilds USER fences after restart, blocks late USER classification, and allows PROJECT', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const userCandidate = oldProjectItem(17)
+    const projectCandidate = oldProjectItem(18)
+    domain.workItems.set(userCandidate.workItemId, userCandidate)
+    domain.workItems.set(projectCandidate.workItemId, projectCandidate)
+    const before = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+    const pendingUser = await prepareAnalyzingLearning(before, userCandidate)
+    const pendingProject = await prepareAnalyzingLearning(before, projectCandidate)
+    const service = new PurgeService(domain, { async resolve() { return { scope: 'USER' } } }, {
+      now: () => NOW,
+    })
+    const preview = await service.preview('USER')
+    expect(preview.workItemCount).toBe(0)
+    await service.confirm(preview.previewId, preview.digest)
+
+    const restarted = new LearningWorkItemStore(
+      domain,
+      () => '2026-08-21T00:00:00.001Z',
+      new PurgeVisibility(domain),
+    )
+    await expect(restarted.complete(
+      userCandidate.workItemId,
+      pendingUser.revision,
+      userLearningResult(userCandidate),
+    )).rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+    await expect(restarted.complete(
+      projectCandidate.workItemId,
+      pendingProject.revision,
+      makeLearningResult(projectCandidate),
+    )).resolves.toMatchObject({ processingState: 'LEARNED', learning: { proposal: { persistenceScope: 'PROJECT' } } })
+  })
+
+  it('upserts the latest same-scope fence without growing the PROJECT set', async () => {
+    const domain = createMemoryRun2skillDomain()
+    let now = NOW
+    const service = new PurgeService(domain, resolver, { now: () => now })
+    const first = await service.preview('PROJECT', binding.workspaceId)
+    const firstReceipt = await service.confirm(first.previewId, first.digest)
+    now += 1_000
+    const second = await service.preview('PROJECT', binding.workspaceId)
+    const secondReceipt = await service.confirm(second.previewId, second.digest)
+
+    const fences = domain.global.get().completedPurgeFences!
+    expect(Object.keys(fences.projects)).toHaveLength(1)
+    expect(fences.projects[deriveProjectPurgeScopeIdentityDigest(binding)]).toMatchObject({
+      purgeId: secondReceipt.purgeId,
+      hideBefore: second.hideBefore,
+    })
+    expect(secondReceipt.purgeId).not.toBe(firstReceipt.purgeId)
+  })
+
+  it('allows existing scope at the 1024 limit and rejects a new PROJECT before preview or journal', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const scopeKey = deriveProjectPurgeScopeIdentityDigest(binding)
+    const projects = Object.fromEntries(Array.from(
+      { length: MAX_COMPLETED_PROJECT_PURGE_FENCES },
+      (_, index) => {
+        const digest = index === 0 ? scopeKey : index.toString(16).padStart(64, '0')
+        return [digest, {
+          schemaVersion: 1 as const,
+          scope: 'PROJECT' as const,
+          purgeId: `purge_${digest}`,
+          completedAt: '2026-08-20T00:00:00.000Z',
+          hideBefore: '2026-08-20T00:00:00.000Z',
+          scopeIdentityDigest: digest,
+        }]
+      },
+    ))
+    await domain.global.set({
+      ...domain.global.get(),
+      completedPurgeFences: { schemaVersion: 1, projects },
+    })
+    const existing = new PurgeService(domain, resolver, { now: () => NOW })
+    await expect(existing.preview('PROJECT', binding.workspaceId)).resolves.toBeDefined()
+
+    const overflowBinding = {
+      ...binding,
+      workspaceId: 'workspace-overflow',
+      canonicalWorkspacePath: join(PROJECT, 'overflow'),
+      canonicalRootPath: join(PROJECT, 'overflow', '.dsh', 'skills'),
+      resolutionContractDigest: 'f'.repeat(64),
+    }
+    const overflow = new PurgeService(domain, { async resolve() { return overflowBinding } }, { now: () => NOW })
+    await expect(overflow.preview('PROJECT', overflowBinding.workspaceId))
+      .rejects.toMatchObject({ code: 'PURGE_FENCE_LIMIT' })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+
+    const confirmDomain = createMemoryRun2skillDomain()
+    const entries = Object.entries(projects)
+    await confirmDomain.global.set({
+      ...confirmDomain.global.get(),
+      completedPurgeFences: {
+        schemaVersion: 1,
+        projects: Object.fromEntries(entries.slice(0, MAX_COMPLETED_PROJECT_PURGE_FENCES - 1)),
+      },
+    })
+    const confirmService = new PurgeService(
+      confirmDomain,
+      { async resolve() { return overflowBinding } },
+      { now: () => NOW },
+    )
+    const confirmPreview = await confirmService.preview('PROJECT', overflowBinding.workspaceId)
+    await confirmDomain.global.set({
+      ...confirmDomain.global.get(),
+      completedPurgeFences: { schemaVersion: 1, projects },
+    })
+    await expect(confirmService.confirm(confirmPreview.previewId, confirmPreview.digest))
+      .rejects.toMatchObject({ code: 'PURGE_FENCE_LIMIT' })
+    expect(confirmDomain.global.get().purgeJournal).toBeUndefined()
   })
 })

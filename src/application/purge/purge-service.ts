@@ -4,8 +4,10 @@ import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import {
   PurgeJournalV1Schema,
   PurgeScopeBindingV1Schema,
+  canUpsertCompletedPurgeFence,
   classifyLineageForPurge,
   classifyWorkItemForPurge,
+  upsertCompletedPurgeFence,
   type PurgeClassification,
   type PurgeJournalV1,
   type PurgePhaseV1,
@@ -25,6 +27,7 @@ export type PurgeErrorCode =
   | 'PURGE_SCOPE_UNAVAILABLE'
   | 'PURGE_STORAGE_UNAVAILABLE'
   | 'PURGE_INCOMPATIBLE'
+  | 'PURGE_FENCE_LIMIT'
 
 export class PurgeError extends Error {
   constructor(readonly code: PurgeErrorCode, readonly busyPublicationCount = 0) {
@@ -165,6 +168,7 @@ export class PurgeService {
       if (error instanceof PurgeError) throw error
       throw new PurgeError('PURGE_SCOPE_UNAVAILABLE')
     }
+    this.#assertFenceCapacity(binding)
     const hideBefore = new Date(this.#now()).toISOString()
     const candidates = collectPurgeCandidates(this.domain, binding, hideBefore)
     const digest = candidateDigest(binding, hideBefore, candidates)
@@ -218,6 +222,7 @@ export class PurgeService {
       if (!sameScopeFacts(stored.value.scopeBinding, currentBinding)) {
         throw new PurgeError('PURGE_PREVIEW_STALE')
       }
+      this.#assertFenceCapacity(currentBinding)
       const current = collectPurgeCandidates(this.domain, currentBinding, stored.value.hideBefore)
       const currentDigest = candidateDigest(stored.value.scopeBinding, stored.value.hideBefore, current)
       if (currentDigest !== digest) throw new PurgeError('PURGE_PREVIEW_STALE')
@@ -356,7 +361,20 @@ export class PurgeService {
       deletedWorkItems: journal.deletedWorkItems,
       deletedLineages: journal.deletedLineages,
     }
-    await this.#global.update(current => ({ ...current, purgeJournal: undefined }))
+    await this.#global.update(current => {
+      if (!canUpsertCompletedPurgeFence(current.completedPurgeFences, journal.scopeBinding)) {
+        throw new PurgeError('PURGE_FENCE_LIMIT')
+      }
+      return {
+        ...current,
+        completedPurgeFences: upsertCompletedPurgeFence(
+          current.completedPurgeFences,
+          journal,
+          new Date(this.#now()).toISOString(),
+        ),
+        purgeJournal: undefined,
+      }
+    })
   }
 
   async #writeJournal(journal: PurgeJournalV1): Promise<void> {
@@ -385,6 +403,12 @@ export class PurgeService {
     const now = this.#now()
     for (const [id, preview] of this.#previews) {
       if (Date.parse(preview.value.expiresAt) <= now) this.#previews.delete(id)
+    }
+  }
+
+  #assertFenceCapacity(binding: PurgeScopeBindingV1): void {
+    if (!canUpsertCompletedPurgeFence(this.#global.get().completedPurgeFences, binding)) {
+      throw new PurgeError('PURGE_FENCE_LIMIT')
     }
   }
 

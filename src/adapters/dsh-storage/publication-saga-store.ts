@@ -60,11 +60,13 @@ export class PublicationSagaStore {
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
-    return this.#workItems.get(workItemId)
+    const item = this.#workItems.get(workItemId)
+    return item !== undefined && this.#visibility.workItemVisible(item) ? item : undefined
   }
 
   getLineage(lineageId: string): LineageV1 | undefined {
-    return this.#lineages.get(lineageId)
+    const lineage = this.#lineages.get(lineageId)
+    return lineage !== undefined && this.#visibility.lineageVisible(lineage) ? lineage : undefined
   }
 
   listRecoverable(): CaptureWorkItemV1[] {
@@ -262,7 +264,13 @@ export class PublicationSagaStore {
   }
 
   async #putLineage(pending: LineageV1): Promise<void> {
+    if (!this.#visibility.lineageVisible(pending)) {
+      throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
+    }
     const current = this.#lineages.get(pending.lineageId)
+    if (current !== undefined && !this.#visibility.lineageVisible(current)) {
+      throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
+    }
     if (current === undefined) {
       await this.#lineages.put(pending.lineageId, pending)
       return
@@ -292,7 +300,9 @@ export class PublicationSagaStore {
 
   #required(workItemId: string): CaptureWorkItemV1 {
     const current = this.#workItems.get(workItemId)
-    if (current === undefined) throw new PublicationSagaStoreError('PUBLICATION_WORK_ITEM_NOT_FOUND')
+    if (current === undefined || !this.#visibility.workItemVisible(current)) {
+      throw new PublicationSagaStoreError('PUBLICATION_WORK_ITEM_NOT_FOUND')
+    }
     return current
   }
 

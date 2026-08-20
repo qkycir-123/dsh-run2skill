@@ -7,7 +7,10 @@ import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-sa
 import { RuntimeNotices } from '../src/application/capture/runtime-notices.js'
 import { createObserveSummary } from '../src/application/observe-summary.js'
 import { proposalRefOf } from '../src/domain/review/index.js'
-import type { ProjectPurgeScopeBindingV1 } from '../src/domain/purge/index.js'
+import {
+  deriveProjectPurgeScopeIdentityDigest,
+  type ProjectPurgeScopeBindingV1,
+} from '../src/domain/purge/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeCreateProposalSnapshot, makeLearnedWorkItem } from './support/review-fixture.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
@@ -100,5 +103,52 @@ describe('unified Purge visibility predicate', () => {
       notices: new RuntimeNotices(),
       compatibility: 'COMPATIBLE',
     }).capturedCount).toBe(0)
+  })
+
+  it('reconstructs the same query, mutation, and claim boundary from a completed fence', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const learned = makeLearnedWorkItem({
+      createdAt: '2026-08-20T00:00:00.000Z',
+      workspaceBinding: {
+        status: 'BOUND', workspaceId: binding.workspaceId, canonicalPath: PROJECT, observedAt: NOW,
+      },
+    })
+    domain.workItems.set(learned.workItemId, learned)
+    const staged = await new ProposalReviewStore(domain, () => NOW).stage(
+      learned.workItemId,
+      learned.revision,
+      makeCreateProposalSnapshot(learned),
+    )
+    const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
+    await domain.global.set({
+      ...domain.global.get(),
+      completedPurgeFences: {
+        schemaVersion: 1,
+        projects: {
+          [scopeIdentityDigest]: {
+            schemaVersion: 1,
+            scope: 'PROJECT',
+            purgeId: `purge_${'1'.repeat(64)}`,
+            completedAt: NOW,
+            hideBefore: NOW,
+            scopeIdentityDigest,
+          },
+        },
+      },
+    })
+    const handler = createProposalReviewRpcHandler(() => domain)
+    const signal = new AbortController().signal
+
+    await expect(handler('proposals/list', {
+      apiVersion: 1, workspaceId: binding.workspaceId,
+    }, signal)).resolves.toMatchObject({ ok: true, value: { items: [] } })
+    await expect(handler('proposals/approve', {
+      apiVersion: 1,
+      workItemId: staged.item.workItemId,
+      workItemRevision: staged.item.revision,
+      proposalRef: proposalRefOf(staged.item.review!.proposal),
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+    expect(new LearningWorkItemStore(domain, () => NOW).listEligible(NOW)).toEqual([])
+    expect(new PublicationSagaStore(domain).get(staged.item.workItemId)).toBeUndefined()
   })
 })

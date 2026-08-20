@@ -50,7 +50,8 @@ export class DurableCaptureStore {
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
-    return this.#table.get(workItemId)
+    const item = this.#table.get(workItemId)
+    return item !== undefined && this.#visibility.workItemVisible(item) ? item : undefined
   }
 
   getIncomplete(limit: number, afterWorkItemId?: string): readonly CaptureWorkItemV1[] {
@@ -88,8 +89,11 @@ export class DurableCaptureStore {
     if (!parsed.success) throw new DomainError('INVALID_WORK_ITEM')
     const incoming = parsed.data
     const existing = storedAtRequestedId
+    if (
+      this.#visibility.workItemWasPurged(incoming)
+      || (existing !== undefined && this.#visibility.workItemWasPurged(existing))
+    ) throw new DomainError('PURGED_WORK_ITEM')
     if (existing === undefined) {
-      if (this.#visibility.workItemWasPurged(incoming)) throw new DomainError('PURGED_WORK_ITEM')
       const initial = CaptureWorkItemV1Schema.parse({ ...incoming, revision: 1 })
       await this.#table.put(initial.workItemId, initial)
       return { item: initial, changed: true }
