@@ -15,7 +15,7 @@
 | Windows Node / pnpm | Node `v24.18.0` / pnpm `11.19.0` |
 | Linux 对照 | WSL2 Linux 6.18.33.2 x86_64；Node `v22.23.2` |
 
-本记录验收的是 D1–D4 合并后的最终产品代码候选。D5 PR 只增加本证据文档，不改变运行时代码、测试、package、schema 或 DSH baseline。PR 的 exact-HEAD CI 与本地审查仍是第 8 节的独立最终门。
+本记录验收的是 D1–D4 合并后的最终产品代码候选。D5 PR 只增加本证据文档并加固两个验收探针，不改变运行时代码、候选 package 内容、schema 或 DSH baseline。PR 的 exact-HEAD CI 与本地审查仍是第 8 节的独立最终门。
 
 受保护 DSH checkout 在所有相关 runner 前后均满足：精确 baseline、detached、clean、无本地 patch；runner 只在被忽略的 disposable clone 和临时目录中写入。最终后置检查仍为 `DSH_SOURCE_AFTER=unchanged`。
 
@@ -27,7 +27,7 @@
 | package allowlist、许可、metadata、secret、本机路径、日志脱敏 | PASS | 真实 tarball；自动化 |
 | typecheck、lint、全量 unit/integration、冻结 evaluation、crash matrix | PASS | 自动化 |
 | JSON 主路径、SQLite 对照、schema/restart/recovery | PASS | 固定 DSH production-backed 契约 + 自动化 |
-| Settings、Purge、Inbox/Header、Learning/Publication | PASS | 固定 DSH 组合、真实 Web/Chromium、自动化 |
+| Settings、Purge、Inbox/Header、Learning/Publication | PASS | 固定 DSH production-backed 组合、真实 Web/Chromium、自动化 |
 | PROJECT/USER、CREATE/MERGE、conflict、readback、卸载保留 | PASS | stock DSH root contract + Windows/WSL CAS + 生命周期 |
 | add / disable / upgrade / uninstall | PASS | 当前候选 tarball；真实 DSH Web/Chromium |
 | D3 UI/a11y 与 polling | PASS | 确定性浏览器 DOM 集成 + 真实 Chromium spot check |
@@ -101,16 +101,18 @@ schema mismatch 证据分两层：运行时 strict schema 测试证明 Global、
     'b2-learning-window.spec.ts',
     'llm-skills.spec.ts',
     'web.spec.ts',
-    'd2-purge-storage.spec.ts'
+    'd2-purge-storage.spec.ts',
+    'd5-settings-behavior.spec.ts'
   )
 ```
 
-结果：8 个文件、26 项测试通过，`CONTRACT_PROBES=PASS`，`DSH_SOURCE_AFTER=unchanged`。
+结果：9 个文件、27 项测试通过，`CONTRACT_PROBES=PASS`，`DSH_SOURCE_AFTER=unchanged`。
 
 该矩阵使用 DSH 的真实 Session Persistence、Storage Domain、Settings/Connection/Skill/LLM/Web 契约和 production run2skill 源码，覆盖：
 
 - Web JSON/JSONL 主路径与 SQLite 对照路径的 open、write、close、restart 和 recovery；
 - Session gap/restart、Settings namespace 与 live mutation 边界；
+- stock DSH Settings provider + JSON Storage Domain 上，`automaticLearning=OFF` 阻止普通 constraint Turn 创建 WorkItem，显式保存 Turn 仍创建 `CAPTURED` WorkItem；OFF 队列只启动显式项，切回 ON 后普通项恢复，且 worker 获得的 analysis 启动快照为冻结对象、不会随运行中设置变化漂移；
 - PROJECT/USER Purge 的 production Store/visibility、completed fence 与 backend 对照；
 - Inbox/Header RPC、loopback fence、Learning route、完整 Skill observation 和 publication readback seam；
 - incompatible/missing backend 不被解释为空数据，DSH 主 Agent 保持 fail open。
@@ -152,7 +154,7 @@ runner 先完成 DSH frozen install 和完整 Host/Client/Web build，再分别�
 - 真实 Chromium 打开 USER Purge `alertdialog`，确认保留 DSH Session Log 与所有已发布原生 Skill，Escape 关闭后焦点恢复；
 - disable 后 Host、Client、RPC 与启动组合均不可达；
 - upgrade 到候选 v2 fixture 后 Host/Client 重新可用，run2skill Storage Domain 仍存在；
-- uninstall 后 package dependency、bundle、Host 与 Client 全部移除；run2skill storage 保留；预置的原生 `SKILL.md` exact bytes 不变；
+- uninstall 后重新读取 profile manifest、package path 与 storage：dependency、bundle、Host、Client 及 `node_modules/dsh-run2skill` 全部移除；run2skill storage 仍存在；预置的原生 `SKILL.md` exact bytes 不变；
 - 最终 DSH source 仍为精确 baseline 且 clean。
 
 ## 7. D3 Web UI / a11y

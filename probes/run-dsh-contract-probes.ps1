@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts')
+  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'd5-settings-behavior.spec.ts')
 )
 
 $ErrorActionPreference = 'Stop'
