@@ -319,7 +319,7 @@ describe('Purge native settings UI', () => {
     expect(dialog.textContent).toContain('保留 DSH Session Log')
     expect(dialog.textContent).toContain('保留所有已发布的原生 Skill')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '取消清理' }))
-    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    fireEvent.keyDown(dialog, { key: 'Tab', ['shift' + 'Key']: true })
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '确认清理' }))
     fireEvent.keyDown(dialog, { key: 'Escape' })
     await waitFor(() => { expect(screen.queryByRole('alertdialog')).toBeNull() })

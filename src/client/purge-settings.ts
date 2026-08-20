@@ -80,7 +80,7 @@ const errorSchema = z.object({
   error: z.object({
     code: z.string().min(1).max(128),
     message: z.string().max(512),
-    details: z.record(z.string(), z.unknown()).optional(),
+    details: z.object({ busyPublicationCount: count.optional() }).strict().optional(),
   }).strict(),
 }).strict()
 
