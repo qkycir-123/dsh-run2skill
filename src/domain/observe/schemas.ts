@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CompletedPurgeFencesV1Schema, PurgeJournalV1Schema } from '../purge/schemas.js'
 import {
   CAPTURE_BLOCKER_ORDER,
   compareOrdinalText,
@@ -424,6 +425,8 @@ export const GlobalV1Schema = z.object({
     pendingSessionCount: safeNonNegativeInteger,
     lastCheckpointAt: isoDateTime.optional(),
   }).strict(),
+  purgeJournal: PurgeJournalV1Schema.optional(),
+  completedPurgeFences: CompletedPurgeFencesV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   for (const [lifecycleKey, checkpoint] of Object.entries(value.sessions)) {
     if (lifecycleKey !== deriveSessionLifecycleKeyFromFacts(checkpoint)) {

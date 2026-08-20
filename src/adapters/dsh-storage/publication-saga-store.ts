@@ -12,6 +12,7 @@ import {
   type ProposalRefV1,
 } from '../../domain/review/index.js'
 import type { Run2skillDomain } from './types.js'
+import { PurgeVisibility } from './purge-visibility.js'
 
 export type PublicationSagaStoreErrorCode =
   | 'PUBLICATION_WORK_ITEM_NOT_FOUND'
@@ -44,25 +45,34 @@ export class PublicationSagaStore {
   readonly #workItems
   readonly #lineages
   readonly #now
+  readonly #visibility
   #tail: Promise<void> = Promise.resolve()
 
-  constructor(domain: Run2skillDomain, now: () => string = () => new Date().toISOString()) {
+  constructor(
+    domain: Run2skillDomain,
+    now: (() => string) | undefined = undefined,
+    visibility: PurgeVisibility = new PurgeVisibility(domain),
+  ) {
     this.#workItems = domain.table('work_items')
     this.#lineages = domain.table('lineages')
-    this.#now = now
+    this.#now = now ?? (() => new Date().toISOString())
+    this.#visibility = visibility
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
-    return this.#workItems.get(workItemId)
+    const item = this.#workItems.get(workItemId)
+    return item !== undefined && this.#visibility.workItemVisible(item) ? item : undefined
   }
 
   getLineage(lineageId: string): LineageV1 | undefined {
-    return this.#lineages.get(lineageId)
+    const lineage = this.#lineages.get(lineageId)
+    return lineage !== undefined && this.#visibility.lineageVisible(lineage) ? lineage : undefined
   }
 
   listRecoverable(): CaptureWorkItemV1[] {
     return [...this.#workItems.entries()].map(([, item]) => item).filter(item => (
-      item.processingState === 'PUBLISHING'
+      this.#visibility.workItemVisible(item)
+      && item.processingState === 'PUBLISHING'
       && item.review?.reviewDecision === 'APPROVED'
       && item.publication !== undefined
     )).sort((left, right) => (
@@ -254,7 +264,13 @@ export class PublicationSagaStore {
   }
 
   async #putLineage(pending: LineageV1): Promise<void> {
+    if (!this.#visibility.lineageVisible(pending)) {
+      throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
+    }
     const current = this.#lineages.get(pending.lineageId)
+    if (current !== undefined && !this.#visibility.lineageVisible(current)) {
+      throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
+    }
     if (current === undefined) {
       await this.#lineages.put(pending.lineageId, pending)
       return
@@ -284,7 +300,9 @@ export class PublicationSagaStore {
 
   #required(workItemId: string): CaptureWorkItemV1 {
     const current = this.#workItems.get(workItemId)
-    if (current === undefined) throw new PublicationSagaStoreError('PUBLICATION_WORK_ITEM_NOT_FOUND')
+    if (current === undefined || !this.#visibility.workItemVisible(current)) {
+      throw new PublicationSagaStoreError('PUBLICATION_WORK_ITEM_NOT_FOUND')
+    }
     return current
   }
 

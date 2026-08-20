@@ -9,6 +9,7 @@ import {
 } from '../../domain/observe/work-item.js'
 import { canonicalizeSignalKey } from '../../domain/observe/signal-key.js'
 import type { Run2skillDomain } from './types.js'
+import { PurgeVisibility } from './purge-visibility.js'
 
 export interface DurableCaptureResult {
   readonly item: CaptureWorkItemV1
@@ -24,24 +25,33 @@ function latestIso(...values: string[]): string {
 export class DurableCaptureStore {
   readonly #table
   readonly #now
+  readonly #visibility
+  readonly #runMutation
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
     domain: Run2skillDomain,
-    now: () => string = () => new Date().toISOString(),
+    now: (() => string) | undefined = undefined,
+    visibility: PurgeVisibility = new PurgeVisibility(domain),
+    runMutation: <T>(operation: () => Promise<T>) => Promise<T> = operation => operation(),
   ) {
     this.#table = domain.table('work_items')
-    this.#now = now
+    this.#now = now ?? (() => new Date().toISOString())
+    this.#visibility = visibility
+    this.#runMutation = runMutation
   }
 
   persist(value: CaptureWorkItemV1): Promise<DurableCaptureResult> {
-    const operation = this.#tail.then(async () => await this.#persist(value))
-    this.#tail = operation.then(() => {}, () => {})
-    return operation
+    return this.#runMutation(async () => {
+      const operation = this.#tail.then(async () => await this.#persist(value))
+      this.#tail = operation.then(() => {}, () => {})
+      return await operation
+    })
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
-    return this.#table.get(workItemId)
+    const item = this.#table.get(workItemId)
+    return item !== undefined && this.#visibility.workItemVisible(item) ? item : undefined
   }
 
   getIncomplete(limit: number, afterWorkItemId?: string): readonly CaptureWorkItemV1[] {
@@ -49,7 +59,7 @@ export class DurableCaptureStore {
       throw new TypeError('Incomplete capture limit must be a positive safe integer')
     }
     const items = [...this.#table.entries()]
-      .filter(([, item]) => item.scanStatus === 'INCOMPLETE')
+      .filter(([, item]) => this.#visibility.workItemVisible(item) && item.scanStatus === 'INCOMPLETE')
       .sort(([left], [right]) => left.localeCompare(right))
     if (items.length === 0) return []
     const start = afterWorkItemId === undefined
@@ -62,7 +72,7 @@ export class DurableCaptureStore {
   countIncomplete(): number {
     let count = 0
     for (const [, item] of this.#table.entries()) {
-      if (item.scanStatus === 'INCOMPLETE') count += 1
+      if (this.#visibility.workItemVisible(item) && item.scanStatus === 'INCOMPLETE') count += 1
     }
     return count
   }
@@ -79,6 +89,10 @@ export class DurableCaptureStore {
     if (!parsed.success) throw new DomainError('INVALID_WORK_ITEM')
     const incoming = parsed.data
     const existing = storedAtRequestedId
+    if (
+      this.#visibility.workItemWasPurged(incoming)
+      || (existing !== undefined && this.#visibility.workItemWasPurged(existing))
+    ) throw new DomainError('PURGED_WORK_ITEM')
     if (existing === undefined) {
       const initial = CaptureWorkItemV1Schema.parse({ ...incoming, revision: 1 })
       await this.#table.put(initial.workItemId, initial)

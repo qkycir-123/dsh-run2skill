@@ -1,8 +1,8 @@
 # dsh-run2skill v0.1 架构基线
 
-状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-20 纯插件发布 root contract 与原生 Settings RPC 窄修订已接受
+状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-20 纯插件发布 root contract 与原生 Settings RPC 窄修订已接受；2026-08-21 durable completed Purge fence 窄修订已接受
 文档版本：v0.1  
-更新时间：2026-08-20
+更新时间：2026-08-21
 产品输入：docs/product/prd.md v0.1（已冻结）  
 DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
@@ -19,6 +19,8 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 2026-08-19 的 Slice A 专项复核发现，DSH Session ID 不是生命周期唯一身份，且 Web JSON Storage 的 global 水位若逐 Turn 更新会导致整 domain 反复发布。本文以下窄修订把 Session 生命周期身份、无信号关闭状态和水位 write-behind 纳入上层契约；它不改变 PRD 的每 Root Turn 观察边界。维护者接受修订后的 Slice A Design 时，同时接受了这些窄修订。
 
 2026-08-20 的 Slice D 复核确认，固定 DSH baseline 已原生提供 Settings namespace、`expectedRevision`、loopback Settings RPC 和外部插件设置卡片 Slot。run2skill 因此直接注册 `run2skill` namespace 并复用 DSH Settings Client 接口，不再重复实现 `/run2skill` 私有 settings endpoint；该窄修订不改变 PRD 的设置字段、默认值或生效语义。
+
+2026-08-21 的 D2 exact-HEAD 复核确认，active Purge journal 在完成后清除，不能独自阻止旧 Session gap 或迟到 Learning 在 runtime/进程重启后重新形成已清除数据。本文以下窄修订在同一 global 中增加可选、版本化、path-free 的 durable completed fences，并要求与 active journal 清除原子转换；这是同一 domain version 下的向后兼容可选字段扩展，不改变 PRD，也不增加 table、backend、History、Retention 或 migration framework。
 
 本文中的“必须”来自冻结 PRD 或为满足它而不可缺少的技术约束；“候选”表示可在 Design 中细化但不得破坏稳定契约；“Contract Probe”表示源码不足以证明、必须在固定 DSH baseline 上运行验证的事项。
 
@@ -385,7 +387,7 @@ v0.1 复用 `ctx.storage.domain`，物理存储完全服从目标 profile 已装
 |---|---|---|
 | work_items | workItemId | signal、过滤 Evidence、Experience、Proposal、Review、Outcome、usage、Publication Journal |
 | lineages | targetIdentity | 完整 Revision snapshots、manual reconciliation facts |
-| global | 单记录 | schema/policy versions、恢复水位、Purge journal、健康信息索引 |
+| global | 单记录 | schema/policy versions、恢复水位、active Purge journal、completed Purge fences、健康信息索引 |
 
 global 的无信号扫描水位允许 write-behind；命中/blocked WorkItem 仍立即写入，且对应水位不得先于 WorkItem。确定性 WorkItem ID 负责重放去重，策略 activation fence 负责阻止规则升级重扫旧历史。
 
@@ -402,6 +404,7 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - Revision 保存 full snapshot；不使用 delta。
 - Store 只保存过滤后的必要文本、坐标、hash 和元数据，不复制 Whole Session。
 - v0.1.0-alpha 发布前冻结 domain schema；同一 v0.1 数据格式只做向后兼容的可选字段扩展。
+- D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
 - 在首个公开 alpha 前的开发数据可以显式导出后重建，但不得把这种做法用于已发布用户数据。
 
@@ -413,9 +416,13 @@ Purge 是持久 saga：
 2. UI 立即过滤命中数据；
 3. 扫描并删除匹配 WorkItem 和 Lineage；
 4. 校验无正常可见残留；
-5. 清除 journal。
+5. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
 
-崩溃后继续同一 purgeId。Purge 不删除 DSH Session Log，也不删除已发布 SKILL.md。删除失败时保持隐藏并显示可恢复错误，不把部分删除伪装成完成。
+崩溃后继续同一 purgeId。active journal 与 durable completed fences 共同定义所有 create/update/claim/query 的 visibility：`createdAt/first committedAt <= hideBefore` 的匹配旧事实在 runtime/进程重启后仍不能重新进入，边界后的新事实仍允许。USER fence 为单例；PROJECT fence 以 canonical workspace path 的平台规范化身份 digest 为确定性 key，同 scope 只保留最大 `hideBefore`。
+
+PROJECT completed fences 固定最多 1024 个且不得淘汰。达到上限时已有 scope 可更新，新 PROJECT 必须在 preview/confirm 写 journal 前以 `PURGE_FENCE_LIMIT` fail closed。任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/迁移门。
+
+Purge 不删除 DSH Session Log，也不删除已发布 SKILL.md。删除失败时保持隐藏并显示可恢复错误，不把部分删除伪装成完成。
 
 ### 9.5 物理与进程边界
 

@@ -59,6 +59,7 @@ DSH baseline：`99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）
 8. **首个 Alpha 才是公开迁移起点。** 公开前的开发数据允许显式重建；公开 Alpha 后不允许静默清库，任何破坏性 domain version 变化必须先有独立 Migration ADR、备份/回退和升级测试。
 9. **产品设置进入 DSH 原生插件设置页。** 不在 Proposal Inbox 内再造第二套设置导航；Inbox 继续只做当前工作区的 Action Queue。
 10. **发布候选不等于外部发布。** Slice D 可以生成和验收 tarball、安装说明和版本候选，但真正 tag、Release 或 npm publish 仍需单独授权。
+11. **完成边界必须跨重启持续。** active journal 完成时原子转成 path-free 的 durable completed fence；内存缓存不是真相。旧 Session gap 或晚到 Learning 不得在 journal 清除、runtime 重开或进程重启后重新形成已清除作用域的数据。
 
 ## 4. Automatic Learning
 
@@ -169,7 +170,7 @@ Client 的确认文案必须明确：
 
 ### 6.3 Durable saga
 
-global 增加可选的单个 `PurgeJournalV1`；v0.1 单 Host、一次只运行一个 Purge：
+global 增加可选的单个 active `PurgeJournalV1` 和可选、版本化的 `CompletedPurgeFencesV1`；v0.1 单 Host、一次只运行一个 active Purge：
 
 ```text
 purgeId
@@ -183,6 +184,16 @@ deletedLineages
 lastError?
 ```
 
+completed fences 只保存：
+
+```text
+schemaVersion
+USER: purgeId, completedAt, hideBefore
+PROJECT[scopeIdentityDigest]: purgeId, completedAt, hideBefore, scopeIdentityDigest
+```
+
+PROJECT 的确定性 `scopeIdentityDigest` 对 canonical workspace path 的平台规范化身份求 hash；不保存 workspace path、root path、Evidence、候选 ID 或删除审计内容。USER 只有一个 fence。相同 scope 只保留 `hideBefore` 最大的记录。
+
 执行顺序：
 
 1. 串行重验 preview、workspace/root 和不存在匹配 `PUBLISHING`；
@@ -190,7 +201,7 @@ lastError?
 3. 中止匹配且可中断的 Learning；禁止命中旧 WorkItem 产生新的 claim 或 publication；
 4. 先删 Lineage，再删 WorkItem；每次删除幂等，并按有界批次更新 phase/count；
 5. 重新扫描确认 `hideBefore` 之前无正常可见匹配记录；
-6. durable 清除 journal；返回完成 receipt；
+6. 在同一次 authoritative global update 中 upsert completed fence 并清除 active journal；不得出现“journal 已清、fence 尚未 durable”的中间状态；
 7. UI 重新读取队列和设置状态，并通过 `aria-live` 宣布结果。
 
 进程崩溃后从同一 journal 继续，不创建第二个 purgeId。删除失败时 journal 保留、命中数据继续隐藏、设置页显示可重试错误；不得返回成功或重新显示部分数据。
@@ -201,13 +212,16 @@ lastError?
 - Lineage 以第一条 revision 的 `committedAt <= hideBefore` 判断旧数据；
 - confirm 写 journal 后，所有 WorkItem Store 查询与 scheduler claim 必须共用同一 visibility predicate，不能只在 Web DTO 过滤；
 - 已开始的非发布 Analysis 若晚于 hide fence 提交，只能写回原 WorkItem，随后仍被 saga 删除；删除后的 update 必须失败，不能重建记录；
+- journal 完成后，create/update/claim/query 必须从 durable completed fences 重建相同 predicate；缓存可有，但不得成为权威；
+- USER Purge 仍在 preview 中保留旧 provisional WorkItem；若它在完成后才被判定为 USER，durable USER fence 拒绝该提交；若被判定为 PROJECT，则继续允许；
+- PROJECT Purge 后，旧 Session gap 重放产生且 `createdAt <= hideBefore` 的匹配 WorkItem 必须被 durable PROJECT fence 拒绝；
 - 新创建且 `createdAt > hideBefore` 的匹配数据可正常存在，不属于本次 Purge。
 
 ## 7. Storage 与迁移
 
 ### 7.1 Alpha schema 冻结
 
-Purge 只在现有 `run2skill_v1` domain 的 global 增加可选 journal，不新建数据库、文件或第二个 domain。现有 `work_items` 和 `lineages` 仍是数据真相。
+Purge 只在现有 `run2skill_v1` domain 的 global 增加可选 active journal 和可选 completed fences，不新建数据库、文件、表或第二个 domain。completed fences 是向后兼容的可选字段扩展，因此 domain version 保持不变；现有 `work_items` 和 `lineages` 仍是业务数据真相。
 
 Slice D 验收时记录并冻结：
 
@@ -226,6 +240,12 @@ Slice D 验收时记录并冻结：
 ### 7.2 公开前开发数据
 
 当前尚未公开的开发数据不承诺兼容。若实现需要不兼容变更，只允许在发布前明确记录一次“导出后重建”，并通过 candidate fixture 验证；该做法不得进入已发布用户升级路径。
+
+### 7.3 Known limitation：PROJECT fence 容量与未来 retention
+
+PROJECT completed fences 固定最多 1024 个。达到上限后，已有 scope 仍可把 fence upsert 到更大的 `hideBefore`；新的不同 PROJECT 在 preview 和 confirm 写 journal 前均 fail closed，返回非破坏性的 `PURGE_FENCE_LIMIT`。v0.1 不淘汰旧 fence，因为淘汰会让旧派生数据在 Session gap、迟到写或重启后复活。
+
+任何未来 retention/compaction 都必须先证明对应 Session gap 与迟到 mutation 已不可重放，并以独立 Design/迁移门交付；D2 不实现自动淘汰、History、Retention 或 migration framework。
 
 ## 8. Web 产品收口
 
@@ -276,6 +296,7 @@ PURGE_ALREADY_RUNNING
 PURGE_SCOPE_UNAVAILABLE
 PURGE_STORAGE_UNAVAILABLE
 PURGE_INCOMPATIBLE
+PURGE_FENCE_LIMIT
 ```
 
 错误 DTO 不返回本机绝对路径、Evidence 内容或后端异常堆栈。
@@ -305,6 +326,8 @@ PURGE_INCOMPATIBLE
 - PROJECT/USER scope truth table、无法证明作用域、hideBefore 边界；
 - preview stale、双 confirm、并发 confirm、PUBLISHING busy；
 - purge crash 在每个 durable phase 的恢复、删除失败后保持隐藏、restart 后继续、最终 journal 清除；
+- completed fence 与 journal 清除的原子转换、restart/old gap、USER provisional 晚分类、same-scope upsert、`hideBefore` 后新数据；
+- PROJECT fence 1024 exact limit、已有 scope 更新与新 scope `PURGE_FENCE_LIMIT` fail-closed；
 - scheduler/query/detail/summary 均应用同一 visibility predicate；
 - DSH Session Log 与已发布 Skill 在 Purge 前后 exact bytes 不变；
 - Settings 卡片与 Purge 对话框的键盘、focus、screen reader status；

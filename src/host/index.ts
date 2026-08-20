@@ -22,6 +22,7 @@ import type {
 import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
 import { registerObserveSummaryRpc, type ObserveSummaryHostConnection } from '../adapters/dsh-connection/observe-summary-rpc.js'
 import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/proposal-review-rpc.js'
+import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
@@ -71,6 +72,14 @@ import {
   type AutomaticLearningSettingsPolicy,
   type DshSettingsPort,
 } from '../adapters/dsh-settings/automatic-learning.js'
+import { PurgeVisibility } from '../adapters/dsh-storage/purge-visibility.js'
+import {
+  PurgeError,
+  PurgeService,
+  type PurgeScopeResolver,
+} from '../application/purge/index.js'
+import { HostMutationGate } from '../application/host-mutation-gate.js'
+import type { PurgeScopeBindingV1 } from '../domain/purge/index.js'
 
 export {
   PublicationConflict,
@@ -139,6 +148,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentDomain: Run2skillDomain | undefined
   currentScheduler: LearningScheduler | undefined
   currentPublicationScheduler: PublicationScheduler | undefined
+  currentPurgeService: PurgeService | undefined
   readonly #stockRootResolver = new StockDshRootContractResolver()
   readonly #stockConfigurations: StockSkillRuntimeConfigurationCache<Run2skillAgent>
 
@@ -147,6 +157,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
     private readonly automaticLearning: AutomaticLearningSettingsPolicy,
+    private readonly mutationGate: HostMutationGate,
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
       async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
@@ -176,14 +187,63 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
 
   currentCurationWake: (() => void) | undefined
 
+  async resolvePurgeScope(
+    scope: 'PROJECT' | 'USER',
+    workspaceId?: string,
+  ): Promise<PurgeScopeBindingV1> {
+    if (scope === 'USER') return { scope: 'USER' }
+    if (workspaceId === undefined || this.context.workspaceRegistry.get === undefined) {
+      throw new PurgeError('PURGE_SCOPE_UNAVAILABLE')
+    }
+    const workspace = this.context.workspaceRegistry.get(workspaceId)
+    if (
+      workspace === undefined
+      || workspace.id !== workspaceId
+      || (workspace.status !== undefined && await workspace.status() !== 'ok')
+    ) throw new PurgeError('PURGE_SCOPE_UNAVAILABLE')
+    const agentScope = this.scopes.resolveUniqueCwd(workspace.path)
+    if (agentScope.status !== 'AVAILABLE') throw new PurgeError('PURGE_SCOPE_UNAVAILABLE')
+    const configuration = this.#stockConfigurations.get(agentScope.agent)
+    if (configuration === undefined) throw new PurgeError('PURGE_SCOPE_UNAVAILABLE')
+    const root = this.#stockRootResolver.resolve({
+      scope: 'PROJECT',
+      workspaceBinding: { workspaceId, canonicalPath: workspace.path },
+      configuration,
+    })
+    if (root.status !== 'SUPPORTED') throw new PurgeError('PURGE_SCOPE_UNAVAILABLE')
+    return {
+      scope: 'PROJECT',
+      workspaceId,
+      canonicalWorkspacePath: workspace.path,
+      workspaceObservedAt: new Date().toISOString(),
+      canonicalRootPath: root.declaredRootPath,
+      rootContractVersion: 'stock-dsh-web-default-roots-v1',
+      resolverVersion: 'stock-root-resolver-v2',
+      resolutionContractDigest: deriveStockResolutionContractDigest(root, {
+        kind: 'WORKSPACE', workspaceId, canonicalPath: workspace.path,
+      }),
+    }
+  }
+
   async open(): Promise<RecoveryRuntime> {
     const domain = await openRun2skillDomain(this.context)
     this.currentDomain = domain
     try {
       const checkpoint = new WriteBehindCheckpoint(domain)
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
-      const store = new DurableCaptureStore(domain)
-      const learningStore = new LearningWorkItemStore(domain)
+      const visibility = new PurgeVisibility(domain)
+      const store = new DurableCaptureStore(
+        domain,
+        undefined,
+        visibility,
+        operation => this.mutationGate.run(operation),
+      )
+      const learningStore = new LearningWorkItemStore(
+        domain,
+        undefined,
+        visibility,
+        operation => this.mutationGate.run(operation),
+      )
       const skillCatalog = new DshSkillCatalogAdapter(this.context.skills)
       const workspaceResolver = new DshWorkspaceBindingResolver(this.context.workspaceRegistry)
       const publicationAbort = new AbortController()
@@ -262,7 +322,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         workspaceResolver,
         { rootContract },
       )
-      const proposalReviewStore = new ProposalReviewStore(domain)
+      const proposalReviewStore = new ProposalReviewStore(domain, undefined, visibility)
       const stageLearned = async (item: CaptureWorkItemV1): Promise<void> => {
         const view = publicationView(item)
         if (view === undefined) return
@@ -281,13 +341,13 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       this.currentCurationWake = () => {
         staging = staging.then(async () => {
           for (const [, item] of domain.table('work_items').entries()) {
-            if (item.processingState === 'LEARNED') await stageLearned(item)
+            if (visibility.workItemVisible(item) && item.processingState === 'LEARNED') await stageLearned(item)
           }
         }).catch(() => {
           this.notices.record({ healthCode: 'CURATION_STAGE_FAILED', sessionId: 'global' })
         })
       }
-      const publicationStore = new PublicationSagaStore(domain)
+      const publicationStore = new PublicationSagaStore(domain, undefined, visibility)
       const publicationSaga = new ApprovalPublicationSaga({
         store: publicationStore,
         revalidation: new ApprovedProposalRevalidator(proposalBuilder, publicationView),
@@ -335,6 +395,17 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         notices: this.notices,
       })
       this.currentScheduler = scheduler
+      const scopeResolver: PurgeScopeResolver = {
+        resolve: async (scope, workspaceId) => await this.resolvePurgeScope(scope, workspaceId),
+      }
+      const purgeService = new PurgeService(domain, scopeResolver, {
+        onHidden: () => {
+          scheduler.abortMatching(item => !visibility.workItemVisible(item))
+          scheduler.wake()
+          this.currentCurationWake?.()
+        },
+      })
+      this.currentPurgeService = purgeService
       const coordinator = new DurableCaptureCoordinator(store, checkpoint, this.notices)
       const processor = new TurnCaptureProcessor(
         coordinator,
@@ -428,6 +499,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           if (this.currentPublicationScheduler === publicationScheduler) {
             this.currentPublicationScheduler = undefined
           }
+          if (this.currentPurgeService === purgeService) this.currentPurgeService = undefined
           publicationAbort.abort()
           if (this.currentDomain === domain) this.currentDomain = undefined
           if (this.currentCurationWake !== undefined) this.currentCurationWake = undefined
@@ -442,12 +514,18 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           }
         },
       }
+      try {
+        await purgeService.recover()
+      } catch {
+        this.notices.record({ healthCode: 'PURGE_RECOVERY_FAILED', sessionId: 'global' })
+      }
       await publicationScheduler.start()
       await scheduler.start()
       return runtime
     } catch (error) {
       this.currentScheduler = undefined
       this.currentPublicationScheduler = undefined
+      this.currentPurgeService = undefined
       if (this.currentDomain === domain) this.currentDomain = undefined
       this.currentCurationWake = undefined
       await domain.close()
@@ -480,7 +558,8 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   const notices = new RuntimeNotices()
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
-  const factory = new Run2skillRuntimeFactory(context, notices, scopes, automaticLearning)
+  const mutationGate = new HostMutationGate()
+  const factory = new Run2skillRuntimeFactory(context, notices, scopes, automaticLearning, mutationGate)
   const stopWatchingSettings = automaticLearning.watch((next, previous) => {
     if (!previous.automaticLearning && next.automaticLearning) factory.wakeLearning()
   })
@@ -525,17 +604,26 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
           compatibility: 'COMPATIBLE',
         })
   }
+  const reviewRpc = createProposalReviewRpcHandler(() => factory.currentDomain, () => {
+    const summary = readSummary()
+    return {
+      status: summary.status,
+      recoveryLag: summary.recoveryLag,
+      ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
+    }
+  }, {
+    onPublicationRequested: () => { factory.wakePublication() },
+    visibility: domain => new PurgeVisibility(domain),
+    runMutation: operation => mutationGate.run(operation),
+  })
   const disposeRpc = registerObserveSummaryRpc(
     context.connection,
     readSummary,
-    createProposalReviewRpcHandler(() => factory.currentDomain, () => {
-      const summary = readSummary()
-      return {
-        status: summary.status,
-        recoveryLag: summary.recoveryLag,
-        ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
-      }
-    }, { onPublicationRequested: () => { factory.wakePublication() } }),
+    createPurgeRpcHandler(
+      () => factory.currentPurgeService,
+      reviewRpc,
+      { runMutation: operation => mutationGate.run(operation) },
+    ),
   )
 
   try {

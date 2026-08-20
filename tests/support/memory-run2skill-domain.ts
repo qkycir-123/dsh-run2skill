@@ -13,6 +13,8 @@ export function createMemoryRun2skillDomain(options: {
   writeLog: string[]
   failNextGlobalWrites(count: number): void
   failNextWorkItemWrites(count: number): void
+  failNextWorkItemDeletes(count: number): void
+  failNextLineageDeletes(count: number): void
 } {
   const workItems = new Map<string, CaptureWorkItemV1>()
   const lineages = new Map<string, LineageV1>()
@@ -21,6 +23,8 @@ export function createMemoryRun2skillDomain(options: {
   let remainingGlobalFailures = options.failGlobalWrites ?? 0
   let remainingWorkItemFailures = options.failWorkItemWrites ?? 0
   let remainingLineageFailures = options.failLineageWrites ?? 0
+  let remainingWorkItemDeleteFailures = 0
+  let remainingLineageDeleteFailures = 0
   const workItemTable = {
     get: (key: string) => workItems.get(key),
     entries: () => [...workItems.entries()][Symbol.iterator](),
@@ -34,7 +38,15 @@ export function createMemoryRun2skillDomain(options: {
       workItems.set(key, structuredClone(value))
       writeLog.push('work_items')
     },
-    delete: async (key: string) => workItems.delete(key),
+    delete: async (key: string) => {
+      if (remainingWorkItemDeleteFailures > 0) {
+        remainingWorkItemDeleteFailures -= 1
+        throw new Error('synthetic work item delete failure')
+      }
+      const deleted = workItems.delete(key)
+      if (deleted) writeLog.push('delete:work_items')
+      return deleted
+    },
     update: async (key: string, transform: (current: CaptureWorkItemV1) => CaptureWorkItemV1) => {
       if (remainingWorkItemFailures > 0) {
         remainingWorkItemFailures -= 1
@@ -61,7 +73,15 @@ export function createMemoryRun2skillDomain(options: {
       lineages.set(key, structuredClone(value))
       writeLog.push('lineages')
     },
-    delete: async (key: string) => lineages.delete(key),
+    delete: async (key: string) => {
+      if (remainingLineageDeleteFailures > 0) {
+        remainingLineageDeleteFailures -= 1
+        throw new Error('synthetic lineage delete failure')
+      }
+      const deleted = lineages.delete(key)
+      if (deleted) writeLog.push('delete:lineages')
+      return deleted
+    },
     update: async (key: string, transform: (current: LineageV1) => LineageV1) => {
       if (remainingLineageFailures > 0) {
         remainingLineageFailures -= 1
@@ -87,6 +107,8 @@ export function createMemoryRun2skillDomain(options: {
     writeLog,
     failNextGlobalWrites(count) { remainingGlobalFailures += count },
     failNextWorkItemWrites(count) { remainingWorkItemFailures += count },
+    failNextWorkItemDeletes(count) { remainingWorkItemDeleteFailures += count },
+    failNextLineageDeletes(count) { remainingLineageDeleteFailures += count },
     global: {
       get: () => structuredClone(global),
       set: async (value: GlobalV1) => {
