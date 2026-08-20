@@ -139,6 +139,12 @@ const context = {
     snapshot: async () => ({ skills: [], complete: true }),
     get: async () => undefined,
   },
+  settings: {
+    register: (_namespace, schema) => {
+      const value = schema({})
+      return { get: () => value, watch: () => () => {} }
+    },
+  },
   storageDomain: { open: async () => domain },
   sessionPersistence: {
     listSnapshots: async () => [{ header, revision }],
