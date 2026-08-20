@@ -1,6 +1,6 @@
 # dsh-run2skill 项目路线
 
-状态：切片 A/B 已验收，切片 C Design 已接受且 C1–C6 已合并；C7 暂停，先完成纯插件 root-contract 修正 #48
+状态：切片 A/B/C 已验收；C1–C7 与纯插件 root-contract 修正 #48 均已完成，下一阶段仍受 Slice D Design 门约束
 更新时间：2026-08-20
 
 ## 1. 路线目标
@@ -101,11 +101,11 @@
 
 结果：Session、Storage、LLM、Skill、Web、Publication CAS 和安装生命周期已取得运行证据。CP-ROOT-001 的默认组合 parity 历史证据仍为 PARTIAL，但“等待 provider roots API”已被 ADR-0001 取代；stock-DSH 纯插件 CP-ROOT-003 已在固定 baseline 通过。
 
-阶段门：Slice A/B 所需的底层契约已有运行证据，且两条切片均已完成验收；Slice C Design 与 C1–C6 已完成。#48 已移除候选 roots API 生产依赖并通过 CP-ROOT-003；C7 仍需在独立 #40 中执行最终黄金验收。
+阶段门：Slice A/B/C 所需的底层契约均有运行证据，三条切片已完成验收。#48 已移除候选 roots API 生产依赖并通过 CP-ROOT-003；C7 在 #40 中完成四个黄金场景与发布候选门，证据见 `docs/evidence/slice-c-acceptance.md`。
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A/B 已验收。切片 C Design 已接受，C1–C6 已合并；C7 保持最终验收边界，当前先推进独立修正 #48；不提前铺开切片 D 的详细 Issues。
+状态：进行中；切片 A/B/C 已验收。切片 C Design、C1–C7 与独立修正 #48 已完成；不提前铺开切片 D 的详细 Issues。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：切片 A/B 的独立 Design、公开 Issues、实现代码，以及 `docs/evidence/slice-a-acceptance.md` 和 `docs/evidence/slice-b-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C6（#34–#39）已完成。#48 只修正纯插件 root contract，完成后才恢复 C7（#40）最终集成验收。
+当前交付物：切片 A/B/C 的独立 Design、公开 Issues、实现代码，以及三份 `docs/evidence/slice-*-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C7（#34–#40）与纯插件 root-contract 修正 #48 已完成。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
@@ -143,7 +143,7 @@ Design → Review → Issues → Feature Branch → Implementation
 
 实现后只做一次简化自审，不使用 Compound Engineering、多角色或跨模型流程。PR 在稳定的精确 HEAD 上接受一次只读 `gpt-5.6-sol` / `high` 审查：P0/P1 阻塞；P2 仅在可复现且影响当前 Issue 验收、安全、用户数据、写错目录或主流程可用时阻塞；其余 P2/P3 建 GitHub backlog，不为字面 `CLEAN` 无限循环。只有修复阻塞 finding 的 push 才要求新的 exact-HEAD 审查；CI、必要探针和审查均无阻塞 finding 后，直接转 Ready 并 squash merge。需求或架构变化仍交由维护者决策，流程简化不改变产品范围。
 
-Slice A/B 已逐 Issue 合并并完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 已完成，#48 已完成；C7 尚未启动。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
+Slice A/B/C 已逐 Issue 完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 → #48 → C7 已完成。切片 D 只保留路线和阶段门，不提前拆成容易漂移的详细实现 Issue。
 
 ### 阶段 6：v0.1 集成验证
 

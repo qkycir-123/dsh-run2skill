@@ -44,10 +44,11 @@ import {
 } from '../application/learn/index.js'
 import { ObserveSummaryV1Schema, type ObserveSummaryV1 } from '../domain/observe/observe-summary.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
-import { normalize, resolve } from 'node:path'
+import { normalize, resolve, sep } from 'node:path'
 import { NodePublicationFactsAdapter } from '../adapters/dsh-publication/publication-facts.js'
 import { C5PublicationFileSystemAdapter } from '../adapters/dsh-publication/publication-filesystem.js'
 import { PublicationSagaStore } from '../adapters/dsh-storage/publication-saga-store.js'
+import { ProposalReviewStore } from '../adapters/dsh-storage/proposal-review-store.js'
 import { ProposalSnapshotBuilder } from '../application/curation/index.js'
 import {
   ApprovalPublicationSaga,
@@ -57,8 +58,10 @@ import {
 import { DshPublicationReadbackAdapter } from '../adapters/dsh-skills/publication-readback.js'
 import {
   StockDshRootContractResolver,
+  StockSkillRuntimeConfigurationCache,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
+  resolvePinnedStockPresetConfiguration,
 } from '../adapters/dsh-skills/stock-root-contract.js'
 import { stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
@@ -83,6 +86,7 @@ export const inject = [
   'connection',
   'llm',
   'skills',
+  'agentPresets',
 ] as const
 
 interface DshSessionProjection {
@@ -106,6 +110,7 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly connection: ObserveSummaryHostConnection
   readonly llm: DshLlmPort
   readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
+  readonly agentPresets: Parameters<typeof resolvePinnedStockPresetConfiguration>[0]
   on(
     event: string,
     listener: (...args: never[]) => unknown,
@@ -127,12 +132,18 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentScheduler: LearningScheduler | undefined
   currentPublicationScheduler: PublicationScheduler | undefined
   readonly #stockRootResolver = new StockDshRootContractResolver()
+  readonly #stockConfigurations: StockSkillRuntimeConfigurationCache<Run2skillAgent>
 
   constructor(
     private readonly context: Run2skillHostContext,
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
-  ) {}
+  ) {
+    this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
+      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
+        ?? await resolvePinnedStockPresetConfiguration(this.context.agentPresets, agent),
+    )
+  }
 
   wakeLearning(): void {
     this.currentScheduler?.wake()
@@ -141,6 +152,20 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   wakePublication(): void {
     this.currentPublicationScheduler?.wake()
   }
+
+  wakeCuration(): void {
+    this.currentCurationWake?.()
+  }
+
+  async captureRootConfiguration(agent: Run2skillAgent): Promise<void> {
+    await this.#stockConfigurations.capture(agent)
+  }
+
+  releaseRootConfiguration(agent: Run2skillAgent): void {
+    this.#stockConfigurations.release(agent)
+  }
+
+  currentCurationWake: (() => void) | undefined
 
   async open(): Promise<RecoveryRuntime> {
     const domain = await openRun2skillDomain(this.context)
@@ -154,7 +179,47 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const workspaceResolver = new DshWorkspaceBindingResolver(this.context.workspaceRegistry)
       const publicationAbort = new AbortController()
       const publicationView = (item: CaptureWorkItemV1): LearningSkillView<Run2skillAgent> | undefined => {
-        const scope = this.scopes.resolve(item)
+        let scope = this.scopes.resolve(item)
+        if (
+          scope.status === 'UNAVAILABLE'
+          && item.review?.reviewDecision === 'APPROVED'
+          && item.review.proposal.workspaceBinding !== undefined
+          && item.review.proposal.actionBinding.kind !== 'DISCARD'
+        ) {
+          const approved = item.review.proposal
+          const workspaceBinding = approved.workspaceBinding
+          const actionBinding = approved.actionBinding
+          if (workspaceBinding === undefined || actionBinding.kind === 'DISCARD') return undefined
+          const recovered = this.scopes.resolveUniqueCwd(workspaceBinding.canonicalPath)
+          if (recovered.status === 'AVAILABLE') {
+            const configuration = this.#stockConfigurations.get(recovered.agent)
+            const currentRoot = configuration === undefined
+              ? undefined
+              : this.#stockRootResolver.resolve({
+                  scope: approved.persistenceScope,
+                  workspaceBinding,
+                  configuration,
+                })
+            const identity = approved.persistenceScope === 'PROJECT'
+              ? {
+                  kind: 'WORKSPACE' as const,
+                  workspaceId: workspaceBinding.workspaceId,
+                  canonicalPath: workspaceBinding.canonicalPath,
+                }
+              : approved.dshHomeBinding === undefined
+                ? undefined
+                : {
+                    kind: 'DSH_HOME' as const,
+                    resolutionKind: approved.dshHomeBinding.resolutionKind,
+                    canonicalPath: approved.dshHomeBinding.canonicalPath,
+                    identityDigest: approved.dshHomeBinding.identityDigest,
+                  }
+            const currentDigest = currentRoot?.status === 'SUPPORTED' && identity !== undefined
+              ? deriveStockResolutionContractDigest(currentRoot, identity)
+              : undefined
+            if (currentDigest === actionBinding.rootBinding.resolutionContractDigest) scope = recovered
+          }
+        }
         return scope.status === 'UNAVAILABLE'
           ? undefined
           : {
@@ -170,10 +235,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           readonly workspaceBinding?: { readonly workspaceId: string; readonly canonicalPath: string } | undefined
           readonly view: LearningSkillView<Run2skillAgent>
         }) => {
-          const configuration = await resolveStockSkillRuntimeConfiguration(
-            stockPresetMounts,
-            input.view.scope,
-          )
+          const configuration = this.#stockConfigurations.get(input.view.scope)
           if (configuration === undefined) {
             return { status: 'UNSUPPORTED' as const, code: 'ROOT_CONTRACT_UNSUPPORTED' as const }
           }
@@ -191,6 +253,31 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         workspaceResolver,
         { rootContract },
       )
+      const proposalReviewStore = new ProposalReviewStore(domain)
+      const stageLearned = async (item: CaptureWorkItemV1): Promise<void> => {
+        const view = publicationView(item)
+        if (view === undefined) return
+        const built = await proposalBuilder.build(item, view)
+        if (built.status !== 'READY') {
+          this.notices.record({
+            healthCode: `CURATION_${built.failureCode}`,
+            sessionId: item.signalKey.rootSessionId,
+            turnEndSeq: item.signalKey.turnEndSeq,
+          })
+          return
+        }
+        await proposalReviewStore.stage(item.workItemId, item.revision, built.proposal)
+      }
+      let staging = Promise.resolve()
+      this.currentCurationWake = () => {
+        staging = staging.then(async () => {
+          for (const [, item] of domain.table('work_items').entries()) {
+            if (item.processingState === 'LEARNED') await stageLearned(item)
+          }
+        }).catch(() => {
+          this.notices.record({ healthCode: 'CURATION_STAGE_FAILED', sessionId: 'global' })
+        })
+      }
       const publicationStore = new PublicationSagaStore(domain)
       const publicationSaga = new ApprovalPublicationSaga({
         store: publicationStore,
@@ -208,7 +295,11 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
               && sameHostPath(canonicalRoot, binding.declaredRootPath)
           },
         }),
-        readback: new DshPublicationReadbackAdapter(skillCatalog, publicationView),
+        readback: new DshPublicationReadbackAdapter(skillCatalog, publicationView, {
+          refreshView: view => view.cwd === undefined
+            ? view
+            : { ...view, cwd: view.cwd.endsWith(sep) ? `${view.cwd}.${sep}` : `${view.cwd}${sep}` },
+        }),
       })
       const publicationScheduler = new PublicationScheduler({
         store: publicationStore,
@@ -226,6 +317,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         skills: skillCatalog,
         client: new RestrictedLearningClient(this.context.llm),
         notices: this.notices,
+        onCompleted: stageLearned,
       })
       const scheduler = new LearningScheduler({ store: learningStore, worker, notices: this.notices })
       this.currentScheduler = scheduler
@@ -310,6 +402,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           }
           publicationAbort.abort()
           if (this.currentDomain === domain) this.currentDomain = undefined
+          if (this.currentCurationWake !== undefined) this.currentCurationWake = undefined
           try {
             await publicationScheduler.dispose()
           } finally {
@@ -328,6 +421,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       this.currentScheduler = undefined
       this.currentPublicationScheduler = undefined
       if (this.currentDomain === domain) this.currentDomain = undefined
+      this.currentCurationWake = undefined
       await domain.close()
       throw error
     }
@@ -371,9 +465,11 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   context.on('agent/pre-step', async ({ agent }: AgentPreStepPayload, next: () => Promise<unknown>) => {
     if (accepting && !scopeDisposers.has(agent)) {
       try {
+        await factory.captureRootConfiguration(agent)
         scopeDisposers.set(agent, scopes.register(agent))
         factory.wakeLearning()
         factory.wakePublication()
+        factory.wakeCuration()
       } catch {
         notices.record({ healthCode: 'AGENT_SCOPE_UNAVAILABLE', sessionId: agent.id || 'global' })
       }
@@ -383,6 +479,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   context.on('agent/disposed', ({ agent }: AgentDisposedPayload) => {
     scopeDisposers.get(agent)?.()
     scopeDisposers.delete(agent)
+    factory.releaseRootConfiguration(agent)
   })
 
   const readSummary = (): ObserveSummaryV1 => {

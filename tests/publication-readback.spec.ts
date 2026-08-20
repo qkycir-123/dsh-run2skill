@@ -72,6 +72,54 @@ describe('DshPublicationReadbackAdapter', () => {
     expect(wait).toHaveBeenCalledOnce()
   })
 
+  it('keeps the bounded default window open through the fifth hot-refresh observation', async () => {
+    const item = await approvedItem()
+    const exact = exactCatalog(item)
+    let snapshots = 0
+    const skills: SkillCatalogPort<View> = {
+      async snapshot(view) {
+        snapshots += 1
+        return snapshots < 5 ? { skills: [], complete: true } : await exact.snapshot(view)
+      },
+      get: (name, view) => exact.get(name, view),
+    }
+    const wait = vi.fn(async () => undefined)
+
+    await expect(new DshPublicationReadbackAdapter(
+      skills,
+      () => ({ cwd: 'D:\\workspace' }),
+      { wait },
+    ).confirmExact(item)).resolves.toEqual({
+      status: 'CONFIRMED',
+      observedHash: item.review!.proposal.skillBytesDigest,
+    })
+    expect(wait).toHaveBeenCalledTimes(4)
+  })
+
+  it('uses a canonical-equivalent fresh view to avoid reusing the pre-publication catalog cache', async () => {
+    const item = await approvedItem()
+    const exact = exactCatalog(item)
+    const skills: SkillCatalogPort<View> = {
+      async snapshot(view) {
+        return view.cwd.endsWith('\\')
+          ? await exact.snapshot(view)
+          : { skills: [], complete: true }
+      },
+      async get(name, view) {
+        return view.cwd.endsWith('\\') ? await exact.get(name, view) : undefined
+      },
+    }
+
+    await expect(new DshPublicationReadbackAdapter(
+      skills,
+      () => ({ cwd: 'D:\\workspace' }),
+      { refreshView: view => ({ ...view, cwd: `${view.cwd}\\` }), wait: async () => undefined },
+    ).confirmExact(item)).resolves.toEqual({
+      status: 'CONFIRMED',
+      observedHash: item.review!.proposal.skillBytesDigest,
+    })
+  })
+
   it('distinguishes a complete wrong winner from bounded incomplete timeout', async () => {
     const item = await approvedItem()
     const exact = exactCatalog(item)

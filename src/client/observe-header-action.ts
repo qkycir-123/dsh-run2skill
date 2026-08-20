@@ -47,7 +47,7 @@ export interface ObserveSummaryClientContext {
       readonly name: string
       readonly id: string
       readonly order: number
-      readonly inject: {
+      readonly inject: () => {
         readonly callSummary: ObserveSummaryCall
         readonly callReview: ProposalReviewCall
         readonly getWorkspaceId: (sessionId: string) => string
@@ -166,7 +166,7 @@ export function applyObserveSummaryClient(ctx: ObserveSummaryClientContext): voi
       name: 'conversation.session.header.actions',
       id: 'run2skill-observe-summary',
       order: 30,
-      inject: { callSummary, callReview, getWorkspaceId },
+      inject: () => ({ callSummary, callReview, getWorkspaceId }),
     }, Run2skillHeaderAction),
   )
 }

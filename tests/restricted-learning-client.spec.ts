@@ -115,6 +115,9 @@ describe('RestrictedLearningClient', () => {
     expect(llm.calls[0]).not.toHaveProperty('tools')
     expect(llm.calls[0]).not.toHaveProperty('purpose')
     expect(llm.calls[0]).not.toHaveProperty('reasoningEffort')
+    expect(llm.calls[0]?.system).toContain(
+      'Copy every supportingEvidence messageSeq and excerptDigest exactly from USER_EVIDENCE',
+    )
     expect(ledger.reservations).toEqual(['PRIMARY'])
     expect(ledger.calls).toEqual([{
       requestOrdinal: 1,
@@ -263,7 +266,7 @@ describe('RestrictedLearningClient', () => {
   })
 
   it('does not reserve or call when the fixed prompt and envelope exceed route context', async () => {
-    const llm = new RecordingLlm([], 7_200)
+    const llm = new RecordingLlm([], 7_400)
     const ledger = new RecordingLedger()
     expect(await request(llm, ledger)).toEqual({
       status: 'FAILED', failureCode: 'ENVELOPE_UNBUILDABLE',

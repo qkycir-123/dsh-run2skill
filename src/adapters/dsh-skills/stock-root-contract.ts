@@ -12,6 +12,10 @@ export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard', 'code'])
+export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
+  standard: '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
+  code: 'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
+})
 
 export interface StockSkillRuntimeConfiguration {
   readonly profile: string
@@ -46,6 +50,68 @@ export interface StockPresetMountPort {
 export interface StockComposedAgentProjection {
   readonly ctx: {
     readonly registry: { values(): Iterable<StockPluginRuntimeProjection> }
+  }
+}
+
+export interface StockAgentPresetObservationPort {
+  composedPreset(agentContext: object): string | undefined
+  resolve(id: string): Promise<{ readonly id: string; readonly trust: 'system' | 'user' }>
+  read(id: string): Promise<string>
+}
+
+export async function resolvePinnedStockPresetConfiguration(
+  presets: StockAgentPresetObservationPort,
+  agent: { readonly ctx: object },
+  expectedDigests: Readonly<Record<'standard' | 'code', string>> = STOCK_PRESET_COMPOSITION_DIGESTS,
+): Promise<StockSkillRuntimeConfiguration | undefined> {
+  const presetId = presets.composedPreset(agent.ctx)
+  if (presetId !== 'standard' && presetId !== 'code') return undefined
+  try {
+    const preset = await presets.resolve(presetId)
+    if (preset.id !== presetId || preset.trust !== 'system') return undefined
+    const content = await presets.read(presetId)
+    if (sha256Utf8(content) !== expectedDigests[presetId]) return undefined
+    return {
+      profile: 'web',
+      presetId,
+      providerName: 'filesystem',
+      includeDefaultRoots: true,
+      customSkillDirs: [],
+    }
+  } catch {
+    return undefined
+  }
+}
+
+export class StockSkillRuntimeConfigurationCache<TAgent extends object> {
+  readonly #entries = new WeakMap<TAgent, StockSkillRuntimeConfiguration>()
+
+  constructor(
+    private readonly observe: (
+      agent: TAgent,
+    ) => Promise<StockSkillRuntimeConfiguration | undefined>,
+  ) {}
+
+  async capture(agent: TAgent): Promise<StockSkillRuntimeConfiguration | undefined> {
+    const observed = await this.observe(agent)
+    if (observed === undefined) {
+      this.#entries.delete(agent)
+      return undefined
+    }
+    const snapshot = Object.freeze({
+      ...observed,
+      customSkillDirs: Object.freeze([...observed.customSkillDirs]),
+    })
+    this.#entries.set(agent, snapshot)
+    return snapshot
+  }
+
+  get(agent: TAgent): StockSkillRuntimeConfiguration | undefined {
+    return this.#entries.get(agent)
+  }
+
+  release(agent: TAgent): void {
+    this.#entries.delete(agent)
   }
 }
 

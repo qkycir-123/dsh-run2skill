@@ -4,9 +4,10 @@ import { parseCanonicalSkillBody } from '../../application/curation/index.js'
 import type { SkillCatalogPort, SkillDefinitionProjection } from '../../domain/learn/index.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 
-export interface PublicationReadbackOptions {
+export interface PublicationReadbackOptions<TView extends object> {
   readonly attempts?: number
   readonly wait?: (milliseconds: number) => Promise<void>
+  readonly refreshView?: (view: TView) => TView
 }
 
 function samePath(left: string | undefined, right: string): boolean {
@@ -41,18 +42,20 @@ export class DshPublicationReadbackAdapter<TView extends object> implements Publ
   readonly #resolveView
   readonly #attempts
   readonly #wait
+  readonly #refreshView
 
   constructor(
     skills: SkillCatalogPort<TView>,
     resolveView: (item: CaptureWorkItemV1) => TView | undefined,
-    options: PublicationReadbackOptions = {},
+    options: PublicationReadbackOptions<TView> = {},
   ) {
-    const attempts = options.attempts ?? 3
+    const attempts = options.attempts ?? 5
     if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 5) {
       throw new TypeError('Publication readback attempts must be between 1 and 5')
     }
     this.#skills = skills
     this.#resolveView = resolveView
+    this.#refreshView = options.refreshView ?? (view => view)
     this.#attempts = attempts
     this.#wait = options.wait ?? (async milliseconds => {
       await new Promise(resolveWait => setTimeout(resolveWait, milliseconds))
@@ -62,14 +65,15 @@ export class DshPublicationReadbackAdapter<TView extends object> implements Publ
   async confirmExact(item: CaptureWorkItemV1): Promise<PublicationReadbackResult> {
     const proposal = item.review?.proposal
     const binding = proposal?.actionBinding
-    const view = this.#resolveView(item)
+    const resolvedView = this.#resolveView(item)
     if (
       item.review?.reviewDecision !== 'APPROVED'
       || proposal === undefined
       || binding === undefined
       || binding.kind === 'DISCARD'
-      || view === undefined
+      || resolvedView === undefined
     ) return { status: 'TIMEOUT', code: 'READBACK_SCOPE_UNAVAILABLE' }
+    const view = this.#refreshView(resolvedView)
 
     let expectedBody: string
     try {
@@ -79,7 +83,7 @@ export class DshPublicationReadbackAdapter<TView extends object> implements Publ
     }
 
     let sawCompleteMismatch = false
-    const delays = [50, 200, 500, 1_000]
+    const delays = [50, 500, 2_000, 7_500]
     for (let attempt = 0; attempt < this.#attempts; attempt += 1) {
       try {
         const snapshot = await this.#skills.snapshot(view)

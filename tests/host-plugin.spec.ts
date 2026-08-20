@@ -15,6 +15,11 @@ function learningServices() {
       async snapshot() { return { skills: [], complete: true } },
       async get() { return undefined },
     },
+    agentPresets: {
+      composedPreset() { return undefined },
+      async resolve(id: string) { return { id, trust: 'system' as const } },
+      async read() { return '' },
+    },
   }
 }
 
@@ -29,6 +34,7 @@ describe('Host plugin assembly', () => {
       'connection',
       'llm',
       'skills',
+      'agentPresets',
     ])
     expect(inject).not.toContain('settings')
   })
@@ -226,6 +232,7 @@ describe('Host plugin assembly', () => {
     }
     let preStep: ((payload: { agent: typeof agent }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     let agentDisposed: ((payload: { agent: typeof agent }) => void) | undefined
+    let registeredAgentCreated = false
     const context = {
       ...learningServices(),
       sessions: {},
@@ -241,6 +248,8 @@ describe('Host plugin assembly', () => {
           preStep = listener as unknown as typeof preStep
         } else if (event === 'agent/disposed') {
           agentDisposed = listener as unknown as typeof agentDisposed
+        } else if (event === 'agent/created') {
+          registeredAgentCreated = true
         }
       },
     }
@@ -248,6 +257,7 @@ describe('Host plugin assembly', () => {
     const decision = { kind: 'enter', messages: [] }
     const next = vi.fn(async () => decision)
 
+    expect(registeredAgentCreated).toBe(false)
     await expect(preStep?.({ agent }, next)).resolves.toBe(decision)
     expect(next).toHaveBeenCalledOnce()
     agentDisposed?.({ agent })

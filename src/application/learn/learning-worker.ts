@@ -60,6 +60,7 @@ export interface LearningWorkerOptions<TAgent extends LearningAgent> {
   readonly notices: RuntimeNotices
   readonly now?: () => number
   readonly sleep?: (milliseconds: number) => Promise<void>
+  readonly onCompleted?: (item: CaptureWorkItemV1) => Promise<void>
 }
 
 class LearningInputStale extends Error {}
@@ -138,6 +139,7 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
   readonly #notices
   readonly #now
   readonly #sleep
+  readonly #onCompleted
 
   constructor(options: LearningWorkerOptions<TAgent>) {
     this.#store = options.store
@@ -148,6 +150,7 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
     this.#notices = options.notices
     this.#now = options.now ?? Date.now
     this.#sleep = options.sleep ?? delay
+    this.#onCompleted = options.onCompleted
   }
 
   canResolveScope(item: CaptureWorkItemV1): boolean {
@@ -307,12 +310,19 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
         experiences: learned.experiences,
         proposal: learned.proposal,
       })
-      if (guarded.status === 'REJECTED') return await fail('LEARNING_GUARD_REJECTED')
+      if (guarded.status === 'REJECTED') {
+        return await fail('LEARNING_GUARD_REJECTED')
+      }
 
       for (const wait of RESULT_WRITE_RETRY_DELAYS_MS) {
         if (wait > 0) await this.#sleep(wait)
         try {
           current = await this.#store.complete(current.workItemId, current.revision, learned)
+          try {
+            await this.#onCompleted?.(current)
+          } catch {
+            this.#notice('CURATION_STAGE_FAILED', current)
+          }
           return
         } catch (error) {
           if (error instanceof LearningStoreError && error.code === 'LEARNING_REVISION_CONFLICT') {

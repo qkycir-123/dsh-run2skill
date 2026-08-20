@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ExactAgentScopeRegistry } from '../src/adapters/dsh-skills/index.js'
 import { deriveSessionCwdDigest } from '../src/domain/observe/signal-key.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
+import { resolve, sep } from 'node:path'
 
 function agent(id: string, createdAt: number, cwd: string) {
   return { id, session: { header: { id, createdAt, cwd } } }
@@ -52,5 +53,21 @@ describe('ExactAgentScopeRegistry', () => {
     })
     release()
     expect(registry.resolve(item)).toEqual({ status: 'UNAVAILABLE' })
+  })
+
+  it('borrows a unique active scope only from the same canonical cwd for restart recovery', () => {
+    const registry = new ExactAgentScopeRegistry<object>()
+    const project = resolve('repo', 'project')
+    const current = agent('current-session', 300, project)
+    const release = registry.register(current)
+
+    expect(registry.resolveUniqueCwd(`${project}${sep}.`)).toMatchObject({
+      status: 'AVAILABLE', agent: current, cwd: project,
+    })
+    expect(registry.resolveUniqueCwd(resolve('repo', 'other'))).toEqual({ status: 'UNAVAILABLE' })
+
+    registry.register(agent('concurrent-session', 400, project))
+    expect(registry.resolveUniqueCwd(project)).toEqual({ status: 'UNAVAILABLE' })
+    release()
   })
 })
