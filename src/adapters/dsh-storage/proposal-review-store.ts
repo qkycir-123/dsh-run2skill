@@ -14,6 +14,7 @@ import {
   createPublicationState,
   derivePublicationTargetIdentityDigest,
 } from '../../domain/publication/index.js'
+import { PurgeVisibility } from './purge-visibility.js'
 
 export type ProposalReviewStoreErrorCode =
   | 'REVIEW_WORK_ITEM_NOT_FOUND'
@@ -43,11 +44,17 @@ function sameRef(left: ProposalRefV1, right: ProposalRefV1): boolean {
 export class ProposalReviewStore {
   readonly #table
   readonly #now
+  readonly #visibility
   #tail: Promise<void> = Promise.resolve()
 
-  constructor(domain: Run2skillDomain, now: () => string = () => new Date().toISOString()) {
+  constructor(
+    domain: Run2skillDomain,
+    now: (() => string) | undefined = undefined,
+    visibility: PurgeVisibility = new PurgeVisibility(domain),
+  ) {
     this.#table = domain.table('work_items')
-    this.#now = now
+    this.#now = now ?? (() => new Date().toISOString())
+    this.#visibility = visibility
   }
 
   stage(
@@ -260,7 +267,9 @@ export class ProposalReviewStore {
 
   #required(workItemId: string): CaptureWorkItemV1 {
     const current = this.#table.get(workItemId)
-    if (current === undefined) throw new ProposalReviewStoreError('REVIEW_WORK_ITEM_NOT_FOUND')
+    if (current === undefined || !this.#visibility.workItemVisible(current)) {
+      throw new ProposalReviewStoreError('REVIEW_WORK_ITEM_NOT_FOUND')
+    }
     return current
   }
 

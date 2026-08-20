@@ -7,6 +7,7 @@ import type {
   LearningStateV1,
 } from '../../domain/learn/index.js'
 import type { Run2skillDomain } from './types.js'
+import { PurgeVisibility } from './purge-visibility.js'
 
 export type LearningStoreErrorCode =
   | 'LEARNING_WORK_ITEM_NOT_FOUND'
@@ -33,11 +34,17 @@ function withoutUndefined<T extends object>(value: T): T {
 export class LearningWorkItemStore {
   readonly #table
   readonly #now
+  readonly #visibility
   #tail: Promise<void> = Promise.resolve()
 
-  constructor(domain: Run2skillDomain, now: () => string = () => new Date().toISOString()) {
+  constructor(
+    domain: Run2skillDomain,
+    now: (() => string) | undefined = undefined,
+    visibility: PurgeVisibility = new PurgeVisibility(domain),
+  ) {
     this.#table = domain.table('work_items')
-    this.#now = now
+    this.#now = now ?? (() => new Date().toISOString())
+    this.#visibility = visibility
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
@@ -48,7 +55,8 @@ export class LearningWorkItemStore {
     const instant = Date.parse(now)
     if (!Number.isFinite(instant)) throw new TypeError('Invalid eligibility instant')
     return [...this.#table.entries()].map(([, item]) => item).filter(item => (
-      item.processingState === 'CAPTURED'
+      this.#visibility.workItemVisible(item)
+      && item.processingState === 'CAPTURED'
       && item.captureReason === 'CHEAP_TRIGGER'
       && item.scanStatus === 'COMPLETE'
       && item.evidenceRefs.length > 0
@@ -68,6 +76,7 @@ export class LearningWorkItemStore {
     if (!Number.isFinite(instant)) throw new TypeError('Invalid eligibility instant')
     let next: string | undefined
     for (const [, item] of this.#table.entries()) {
+      if (!this.#visibility.workItemVisible(item)) continue
       const candidate = item.learning?.nextEligibleAt
       if (
         item.processingState !== 'CAPTURED'
@@ -83,6 +92,9 @@ export class LearningWorkItemStore {
 
   claim(workItemId: string, expectedRevision: number): Promise<CaptureWorkItemV1> {
     return this.#update(workItemId, expectedRevision, (current) => {
+      if (!this.#visibility.workItemVisible(current)) {
+        throw new LearningStoreError('INVALID_LEARNING_STATE')
+      }
       if (current.processingState !== 'CAPTURED' || current.scanStatus !== 'COMPLETE') {
         throw new LearningStoreError('INVALID_LEARNING_STATE')
       }
@@ -235,6 +247,7 @@ export class LearningWorkItemStore {
   async recoverInterrupted(): Promise<CaptureWorkItemV1[]> {
     const recovered: CaptureWorkItemV1[] = []
     for (const [workItemId, item] of this.#table.entries()) {
+      if (!this.#visibility.workItemVisible(item)) continue
       if (item.processingState !== 'ANALYZING') continue
       const failure: LearningFailureV1 = {
         code: 'MODEL_ABORTED', retryable: true, occurredAt: this.#now(),
@@ -249,6 +262,7 @@ export class LearningWorkItemStore {
   ): Promise<CaptureWorkItemV1[]> {
     const reopened: CaptureWorkItemV1[] = []
     for (const [workItemId, snapshot] of this.#table.entries()) {
+      if (!this.#visibility.workItemVisible(snapshot)) continue
       if (
         snapshot.processingState !== 'NEEDS_ATTENTION'
         || snapshot.learning?.failure?.code !== 'AGENT_SCOPE_UNAVAILABLE'

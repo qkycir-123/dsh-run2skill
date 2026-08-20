@@ -9,6 +9,7 @@ import {
 } from '../../domain/observe/work-item.js'
 import { canonicalizeSignalKey } from '../../domain/observe/signal-key.js'
 import type { Run2skillDomain } from './types.js'
+import { PurgeVisibility } from './purge-visibility.js'
 
 export interface DurableCaptureResult {
   readonly item: CaptureWorkItemV1
@@ -24,14 +25,17 @@ function latestIso(...values: string[]): string {
 export class DurableCaptureStore {
   readonly #table
   readonly #now
+  readonly #visibility
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
     domain: Run2skillDomain,
-    now: () => string = () => new Date().toISOString(),
+    now: (() => string) | undefined = undefined,
+    visibility: PurgeVisibility = new PurgeVisibility(domain),
   ) {
     this.#table = domain.table('work_items')
-    this.#now = now
+    this.#now = now ?? (() => new Date().toISOString())
+    this.#visibility = visibility
   }
 
   persist(value: CaptureWorkItemV1): Promise<DurableCaptureResult> {
@@ -49,7 +53,7 @@ export class DurableCaptureStore {
       throw new TypeError('Incomplete capture limit must be a positive safe integer')
     }
     const items = [...this.#table.entries()]
-      .filter(([, item]) => item.scanStatus === 'INCOMPLETE')
+      .filter(([, item]) => this.#visibility.workItemVisible(item) && item.scanStatus === 'INCOMPLETE')
       .sort(([left], [right]) => left.localeCompare(right))
     if (items.length === 0) return []
     const start = afterWorkItemId === undefined
@@ -62,7 +66,7 @@ export class DurableCaptureStore {
   countIncomplete(): number {
     let count = 0
     for (const [, item] of this.#table.entries()) {
-      if (item.scanStatus === 'INCOMPLETE') count += 1
+      if (this.#visibility.workItemVisible(item) && item.scanStatus === 'INCOMPLETE') count += 1
     }
     return count
   }

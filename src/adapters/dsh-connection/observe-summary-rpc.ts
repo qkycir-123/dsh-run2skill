@@ -10,9 +10,9 @@ export const OBSERVE_SUMMARY_ENDPOINT = 'observe-summary'
 const ObserveSummaryRequestV1Schema = z.object({ apiVersion: z.literal(1) }).strict()
 
 type ObserveRpcError = {
-  readonly code: 'bad-request' | 'cancelled' | 'internal' | 'not-found' | 'conflict' | 'invalid-state'
+  readonly code: string
   readonly message: string
-  readonly details: Record<string, never> | { readonly issues: never[] }
+  readonly details: Record<string, unknown>
 }
 
 export type ObserveRpcResult<T> =

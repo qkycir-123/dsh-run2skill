@@ -10,6 +10,7 @@ import {
   proposalRefOf,
 } from '../../domain/review/index.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
+import { PurgeVisibility } from '../../application/purge/index.js'
 
 export const PROPOSALS_LIST_ENDPOINT = 'proposals/list'
 export const PROPOSAL_SUMMARY_ENDPOINT = 'summary'
@@ -167,6 +168,8 @@ function mappedStoreError(value: unknown): ObserveRpcResult<never> {
 
 export interface ProposalReviewRpcOptions {
   readonly onPublicationRequested?: (workItemId: string) => void
+  readonly visibility?: (domain: Run2skillDomain) => PurgeVisibility
+  readonly runMutation?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
 export function createProposalReviewRpcHandler(
@@ -180,6 +183,16 @@ export function createProposalReviewRpcHandler(
 ): ObserveSummaryRpcHandler {
   const stores = new WeakMap<Run2skillDomain, ProposalReviewStore>()
   const publicationStores = new WeakMap<Run2skillDomain, PublicationSagaStore>()
+  const visibilities = new WeakMap<Run2skillDomain, PurgeVisibility>()
+  const visibilityOf = (domain: Run2skillDomain): PurgeVisibility => {
+    let visibility = visibilities.get(domain)
+    if (visibility === undefined) {
+      visibility = options.visibility?.(domain) ?? new PurgeVisibility(domain)
+      visibilities.set(domain, visibility)
+    }
+    return visibility
+  }
+  const runMutation = options.runMutation ?? (async <T>(operation: () => Promise<T>) => await operation())
   return async (endpoint, payload, signal) => {
     if (!requestFits(payload)) return error('bad-request')
     const schema = endpoint === PROPOSAL_SUMMARY_ENDPOINT
@@ -218,6 +231,8 @@ export function createProposalReviewRpcHandler(
         }) }
       }
       const items = [...domain.table('work_items').entries()].map(([, item]) => item).filter(item => (
+        visibilityOf(domain).workItemVisible(item)
+        &&
         item.review !== undefined
         && item.processingState !== 'TERMINAL'
         && (
@@ -247,6 +262,8 @@ export function createProposalReviewRpcHandler(
       const eligible = [...domain.table('work_items').entries()].flatMap(([id, item]) => {
         const review = item.review
         if (
+          !visibilityOf(domain).workItemVisible(item)
+          ||
           review === undefined
           || item.processingState === 'TERMINAL'
           || (
@@ -282,7 +299,10 @@ export function createProposalReviewRpcHandler(
       const request = getRequestSchema.parse(payload)
       const item = [...domain.table('work_items').entries()]
         .map(([, candidate]) => candidate)
-        .find(candidate => candidate.review?.proposal.proposalId === request.proposalId)
+        .find(candidate => (
+          visibilityOf(domain).workItemVisible(candidate)
+          && candidate.review?.proposal.proposalId === request.proposalId
+        ))
       if (item?.review === undefined) return error('not-found')
       return { ok: true, value: detailResponseSchema.parse({
         apiVersion: 1,
@@ -306,61 +326,68 @@ export function createProposalReviewRpcHandler(
     const request = endpoint === PROPOSALS_REJECT_ENDPOINT
       ? rejectRequestSchema.parse(payload)
       : mutationRequestSchema.parse(payload)
-    let store = stores.get(domain)
-    if (store === undefined) {
-      store = new ProposalReviewStore(domain)
-      stores.set(domain, store)
-    }
     try {
-      let result: { readonly item: CaptureWorkItemV1; readonly changed: boolean }
-      if (endpoint === PROPOSALS_APPROVE_ENDPOINT) {
-        result = await store.approve(request.workItemId, request.workItemRevision, request.proposalRef)
-      } else if (endpoint === PROPOSALS_RETRY_ENDPOINT) {
-        const current = domain.table('work_items').get(request.workItemId)
-        const currentRef = current?.review === undefined
-          ? undefined
-          : proposalRefOf(current.review.proposal)
-        const sameProposal = currentRef !== undefined
-          && currentRef.proposalId === request.proposalRef.proposalId
-          && currentRef.revision === request.proposalRef.revision
-          && currentRef.digest === request.proposalRef.digest
-        if (
-          current?.review?.reviewDecision === 'APPROVED'
-          && current.review.publicationOutcome === 'PUBLISH_FAILED'
-        ) {
-          let publications = publicationStores.get(domain)
-          if (publications === undefined) {
-            publications = new PublicationSagaStore(domain)
-            publicationStores.set(domain, publications)
-          }
-          result = {
-            item: await publications.retry(
+      const result = await runMutation(async () => {
+        const currentVisible = domain.table('work_items').get(request.workItemId)
+        if (currentVisible === undefined || !visibilityOf(domain).workItemVisible(currentVisible)) {
+          throw new ProposalReviewStoreError('REVIEW_WORK_ITEM_NOT_FOUND')
+        }
+        let store = stores.get(domain)
+        if (store === undefined) {
+          store = new ProposalReviewStore(domain, undefined, visibilityOf(domain))
+          stores.set(domain, store)
+        }
+        let mutationResult: { readonly item: CaptureWorkItemV1; readonly changed: boolean }
+        if (endpoint === PROPOSALS_APPROVE_ENDPOINT) {
+          mutationResult = await store.approve(request.workItemId, request.workItemRevision, request.proposalRef)
+        } else if (endpoint === PROPOSALS_RETRY_ENDPOINT) {
+          const current = domain.table('work_items').get(request.workItemId)
+          const currentRef = current?.review === undefined
+            ? undefined
+            : proposalRefOf(current.review.proposal)
+          const sameProposal = currentRef !== undefined
+            && currentRef.proposalId === request.proposalRef.proposalId
+            && currentRef.revision === request.proposalRef.revision
+            && currentRef.digest === request.proposalRef.digest
+          if (
+            current?.review?.reviewDecision === 'APPROVED'
+            && current.review.publicationOutcome === 'PUBLISH_FAILED'
+          ) {
+            let publications = publicationStores.get(domain)
+            if (publications === undefined) {
+              publications = new PublicationSagaStore(domain, undefined, visibilityOf(domain))
+              publicationStores.set(domain, publications)
+            }
+            mutationResult = {
+              item: await publications.retry(
+                request.workItemId,
+                request.workItemRevision,
+                request.proposalRef,
+              ),
+              changed: true,
+            }
+          } else if (
+            current?.processingState === 'PUBLISHING'
+            && current.review?.reviewDecision === 'APPROVED'
+            && current.review.publicationOutcome === 'PENDING_REVIEW'
+            && (current.publication?.attemptCount ?? 0) > 1
+            && sameProposal
+          ) {
+            mutationResult = { item: current, changed: false }
+          } else {
+            mutationResult = await store.requestCoverageRetry(
               request.workItemId,
               request.workItemRevision,
               request.proposalRef,
-            ),
-            changed: true,
+            )
           }
-        } else if (
-          current?.processingState === 'PUBLISHING'
-          && current.review?.reviewDecision === 'APPROVED'
-          && current.review.publicationOutcome === 'PENDING_REVIEW'
-          && (current.publication?.attemptCount ?? 0) > 1
-          && sameProposal
-        ) {
-          result = { item: current, changed: false }
         } else {
-          result = await store.requestCoverageRetry(
-            request.workItemId,
-            request.workItemRevision,
-            request.proposalRef,
-          )
+          mutationResult = endpoint === PROPOSALS_REJECT_ENDPOINT
+            ? await store.reject(request.workItemId, request.workItemRevision, request.proposalRef)
+            : await store.confirmCoverage(request.workItemId, request.workItemRevision, request.proposalRef)
         }
-      } else {
-        result = endpoint === PROPOSALS_REJECT_ENDPOINT
-          ? await store.reject(request.workItemId, request.workItemRevision, request.proposalRef)
-          : await store.confirmCoverage(request.workItemId, request.workItemRevision, request.proposalRef)
-      }
+        return mutationResult
+      })
       if (result.item.processingState === 'PUBLISHING') {
         try {
           options.onPublicationRequested?.(result.item.workItemId)

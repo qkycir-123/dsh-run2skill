@@ -37,6 +37,7 @@ export interface LearningSchedulerOptions {
 
 interface ActiveLearning {
   readonly sessionId: string
+  readonly item: CaptureWorkItemV1
   readonly controller: AbortController
   readonly promise: Promise<void>
 }
@@ -81,6 +82,12 @@ export class LearningScheduler {
     if (!this.#started || this.#disposed) return
     this.#wakeRequested = true
     queueMicrotask(() => { void this.#drain() })
+  }
+
+  abortMatching(predicate: (item: CaptureWorkItemV1) => boolean): void {
+    for (const active of this.#active.values()) {
+      if (predicate(active.item)) active.controller.abort(new Error('run2skill work item hidden by purge'))
+    }
   }
 
   async dispose(): Promise<void> {
@@ -149,6 +156,7 @@ export class LearningScheduler {
     })
     this.#active.set(item.workItemId, {
       sessionId: item.signalKey.rootSessionId,
+      item,
       controller,
       promise,
     })

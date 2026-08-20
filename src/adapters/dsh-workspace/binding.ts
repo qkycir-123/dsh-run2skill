@@ -4,10 +4,12 @@ import { OBSERVE_LIMITS } from '../../domain/observe/constants.js'
 interface DshWorkspaceProjection {
   readonly id: string
   readonly path: string
+  status?(): Promise<'ok' | 'missing-dir'>
 }
 
 export interface DshWorkspaceRegistryPort {
   resolveByPath(path: string): Promise<DshWorkspaceProjection | undefined>
+  get?(id: string): DshWorkspaceProjection | undefined
 }
 
 export class DshWorkspaceBindingResolver implements WorkspaceBindingPort {

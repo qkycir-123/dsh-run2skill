@@ -9,6 +9,7 @@ import type {
   RecoveryLifecycleStatus,
 } from './capture/recovery-lifecycle.js'
 import type { RuntimeNotice, RuntimeNotices } from './capture/runtime-notices.js'
+import { PurgeVisibility } from '../adapters/dsh-storage/purge-visibility.js'
 
 export type ObserveCompatibility = 'COMPATIBLE' | 'INCOMPATIBLE'
 
@@ -53,7 +54,9 @@ export function createObserveSummary(sources: ObserveSummarySources): ObserveSum
   let capturedCount = 0
   let blockedCaptureCount = 0
   const learning = { captured: 0, analyzing: 0, learned: 0, needsAttention: 0 }
+  const visibility = new PurgeVisibility(sources.domain)
   for (const [, item] of sources.domain.table('work_items').entries()) {
+    if (!visibility.workItemVisible(item)) continue
     switch (item.processingState) {
       case 'CAPTURED':
         learning.captured += item.scanStatus === 'COMPLETE' ? 1 : 0

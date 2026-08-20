@@ -12,6 +12,7 @@ import {
   type ProposalRefV1,
 } from '../../domain/review/index.js'
 import type { Run2skillDomain } from './types.js'
+import { PurgeVisibility } from './purge-visibility.js'
 
 export type PublicationSagaStoreErrorCode =
   | 'PUBLICATION_WORK_ITEM_NOT_FOUND'
@@ -44,12 +45,18 @@ export class PublicationSagaStore {
   readonly #workItems
   readonly #lineages
   readonly #now
+  readonly #visibility
   #tail: Promise<void> = Promise.resolve()
 
-  constructor(domain: Run2skillDomain, now: () => string = () => new Date().toISOString()) {
+  constructor(
+    domain: Run2skillDomain,
+    now: (() => string) | undefined = undefined,
+    visibility: PurgeVisibility = new PurgeVisibility(domain),
+  ) {
     this.#workItems = domain.table('work_items')
     this.#lineages = domain.table('lineages')
-    this.#now = now
+    this.#now = now ?? (() => new Date().toISOString())
+    this.#visibility = visibility
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
@@ -62,7 +69,8 @@ export class PublicationSagaStore {
 
   listRecoverable(): CaptureWorkItemV1[] {
     return [...this.#workItems.entries()].map(([, item]) => item).filter(item => (
-      item.processingState === 'PUBLISHING'
+      this.#visibility.workItemVisible(item)
+      && item.processingState === 'PUBLISHING'
       && item.review?.reviewDecision === 'APPROVED'
       && item.publication !== undefined
     )).sort((left, right) => (

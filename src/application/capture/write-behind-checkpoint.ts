@@ -5,6 +5,7 @@ import {
 } from '../../domain/observe/schemas.js'
 import { deriveSessionLifecycleKeyFromFacts } from '../../domain/observe/identity.js'
 import type { Run2skillDomain } from '../../adapters/dsh-storage/types.js'
+import { Run2skillGlobalStore } from '../../adapters/dsh-storage/global-store.js'
 
 export const CHECKPOINT_TURN_BATCH = 32
 export const CHECKPOINT_INTERVAL_MS = 30_000
@@ -15,7 +16,7 @@ interface CheckpointHold {
 }
 
 export class WriteBehindCheckpoint {
-  readonly #domain
+  readonly #global
   readonly #now
   readonly #turnBatch
   #state: GlobalV1
@@ -26,7 +27,7 @@ export class WriteBehindCheckpoint {
   readonly #holds = new Map<string, CheckpointHold>()
 
   constructor(domain: Run2skillDomain, options: { now?: () => number; turnBatch?: number } = {}) {
-    this.#domain = domain
+    this.#global = Run2skillGlobalStore.for(domain)
     this.#now = options.now ?? Date.now
     this.#turnBatch = options.turnBatch ?? CHECKPOINT_TURN_BATCH
     if (!Number.isSafeInteger(this.#turnBatch) || this.#turnBatch < 1) {
@@ -67,8 +68,7 @@ export class WriteBehindCheckpoint {
           lastCheckpointAt: this.#isoNow(),
         },
       })
-      await this.#domain.global.set(committed)
-      this.#state = committed
+      this.#state = await this.#commit(committed)
       this.#dirtySessions.clear()
       this.#lastFlushAt = this.#now()
     })
@@ -185,8 +185,7 @@ export class WriteBehindCheckpoint {
           lastCheckpointAt: this.#isoNow(),
         },
       })
-      await this.#domain.global.set(committed)
-      this.#state = committed
+      this.#state = await this.#commit(committed)
       this.#dirtySessions.clear()
       this.#completedSinceFlush = 0
       this.#lastFlushAt = this.#now()
@@ -212,8 +211,7 @@ export class WriteBehindCheckpoint {
           lastCheckpointAt: this.#isoNow(),
         },
       })
-      await this.#domain.global.set(committed)
-      this.#state = committed
+      this.#state = await this.#commit(committed)
       this.#dirtySessions.clear()
       this.#completedSinceFlush = 0
       this.#lastFlushAt = this.#now()
@@ -236,8 +234,7 @@ export class WriteBehindCheckpoint {
         lastCheckpointAt: this.#isoNow(),
       },
     })
-    await this.#domain.global.set(committed)
-    this.#state = committed
+    this.#state = await this.#commit(committed)
     this.#dirtySessions.clear()
     this.#completedSinceFlush = 0
     this.#lastFlushAt = this.#now()
@@ -245,5 +242,13 @@ export class WriteBehindCheckpoint {
 
   #isoNow(): string {
     return new Date(this.#now()).toISOString()
+  }
+
+  async #commit(committed: GlobalV1): Promise<GlobalV1> {
+    const { purgeJournal: _staleJournal, ...checkpointState } = committed
+    return await this.#global.update(current => GlobalV1Schema.parse({
+      ...checkpointState,
+      ...(current.purgeJournal === undefined ? {} : { purgeJournal: current.purgeJournal }),
+    }))
   }
 }
