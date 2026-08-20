@@ -110,6 +110,36 @@ test('missing root is prepared one fixed segment at a time and resumes after a c
   )
   await assert.rejects(lstat(join(workspace, 'skills')), { code: 'ENOENT' })
 
+  const existingRoot = join(workspace, 'existing-skills')
+  const holding = await fixture(t)
+  const movedRoot = join(holding, 'original-root')
+  await mkdir(existingRoot)
+  const existingPreparation = await preparePublicationRoot({
+    binding: {
+      state: 'EXISTING',
+      scope: 'PROJECT',
+      declaredRootPath: existingRoot,
+      canonicalRootPath: existingRoot,
+      rootIdentityDigest: 'c'.repeat(64),
+    },
+    verifyIdentity: async () => true,
+    verifyParity: async () => true,
+  })
+  await rename(existingRoot, movedRoot)
+  await mkdir(existingRoot)
+  await assert.rejects(
+    createBundle({
+      root: existingRoot,
+      name: 'replaced-root',
+      txid: 'replaced-root-tx',
+      nextBytes: '# no\n',
+      rootPreparation: existingPreparation,
+    }),
+    (error) => error instanceof PublicationConflict && error.code === 'root_preparation_mismatch',
+  )
+  await assert.rejects(readFile(join(existingRoot, 'replaced-root', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+  await assert.rejects(readFile(join(movedRoot, 'replaced-root', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+
   const declaredRootPath = join(workspace, '.dsh', 'skills')
   const binding = {
     state: 'ABSENT',

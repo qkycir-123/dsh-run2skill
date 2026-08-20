@@ -24,6 +24,7 @@ const JOURNAL_KEYS = new Set([
   'targetDirIdentityDigest',
   'backupReservationNonce',
   'stageIdentityDigest', 'claimIdentityDigest', 'backupIdentityDigest',
+  'rootIdentityDigest',
 ])
 
 export class PublicationConflict extends Error {
@@ -163,6 +164,31 @@ function identityPath(path) {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
+async function observeDirectoryIdentity(path, label) {
+  const stat = await statOrNull(path)
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new PublicationConflict('unsafe_path', `${label} is a symlink, junction, or non-directory`)
+  }
+  let canonical
+  try {
+    canonical = await realpath(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new PublicationConflict('directory_identity_changed', `${label} disappeared`)
+    }
+    throw error
+  }
+  if (!samePath(canonical, path)) {
+    throw new PublicationConflict('unsafe_path', `${label} changed canonical location`)
+  }
+  return sha256(JSON.stringify([
+    String(stat.dev),
+    String(stat.ino),
+    String(stat.birthtimeMs),
+    identityPath(canonical),
+  ]))
+}
+
 function allowedMissingSegments(binding) {
   const joined = binding.missingSegments.join('\0')
   return binding.scope === 'PROJECT'
@@ -194,7 +220,11 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
     if (!await verifyParity(binding, root)) {
       throw new PublicationConflict('root_parity_changed', 'Provider root observation changed')
     }
-    return { root, createdSegments: [] }
+    return {
+      root,
+      createdSegments: [],
+      rootIdentityDigest: await observeDirectoryIdentity(root, 'Publication root'),
+    }
   }
   if (
     binding.state !== 'ABSENT'
@@ -253,7 +283,11 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
   if (!await verifyParity(binding, current)) {
     throw new PublicationConflict('root_parity_changed', 'Provider root observation changed')
   }
-  return { root: current, createdSegments }
+  return {
+    root: current,
+    createdSegments,
+    rootIdentityDigest: await observeDirectoryIdentity(current, 'Publication root'),
+  }
 }
 
 function validateIdentity(name, txid) {
@@ -281,28 +315,7 @@ function targetPaths(rootReal, name, txid) {
 }
 
 async function observeBundleDirectory(paths) {
-  const dirStat = await statOrNull(paths.targetDir)
-  if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
-    throw new PublicationConflict('unsafe_path', 'Skill bundle is a symlink, junction, or non-directory')
-  }
-  let canonical
-  try {
-    canonical = await realpath(paths.targetDir)
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      throw new PublicationConflict('target_identity_changed', 'Skill bundle directory disappeared')
-    }
-    throw error
-  }
-  if (!samePath(canonical, paths.targetDir)) {
-    throw new PublicationConflict('unsafe_path', 'Skill bundle changed canonical location')
-  }
-  return sha256(JSON.stringify([
-    String(dirStat.dev),
-    String(dirStat.ino),
-    String(dirStat.birthtimeMs),
-    identityPath(canonical),
-  ]))
+  return observeDirectoryIdentity(paths.targetDir, 'Skill bundle')
 }
 
 async function assertExistingBundleIsSafe(paths) {
@@ -312,6 +325,12 @@ async function assertExistingBundleIsSafe(paths) {
 }
 
 async function assertBoundBundleDirectory(paths, expectedDigest) {
+  if (
+    paths.rootIdentityDigest
+    && await observeDirectoryIdentity(paths.root, 'Publication root') !== paths.rootIdentityDigest
+  ) {
+    throw new PublicationConflict('root_identity_changed', 'Publication root directory identity changed')
+  }
   if (!expectedDigest || await observeBundleDirectory(paths) !== expectedDigest) {
     throw new PublicationConflict('target_identity_changed', 'Skill bundle directory identity changed')
   }
@@ -355,6 +374,7 @@ async function beginRecord({
   expectedHash,
   nextBytes,
   rootPreparation,
+  rootIdentityDigest,
   targetDirIdentityDigest,
 }) {
   const paths = targetPaths(root, name, txid)
@@ -369,6 +389,7 @@ async function beginRecord({
     expectedHash: expectedHash ?? null,
     nextHash: sha256(nextBytes),
     prevHash: null,
+    rootIdentityDigest,
     ...(rootPreparation ? { createdRootSegments: [...rootPreparation.createdSegments] } : {}),
     ...(targetDirIdentityDigest ? { targetDirIdentityDigest } : {}),
     ...paths,
@@ -434,14 +455,22 @@ async function preserveUnknownInstall(record) {
   return conflict(record, 'post_write_mismatch')
 }
 
+function rootPreparationMatches(rootPreparation, rootReal, rootIdentityDigest) {
+  return Boolean(
+    rootPreparation
+    && samePath(rootPreparation.root, rootReal)
+    && HASH_PATTERN.test(rootPreparation.rootIdentityDigest ?? '')
+    && rootPreparation.rootIdentityDigest === rootIdentityDigest
+    && Array.isArray(rootPreparation.createdSegments)
+    && new Set(['', 'skills', '.dsh\0skills']).has(rootPreparation.createdSegments.join('\0')),
+  )
+}
+
 export async function createBundle({ root, name, txid, nextBytes, rootPreparation, crashAt, hooks }) {
   validateIdentity(name, txid)
   const rootReal = await ensureRoot(root)
-  if (rootPreparation && (
-    !samePath(rootPreparation.root, rootReal)
-    || !Array.isArray(rootPreparation.createdSegments)
-    || !new Set(['', 'skills', '.dsh\0skills']).has(rootPreparation.createdSegments.join('\0'))
-  )) {
+  const rootIdentityDigest = await observeDirectoryIdentity(rootReal, 'Publication root')
+  if (rootPreparation && !rootPreparationMatches(rootPreparation, rootReal, rootIdentityDigest)) {
     throw new PublicationConflict('root_preparation_mismatch', 'Prepared root facts do not match publication root')
   }
   let record = await beginRecord({
@@ -451,6 +480,7 @@ export async function createBundle({ root, name, txid, nextBytes, rootPreparatio
     kind: 'CREATE',
     nextBytes,
     rootPreparation,
+    rootIdentityDigest,
   })
 
   try {
@@ -535,11 +565,16 @@ export async function mergeBundle({
   txid,
   expectedHash,
   nextBytes,
+  rootPreparation,
   crashAt,
   hooks,
 }) {
   validateIdentity(name, txid)
   const rootReal = await ensureRoot(root)
+  const rootIdentityDigest = await observeDirectoryIdentity(rootReal, 'Publication root')
+  if (rootPreparation && !rootPreparationMatches(rootPreparation, rootReal, rootIdentityDigest)) {
+    throw new PublicationConflict('root_preparation_mismatch', 'Prepared root facts do not match publication root')
+  }
   const paths = targetPaths(rootReal, name, txid)
   const targetDirIdentityDigest = await assertExistingBundleIsSafe(paths)
   let record = await beginRecord({
@@ -549,6 +584,8 @@ export async function mergeBundle({
     kind: 'MERGE',
     expectedHash,
     nextBytes,
+    rootPreparation,
+    rootIdentityDigest,
     targetDirIdentityDigest,
   })
 
@@ -673,6 +710,7 @@ async function loadLatestRecord(rootReal, txid) {
         && (record.stageIdentityDigest === undefined || HASH_PATTERN.test(record.stageIdentityDigest))
         && (record.claimIdentityDigest === undefined || HASH_PATTERN.test(record.claimIdentityDigest))
         && (record.backupIdentityDigest === undefined || HASH_PATTERN.test(record.backupIdentityDigest))
+        && HASH_PATTERN.test(record.rootIdentityDigest)
         && ['root', 'name', 'targetDir', 'target', 'stage', 'backup', 'claim']
           .every(key => typeof record[key] === 'string')
         && (record.createdRootSegments === undefined || (

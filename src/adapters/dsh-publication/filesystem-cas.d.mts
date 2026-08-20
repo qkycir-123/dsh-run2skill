@@ -17,6 +17,12 @@ export interface PublicationHooks {
   readonly afterInstall?: (record: Readonly<Record<string, unknown>>) => Promise<void>
 }
 
+export interface RootPreparation {
+  readonly root: string
+  readonly createdSegments: readonly string[]
+  readonly rootIdentityDigest: string
+}
+
 export class PublicationConflict extends Error {
   readonly code: string
 }
@@ -27,13 +33,13 @@ export function preparePublicationRoot(input: {
   readonly verifyIdentity: (canonicalPath: string, identityDigest: string) => Promise<boolean>
   readonly verifyParity: (binding: RootBindingV1, canonicalRoot: string) => Promise<boolean>
   readonly crashAt?: string
-}): Promise<{ readonly root: string; readonly createdSegments: readonly string[] }>
+}): Promise<RootPreparation>
 export function createBundle(input: {
   readonly root: string
   readonly name: string
   readonly txid: string
   readonly nextBytes: string | Uint8Array
-  readonly rootPreparation?: { readonly root: string; readonly createdSegments: readonly string[] }
+  readonly rootPreparation?: RootPreparation
   readonly crashAt?: string
   readonly hooks?: PublicationHooks
 }): Promise<PublicationResult>
@@ -43,6 +49,7 @@ export function mergeBundle(input: {
   readonly txid: string
   readonly expectedHash: string
   readonly nextBytes: string | Uint8Array
+  readonly rootPreparation?: RootPreparation
   readonly crashAt?: string
   readonly hooks?: PublicationHooks
 }): Promise<PublicationResult>
