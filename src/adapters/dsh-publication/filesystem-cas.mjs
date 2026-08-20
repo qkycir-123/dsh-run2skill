@@ -267,6 +267,18 @@ export async function verifyPublicationDirectoryIdentity(path, expectedIdentityD
   }
 }
 
+async function requirePublicationRootIdentity(root, expectedIdentityDigest) {
+  try {
+    if (await observeDirectoryIdentity(root, 'Publication root') === expectedIdentityDigest) return
+  } catch {
+    // Normalize an unobservable root to the same fail-closed durable fact.
+  }
+  throw new PublicationConflict(
+    'root_identity_changed',
+    'Publication root directory identity changed',
+  )
+}
+
 export async function verifyFinalizedTransaction({
   root,
   name,
@@ -278,9 +290,7 @@ export async function verifyFinalizedTransaction({
   try {
     validateIdentity(name, txid)
     const rootReal = await ensureRoot(root)
-    if (await observeDirectoryIdentity(rootReal, 'Publication root') !== expectedRootIdentityDigest) {
-      return false
-    }
+    await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
     const paths = targetPaths(rootReal, name, txid)
     const targetDirIdentity = await observeBundleDirectory(paths)
     const target = await observeRegularFile(paths.target)
@@ -294,12 +304,15 @@ export async function verifyFinalizedTransaction({
     const journalIdentity = await observeDirectoryIdentity(journalDir, 'Publication journal')
     if ((await readdir(journalDir)).some(entry => entry.startsWith(`${txid}.`))) return false
     const confirmed = await observeRegularFile(paths.target)
-    return confirmed?.hash === expectedHash
+    const stable = confirmed?.hash === expectedHash
       && confirmed.identityDigest === target.identityDigest
       && await observeBundleDirectory(paths) === targetDirIdentity
       && await observeDirectoryIdentity(journalDir, 'Publication journal') === journalIdentity
-      && await observeDirectoryIdentity(rootReal, 'Publication root') === expectedRootIdentityDigest
-  } catch {
+    if (!stable) return false
+    await requirePublicationRootIdentity(rootReal, expectedRootIdentityDigest)
+    return true
+  } catch (caught) {
+    if (caught instanceof PublicationConflict && caught.code === 'root_identity_changed') throw caught
     return false
   }
 }

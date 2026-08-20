@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { C5PublicationFileSystemAdapter } from '../src/adapters/dsh-publication/publication-filesystem.js'
+import { verifyPublicationDirectoryIdentity } from '../src/adapters/dsh-publication/filesystem-cas.mjs'
 import { NodePublicationFactsAdapter } from '../src/adapters/dsh-publication/publication-facts.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-saga-store.js'
@@ -357,7 +358,21 @@ describe('ApprovalPublicationSaga', () => {
         proposalRefOf(proposal),
       )
       const store = new PublicationSagaStore(domain, fixedNow)
-      const productionFileSystem = new C5PublicationFileSystemAdapter({ async verifyParity() { return true } })
+      let replaceRootAfterIdentityCheck = false
+      const productionFileSystem = new C5PublicationFileSystemAdapter({
+        async verifyParity() { return true },
+        async verifyIdentity(path, identityDigest) {
+          const matches = await verifyPublicationDirectoryIdentity(path, identityDigest)
+          if (matches && replaceRootAfterIdentityCheck) {
+            replaceRootAfterIdentityCheck = false
+            await rename(rootPath, join(workspace, 'original-skills-root'))
+            await mkdir(join(rootPath, '.run2skill-publication'), { recursive: true })
+            await mkdir(bundlePath, { recursive: true })
+            await writeFile(skillFilePath, proposal.exactSkillBytes)
+          }
+          return matches
+        },
+      })
       let failOutcomeWrite = true
       const fileSystem: PublicationFileSystemPort = {
         async recover(input) { return await productionFileSystem.recover(input) },
@@ -407,10 +422,7 @@ describe('ApprovalPublicationSaga', () => {
         rootIdentityDigest,
       })).rejects.toMatchObject({ code: 'journal_missing' })
 
-      await rename(rootPath, join(workspace, 'original-skills-root'))
-      await mkdir(join(rootPath, '.run2skill-publication'), { recursive: true })
-      await mkdir(bundlePath, { recursive: true })
-      await writeFile(skillFilePath, proposal.exactSkillBytes)
+      replaceRootAfterIdentityCheck = true
       const retried = await store.retry(failed.workItemId, failed.revision, proposalRefOf(proposal))
       await expect(saga.run(retried.workItemId)).resolves.toMatchObject({
         processingState: 'NEEDS_ATTENTION',
