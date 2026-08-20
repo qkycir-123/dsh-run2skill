@@ -1,6 +1,6 @@
 # dsh-run2skill v0.1 架构基线
 
-状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-20 纯插件发布 root contract 窄修订已接受
+状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-20 纯插件发布 root contract 与原生 Settings RPC 窄修订已接受
 文档版本：v0.1  
 更新时间：2026-08-20
 产品输入：docs/product/prd.md v0.1（已冻结）  
@@ -17,6 +17,8 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 - 对应阻塞探针通过后，才能为相关纵向切片编写 Design。
 
 2026-08-19 的 Slice A 专项复核发现，DSH Session ID 不是生命周期唯一身份，且 Web JSON Storage 的 global 水位若逐 Turn 更新会导致整 domain 反复发布。本文以下窄修订把 Session 生命周期身份、无信号关闭状态和水位 write-behind 纳入上层契约；它不改变 PRD 的每 Root Turn 观察边界。维护者接受修订后的 Slice A Design 时，同时接受了这些窄修订。
+
+2026-08-20 的 Slice D 复核确认，固定 DSH baseline 已原生提供 Settings namespace、`expectedRevision`、loopback Settings RPC 和外部插件设置卡片 Slot。run2skill 因此直接注册 `run2skill` namespace 并复用 DSH Settings Client 接口，不再重复实现 `/run2skill` 私有 settings endpoint；该窄修订不改变 PRD 的设置字段、默认值或生效语义。
 
 本文中的“必须”来自冻结 PRD 或为满足它而不可缺少的技术约束；“候选”表示可在 Design 中细化但不得破坏稳定契约；“Contract Probe”表示源码不足以证明、必须在固定 DSH baseline 上运行验证的事项。
 
@@ -672,10 +674,10 @@ CP-PUB-001 已在 Windows 与 WSL/Linux 验证上述 hard-link no-replace、外�
 | proposals/reject | ProposalRef + confirm=true | mutation receipt |
 | proposals/retry | ProposalRef | 新状态或新 ProposalRef |
 | coverage/confirm-discard | ProposalRef | DISCARDED |
-| settings/get | 无 | run2skill setting + revision |
-| settings/update | patch + expectedRevision | 新 setting |
 | purge/preview | scope binding | 将删/不删摘要 |
 | purge/confirm | previewId + digest | purge receipt |
+
+`automaticLearning` 通过 DSH 原生 `settings.describe/update/mutate` 读写；run2skill 只注册 namespace、schema、默认值和运行时 watch，不复制 Settings transport 或 persistence。
 
 每个 payload 由 Host 端严格 schema 解析；未知字段、超长字符串、非法 enum、stale revision 都拒绝。RPC 版本放在 envelope 中，破坏性变更新开 v2，不静默改变 v1。
 
