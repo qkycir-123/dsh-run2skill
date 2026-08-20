@@ -152,7 +152,7 @@ function closeOnKeyboard(
   }
 }
 
-function ProposalInboxPanel(props: {
+export function ProposalInboxPanel(props: {
   readonly controller: ProposalInboxController
   readonly state: ProposalInboxState
   readonly dialogRef: RefObject<HTMLDivElement | null>
@@ -189,7 +189,7 @@ function ProposalInboxPanel(props: {
   },
   createElement('div', {
     'aria-hidden': props.rejectConfirm || undefined,
-    inert: props.rejectConfirm || undefined,
+    inert: props.rejectConfirm ? '' : undefined,
     style: { display: 'contents', pointerEvents: props.rejectConfirm ? 'none' : undefined },
   },
   createElement('section', { 'aria-label': 'Proposal 待处理队列', style: { overflow: 'auto' } },
@@ -433,9 +433,19 @@ function RejectConfirmation(props: {
 }): ReactElement {
   const dialogRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const previous = typeof document === 'undefined' ? undefined : document.activeElement as HTMLElement | null
-    dialogRef.current?.querySelector<HTMLElement>('[data-initial-focus]')?.focus()
-    return () => { previous?.focus() }
+    if (typeof document === 'undefined') return
+    const previous = document.activeElement as HTMLElement | null
+    const dialog = dialogRef.current
+    const initial = dialog?.querySelector<HTMLElement>('[data-initial-focus]')
+    const recapture = (event: FocusEvent) => {
+      if (dialog !== null && event.target instanceof Node && !dialog.contains(event.target)) initial?.focus()
+    }
+    document.addEventListener('focusin', recapture, true)
+    initial?.focus()
+    return () => {
+      document.removeEventListener('focusin', recapture, true)
+      previous?.focus()
+    }
   }, [])
   return createElement('div', {
     ref: dialogRef,

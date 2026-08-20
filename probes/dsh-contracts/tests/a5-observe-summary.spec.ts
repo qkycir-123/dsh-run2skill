@@ -7,6 +7,9 @@ import type { WebRoute, WebServer, WebUpgradeRoute } from '@deepseek-ai/dsh-host
 import { EventEmitter } from 'node:events'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
+import { JSDOM } from 'jsdom'
+import { act, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import {
   OBSERVE_SUMMARY_ENDPOINT,
@@ -18,6 +21,8 @@ import {
   inject as clientInject,
   type ObserveSummaryClientContext,
 } from '../src/client/observe-header-action.ts'
+import { ProposalInboxController } from '../src/client/proposal-inbox.ts'
+import { ProposalInboxPanel } from '../src/client/proposal-inbox-view.ts'
 
 function fakeWebServer(routes: WebRoute[], upgrades: WebUpgradeRoute[]): Pick<
   WebServer,
@@ -154,5 +159,76 @@ describe('A5 Observe Summary on the pinned DSH Web seam', () => {
       }))
     await fiber.dispose()
     expect(ctx.slots.entries('conversation.session.header.actions')).toHaveLength(0)
+  })
+
+  it('keeps the Reject confirmation modal isolated with the pinned React runtime', async () => {
+    const dom = new JSDOM('<!doctype html><html><body></body></html>')
+    vi.stubGlobal('window', dom.window)
+    vi.stubGlobal('document', dom.window.document)
+    vi.stubGlobal('Node', dom.window.Node)
+    vi.stubGlobal('HTMLElement', dom.window.HTMLElement)
+    vi.stubGlobal('navigator', dom.window.navigator)
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const before = document.createElement('button')
+    const host = document.createElement('div')
+    document.body.append(before, host)
+    before.focus()
+    const root = createRoot(host)
+    const setRejectConfirm = vi.fn()
+    const controller = new ProposalInboxController(
+      'workspace-fixture',
+      async () => ({ ok: false, error: { code: 'UNAVAILABLE' } }),
+    )
+
+    try {
+      await act(async () => {
+        root.render(createElement(ProposalInboxPanel, {
+          controller,
+          state: {
+            open: true,
+            summaryPhase: 'READY',
+            summary: {
+              apiVersion: 1,
+              status: 'READY',
+              recoveryLag: false,
+              queue: { completeness: 'KNOWN', pendingReview: 0, publishing: 0, needsAttention: 0 },
+            },
+            listPhase: 'READY',
+            items: [],
+            detailPhase: 'IDLE',
+            mutationPending: false,
+            announcement: '',
+          },
+          dialogRef: { current: null },
+          textMode: 'SAFE',
+          setTextMode: vi.fn(),
+          rejectConfirm: true,
+          setRejectConfirm,
+        }))
+      })
+
+      const isolated = host.querySelector('[aria-hidden="true"]')
+      const alert = host.querySelector<HTMLElement>('[role="alertdialog"]')
+      expect(isolated?.getAttribute('inert')).toBe('')
+      expect(document.activeElement?.textContent).toBe('取消')
+
+      const escaped = document.createElement('button')
+      document.body.append(escaped)
+      escaped.focus()
+      expect(document.activeElement?.textContent).toBe('取消')
+
+      alert?.dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }))
+      expect(setRejectConfirm).toHaveBeenCalledWith(false)
+    } finally {
+      await act(async () => { root.unmount() })
+      expect(document.activeElement).toBe(before)
+      controller.dispose()
+      dom.window.close()
+      vi.unstubAllGlobals()
+    }
   })
 })
