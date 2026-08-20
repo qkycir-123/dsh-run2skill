@@ -264,12 +264,16 @@ describe('ProposalSnapshotBuilder', () => {
       proposalRefOf(built.proposal),
     )
     const partialRootBuilder = proposalBuilder(skills, publicationFacts({
-      observeRoot: async () => ({
-        status: 'ABSENT',
-        canonicalExistingAncestorPath: join(workspace, '.dsh'),
-        ancestorIdentityDigest: 'f'.repeat(64),
-        missingSegments: ['skills'],
-      }),
+      observeRoot: async path => samePath(path, workspace)
+        ? {
+            status: 'EXISTING', canonicalRootPath: workspace, rootIdentityDigest: 'a'.repeat(64),
+          }
+        : {
+            status: 'ABSENT',
+            canonicalExistingAncestorPath: join(workspace, '.dsh'),
+            ancestorIdentityDigest: 'f'.repeat(64),
+            missingSegments: ['skills'],
+          },
     }), { now: () => '2026-08-20T09:00:00.000Z' })
 
     await expect(partialRootBuilder.revalidateApproved(
@@ -278,12 +282,50 @@ describe('ProposalSnapshotBuilder', () => {
     )).resolves.toEqual({ status: 'READY', proposal: built.proposal })
 
     const occupiedTargetBuilder = proposalBuilder(skills, publicationFacts({
+      observeRoot: async path => samePath(path, workspace)
+        ? {
+            status: 'EXISTING', canonicalRootPath: workspace, rootIdentityDigest: 'a'.repeat(64),
+          }
+        : {
+            status: 'ABSENT',
+            canonicalExistingAncestorPath: workspace,
+            ancestorIdentityDigest: 'a'.repeat(64),
+            missingSegments: ['.dsh', 'skills'],
+          },
       observeEntry: async path => ({ status: path === bundlePath ? 'DIRECTORY' : 'ABSENT' }),
     }))
     await expect(occupiedTargetBuilder.revalidateApproved(
       approved.item,
       { cwd: workspace },
     )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'TARGET_ALREADY_EXISTS' })
+
+    const stableCreatedRootBuilder = proposalBuilder(skills, publicationFacts({
+      observeRoot: async path => samePath(path, workspace)
+        ? {
+            status: 'EXISTING', canonicalRootPath: workspace, rootIdentityDigest: 'a'.repeat(64),
+          }
+        : {
+            status: 'EXISTING', canonicalRootPath: root, rootIdentityDigest: 'b'.repeat(64),
+          },
+    }))
+    await expect(stableCreatedRootBuilder.revalidateApprovedRootContract(
+      approved.item,
+      { cwd: workspace },
+    )).resolves.toEqual({ status: 'VALID' })
+
+    const replacedAncestorBuilder = proposalBuilder(skills, publicationFacts({
+      observeRoot: async path => samePath(path, workspace)
+        ? {
+            status: 'EXISTING', canonicalRootPath: workspace, rootIdentityDigest: 'c'.repeat(64),
+          }
+        : {
+            status: 'EXISTING', canonicalRootPath: root, rootIdentityDigest: 'b'.repeat(64),
+          },
+    }))
+    await expect(replacedAncestorBuilder.revalidateApprovedRootContract(
+      approved.item,
+      { cwd: workspace },
+    )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'ROOT_BINDING_AMBIGUOUS' })
   })
 
   it.each([

@@ -5,6 +5,7 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
   main?: string
   exports?: Record<string, unknown>
   files?: string[]
+  peerDependencies?: Record<string, string>
   dsh?: {
     bundle?: { patch?: string }
     client?: { platform?: string; inject?: string[] }
@@ -27,6 +28,9 @@ describe('published package contract', () => {
       './package.json': './package.json',
     })
     expect(manifest.files).toEqual(['lib', 'cordis.patch.yml'])
+    expect(manifest.peerDependencies).toEqual({
+      '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7',
+    })
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },
       client: {

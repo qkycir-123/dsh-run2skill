@@ -81,7 +81,10 @@ export interface PublicationRootContractPort<TView extends object> {
     readonly scope: 'PROJECT' | 'USER'
     readonly workspaceBinding?: { readonly workspaceId: string; readonly canonicalPath: string } | undefined
     readonly view: TView
-  }): RootContractResolutionProjection | {
+  }): Promise<RootContractResolutionProjection | {
+    readonly status: 'UNSUPPORTED'
+    readonly code: 'ROOT_CONTRACT_UNSUPPORTED' | 'WORKSPACE_BINDING_UNAVAILABLE'
+  }> | RootContractResolutionProjection | {
     readonly status: 'UNSUPPORTED'
     readonly code: 'ROOT_CONTRACT_UNSUPPORTED' | 'WORKSPACE_BINDING_UNAVAILABLE'
   }
@@ -233,10 +236,16 @@ export class ProposalSnapshotBuilder<TView extends object> {
       return { status: 'UNAVAILABLE', failureCode: contract.failureCode }
     }
     const approvedRoot = approved.actionBinding.rootBinding
-    return contract.resolutionContractDigest === approvedRoot.resolutionContractDigest
-      && samePath(contract.resolution.declaredRootPath, approvedRoot.declaredRootPath)
-      ? { status: 'VALID' }
-      : { status: 'UNAVAILABLE', failureCode: 'APPROVAL_FACTS_CHANGED' }
+    const root = await this.#bindRoot(
+      contract.resolution.declaredRootPath,
+      item.learning.proposal.persistenceScope,
+      contract.resolution,
+      contract.resolutionContractDigest,
+      approvedRoot,
+    )
+    return 'failureCode' in root
+      ? { status: 'UNAVAILABLE', failureCode: root.failureCode }
+      : { status: 'VALID' }
   }
 
   async #build(
@@ -481,6 +490,20 @@ export class ProposalSnapshotBuilder<TView extends object> {
       || approved.resolutionContractDigest !== common.resolutionContractDigest
       || !samePath(approved.declaredRootPath, common.declaredRootPath)
     )) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
+    if (approved?.state === 'ABSENT') {
+      let anchor: ObservedRoot
+      try {
+        anchor = await this.#publicationFacts.observeRoot(approved.canonicalExistingAncestorPath)
+      } catch {
+        return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
+      }
+      if (anchor.status === 'UNAVAILABLE') return { failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' }
+      if (
+        anchor.status !== 'EXISTING'
+        || !samePath(anchor.canonicalRootPath, approved.canonicalExistingAncestorPath)
+        || anchor.rootIdentityDigest !== approved.ancestorIdentityDigest
+      ) return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
+    }
     if (observed.status === 'EXISTING') {
       if (!samePath(observed.canonicalRootPath, expectedRoot)) {
         return { failureCode: 'ROOT_BINDING_AMBIGUOUS' }
@@ -557,7 +580,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
     | { readonly failureCode: ProposalBuildFailureCode }
   > {
     if (this.#rootContract === undefined) return { failureCode: 'ROOT_CONTRACT_UNSUPPORTED' }
-    const resolution = this.#rootContract.resolve({
+    const resolution = await this.#rootContract.resolve({
       scope,
       ...(workspaceBinding === undefined
         ? {}

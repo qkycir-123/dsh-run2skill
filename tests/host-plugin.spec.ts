@@ -5,7 +5,6 @@ import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.j
 
 function learningServices() {
   return {
-    loader: { entries: () => [] },
     llm: {
       async resolveModelInfo() { return { context: { contextWindow: 16_384 } } },
       async *stream() {
@@ -23,7 +22,6 @@ describe('Host plugin assembly', () => {
   it('declares only the approved DSH services', () => {
     expect(name).toBe('run2skill')
     expect(inject).toEqual([
-      'loader',
       'sessions',
       'sessionPersistence',
       'storageDomain',
@@ -223,6 +221,7 @@ describe('Host plugin assembly', () => {
     const domain = createMemoryRun2skillDomain()
     const agent = {
       id: 'session-1',
+      ctx: { registry: { values: () => [] } },
       session: { header: { id: 'session-1', createdAt: 1_725_000_000_000, cwd: 'D:\\workspace' } },
     }
     let preStep: ((payload: { agent: typeof agent }, next: () => Promise<unknown>) => Promise<unknown>) | undefined

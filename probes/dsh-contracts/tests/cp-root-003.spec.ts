@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, normalize, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import AgentPresets from '@deepseek-ai/dsh-agent-presets'
+import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
-import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
@@ -21,6 +24,7 @@ import {
   resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
+import { stockPresetMounts } from '../src/adapters/dsh-skills/stock-preset-mount.js'
 import {
   DshWorkspaceBindingResolver,
   type DshWorkspaceRegistryPort,
@@ -103,76 +107,98 @@ function compositionWitness(
   return { dshHome, presetId, fileSystem }
 }
 
-function runtimeConfiguration(
-  composition: StockCompositionWitness,
-  agent: object,
-): StockSkillRuntimeConfiguration | undefined {
-  return resolveStockSkillRuntimeConfiguration({
-    entries: () => [{
-      disabled: false,
-      fiber: {},
-      ctx: { agent },
-      options: {
-        name: '@deepseek-ai/dsh-skill-filesystem',
-        config: composition.fileSystem,
-      },
-    }],
-  }, agent, composition.presetId)
-}
-
-function fileSystemOptions(
+function fileSystemComposition(
   agentsHome: string,
   overrides: FileSystemCompositionOverrides = {},
-) {
-  return {
-    agentsHome,
-    watch: true,
-    watchUsePolling: true,
-    watchStabilityThresholdMs: 20,
-    watchPollIntervalMs: 10,
-    ...overrides,
-    ...(overrides.customSkillDirs === undefined
-      ? {}
-      : { customSkillDirs: [...overrides.customSkillDirs] }),
+): string {
+  const rows = [
+    '- id: skill-filesystem',
+    '  name: "@deepseek-ai/dsh-skill-filesystem"',
+    '  config:',
+    `    agentsHome: ${JSON.stringify(agentsHome)}`,
+    '    watch: true',
+    '    watchUsePolling: true',
+    '    watchStabilityThresholdMs: 20',
+    '    watchPollIntervalMs: 10',
+  ]
+  if (overrides.providerName !== undefined) {
+    rows.push(`    providerName: ${JSON.stringify(overrides.providerName)}`)
   }
+  if (overrides.includeDefaultRoots !== undefined) {
+    rows.push(`    includeDefaultRoots: ${String(overrides.includeDefaultRoots)}`)
+  }
+  if (overrides.dshHome !== undefined) rows.push(`    dshHome: ${JSON.stringify(overrides.dshHome)}`)
+  if (overrides.customSkillDirs !== undefined) {
+    rows.push('    customSkillDirs:')
+    for (const root of overrides.customSkillDirs) rows.push(`      - ${JSON.stringify(root)}`)
+  }
+  return `${rows.join('\n')}\n`
+}
+
+async function writePresetComposition(
+  presetRoot: string,
+  presetId: string,
+  agentsHome: string,
+  overrides: FileSystemCompositionOverrides,
+): Promise<void> {
+  const directory = join(presetRoot, presetId)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'agent.cordis.yml'), fileSystemComposition(agentsHome, overrides))
 }
 
 async function mountStockDsh(
   base: string,
   agentsHome: string,
-  fileSystem: FileSystemCompositionOverrides,
+  composition: StockCompositionWitness,
 ) {
+  const presetRoot = join(base, 'presets')
+  await writePresetComposition(presetRoot, composition.presetId, agentsHome, composition.fileSystem)
   const ctx = new Context()
-  const storageFiber = await ctx.plugin(Storage)
-  const sqliteFiber = await ctx.plugin(StorageSqlite, { path: join(base, 'storage.db') })
-  const domainFiber = await ctx.plugin(StorageDomain, { backend: 'sqlite' })
-  const sessionStoreFiber = await ctx.plugin(SessionStore)
-  const persistenceFiber = await ctx.plugin(SqliteSessionPersistence, { path: join(base, 'sessions.db') })
-  const workspaceFiber = await ctx.plugin(WorkspaceRegistry)
-  let skillRegistryFiber = await ctx.plugin(SkillRegistry)
-  let skillFileSystemFiber = await ctx.plugin(SkillFileSystem, fileSystemOptions(agentsHome, fileSystem))
+  ctx.baseUrl = pathToFileURL(join(process.cwd(), 'apps', 'cli', 'package.json')).href
+  const disposers: Array<() => Promise<void>> = []
+  async function track<T extends { dispose(): void | Promise<void> }>(pending: Promise<T>): Promise<T> {
+    const fiber = await pending
+    disposers.push(async () => { await fiber.dispose() })
+    return fiber
+  }
+  await track(ctx.plugin(Loader))
+  const agent = {} as { ctx: Context }
+  const agentScope = createScope(ctx, agent)
+  agent.ctx = agentScope.ctx
+  const dispose = async () => {
+    await agentScope.dispose()
+    for (const release of [...disposers].reverse()) await release()
+  }
+  try {
+    await track(ctx.plugin(SkillRegistry))
+    await track(ctx.plugin(AgentPresets, {
+      default: composition.presetId,
+      roots: [{ path: presetRoot, trust: 'system' }],
+      includeUserRoot: false,
+    }))
+    await ctx.agentPresets.mount(agentScope.ctx, composition.presetId)
+    await track(ctx.plugin(Storage))
+    await track(ctx.plugin(StorageSqlite, { path: join(base, 'storage.db') }))
+    await track(ctx.plugin(StorageDomain, { backend: 'sqlite' }))
+    await track(ctx.plugin(SessionStore))
+    await track(ctx.plugin(SqliteSessionPersistence, { path: join(base, 'sessions.db') }))
+    await track(ctx.plugin(WorkspaceRegistry))
+  } catch (error) {
+    await dispose()
+    throw error
+  }
   return {
     ctx,
-    async remountFileSystem(overrides: FileSystemCompositionOverrides) {
-      await skillFileSystemFiber.dispose()
-      skillFileSystemFiber = await ctx.plugin(SkillFileSystem, fileSystemOptions(agentsHome, overrides))
+    agent,
+    async recompose(next: StockCompositionWitness) {
+      await writePresetComposition(presetRoot, next.presetId, agentsHome, next.fileSystem)
+      await ctx.agentPresets.recompose(agentScope.ctx, next.presetId)
     },
     async remountSkills() {
-      await skillFileSystemFiber.dispose()
-      await skillRegistryFiber.dispose()
-      skillRegistryFiber = await ctx.plugin(SkillRegistry)
-      skillFileSystemFiber = await ctx.plugin(SkillFileSystem, fileSystemOptions(agentsHome))
+      await writePresetComposition(presetRoot, 'code', agentsHome, {})
+      await ctx.agentPresets.recompose(agentScope.ctx, 'code')
     },
-    async dispose() {
-      await skillFileSystemFiber.dispose()
-      await skillRegistryFiber.dispose()
-      await workspaceFiber.dispose()
-      await persistenceFiber.dispose()
-      await sessionStoreFiber.dispose()
-      await domainFiber.dispose()
-      await sqliteFiber.dispose()
-      await storageFiber.dispose()
-    },
+    dispose,
   }
 }
 
@@ -263,11 +289,13 @@ async function learnedFor(
 }
 
 function rootContract(
-  configuration: StockSkillRuntimeConfiguration | undefined,
+  agent: Parameters<typeof resolveStockSkillRuntimeConfiguration>[1],
 ): PublicationRootContractPort<SkillView> {
   const resolver = new StockDshRootContractResolver()
   return {
-    resolve: (input) => {
+    resolve: async (input) => {
+      const configuration: StockSkillRuntimeConfiguration | undefined =
+        await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
       if (configuration === undefined) {
         return { status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' }
       }
@@ -284,8 +312,7 @@ function rootContract(
 function makeBuilder(
   skills: DshSkillCatalogAdapter<SkillView>,
   workspaceRegistry: DshWorkspaceRegistryPort,
-  composition: StockCompositionWitness,
-  agent: object,
+  agent: Parameters<typeof resolveStockSkillRuntimeConfiguration>[1],
 ) {
   return new ProposalSnapshotBuilder(
     skills,
@@ -293,7 +320,7 @@ function makeBuilder(
     new DshWorkspaceBindingResolver(workspaceRegistry),
     {
       now: () => '2026-08-20T02:00:00.000Z',
-      rootContract: rootContract(runtimeConfiguration(composition, agent)),
+      rootContract: rootContract(agent),
     },
   )
 }
@@ -319,16 +346,16 @@ async function setupCase(scope: Scope, decision: Decision) {
   }
   let mount: Awaited<ReturnType<typeof mountStockDsh>>
   try {
-    mount = await mountStockDsh(base, agentsHome, composition.fileSystem)
+    mount = await mountStockDsh(base, agentsHome, composition)
   } catch (caught) {
     restoreDshHome()
     throw caught
   }
   try {
     const workspace = await mount.ctx.workspaceRegistry.create(canonicalProject)
-    const view = { cwd: workspace.path, scope: {} }
+    const view = { cwd: workspace.path, scope: mount.agent }
     const skills = new DshSkillCatalogAdapter<SkillView>(mount.ctx.skills)
-    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, composition, view.scope)
+    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, mount.agent)
     const learned = await learnedFor(skills, view, workspace.id, scope, decision)
     return {
       base,
@@ -452,6 +479,64 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
     await publish(scope, decision, remount)
   }, 30_000)
 
+  it.each(['NO_JOURNAL', 'written'] as const)(
+    'stops %s recovery before touching C5 when the approved absent-root ancestor identity changes',
+    async (recoveryStatus) => {
+      const setup = await setupCase('PROJECT', 'CREATE')
+      try {
+        const built = await setup.builder.build(setup.learned, setup.view)
+        if (built.status !== 'READY') throw new Error('fixture proposal must be ready')
+        const domain = createMemoryRun2skillDomain()
+        domain.workItems.set(setup.learned.workItemId, setup.learned)
+        const reviews = new ProposalReviewStore(domain)
+        const staged = await reviews.stage(setup.learned.workItemId, setup.learned.revision, built.proposal)
+        const approved = await reviews.approve(
+          setup.learned.workItemId,
+          staged.item.revision,
+          proposalRefOf(built.proposal),
+        )
+        await rename(setup.view.cwd, join(setup.base, 'approved-project-replaced'))
+        await mkdir(setup.view.cwd, { recursive: true })
+        const revalidation = new ApprovedProposalRevalidator(setup.builder, () => setup.view)
+        await expect(revalidation.revalidateRootContract(approved.item)).resolves.toEqual({
+          status: 'NEEDS_ATTENTION', code: 'ROOT_BINDING_AMBIGUOUS',
+        })
+        let boundaryCalls = 0
+        const unreachable = async () => {
+          boundaryCalls += 1
+          throw new Error('root identity drift must stop before C5 or readback')
+        }
+        const saga = new ApprovalPublicationSaga({
+          store: new PublicationSagaStore(domain),
+          revalidation,
+          fileSystem: {
+            recover: async () => {
+              boundaryCalls += 1
+              return recoveryStatus === 'NO_JOURNAL'
+                ? { status: 'NO_JOURNAL' as const }
+                : { status: 'written' as const, txid: 'recovered', target: 'target', backup: null }
+            },
+            prepareRoot: unreachable,
+            write: unreachable,
+            finalize: unreachable,
+          },
+          readback: { confirmExact: unreachable },
+        })
+
+        const completed = await saga.run(approved.item.workItemId)
+        expect(completed).toMatchObject({
+          processingState: 'NEEDS_ATTENTION',
+          review: { publicationOutcome: 'NEEDS_ATTENTION' },
+        })
+        expect(boundaryCalls).toBe(0)
+      } finally {
+        await setup.mount.dispose()
+        setup.restoreDshHome()
+      }
+    },
+    30_000,
+  )
+
   it.each([
     ['renamed provider', 'provider'],
     ['disabled defaults', 'defaults'],
@@ -483,12 +568,11 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
           },
           drift === 'preset' ? 'team-preset' : 'standard',
         )
-        await setup.mount.remountFileSystem(mismatchedComposition.fileSystem)
+        await setup.mount.recompose(mismatchedComposition)
         const mismatched = makeBuilder(
           setup.skills,
           setup.mount.ctx.workspaceRegistry,
-          mismatchedComposition,
-          setup.view.scope,
+          setup.mount.agent,
         )
         const publicationView = () => setup.view
         const revalidation = new ApprovedProposalRevalidator(mismatched, publicationView)

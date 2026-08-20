@@ -5,7 +5,6 @@ import {
   StockDshRootContractResolver,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
-  resolveStockSessionPreset,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
 import { RootBindingV2Schema } from '../src/domain/review/index.js'
@@ -27,28 +26,36 @@ function configuration(
 }
 
 describe('stock DSH root contract', () => {
-  it('derives the exact Agent filesystem configuration from one active stock Loader entry', () => {
-    const agent = {}
+  it('derives the exact filesystem configuration from the stock fiber mounted for one Agent generation', async () => {
     const configuredHome = resolve('configured-dsh-home')
     const customRoot = resolve('custom-skills')
-    const entry = {
-      disabled: false,
-      fiber: {},
-      ctx: { agent },
-      options: {
-        name: '@deepseek-ai/dsh-skill-filesystem',
-        config: {
-          providerName: 'renamed-filesystem',
-          includeDefaultRoots: false,
-          dshHome: configuredHome,
-          customSkillDirs: [customRoot],
+    type Fiber = { parent: { fiber: Fiber }; config: unknown }
+    const root = { config: {} } as Fiber
+    root.parent = { fiber: root }
+    const mount = { parent: { fiber: root }, config: {} } as Fiber
+    const filesystem = {
+      parent: { fiber: mount },
+      config: {
+        providerName: 'renamed-filesystem',
+        includeDefaultRoots: false,
+        dshHome: configuredHome,
+        customSkillDirs: [customRoot],
+      },
+    } as Fiber
+    const agent = {
+      ctx: {
+        registry: {
+          values: () => [{ name: 'skill-filesystem', fibers: [filesystem] }],
         },
       },
     }
+    const mounts = {
+      standingMountFor: (ctx: object) => ctx === agent.ctx
+        ? { presetId: 'standard', fiber: mount }
+        : undefined,
+    }
 
-    expect(resolveStockSkillRuntimeConfiguration({
-      entries: () => [entry],
-    }, agent, 'standard')).toEqual({
+    await expect(resolveStockSkillRuntimeConfiguration(mounts, agent)).resolves.toEqual({
       profile: 'web',
       presetId: 'standard',
       providerName: 'renamed-filesystem',
@@ -56,31 +63,12 @@ describe('stock DSH root contract', () => {
       customSkillDirs: [customRoot],
       configuredDshHome: configuredHome,
     })
-    expect(resolveStockSkillRuntimeConfiguration({
-      entries: () => [entry, { ...entry }],
-    }, agent, 'standard')).toBeUndefined()
-    expect(resolveStockSkillRuntimeConfiguration({
-      entries: () => [{ ...entry, disabled: true }],
-    }, agent, 'standard')).toBeUndefined()
-    expect(resolveStockSkillRuntimeConfiguration({
-      entries: () => [{ ...entry, ctx: { agent: {} } }],
-    }, agent, 'standard')).toBeUndefined()
-  })
-
-  it('uses DSH last-selected preset semantics and fails closed on malformed selection facts', () => {
-    expect(resolveStockSessionPreset({
-      header: { agentPreset: 'standard' },
-      events: [
-        { type: 'agent-preset/selected', data: { agentPreset: 'minimal' } },
-        { type: 'turn/end', data: {} },
-        { type: 'agent-preset/selected', data: { agentPreset: 'code' } },
-      ],
-    })).toBe('code')
-    expect(resolveStockSessionPreset({
-      header: { agentPreset: 'standard' },
-      events: [{ type: 'agent-preset/selected', data: { preset: 'code' } }],
-    })).toBeUndefined()
-    expect(resolveStockSessionPreset({ header: { agentPreset: 'standard' } })).toBe('standard')
+    const duplicate = { parent: { fiber: mount }, config: {} } as Fiber
+    await expect(resolveStockSkillRuntimeConfiguration(mounts, {
+      ctx: { registry: { values: () => [{ name: 'skill-filesystem', fibers: [filesystem, duplicate] }] } },
+    })).resolves.toBeUndefined()
+    await expect(resolveStockSkillRuntimeConfiguration({ standingMountFor: () => undefined }, agent))
+      .resolves.toBeUndefined()
   })
 
   it('accepts only the versioned RootBindingV2 stock contract facts', () => {

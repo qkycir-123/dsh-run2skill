@@ -44,6 +44,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Failed to create disposable stock DSH clone.' 
 & git -C $cloneRoot checkout --detach $expectedCommit
 if ($LASTEXITCODE -ne 0) { throw 'Failed to check out the pinned stock DSH commit.' }
 
+Push-Location $cloneRoot
+try {
+  & pnpm install --frozen-lockfile
+  if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed in the disposable stock DSH clone.' }
+  # Preset compositions resolve published package entrypoints. A source clone
+  # has no lib/ outputs until the stock host packages are built.
+  & pnpm run build:lib:host
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to build stock DSH host package entrypoints.' }
+} finally {
+  Pop-Location
+}
+
 $probeRoot = Join-Path $cloneRoot 'packages\run2skill\contract-probes'
 $probeTests = Join-Path $probeRoot 'tests'
 $probeSupport = Join-Path $probeTests 'support'
@@ -57,8 +69,6 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\vitest.config.ts'
 
 Push-Location $cloneRoot
 try {
-  & pnpm install --frozen-lockfile
-  if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed in the disposable stock DSH clone.' }
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\package.json') -Destination (Join-Path $probeRoot 'package.json')
   & pnpm install --no-frozen-lockfile --ignore-scripts --filter '@dsh-run2skill/contract-probes'
   if ($LASTEXITCODE -ne 0) { throw 'Failed to link the disposable stock probe workspace package.' }

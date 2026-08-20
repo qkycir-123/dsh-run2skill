@@ -22,16 +22,31 @@ export interface StockSkillRuntimeConfiguration {
   readonly configuredDshHome?: string | undefined
 }
 
-export interface StockLoaderProjection {
-  entries(): Iterable<{
-    readonly disabled: boolean
-    readonly fiber?: unknown
-    readonly ctx: { readonly agent?: object | undefined }
-    readonly options: {
-      readonly name: string
-      readonly config?: unknown
-    }
-  }>
+interface StockFiberProjection {
+  readonly parent: { readonly fiber: StockFiberProjection }
+  readonly config: unknown
+}
+
+interface StockPluginRuntimeProjection {
+  readonly name?: string | undefined
+  readonly fibers: Iterable<StockFiberProjection>
+}
+
+export interface StockPresetMountProjection {
+  readonly presetId: string
+  readonly fiber: StockFiberProjection
+}
+
+export interface StockPresetMountPort {
+  standingMountFor(
+    agentContext: object,
+  ): StockPresetMountProjection | undefined | Promise<StockPresetMountProjection | undefined>
+}
+
+export interface StockComposedAgentProjection {
+  readonly ctx: {
+    readonly registry: { values(): Iterable<StockPluginRuntimeProjection> }
+  }
 }
 
 export interface StockWorkspaceContractBinding {
@@ -79,42 +94,33 @@ export interface StockDshRootContractResolverOptions {
   readonly homeDirectory?: () => string
 }
 
-export interface StockPresetSessionProjection {
-  readonly header: { readonly agentPreset?: string | undefined }
-  readonly events?: readonly { readonly type: string; readonly data?: unknown }[] | undefined
-}
-
-/** Mirrors stock DSH's last-selected preset rule without importing its runtime. */
-export function resolveStockSessionPreset(session: StockPresetSessionProjection): string | undefined {
-  const events = session.events ?? []
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event?.type !== 'agent-preset/selected') continue
-    if (typeof event.data !== 'object' || event.data === null) return undefined
-    const selected = Reflect.get(event.data, 'agentPreset')
-    return typeof selected === 'string' && selected.length > 0 ? selected : undefined
-  }
-  return session.header.agentPreset
-}
-
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Reads the exact active stock filesystem row mounted for one Agent scope. */
-export function resolveStockSkillRuntimeConfiguration(
-  loader: StockLoaderProjection,
-  agent: object,
-  presetId: string | undefined,
-): StockSkillRuntimeConfiguration | undefined {
-  const entries = [...loader.entries()].filter(entry => (
-    !entry.disabled
-    && entry.fiber !== undefined
-    && entry.ctx.agent === agent
-    && entry.options.name === '@deepseek-ai/dsh-skill-filesystem'
-  ))
-  if (entries.length !== 1) return undefined
-  const raw = entries[0]!.options.config
+function isWithinFiber(candidate: StockFiberProjection, root: StockFiberProjection): boolean {
+  let current = candidate
+  while (true) {
+    if (current === root) return true
+    const parent = current.parent.fiber
+    if (parent === current) return false
+    current = parent
+  }
+}
+
+/** Reads the exact stock filesystem fiber mounted for one Agent's joined generation. */
+export async function resolveStockSkillRuntimeConfiguration(
+  mounts: StockPresetMountPort,
+  agent: StockComposedAgentProjection,
+): Promise<StockSkillRuntimeConfiguration | undefined> {
+  const mount = await mounts.standingMountFor(agent.ctx)
+  if (mount === undefined) return undefined
+  const fibers = [...agent.ctx.registry.values()]
+    .filter(runtime => runtime.name === 'skill-filesystem')
+    .flatMap(runtime => [...runtime.fibers])
+    .filter(fiber => isWithinFiber(fiber, mount.fiber))
+  if (fibers.length !== 1) return undefined
+  const raw = fibers[0]!.config
   if (raw !== undefined && !isRecord(raw)) return undefined
   const config = raw ?? {}
   const providerName = config.providerName ?? 'filesystem'
@@ -130,7 +136,7 @@ export function resolveStockSkillRuntimeConfiguration(
   ) return undefined
   return {
     profile: 'web',
-    ...(presetId === undefined ? {} : { presetId }),
+    presetId: mount.presetId,
     providerName,
     includeDefaultRoots,
     customSkillDirs: [...customSkillDirs],

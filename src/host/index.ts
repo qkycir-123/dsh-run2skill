@@ -59,9 +59,8 @@ import {
   StockDshRootContractResolver,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
-  resolveStockSessionPreset,
-  type StockLoaderProjection,
 } from '../adapters/dsh-skills/stock-root-contract.js'
+import { stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
 
 export {
@@ -77,7 +76,6 @@ export * from '../application/publication/index.js'
 
 export const name = 'run2skill'
 export const inject = [
-  'loader',
   'sessions',
   'sessionPersistence',
   'storageDomain',
@@ -91,7 +89,7 @@ interface DshSessionProjection {
   readonly header: DshSessionHeader
 }
 
-type Run2skillAgent = object & AgentScopeProjection
+type Run2skillAgent = object & AgentScopeProjection & Parameters<typeof resolveStockSkillRuntimeConfiguration>[1]
 
 interface AgentPreStepPayload {
   readonly agent: Run2skillAgent
@@ -102,7 +100,6 @@ interface AgentDisposedPayload {
 }
 
 export interface Run2skillHostContext extends Run2skillStorageContext {
-  readonly loader: StockLoaderProjection
   readonly sessions: unknown
   readonly sessionPersistence: SessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
@@ -168,15 +165,14 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const publicationFacts = new NodePublicationFactsAdapter()
       const stockRootResolver = new StockDshRootContractResolver()
       const rootContract = {
-        resolve: (input: {
+        resolve: async (input: {
           readonly scope: 'PROJECT' | 'USER'
           readonly workspaceBinding?: { readonly workspaceId: string; readonly canonicalPath: string } | undefined
           readonly view: LearningSkillView<Run2skillAgent>
         }) => {
-          const configuration = resolveStockSkillRuntimeConfiguration(
-            this.context.loader,
+          const configuration = await resolveStockSkillRuntimeConfiguration(
+            stockPresetMounts,
             input.view.scope,
-            resolveStockSessionPreset(input.view.scope.session),
           )
           if (configuration === undefined) {
             return { status: 'UNSUPPORTED' as const, code: 'ROOT_CONTRACT_UNSUPPORTED' as const }
