@@ -1,6 +1,6 @@
 # dsh-run2skill 项目路线
 
-状态：切片 A/B/C 已验收；C1–C7 与纯插件 root-contract 修正 #48 均已完成，下一阶段仍受 Slice D Design 门约束
+状态：切片 A/B/C 已验收；Slice D Design 已于 2026-08-20 获批，下一步拆分并执行 D1–D5
 更新时间：2026-08-20
 
 ## 1. 路线目标
@@ -105,7 +105,7 @@
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A/B/C 已验收。切片 C Design、C1–C7 与独立修正 #48 已完成；不提前铺开切片 D 的详细 Issues。
+状态：进行中；切片 A/B/C 已验收。切片 C Design、C1–C7 与独立修正 #48 已完成；Slice D Design 已获批，可按 D1–D5 的边界创建 Issues。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：切片 A/B/C 的独立 Design、公开 Issues、实现代码，以及三份 `docs/evidence/slice-*-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C7（#34–#40）与纯插件 root-contract 修正 #48 已完成。
+当前交付物：切片 A/B/C 的独立 Design、公开 Issues、实现代码，以及三份 `docs/evidence/slice-*-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C7（#34–#40）与纯插件 root-contract 修正 #48 已完成；获批的 Slice D Design 位于 `docs/design/slice-d-productize.md`。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
