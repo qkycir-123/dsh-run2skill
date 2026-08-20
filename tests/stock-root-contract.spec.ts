@@ -165,6 +165,23 @@ describe('stock DSH root contract', () => {
     })
   })
 
+  it('fails USER closed when the provider environment witness drifts after mount', () => {
+    const environment: Record<string, string | undefined> = { DSH_HOME: dshHome }
+    const resolver = new StockDshRootContractResolver({
+      environment,
+      currentEnvironment: () => environment,
+      homeDirectory: () => resolve('unused-home'),
+    })
+    environment.DSH_HOME = resolve('drifted-dsh-home')
+
+    expect(resolver.resolve({ scope: 'USER', configuration: configuration() }))
+      .toEqual({ status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' })
+    expect(resolver.resolve({
+      scope: 'USER',
+      configuration: configuration({ configuredDshHome: resolve('configured-home') }),
+    })).toMatchObject({ status: 'SUPPORTED', dshHome: { resolutionKind: 'CONFIGURATION' } })
+  })
+
   it('fails closed when PROJECT has no exact Workspace binding', () => {
     const resolver = new StockDshRootContractResolver({
       environment: {},

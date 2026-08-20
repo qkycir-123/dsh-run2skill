@@ -52,7 +52,7 @@
 | Web trust / RPC | packages/client/connection/src/rpc.ts、rpc-host.ts、index.ts | 独立 RPC channel 可声明 authority=loopback；Host/Origin/cross-site 检查发生在业务 handler 前；该 fence 是可达性边界，不是远程认证 |
 | Client 插件与 slot | packages/client/modules、packages/client/ui-conversation/src/client/contract/slots.ts | 外部包可用 dsh.client + ./client 加载；conversation.session.header.actions 是 session-scoped list slot |
 | 原子文件工具 | packages/util/atomic-write/src/index.ts | writeFileAtomic 保证同目录完整替换，withFileLock 只协调遵守该锁的 writer；两者都不提供内容 compare-and-exchange 或 crash fsync |
-| DSH Home | packages/util/home-paths/src/index.ts | resolveDshHome 顺序为显式配置、DSH_HOME、默认目录；ctx.skills 当前未直接暴露 effective writable root 查询，但 v0.1 生产契约不以该 API 为前置 |
+| DSH Home | packages/util/home-paths/src/index.ts；packages/skill/skill-filesystem/src/index.ts | resolveDshHome 顺序为显式配置、DSH_HOME、默认目录；filesystem provider 在构造时固定 effective Home，Host 因此保存启动环境 witness 并对运行时环境漂移 fail closed；ctx.skills 当前未直接暴露 effective writable root 查询 |
 
 这些结论已转化为 docs/architecture/baseline.md 的模块边界、fail-open/fail-closed 规则和 Contract Probe 清单。
 

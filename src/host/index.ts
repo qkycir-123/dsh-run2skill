@@ -126,6 +126,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentDomain: Run2skillDomain | undefined
   currentScheduler: LearningScheduler | undefined
   currentPublicationScheduler: PublicationScheduler | undefined
+  readonly #stockRootResolver = new StockDshRootContractResolver()
 
   constructor(
     private readonly context: Run2skillHostContext,
@@ -163,7 +164,6 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
             }
       }
       const publicationFacts = new NodePublicationFactsAdapter()
-      const stockRootResolver = new StockDshRootContractResolver()
       const rootContract = {
         resolve: async (input: {
           readonly scope: 'PROJECT' | 'USER'
@@ -177,7 +177,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           if (configuration === undefined) {
             return { status: 'UNSUPPORTED' as const, code: 'ROOT_CONTRACT_UNSUPPORTED' as const }
           }
-          return stockRootResolver.resolve({
+          return this.#stockRootResolver.resolve({
             scope: input.scope,
             ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
             configuration,

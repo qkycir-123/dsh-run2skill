@@ -91,6 +91,7 @@ export type StockRootScopeIdentity =
 
 export interface StockDshRootContractResolverOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>
+  readonly currentEnvironment?: () => Readonly<Record<string, string | undefined>>
   readonly homeDirectory?: () => string
 }
 
@@ -177,10 +178,14 @@ function supportedConfiguration(
 
 export class StockDshRootContractResolver {
   readonly #environment: Readonly<Record<string, string | undefined>>
+  readonly #currentEnvironment: () => Readonly<Record<string, string | undefined>>
   readonly #homeDirectory: () => string
 
   constructor(options: StockDshRootContractResolverOptions = {}) {
-    this.#environment = options.environment ?? process.env
+    const environment = options.environment ?? process.env
+    this.#environment = { ...environment }
+    this.#currentEnvironment = options.currentEnvironment
+      ?? (options.environment === undefined ? () => process.env : () => environment)
     this.#homeDirectory = options.homeDirectory ?? homedir
   }
 
@@ -214,6 +219,14 @@ export class StockDshRootContractResolver {
     }
     const configuredHome = input.configuration.configuredDshHome
     const environmentHome = this.#environment.DSH_HOME
+    if (
+      configuredHome === undefined
+      && !sameResolvedDshHome(
+        environmentHome,
+        this.#currentEnvironment().DSH_HOME,
+        this.#homeDirectory(),
+      )
+    ) return { status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' }
     const selected = configuredHome
       ?? (environmentHome !== undefined && environmentHome.trim().length > 0
         ? environmentHome
@@ -233,6 +246,21 @@ export class StockDshRootContractResolver {
       },
     }
   }
+}
+
+function sameResolvedDshHome(
+  left: string | undefined,
+  right: string | undefined,
+  homeDirectory: string,
+): boolean {
+  const fallback = join(homeDirectory, '.dsh')
+  const resolveEnvironmentHome = (value: string | undefined) => resolve(expandHomePath(
+    value !== undefined && value.trim().length > 0 ? value : fallback,
+    homeDirectory,
+  ))
+  const a = resolveEnvironmentHome(left)
+  const b = resolveEnvironmentHome(right)
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 export function deriveStockResolutionContractDigest(

@@ -290,8 +290,8 @@ async function learnedFor(
 
 function rootContract(
   agent: Parameters<typeof resolveStockSkillRuntimeConfiguration>[1],
+  resolver: StockDshRootContractResolver,
 ): PublicationRootContractPort<SkillView> {
-  const resolver = new StockDshRootContractResolver()
   return {
     resolve: async (input) => {
       const configuration: StockSkillRuntimeConfiguration | undefined =
@@ -313,6 +313,7 @@ function makeBuilder(
   skills: DshSkillCatalogAdapter<SkillView>,
   workspaceRegistry: DshWorkspaceRegistryPort,
   agent: Parameters<typeof resolveStockSkillRuntimeConfiguration>[1],
+  resolver: StockDshRootContractResolver,
 ) {
   return new ProposalSnapshotBuilder(
     skills,
@@ -320,7 +321,7 @@ function makeBuilder(
     new DshWorkspaceBindingResolver(workspaceRegistry),
     {
       now: () => '2026-08-20T02:00:00.000Z',
-      rootContract: rootContract(agent),
+      rootContract: rootContract(agent, resolver),
     },
   )
 }
@@ -340,6 +341,7 @@ async function setupCase(scope: Scope, decision: Decision) {
   const composition = compositionWitness(dshHome)
   const previousDshHome = process.env.DSH_HOME
   process.env.DSH_HOME = composition.dshHome
+  const rootResolver = new StockDshRootContractResolver()
   const restoreDshHome = () => {
     if (previousDshHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousDshHome
@@ -355,7 +357,7 @@ async function setupCase(scope: Scope, decision: Decision) {
     const workspace = await mount.ctx.workspaceRegistry.create(canonicalProject)
     const view = { cwd: workspace.path, scope: mount.agent }
     const skills = new DshSkillCatalogAdapter<SkillView>(mount.ctx.skills)
-    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, mount.agent)
+    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, mount.agent, rootResolver)
     const learned = await learnedFor(skills, view, workspace.id, scope, decision)
     return {
       base,
@@ -366,6 +368,7 @@ async function setupCase(scope: Scope, decision: Decision) {
       view,
       skills,
       builder,
+      rootResolver,
       learned,
       root,
       restoreDshHome,
@@ -538,13 +541,14 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
   )
 
   it.each([
-    ['renamed provider', 'provider'],
-    ['disabled defaults', 'defaults'],
-    ['custom roots', 'roots'],
-    ['custom preset', 'preset'],
-  ] as const)('fails closed with NEEDS_ATTENTION for %s drift', async (_label, drift) => {
+    ['renamed provider', 'provider', 'PROJECT'],
+    ['disabled defaults', 'defaults', 'PROJECT'],
+    ['custom roots', 'roots', 'PROJECT'],
+    ['custom preset', 'preset', 'PROJECT'],
+    ['mounted DSH_HOME environment', 'environment', 'USER'],
+  ] as const)('fails closed with NEEDS_ATTENTION for %s drift', async (_label, drift, scope) => {
     for (const recoveryStatus of ['NO_JOURNAL', 'written'] as const) {
-      const setup = await setupCase('PROJECT', 'CREATE')
+      const setup = await setupCase(scope, 'CREATE')
       try {
         const built = await setup.builder.build(setup.learned, setup.view)
         if (built.status !== 'READY') throw new Error('fixture proposal must be ready')
@@ -568,11 +572,16 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
           },
           drift === 'preset' ? 'team-preset' : 'standard',
         )
-        await setup.mount.recompose(mismatchedComposition)
+        if (drift === 'environment') {
+          process.env.DSH_HOME = join(setup.base, 'drifted-dsh-home')
+        } else {
+          await setup.mount.recompose(mismatchedComposition)
+        }
         const mismatched = makeBuilder(
           setup.skills,
           setup.mount.ctx.workspaceRegistry,
           setup.mount.agent,
+          setup.rootResolver,
         )
         const publicationView = () => setup.view
         const revalidation = new ApprovedProposalRevalidator(mismatched, publicationView)

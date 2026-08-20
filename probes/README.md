@@ -41,7 +41,7 @@ powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1 -WslDistribution <distribution-name>
 ```
 
-第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条是 production-backed CP-ROOT-003，应以 14 个测试通过并结束于 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。第三条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第四条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
+第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条是 production-backed CP-ROOT-003，应以 15 个测试通过并结束于 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。第三条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第四条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
 
 ## stock DSH 纯插件 root probe
 
@@ -50,10 +50,10 @@ CP-ROOT-003 是默认生产门禁。production-backed runner 使用本页固定�
 - PROJECT/USER 的标准默认 roots、existing/absent root、CREATE/MERGE；
 - Workspace/DSH Home identity、版本化 contract digest、文件 identity/expected-absence；
 - CAS/journal 后由原生 filesystem provider/source/path winner 和 exact `get()` content 回读确认；
-- incomplete snapshot、配置漂移、custom roots、`includeDefaultRoots=false`、重命名 provider/自定义 preset 均 fail closed；
+- incomplete snapshot、配置漂移、custom roots、`includeDefaultRoots=false`、重命名 provider/自定义 preset、mounted USER provider 的 `$DSH_HOME` 漂移均 fail closed；
 - 卸载插件后已发布 USER Skill 仍由 stock DSH 使用。
 
-固定 baseline 的当前结果为 1 个测试文件、14 个测试通过，并输出 `CP_ROOT_003=PASS`。production Host 通过 stock `standingMountFor(agent.ctx)` 定位 exact Agent 当前 joined generation，并从其 subtree 内真实 `skill-filesystem` fiber 读取唯一 composition witness；探针以同一真实 mount 驱动 provider 与 production resolver。四种配置漂移及两条 approved-ancestor identity 漂移恢复分支都经 production root-contract revalidator/saga 在 journal recover、root prepare、write、finalize 和 readback 前进入 `NEEDS_ATTENTION`。切换到新的 stock standing generation 后 USER Skill 仍由原生 filesystem provider 使用；实际包 add/remove 边界仍由 CP-INS-001 独立验证。
+固定 baseline 的当前结果为 1 个测试文件、15 个测试通过，并输出 `CP_ROOT_003=PASS`。production Host 通过 stock `standingMountFor(agent.ctx)` 定位 exact Agent 当前 joined generation，并从其 subtree 内真实 `skill-filesystem` fiber 读取唯一 composition witness；探针以同一真实 mount 和启动环境 witness 驱动 provider 与 production resolver。四种 composition 漂移、mounted USER provider 的 `$DSH_HOME` 环境漂移及两条 approved-ancestor identity 漂移恢复分支都经 production root-contract revalidator/saga 在 journal recover、root prepare、write、finalize 和 readback 前进入 `NEEDS_ATTENTION`。切换到新的 stock standing generation 后 USER Skill 仍由原生 filesystem provider 使用；实际包 add/remove 边界仍由 CP-INS-001 独立验证。
 
 ## 已放弃的历史实验
 
