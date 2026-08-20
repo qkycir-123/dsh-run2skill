@@ -185,18 +185,6 @@ async function observe(present, expectedAutomaticLearning) {
       const body = await rpc.json()
       assert.equal(body.result?.ok, true)
       assert.equal(body.result?.value?.capturedCount, 0)
-      const workspaceRpcId = 'd3-workspace-create'
-      const workspaceResponse = await fetch(`${base}/api/workspace.create`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          type: 'client-request', rpcId: workspaceRpcId, method: 'workspace.create',
-          payload: { path: workspace },
-        }),
-      })
-      assert.equal(workspaceResponse.status, 200)
-      const workspaceBody = await workspaceResponse.json()
-      assert.equal(workspaceBody.rpcId, workspaceRpcId)
-      assert.equal(workspaceBody.result?.ok, true)
       browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
       const page = await browser.newPage()
       const errors = []

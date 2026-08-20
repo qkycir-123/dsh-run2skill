@@ -52,7 +52,7 @@ describe('Automatic Learning native settings card', () => {
     }), expect.any(Function))
   })
 
-  it('wires Purge through the loopback channel and the native recent Workspace identity', async () => {
+  it('wires USER Purge through the loopback channel without a Workspace identity', async () => {
     const fixture = scopeFixture()
     const rpc = vi.fn(async (_channel: string, endpoint: string) => endpoint === 'purge/preview'
       ? {
@@ -90,7 +90,7 @@ describe('Automatic Learning native settings card', () => {
       connection: { rpc: { call: rpc } },
       workspaces: {
         list: {
-          getSnapshot: () => ({ items: [{ workspaceId: 'workspace-a' }], recentWorkspaceId: 'workspace-a' }),
+          getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }),
         },
       },
       settingsScope: { bind: (() => fixture.scope) as never },
@@ -102,7 +102,7 @@ describe('Automatic Learning native settings card', () => {
     expect(rpc).toHaveBeenCalledWith(
       '/run2skill',
       'purge/preview',
-      { apiVersion: 1, scope: 'USER', workspaceId: 'workspace-a' },
+      { apiVersion: 1, scope: 'USER' },
       expect.any(AbortSignal),
     )
   })

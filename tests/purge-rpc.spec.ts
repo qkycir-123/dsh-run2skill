@@ -21,6 +21,26 @@ const binding: ProjectPurgeScopeBindingV1 = {
 }
 
 describe('Purge RPC v1', () => {
+  it('accepts USER preview without workspaceId and rejects one supplied by clients', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const resolve = vi.fn(async (scope: 'PROJECT' | 'USER', _workspaceId?: string) => scope === 'USER'
+      ? { scope: 'USER' as const }
+      : binding)
+    const handler = createPurgeRpcHandler(new PurgeService(domain, { resolve }))
+    const signal = new AbortController().signal
+
+    await expect(handler('purge/preview', {
+      apiVersion: 1, scope: 'USER',
+    }, signal)).resolves.toMatchObject({
+      ok: true,
+      value: { scopeBinding: { scope: 'USER' } },
+    })
+    expect(resolve).toHaveBeenCalledWith('USER', undefined)
+    await expect(handler('purge/preview', {
+      apiVersion: 1, scope: 'USER', workspaceId: binding.workspaceId,
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
+  })
+
   it('strictly dispatches preview, confirm, status, and retry without exposing paths in errors', async () => {
     const domain = createMemoryRun2skillDomain()
     const service = new PurgeService(domain, { async resolve() { return binding } }, {

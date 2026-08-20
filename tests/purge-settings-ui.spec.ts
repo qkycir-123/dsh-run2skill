@@ -43,6 +43,12 @@ const PROJECT_PREVIEW = {
   busyPublicationCount: 1,
 }
 
+const USER_PREVIEW = {
+  ...PROJECT_PREVIEW,
+  previewId: `purv_${'e'.repeat(64)}`,
+  scopeBinding: { scope: 'USER' as const },
+}
+
 function settingsScope() {
   const snapshot = {
     status: 'ready' as const,
@@ -92,6 +98,26 @@ function environment(initiallyVisible = true): PurgePollEnvironment & {
 afterEach(() => { cleanup() })
 
 describe('Purge native settings UI', () => {
+  it('previews USER without a Workspace but still fails PROJECT closed', async () => {
+    const call = vi.fn(async (endpoint: string) => endpoint === 'purge/preview'
+      ? { ok: true, value: USER_PREVIEW }
+      : { ok: true, value: { apiVersion: 1, state: 'IDLE' } })
+    const controller = new PurgeSettingsController(call, () => undefined, environment())
+
+    await controller.preview('USER')
+    expect(call).toHaveBeenCalledWith(
+      'purge/preview',
+      { apiVersion: 1, scope: 'USER' },
+      expect.any(AbortSignal),
+    )
+    expect(controller.snapshot().preview).toEqual(USER_PREVIEW)
+    controller.cancelPreview()
+    await controller.preview('PROJECT')
+    expect(controller.snapshot().announcement).toContain('当前作用域无法可靠确认')
+    expect(call).toHaveBeenCalledTimes(1)
+    controller.dispose()
+  })
+
   it('previews and confirms only the immutable server preview reference', async () => {
     const call = vi.fn(async (endpoint: string) => {
       if (endpoint === 'purge/status') return { ok: true, value: { apiVersion: 1, state: 'IDLE' } }
@@ -239,6 +265,98 @@ describe('Purge native settings UI', () => {
     await controller.confirm()
     expect(controller.snapshot().inProgressReceipt).toMatchObject({ state: 'IN_PROGRESS', phase: 'HIDING' })
     expect(poll.timerDelay()).toBe(2_000)
+    controller.dispose()
+  })
+
+  it('polls active phase while a long confirm mutation is still in flight', async () => {
+    const confirmGate = Promise.withResolvers<unknown>()
+    let confirming = false
+    const call = vi.fn(async (endpoint: string) => {
+      if (endpoint === 'purge/preview') return { ok: true, value: PROJECT_PREVIEW }
+      if (endpoint === 'purge/confirm') {
+        confirming = true
+        return await confirmGate.promise
+      }
+      return {
+        ok: true,
+        value: confirming
+          ? {
+              apiVersion: 1,
+              state: 'IN_PROGRESS',
+              purgeId: `purge_${'d'.repeat(64)}`,
+              hideBefore: '2026-08-21T00:00:00.000Z',
+              startedAt: '2026-08-21T00:00:00.000Z',
+              phase: 'DELETING_LINEAGES',
+              deletedWorkItems: 0,
+              deletedLineages: 1,
+            }
+          : { apiVersion: 1, state: 'IDLE' },
+      }
+    })
+    const poll = environment()
+    const controller = new PurgeSettingsController(call, () => 'workspace-a', poll)
+    controller.start()
+    await controller.whenIdle()
+    await controller.preview('PROJECT')
+    const confirmation = controller.confirm()
+    await waitFor(() => { expect(controller.snapshot().mutationPending).toBe(true) })
+    expect(poll.timerDelay()).toBe(2_000)
+    poll.tick()
+    await waitFor(() => {
+      expect(controller.snapshot().status).toMatchObject({
+        state: 'IN_PROGRESS', phase: 'DELETING_LINEAGES', deletedLineages: 1,
+      })
+    })
+    expect(call.mock.calls.filter(([endpoint]) => endpoint === 'purge/status')).toHaveLength(2)
+    confirmGate.resolve({
+      ok: true,
+      value: {
+        apiVersion: 1,
+        purgeId: `purge_${'d'.repeat(64)}`,
+        state: 'COMPLETED',
+        deletedWorkItems: 3,
+        deletedLineages: 2,
+      },
+    })
+    await confirmation
+    controller.dispose()
+  })
+
+  it('only promises continued hiding after status proves a durable boundary', async () => {
+    let statusActive = false
+    const call = vi.fn(async (endpoint: string) => {
+      if (endpoint === 'purge/status') return {
+        ok: true,
+        value: statusActive
+          ? {
+              apiVersion: 1,
+              state: 'IN_PROGRESS',
+              purgeId: `purge_${'d'.repeat(64)}`,
+              hideBefore: '2026-08-21T00:00:00.000Z',
+              startedAt: '2026-08-21T00:00:00.000Z',
+              phase: 'HIDING',
+              deletedWorkItems: 0,
+              deletedLineages: 0,
+              lastError: { code: 'PURGE_STORAGE_UNAVAILABLE', occurredAt: '2026-08-21T00:00:01.000Z' },
+            }
+          : { apiVersion: 1, state: 'IDLE' },
+      }
+      if (endpoint === 'purge/preview') {
+        return statusActive
+          ? { ok: true, value: PROJECT_PREVIEW }
+          : { ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE', message: 'unavailable', details: {} } }
+      }
+      return { ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE', message: 'failed', details: {} } }
+    })
+    const controller = new PurgeSettingsController(call, () => 'workspace-a', environment())
+
+    await controller.preview('PROJECT')
+    expect(controller.snapshot().announcement).toContain('未确认已建立清理边界')
+    expect(controller.snapshot().announcement).not.toContain('继续隐藏')
+    statusActive = true
+    await controller.preview('PROJECT')
+    await controller.confirm()
+    expect(controller.snapshot().announcement).toContain('清理边界继续隐藏')
     controller.dispose()
   })
 

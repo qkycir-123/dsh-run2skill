@@ -159,7 +159,7 @@ function completionAnnouncement(scope: PurgeScope | undefined, receipt: PurgeRec
   return `${subject}清理完成：${String(receipt.deletedWorkItems)} 条待处理数据，${String(receipt.deletedLineages)} 条发布沿袭记录。`
 }
 
-function errorAnnouncement(error: PurgeClientError): string {
+function errorAnnouncement(error: PurgeClientError, durableBoundary = false): string {
   if (error.code === 'PURGE_PREVIEW_STALE') return '清理预览已失效，请重新预览后确认。'
   if (error.code === 'PURGE_BUSY') {
     return `当前有 ${String(error.busyPublicationCount ?? 0)} 条正在发布；请等待发布完成后重新预览。`
@@ -168,7 +168,9 @@ function errorAnnouncement(error: PurgeClientError): string {
   if (error.code === 'PURGE_SCOPE_UNAVAILABLE') return '当前作用域无法可靠确认，未执行清理。'
   if (error.code === 'PURGE_INCOMPATIBLE') return '当前数据版本不兼容，未执行清理。'
   if (error.code === 'PURGE_FENCE_LIMIT') return 'PROJECT 清理保护记录已达上限，未执行清理。'
-  return '数据清理未完成；已清理边界继续隐藏，可重试。'
+  return durableBoundary
+    ? '数据清理未完成；已建立的清理边界继续隐藏，可重试。'
+    : '数据清理暂不可用；未确认已建立清理边界，请稍后重试。'
 }
 
 const initialState: PurgeSettingsState = {
@@ -185,6 +187,8 @@ export class PurgeSettingsController {
   #disposed = false
   #pending: Promise<void> | undefined
   #abort: AbortController | undefined
+  #statusPending: Promise<void> | undefined
+  #statusAbort: AbortController | undefined
   #timer: unknown
   #timerDelay: number | undefined
   #removeVisibility: (() => void) | undefined
@@ -218,13 +222,16 @@ export class PurgeSettingsController {
   }
 
   whenIdle(): Promise<void> {
-    return this.#pending ?? Promise.resolve()
+    return Promise.all([
+      this.#pending ?? Promise.resolve(),
+      this.#statusPending ?? Promise.resolve(),
+    ]).then(() => undefined)
   }
 
   async preview(scope: PurgeScope): Promise<void> {
     if (this.#disposed || this.#state.previewPending || this.#state.mutationPending) return
     const workspaceId = this.getWorkspaceId()
-    if (workspaceId === undefined) {
+    if (scope === 'PROJECT' && workspaceId === undefined) {
       const error = { code: 'PURGE_SCOPE_UNAVAILABLE' }
       this.#publish({ ...this.#state, error, announcement: errorAnnouncement(error) })
       return
@@ -240,7 +247,9 @@ export class PurgeSettingsController {
       })
       const preview = parseValue(previewSchema, await this.call(
         'purge/preview',
-        { apiVersion: 1, scope, workspaceId },
+        scope === 'PROJECT'
+          ? { apiVersion: 1, scope, workspaceId: workspaceId! }
+          : { apiVersion: 1, scope },
         signal,
       ))
       this.#publish({ ...this.#state, previewPending: false, preview, error: undefined })
@@ -287,7 +296,7 @@ export class PurgeSettingsController {
         preview: undefined,
         previewScope: undefined,
       })
-      await this.#readStatusAfterFailure()
+      await this.#readStatusAfterFailure(error)
     })
   }
 
@@ -312,9 +321,9 @@ export class PurgeSettingsController {
         ...this.#state,
         mutationPending: false,
         error,
-        announcement: errorAnnouncement(error),
+        announcement: errorAnnouncement(error, true),
       })
-      await this.#readStatusAfterFailure()
+      await this.#readStatusAfterFailure(error, true)
     })
   }
 
@@ -325,6 +334,7 @@ export class PurgeSettingsController {
     this.#removeVisibility?.()
     this.#removeVisibility = undefined
     this.#abort?.abort()
+    this.#statusAbort?.abort()
     this.#listeners.clear()
   }
 
@@ -352,7 +362,7 @@ export class PurgeSettingsController {
     })
   }
 
-  async #readStatusAfterFailure(): Promise<void> {
+  async #readStatusAfterFailure(error: PurgeClientError, durableBoundary = false): Promise<void> {
     try {
       const status = parseValue(statusSchema, await this.call(
         'purge/status',
@@ -364,6 +374,7 @@ export class PurgeSettingsController {
         statusPhase: 'READY',
         status,
         inProgressReceipt: status.state === 'IDLE' ? undefined : this.#state.inProgressReceipt,
+        announcement: errorAnnouncement(error, durableBoundary || status.state === 'IN_PROGRESS'),
       })
     } catch {
       // Preserve the actionable mutation error when status readback also fails.
@@ -372,19 +383,31 @@ export class PurgeSettingsController {
 
   async #refreshStatus(): Promise<void> {
     if (this.#disposed || !this.environment.isVisible()) return
-    await this.#execute(async signal => {
-      const status = parseValue(statusSchema, await this.call('purge/status', { apiVersion: 1 }, signal))
-      this.#publish({
-        ...this.#state,
-        statusPhase: 'READY',
-        status,
-        inProgressReceipt: status.state === 'IDLE' ? undefined : this.#state.inProgressReceipt,
-      })
-    }, () => {
-      this.#publish({
-        ...this.#state,
-        statusPhase: this.#state.status === undefined ? 'UNAVAILABLE' : 'STALE',
-      })
+    if (this.#statusPending !== undefined) return this.#statusPending
+    const abort = new AbortController()
+    this.#statusAbort = abort
+    const pending = (async () => {
+      try {
+        const status = parseValue(statusSchema, await this.call('purge/status', { apiVersion: 1 }, abort.signal))
+        if (this.#disposed || abort.signal.aborted) return
+        this.#publish({
+          ...this.#state,
+          statusPhase: 'READY',
+          status,
+          inProgressReceipt: status.state === 'IDLE' ? undefined : this.#state.inProgressReceipt,
+        })
+      } catch {
+        if (this.#disposed || abort.signal.aborted) return
+        this.#publish({
+          ...this.#state,
+          statusPhase: this.#state.status === undefined ? 'UNAVAILABLE' : 'STALE',
+        })
+      }
+    })()
+    this.#statusPending = pending
+    await pending.finally(() => {
+      if (this.#statusPending === pending) this.#statusPending = undefined
+      if (this.#statusAbort === abort) this.#statusAbort = undefined
     })
   }
 
@@ -417,6 +440,7 @@ export class PurgeSettingsController {
     if (this.#disposed) return
     const delay = this.#state.status?.state === 'IN_PROGRESS'
       || this.#state.inProgressReceipt?.state === 'IN_PROGRESS'
+      || this.#state.mutationPending
       ? PURGE_ACTIVE_POLL_INTERVAL_MS
       : PURGE_IDLE_POLL_INTERVAL_MS
     if (this.#timer !== undefined && this.#timerDelay === delay) return

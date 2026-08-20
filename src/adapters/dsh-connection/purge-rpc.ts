@@ -15,7 +15,7 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/)
 const workspaceId = z.string().min(1).max(256)
 const previewRequest = z.discriminatedUnion('scope', [
   z.object({ apiVersion: z.literal(1), scope: z.literal('PROJECT'), workspaceId }).strict(),
-  z.object({ apiVersion: z.literal(1), scope: z.literal('USER'), workspaceId }).strict(),
+  z.object({ apiVersion: z.literal(1), scope: z.literal('USER') }).strict(),
 ])
 const confirmRequest = z.object({ apiVersion: z.literal(1), previewId, digest }).strict()
 const statusRequest = z.object({ apiVersion: z.literal(1) }).strict()
@@ -108,7 +108,13 @@ export function createPurgeRpcHandler(
     try {
       if (endpoint === PURGE_PREVIEW_ENDPOINT) {
         const request = previewRequest.parse(payload)
-        return { ok: true, value: previewResponse.parse(await activeService.preview(request.scope, request.workspaceId)) }
+        return {
+          ok: true,
+          value: previewResponse.parse(await activeService.preview(
+            request.scope,
+            request.scope === 'PROJECT' ? request.workspaceId : undefined,
+          )),
+        }
       }
       if (endpoint === PURGE_CONFIRM_ENDPOINT) {
         const request = confirmRequest.parse(payload)

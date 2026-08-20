@@ -418,6 +418,8 @@ Purge 是持久 saga：
 4. 校验无正常可见残留；
 5. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
 
+RPC scope contract 与作用域身份一致：PROJECT preview 必须携带当前有效 `workspaceId`，由 Host 重新解析 canonical workspace/root facts；USER preview 只绑定 effective DSH Home，请求不依赖也不接受 `workspaceId`。`status`、`confirm` 与 `retry` 只使用各自的 journal/immutable preview 标识，不携带 workspace identity。
+
 崩溃后继续同一 purgeId。active journal 与 durable completed fences 共同定义所有 create/update/claim/query 的 visibility：`createdAt/first committedAt <= hideBefore` 的匹配旧事实在 runtime/进程重启后仍不能重新进入，边界后的新事实仍允许。USER fence 为单例；PROJECT fence 以 canonical workspace path 的平台规范化身份 digest 为确定性 key，同 scope 只保留最大 `hideBefore`。
 
 PROJECT completed fences 固定最多 1024 个且不得淘汰。达到上限时已有 scope 可更新，新 PROJECT 必须在 preview/confirm 写 journal 前以 `PURGE_FENCE_LIMIT` fail closed。任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/迁移门。
@@ -681,7 +683,7 @@ CP-PUB-001 已在 Windows 与 WSL/Linux 验证上述 hard-link no-replace、外�
 | proposals/reject | ProposalRef + confirm=true | mutation receipt |
 | proposals/retry | ProposalRef | 新状态或新 ProposalRef |
 | coverage/confirm-discard | ProposalRef | DISCARDED |
-| purge/preview | scope binding | 将删/不删摘要 |
+| purge/preview | PROJECT：scope + workspaceId；USER：仅 scope | 将删/不删摘要 |
 | purge/confirm | previewId + digest | purge receipt |
 
 `automaticLearning` 通过 DSH 原生 `settings.describe/update/mutate` 读写；run2skill 只注册 namespace、schema、默认值和运行时 watch，不复制 Settings transport 或 persistence。
