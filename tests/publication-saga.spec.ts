@@ -300,6 +300,7 @@ describe('ApprovalPublicationSaga', () => {
   it.each([
     ['stops finalized recovery when the production C5 root disappears', 'ROOT_REMOVED'],
     ['refreshes finalized recovery when the target changes after readback', 'TARGET_CHANGED'],
+    ['refreshes a journaled publication when the target changes after readback', 'JOURNALED_TARGET_CHANGED'],
   ] as const)('%s', async (_name, race) => {
     const workspace = await mkdtemp(join(tmpdir(), 'run2skill-saga-'))
     if (!basename(workspace).startsWith('run2skill-saga-')) throw new Error('unsafe cleanup')
@@ -374,13 +375,14 @@ describe('ApprovalPublicationSaga', () => {
         },
       })
       let failOutcomeWrite = true
+      let readbackCount = 0
       const fileSystem: PublicationFileSystemPort = {
         async recover(input) { return await productionFileSystem.recover(input) },
         async prepareRoot(current) { return await productionFileSystem.prepareRoot(current) },
         async write(input) { return await productionFileSystem.write(input) },
         async finalize(input) {
           const finalized = await productionFileSystem.finalize(input)
-          if (failOutcomeWrite) {
+          if (failOutcomeWrite && finalized.status === 'finalized') {
             failOutcomeWrite = false
             domain.failNextWorkItemWrites(1)
           }
@@ -393,7 +395,11 @@ describe('ApprovalPublicationSaga', () => {
         fileSystem,
         readback: {
           async confirmExact() {
-            if (race === 'TARGET_CHANGED' && failOutcomeWrite === false) {
+            readbackCount += 1
+            if (
+              (race === 'TARGET_CHANGED' && readbackCount === 2)
+              || (race === 'JOURNALED_TARGET_CHANGED' && readbackCount === 1)
+            ) {
               await writeFile(skillFilePath, 'manual target change')
             }
             return { status: 'CONFIRMED', observedHash: proposal.skillBytesDigest }
@@ -403,6 +409,16 @@ describe('ApprovalPublicationSaga', () => {
       })
 
       const failed = await saga.run(approved.item.workItemId)
+      if (race === 'JOURNALED_TARGET_CHANGED') {
+        expect(failed).toMatchObject({
+          processingState: 'NEEDS_ATTENTION',
+          review: {
+            publicationOutcome: 'NEEDS_REFRESH',
+            failure: { code: 'PUBLICATION_FACTS_CHANGED', retryable: false },
+          },
+        })
+        return
+      }
       expect(failed).toMatchObject({
         review: { publicationOutcome: 'PUBLISH_FAILED' },
       })

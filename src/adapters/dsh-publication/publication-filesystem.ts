@@ -32,6 +32,15 @@ function writableBinding(proposal: ProposalSnapshotV1) {
   return binding
 }
 
+function readbackConflict(
+  caught: unknown,
+  attemptId: string,
+): PublicationFileSystemResult | undefined {
+  return caught instanceof PublicationConflict && caught.code === 'readback_changed'
+    ? { status: 'conflict', code: caught.code, txid: attemptId }
+    : undefined
+}
+
 export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort {
   readonly #verifyParity
   readonly #verifyIdentity
@@ -110,6 +119,8 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
         confirmedExactReadback: true,
       })
     } catch (caught) {
+      const primaryConflict = readbackConflict(caught, input.attemptId)
+      if (primaryConflict !== undefined) return primaryConflict
       if (
         caught instanceof PublicationConflict
         && caught.code === 'journal_missing'
@@ -132,16 +143,8 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
             expectedRootIdentityDigest: input.rootIdentityDigest,
           })) return { status: 'finalized', txid: input.attemptId }
         } catch (verificationFailure) {
-          if (
-            verificationFailure instanceof PublicationConflict
-            && verificationFailure.code === 'readback_changed'
-          ) {
-            return {
-              status: 'conflict',
-              code: verificationFailure.code,
-              txid: input.attemptId,
-            }
-          }
+          const fallbackConflict = readbackConflict(verificationFailure, input.attemptId)
+          if (fallbackConflict !== undefined) return fallbackConflict
           throw verificationFailure
         }
       }
