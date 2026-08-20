@@ -113,14 +113,24 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
       if (
         caught instanceof PublicationConflict
         && caught.code === 'journal_missing'
-        && await verifyFinalizedTransaction({
+      ) {
+        if (!await this.#verifyIdentity(
+          binding.rootBinding.declaredRootPath,
+          input.rootIdentityDigest,
+        )) {
+          throw new PublicationConflict(
+            'root_identity_changed',
+            'Publication root directory identity changed',
+          )
+        }
+        if (await verifyFinalizedTransaction({
           root: binding.rootBinding.declaredRootPath,
           name: input.proposal.name,
           txid: input.attemptId,
           expectedHash: input.proposal.skillBytesDigest,
           expectedRootIdentityDigest: input.rootIdentityDigest,
-        })
-      ) return { status: 'finalized', txid: input.attemptId }
+        })) return { status: 'finalized', txid: input.attemptId }
+      }
       throw caught
     }
   }

@@ -296,7 +296,7 @@ describe('ApprovalPublicationSaga', () => {
     expect(completed.review?.publicationOutcome).toBe('PUBLISHED')
   })
 
-  it('connects the saga to the production C5 filesystem adapter', async () => {
+  it('stops finalized recovery when the production C5 root identity changed', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'run2skill-saga-'))
     if (!basename(workspace).startsWith('run2skill-saga-')) throw new Error('unsafe cleanup')
     try {
@@ -357,7 +357,21 @@ describe('ApprovalPublicationSaga', () => {
         proposalRefOf(proposal),
       )
       const store = new PublicationSagaStore(domain, fixedNow)
-      const fileSystem = new C5PublicationFileSystemAdapter({ async verifyParity() { return true } })
+      const productionFileSystem = new C5PublicationFileSystemAdapter({ async verifyParity() { return true } })
+      let failOutcomeWrite = true
+      const fileSystem: PublicationFileSystemPort = {
+        async recover(input) { return await productionFileSystem.recover(input) },
+        async prepareRoot(current) { return await productionFileSystem.prepareRoot(current) },
+        async write(input) { return await productionFileSystem.write(input) },
+        async finalize(input) {
+          const finalized = await productionFileSystem.finalize(input)
+          if (failOutcomeWrite) {
+            failOutcomeWrite = false
+            domain.failNextWorkItemWrites(1)
+          }
+          return finalized
+        },
+      }
       const saga = new ApprovalPublicationSaga({
         store,
         revalidation: { async revalidate() { return { status: 'VALID' } } },
@@ -368,17 +382,17 @@ describe('ApprovalPublicationSaga', () => {
         now: fixedNow,
       })
 
-      const completed = await saga.run(approved.item.workItemId)
-      expect(completed).toMatchObject({
-        review: { publicationOutcome: 'PUBLISHED' },
+      const failed = await saga.run(approved.item.workItemId)
+      expect(failed).toMatchObject({
+        review: { publicationOutcome: 'PUBLISH_FAILED' },
       })
-      const rootIdentityDigest = completed.publication!.journal.find(event => (
+      const rootIdentityDigest = failed.publication!.journal.find(event => (
         event.stage === 'ROOT_PREPARED'
         && event.attemptId === approved.item.publication!.activeAttemptId
       ))?.observedHash
       if (rootIdentityDigest === undefined) throw new Error('expected durable root identity')
       expect(await readFile(skillFilePath, 'utf8')).toBe(proposal.exactSkillBytes)
-      await expect(fileSystem.finalize({
+      await expect(productionFileSystem.finalize({
         proposal,
         attemptId: approved.item.publication!.activeAttemptId,
         rootIdentityDigest,
@@ -387,7 +401,7 @@ describe('ApprovalPublicationSaga', () => {
         join(bundlePath, `.run2skill-${approved.item.publication!.activeAttemptId}.backup`),
         'unknown artifact',
       )
-      await expect(fileSystem.finalize({
+      await expect(productionFileSystem.finalize({
         proposal,
         attemptId: approved.item.publication!.activeAttemptId,
         rootIdentityDigest,
@@ -397,11 +411,14 @@ describe('ApprovalPublicationSaga', () => {
       await mkdir(join(rootPath, '.run2skill-publication'), { recursive: true })
       await mkdir(bundlePath, { recursive: true })
       await writeFile(skillFilePath, proposal.exactSkillBytes)
-      await expect(fileSystem.finalize({
-        proposal,
-        attemptId: approved.item.publication!.activeAttemptId,
-        rootIdentityDigest,
-      })).rejects.toMatchObject({ code: 'journal_missing' })
+      const retried = await store.retry(failed.workItemId, failed.revision, proposalRefOf(proposal))
+      await expect(saga.run(retried.workItemId)).resolves.toMatchObject({
+        processingState: 'NEEDS_ATTENTION',
+        review: {
+          publicationOutcome: 'NEEDS_ATTENTION',
+          failure: { code: 'PUBLICATION_UNSAFE_STATE', retryable: false },
+        },
+      })
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }
