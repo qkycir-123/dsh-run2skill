@@ -282,8 +282,20 @@ if (webOnly) {
 
   console.log('CP_INS_A6_STAGE=uninstall')
   await dsh(['plugin', '--profile', 'web', 'remove', packageName])
-  assert.equal((await manifest()).dsh.profile.bundles.includes(packageName), false)
+  const removedManifest = await manifest()
+  assert.equal(removedManifest.dsh.profile.bundles.includes(packageName), false)
+  assert.equal(Object.hasOwn(removedManifest.dependencies ?? {}, packageName), false)
+  await assert.rejects(
+    access(join(profile, 'node_modules', packageName)),
+    error => error?.code === 'ENOENT',
+    'uninstall left the candidate package path behind',
+  )
   await observe(false)
+  const retainedStorageEntries = await readdir(join(home, 'storages'))
+  assert.ok(
+    retainedStorageEntries.some(entry => /run2skill/iu.test(entry)),
+    'uninstall removed run2skill storage',
+  )
   assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
   console.log('CP_INS_A6=PASS')
 }
