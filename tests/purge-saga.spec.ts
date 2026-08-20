@@ -16,6 +16,8 @@ import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.j
 import { makeWorkItem } from './support/work-item-fixture.js'
 import { WriteBehindCheckpoint } from '../src/application/capture/write-behind-checkpoint.js'
 import { LearningWorkItemStore } from '../src/adapters/dsh-storage/learning-work-item-store.js'
+import { DurableCaptureStore } from '../src/adapters/dsh-storage/durable-capture-store.js'
+import { HostMutationGate } from '../src/application/host-mutation-gate.js'
 
 const NOW = Date.parse('2026-08-21T00:00:00.000Z')
 const PROJECT = join(process.cwd(), '.probe-work', 'purge-saga-project')
@@ -258,5 +260,43 @@ describe('recoverable Purge saga', () => {
     await domain.global.set({ ...domain.global.get(), purgeJournal: undefined })
     await checkpoint.activate([session('checkpoint-two', 2)])
     expect(domain.global.get().purgeJournal).toBeUndefined()
+  })
+
+  it('serializes capture writes with Purge and rejects a late recreation after the journal clears', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = oldProjectItem(12)
+    domain.workItems.set(item.workItemId, item)
+    const visibility = new PurgeVisibility(domain)
+    const gate = new HostMutationGate()
+    const store = new DurableCaptureStore(
+      domain,
+      undefined,
+      visibility,
+      operation => gate.run(operation),
+    )
+    let markHidden!: () => void
+    const hidden = new Promise<void>(resolve => { markHidden = resolve })
+    let continuePurge!: () => void
+    const purgeCanContinue = new Promise<void>(resolve => { continuePurge = resolve })
+    const service = new PurgeService(domain, resolver, {
+      now: () => NOW,
+      async onHidden(journal) {
+        visibility.remember(journal)
+        markHidden()
+        await purgeCanContinue
+      },
+    })
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+
+    const confirmation = gate.run(async () => await service.confirm(preview.previewId, preview.digest))
+    await hidden
+    const lateWrite = store.persist(item)
+    continuePurge()
+    await confirmation
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+
+    await expect(lateWrite).rejects.toMatchObject({ code: 'PURGED_WORK_ITEM' })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
   })
 })

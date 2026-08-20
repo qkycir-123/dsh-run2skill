@@ -26,22 +26,27 @@ export class DurableCaptureStore {
   readonly #table
   readonly #now
   readonly #visibility
+  readonly #runMutation
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
     domain: Run2skillDomain,
     now: (() => string) | undefined = undefined,
     visibility: PurgeVisibility = new PurgeVisibility(domain),
+    runMutation: <T>(operation: () => Promise<T>) => Promise<T> = operation => operation(),
   ) {
     this.#table = domain.table('work_items')
     this.#now = now ?? (() => new Date().toISOString())
     this.#visibility = visibility
+    this.#runMutation = runMutation
   }
 
   persist(value: CaptureWorkItemV1): Promise<DurableCaptureResult> {
-    const operation = this.#tail.then(async () => await this.#persist(value))
-    this.#tail = operation.then(() => {}, () => {})
-    return operation
+    return this.#runMutation(async () => {
+      const operation = this.#tail.then(async () => await this.#persist(value))
+      this.#tail = operation.then(() => {}, () => {})
+      return await operation
+    })
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
@@ -84,6 +89,7 @@ export class DurableCaptureStore {
     const incoming = parsed.data
     const existing = storedAtRequestedId
     if (existing === undefined) {
+      if (this.#visibility.workItemWasPurged(incoming)) throw new DomainError('PURGED_WORK_ITEM')
       const initial = CaptureWorkItemV1Schema.parse({ ...incoming, revision: 1 })
       await this.#table.put(initial.workItemId, initial)
       return { item: initial, changed: true }

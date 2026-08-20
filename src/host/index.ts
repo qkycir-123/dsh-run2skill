@@ -157,6 +157,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
     private readonly automaticLearning: AutomaticLearningSettingsPolicy,
+    private readonly mutationGate: HostMutationGate,
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
       async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
@@ -231,7 +232,14 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const checkpoint = new WriteBehindCheckpoint(domain)
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
       const visibility = new PurgeVisibility(domain)
-      const store = new DurableCaptureStore(domain, undefined, visibility)
+      const activePurge = visibility.active()
+      if (activePurge !== undefined) visibility.remember(activePurge)
+      const store = new DurableCaptureStore(
+        domain,
+        undefined,
+        visibility,
+        operation => this.mutationGate.run(operation),
+      )
       const learningStore = new LearningWorkItemStore(domain, undefined, visibility)
       const skillCatalog = new DshSkillCatalogAdapter(this.context.skills)
       const workspaceResolver = new DshWorkspaceBindingResolver(this.context.workspaceRegistry)
@@ -388,7 +396,8 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         resolve: async (scope, workspaceId) => await this.resolvePurgeScope(scope, workspaceId),
       }
       const purgeService = new PurgeService(domain, scopeResolver, {
-        onHidden: () => {
+        onHidden: (journal) => {
+          visibility.remember(journal)
           scheduler.abortMatching(item => !visibility.workItemVisible(item))
           scheduler.wake()
           this.currentCurationWake?.()
@@ -547,8 +556,8 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   const notices = new RuntimeNotices()
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
-  const factory = new Run2skillRuntimeFactory(context, notices, scopes, automaticLearning)
   const mutationGate = new HostMutationGate()
+  const factory = new Run2skillRuntimeFactory(context, notices, scopes, automaticLearning, mutationGate)
   const stopWatchingSettings = automaticLearning.watch((next, previous) => {
     if (!previous.automaticLearning && next.automaticLearning) factory.wakeLearning()
   })
