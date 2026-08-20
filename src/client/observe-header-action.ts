@@ -17,6 +17,7 @@ import {
 } from './observe-summary-poller.js'
 import type { ProposalReviewCall } from './proposal-inbox.js'
 import { ProposalInboxHeaderAction } from './proposal-inbox-view.js'
+import { describeRun2skillHealth } from './status-copy.js'
 
 export interface ObserveSummaryClientConnection {
   readonly rpc: {
@@ -61,9 +62,7 @@ export const inject = ['connection', 'slots', 'workspaces'] as const
 function summaryFacts(state: Extract<ObserveSummaryClientState, { summary: unknown }>): string[] {
   const { summary } = state
   const facts: string[] = []
-  if (summary.status === 'INCOMPATIBLE') facts.push('当前版本不兼容')
-  else if (summary.status === 'DEGRADED') facts.push('观察功能暂时降级')
-  else if (summary.status === 'RECOVERING') facts.push('正在恢复历史观察')
+  if (summary.status !== 'READY') facts.push(describeRun2skillHealth(summary.status))
   facts.push(`已记录 ${summary.capturedCount} 条待处理事项`)
   if (summary.learning !== undefined) {
     if (summary.learning.learned > 0) facts.push(`${summary.learning.learned} 条已学习草案`)

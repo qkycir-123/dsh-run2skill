@@ -39,6 +39,8 @@ describe('Automatic Learning native settings card', () => {
     const bind = vi.fn(() => fixture.scope)
 
     applyAutomaticLearningSettingsClient({
+      connection: { rpc: { call: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })) } },
+      workspaces: { list: { getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }) } },
       settingsScope: { bind: bind as never },
       slots: { inject: install, register },
     })
@@ -48,6 +50,61 @@ describe('Automatic Learning native settings card', () => {
     expect(register).toHaveBeenCalledWith(expect.objectContaining({
       name: 'settings.plugin.item', key: 'run2skill',
     }), expect.any(Function))
+  })
+
+  it('wires USER Purge through the loopback channel without a Workspace identity', async () => {
+    const fixture = scopeFixture()
+    const rpc = vi.fn(async (_channel: string, endpoint: string) => endpoint === 'purge/preview'
+      ? {
+          ok: true,
+          value: {
+            apiVersion: 1,
+            previewId: `purv_${'a'.repeat(64)}`,
+            digest: 'b'.repeat(64),
+            expiresAt: '2026-08-21T00:05:00.000Z',
+            scopeBinding: { scope: 'USER' },
+            hideBefore: '2026-08-21T00:00:00.000Z',
+            workItemCount: 0,
+            lineageCount: 0,
+            blockedOrUnprovenCount: 0,
+            willDelete: [
+              { kind: 'WORK_ITEMS', count: 0 },
+              { kind: 'LINEAGES', count: 0 },
+            ],
+            willKeep: [
+              { reason: 'KEEP_NEW', count: 0 },
+              { reason: 'KEEP_SCOPE', count: 0 },
+              { reason: 'KEEP_UNPROVEN', count: 0 },
+            ],
+            busyPublicationCount: 0,
+          },
+        }
+      : { ok: true, value: { apiVersion: 1, state: 'IDLE' } })
+    let face: { purgeController: { whenIdle(): Promise<void>; preview(scope: 'USER'): Promise<void> } } | undefined
+    const register = vi.fn((options: { inject: () => typeof face }) => {
+      face = options.inject()
+      return () => undefined
+    })
+
+    applyAutomaticLearningSettingsClient({
+      connection: { rpc: { call: rpc } },
+      workspaces: {
+        list: {
+          getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }),
+        },
+      },
+      settingsScope: { bind: (() => fixture.scope) as never },
+      slots: { inject: (_name, install) => { install() }, register },
+    })
+
+    await face!.purgeController.whenIdle()
+    await face!.purgeController.preview('USER')
+    expect(rpc).toHaveBeenCalledWith(
+      '/run2skill',
+      'purge/preview',
+      { apiVersion: 1, scope: 'USER' },
+      expect.any(AbortSignal),
+    )
   })
 
   it('uses native revision-fenced writes and reports when the requested value did not land', async () => {

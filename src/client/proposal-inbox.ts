@@ -79,10 +79,39 @@ export function describeProposalOutcome(detail: Pick<ProposalDetail, 'processing
   if (detail.publicationOutcome === 'PUBLISHED') return 'Skill 已发布并完成 Registry 回读'
   if (detail.publicationOutcome === 'DISCARDED') return 'Proposal 已离开待处理队列，Skill 未更改'
   if (detail.publicationOutcome === 'NEEDS_REFRESH') return '发布绑定已变化，需要生成新的 Proposal'
-  if (detail.publicationOutcome === 'PUBLISH_FAILED') return '发布失败，可以在事实仍有效时重试'
-  if (detail.processingState === 'NEEDS_ATTENTION') return 'Proposal 需要处理后才能继续'
-  if (detail.processingState === 'PUBLISHING') return 'Proposal 已批准，正在发布'
-  return ''
+  if (detail.publicationOutcome === 'PUBLISH_FAILED') return '发布失败，可重试'
+  if (detail.processingState === 'NEEDS_ATTENTION') return '需要处理后才能继续'
+  if (detail.processingState === 'PUBLISHING') return '已批准，正在发布'
+  return '待审核'
+}
+
+export function describeProposalListItem(item: Pick<
+  ProposalListItem,
+  'processingState' | 'publicationOutcome'
+>): string {
+  return describeProposalOutcome(item)
+}
+
+export function describeReviewDecision(decision: ProposalDetail['reviewDecision']): string {
+  if (decision === 'APPROVED') return '已批准'
+  if (decision === 'REJECTED') return '已拒绝'
+  return '待决定'
+}
+
+export function describeProcessingState(state: ProposalDetail['processingState']): string {
+  if (state === 'PUBLISHING') return '正在发布'
+  if (state === 'NEEDS_ATTENTION') return '需要处理'
+  if (state === 'TERMINAL') return '已结束'
+  return '待审核'
+}
+
+export function describePublicationOutcome(outcome: ProposalDetail['publicationOutcome']): string {
+  if (outcome === 'PUBLISHED') return '已发布并完成 Registry 回读'
+  if (outcome === 'DISCARDED') return '未修改 Skill，Proposal 已离开队列'
+  if (outcome === 'NEEDS_REFRESH') return '发布绑定已变化，需要新 Proposal'
+  if (outcome === 'PUBLISH_FAILED') return '发布失败，可重试'
+  if (outcome === 'NEEDS_ATTENTION') return '发布前事实需要处理'
+  return '尚未产生发布结果'
 }
 
 export interface ProposalInboxState {
@@ -387,10 +416,7 @@ export class ProposalInboxController {
 
   #schedule(): void {
     if (this.#disposed) return
-    const delay = this.#state.open
-      && (this.#state.mutationPending || this.#state.detail?.processingState === 'PUBLISHING')
-      ? PROPOSAL_ACTIVE_POLL_INTERVAL_MS
-      : PROPOSAL_POLL_INTERVAL_MS
+    const delay = this.#state.open ? PROPOSAL_ACTIVE_POLL_INTERVAL_MS : PROPOSAL_POLL_INTERVAL_MS
     if (this.#timer !== undefined && this.#timerDelay === delay) return
     this.#unschedule()
     this.#timerDelay = delay

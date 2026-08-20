@@ -118,6 +118,8 @@ workspace 无法重验证、记录未绑定或 root facts 不完整时，preview
 
 ### 5.2 USER
 
+USER preview 绑定整个 effective DSH Home，不依赖也不接受当前 `workspaceId`；即使尚未注册或选中 PROJECT workspace，用户仍可清理已有 USER scope 数据。
+
 USER preview 匹配：
 
 - 已形成 `persistenceScope=USER` 的 WorkItem；
@@ -280,7 +282,7 @@ Inbox 继续只显示当前 PROJECT Proposal 与 USER Proposal，继续是 Actio
 
 | 方法 | 请求 | 成功响应 |
 |---|---|---|
-| `purge/preview` | `scope: PROJECT \| USER` + 当前 workspace identity | immutable preview |
+| `purge/preview` | PROJECT：`scope + workspaceId`；USER：仅 `scope`，不接受 `workspaceId` | immutable preview |
 | `purge/confirm` | `previewId + digest` | completed / in-progress receipt |
 | `purge/status` | 无 | active journal 的裁剪状态或 idle |
 | `purge/retry` | `purgeId` | in-progress receipt |
