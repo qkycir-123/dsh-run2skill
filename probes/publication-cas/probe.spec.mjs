@@ -80,10 +80,36 @@ test('CREATE atomically claims a bundle and never overwrites a competing writer'
   assert.equal(results.filter((result) => result.status === 'conflict').length, 1)
   const actual = await readFile(join(root, 'race-skill', 'SKILL.md'), 'utf8')
   assert.ok(actual === a || actual === b)
+
+  const maxName = 'a'.repeat(128)
+  assert.equal((await createBundle({
+    root,
+    name: maxName,
+    txid: 'max-length-name',
+    nextBytes: '# max name\n',
+  })).status, 'written')
+  assert.equal(await readFile(join(root, maxName, 'SKILL.md'), 'utf8'), '# max name\n')
 })
 
 test('missing root is prepared one fixed segment at a time and resumes after a crash', async (t) => {
   const workspace = await fixture(t)
+  await assert.rejects(
+    preparePublicationRoot({
+      binding: {
+        state: 'ABSENT',
+        scope: 'USER',
+        declaredRootPath: join(workspace, 'unrelated', 'skills'),
+        canonicalExistingAncestorPath: workspace,
+        ancestorIdentityDigest: 'b'.repeat(64),
+        missingSegments: ['skills'],
+      },
+      verifyIdentity: async () => true,
+      verifyParity: async () => true,
+    }),
+    (error) => error instanceof PublicationConflict && error.code === 'root_changed',
+  )
+  await assert.rejects(lstat(join(workspace, 'skills')), { code: 'ENOENT' })
+
   const declaredRootPath = join(workspace, '.dsh', 'skills')
   const binding = {
     state: 'ABSENT',
@@ -318,6 +344,25 @@ test('path traversal and symlink or junction escape fail closed', async (t) => {
   )
   await assert.rejects(readFile(join(outside, 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
 
+  const linkedParentRoot = await fixture(t)
+  const linkedParentOutside = await fixture(t)
+  await mkdir(join(linkedParentOutside, 'skills'))
+  await symlink(
+    linkedParentOutside,
+    join(linkedParentRoot, '.dsh'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  )
+  await assert.rejects(
+    createBundle({
+      root: join(linkedParentRoot, '.dsh', 'skills'),
+      name: 'parent-link',
+      txid: 'parent-link-tx',
+      nextBytes: '# no\n',
+    }),
+    (error) => error instanceof PublicationConflict && error.code === 'unsafe_path',
+  )
+  await assert.rejects(readFile(join(linkedParentOutside, 'skills', 'parent-link', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+
   const swapHolding = await fixture(t)
   const createSwapRoot = await fixture(t)
   let movedCreate
@@ -404,6 +449,14 @@ test('backup is retained until exact readback finalization', async (t) => {
   )
   assert.equal(await readFile(result.backup, 'utf8'), base)
 
+  const finalizePaths = probeInternals.targetPaths(root, 'finalize-skill', result.txid)
+  await writeFile(finalizePaths.stage, '# unseen finalize stage\n')
+  await assert.rejects(
+    finalizeTransaction({ root, txid: result.txid, confirmedExactReadback: true }),
+    (error) => error instanceof PublicationConflict && error.code === 'stage_changed',
+  )
+  assert.equal(await readFile(finalizePaths.stage, 'utf8'), '# unseen finalize stage\n')
+
   await writeFile(result.target, '# changed after write\n')
   await assert.rejects(
     finalizeTransaction({ root, txid: result.txid, confirmedExactReadback: true }),
@@ -433,6 +486,78 @@ test('backup is retained until exact readback finalization', async (t) => {
 
 test('recovery stops on unknown hashes without deleting or overwriting them', async (t) => {
   const root = await fixture(t)
+  let createStagePath
+  const changedCreateStage = await createBundle({
+    root,
+    name: 'changed-create-stage',
+    txid: 'changed-create-stage-tx',
+    nextBytes: '# approved create\n',
+    hooks: {
+      beforeInstall: async (record) => {
+        createStagePath = record.stage
+        await writeFile(record.stage, '# unseen create stage\n')
+      },
+    },
+  })
+  assert.equal(changedCreateStage.code, 'stage_changed')
+  assert.equal(await readFile(createStagePath, 'utf8'), '# unseen create stage\n')
+  await assert.rejects(readFile(join(root, 'changed-create-stage', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+
+  const changedMergeTarget = await seedBundle(root, 'changed-merge-stage', '# base\n')
+  let mergeStagePath
+  const changedMergeStage = await mergeBundle({
+    root,
+    name: 'changed-merge-stage',
+    txid: 'changed-merge-stage-tx',
+    expectedHash: sha256('# base\n'),
+    nextBytes: '# approved merge\n',
+    hooks: {
+      beforeInstall: async (record) => {
+        mergeStagePath = record.stage
+        await writeFile(record.stage, '# unseen merge stage\n')
+      },
+    },
+  })
+  assert.equal(changedMergeStage.code, 'stage_changed')
+  assert.equal(await readFile(changedMergeTarget, 'utf8'), '# base\n')
+  assert.equal(await readFile(mergeStagePath, 'utf8'), '# unseen merge stage\n')
+
+  let changedInstalledStagePath
+  const changedInstalled = await createBundle({
+    root,
+    name: 'changed-installed-create',
+    txid: 'changed-installed-create-tx',
+    nextBytes: '# approved installed create\n',
+    hooks: {
+      afterInstall: async (record) => {
+        changedInstalledStagePath = record.stage
+        await writeFile(record.stage, '# unseen after install\n')
+      },
+    },
+  })
+  assert.equal(changedInstalled.code, 'post_write_mismatch')
+  assert.equal(await readFile(changedInstalledStagePath, 'utf8'), '# unseen after install\n')
+  await assert.rejects(readFile(join(root, 'changed-installed-create', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+
+  const changedInstalledMergeTarget = await seedBundle(root, 'changed-installed-merge', '# base\n')
+  let changedInstalledMergeStage
+  const changedInstalledMerge = await mergeBundle({
+    root,
+    name: 'changed-installed-merge',
+    txid: 'changed-installed-merge-tx',
+    expectedHash: sha256('# base\n'),
+    nextBytes: '# approved installed merge\n',
+    hooks: {
+      afterInstall: async (record) => {
+        changedInstalledMergeStage = record.stage
+        await writeFile(record.stage, '# unseen merge after install\n')
+      },
+    },
+  })
+  assert.equal(changedInstalledMerge.code, 'post_write_mismatch')
+  assert.equal(await readFile(changedInstalledMergeTarget, 'utf8'), '# base\n')
+  assert.equal(await readFile(changedInstalledMergeStage, 'utf8'), '# unseen merge after install\n')
+
   const name = 'unknown-create'
   const txid = 'unknown-create-tx'
   const configPath = join(root, 'unknown-create.json')

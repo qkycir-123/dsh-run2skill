@@ -15,7 +15,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 // Production filesystem primitive; the cross-platform probe imports this file directly.
 const JOURNAL_DIR = '.run2skill-publication'
 const MAX_JOURNAL_RECORDS = 64
-const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
+const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const TX_PATTERN = /^[a-z0-9-]{1,80}$/
 const HASH_PATTERN = /^[a-f0-9]{64}$/
 const JOURNAL_KEYS = new Set([
@@ -23,6 +23,7 @@ const JOURNAL_KEYS = new Set([
   'prevHash', 'recordHash', 'createdRootSegments', 'targetDir', 'target', 'stage', 'backup', 'claim',
   'targetDirIdentityDigest',
   'backupReservationNonce',
+  'stageIdentityDigest', 'claimIdentityDigest', 'backupIdentityDigest',
 ])
 
 export class PublicationConflict extends Error {
@@ -46,21 +47,47 @@ async function statOrNull(path) {
   }
 }
 
-async function hashRegularFile(path) {
-  const stat = await statOrNull(path)
-  if (!stat) return null
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new PublicationConflict('unsafe_path', 'Expected a regular file')
-  }
-  return sha256(await readFile(path))
+function regularFileIdentityDigest(stat) {
+  return sha256(JSON.stringify([
+    String(stat.dev),
+    String(stat.ino),
+    String(stat.birthtimeMs),
+  ]))
 }
 
-async function unlinkIfPresent(path) {
-  try {
-    await unlink(path)
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
+async function observeRegularFile(path) {
+  const before = await statOrNull(path)
+  if (!before) return null
+  if (before.isSymbolicLink() || !before.isFile()) {
+    throw new PublicationConflict('unsafe_path', 'Expected a regular file')
   }
+  const bytes = await readFile(path)
+  const after = await statOrNull(path)
+  if (!after || after.isSymbolicLink() || !after.isFile()) {
+    throw new PublicationConflict('file_identity_changed', 'Regular file identity changed during observation')
+  }
+  const identityDigest = regularFileIdentityDigest(before)
+  if (regularFileIdentityDigest(after) !== identityDigest) {
+    throw new PublicationConflict('file_identity_changed', 'Regular file identity changed during observation')
+  }
+  return { hash: sha256(bytes), identityDigest }
+}
+
+async function hashRegularFile(path) {
+  return (await observeRegularFile(path))?.hash ?? null
+}
+
+async function unlinkOwnedFileIfPresent(path, expectedIdentityDigest, expectedHash, code) {
+  const facts = await observeRegularFile(path)
+  if (!facts) return
+  if (
+    !expectedIdentityDigest
+    || facts.identityDigest !== expectedIdentityDigest
+    || facts.hash !== expectedHash
+  ) {
+    throw new PublicationConflict(code, 'Refusing to remove an unrecognized transaction artifact')
+  }
+  await unlink(path)
 }
 
 async function fsyncParent(path) {
@@ -97,7 +124,11 @@ async function ensureRoot(root) {
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     throw new PublicationConflict('unsafe_path', 'Publication root must be a real directory')
   }
-  return realpath(root)
+  const rootReal = await realpath(root)
+  if (!samePath(rootReal, root)) {
+    throw new PublicationConflict('unsafe_path', 'Publication root traverses a link or reparse point')
+  }
+  return rootReal
 }
 
 async function ensureJournalDirectory(rootReal, create = false) {
@@ -173,6 +204,13 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
   ) {
     throw new PublicationConflict('unsafe_path', 'Missing root segments are not approved')
   }
+  const expectedRoot = binding.missingSegments.reduce(
+    (parent, segment) => join(parent, segment),
+    binding.canonicalExistingAncestorPath,
+  )
+  if (!samePath(expectedRoot, binding.declaredRootPath)) {
+    throw new PublicationConflict('root_changed', 'Declared root does not match its approved ancestor and segments')
+  }
   let current = await ensureRoot(binding.canonicalExistingAncestorPath)
   if (!samePath(current, binding.canonicalExistingAncestorPath)) {
     throw new PublicationConflict('root_changed', 'Approved ancestor canonical path changed')
@@ -219,7 +257,7 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
 }
 
 function validateIdentity(name, txid) {
-  if (!NAME_PATTERN.test(name)) {
+  if (name.length > 128 || !NAME_PATTERN.test(name)) {
     throw new PublicationConflict('unsafe_name', `Unsafe Skill name: ${name}`)
   }
   if (!TX_PATTERN.test(txid)) {
@@ -376,6 +414,26 @@ function expectedBackupReservationHash(record) {
   return sha256(backupReservationBytes(record))
 }
 
+async function fileMatches(path, expectedIdentityDigest, expectedHash) {
+  const facts = await observeRegularFile(path)
+  return Boolean(
+    facts
+    && expectedIdentityDigest
+    && facts.identityDigest === expectedIdentityDigest
+    && facts.hash === expectedHash,
+  )
+}
+
+async function preserveUnknownInstall(record) {
+  const targetFacts = await observeRegularFile(record.target)
+  if (targetFacts?.identityDigest === record.stageIdentityDigest) {
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
+    await unlink(record.target)
+    if (record.kind === 'MERGE') await restoreBackupWithoutOverwrite(record)
+  }
+  return conflict(record, 'post_write_mismatch')
+}
+
 export async function createBundle({ root, name, txid, nextBytes, rootPreparation, crashAt, hooks }) {
   validateIdentity(name, txid)
   const rootReal = await ensureRoot(root)
@@ -416,30 +474,57 @@ export async function createBundle({ root, name, txid, nextBytes, rootPreparatio
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await writeExclusiveFile(record.stage, nextBytes)
   await fsyncParent(record.targetDir)
-  record = await nextRecord(record, 'CREATE_STAGED')
+  const claimFacts = await observeRegularFile(record.claim)
+  const stageFacts = await observeRegularFile(record.stage)
+  if (!claimFacts || claimFacts.hash !== sha256(`${txid}\n`) || !stageFacts || stageFacts.hash !== record.nextHash) {
+    throw new PublicationConflict('stage_write_mismatch', 'CREATE staging artifacts changed during preparation')
+  }
+  record = await nextRecord(record, 'CREATE_STAGED', {
+    claimIdentityDigest: claimFacts.identityDigest,
+    stageIdentityDigest: stageFacts.identityDigest,
+  })
   maybeCrash('create-after-stage', crashAt)
   await hooks?.beforeInstall?.(record)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
+  if (!await fileMatches(record.stage, record.stageIdentityDigest, record.nextHash)) {
+    return conflict(record, 'stage_changed')
+  }
 
   try {
     await link(record.stage, record.target)
   } catch (error) {
     if (error?.code === 'EEXIST') {
-      await unlinkIfPresent(record.stage)
-      await unlinkIfPresent(record.claim)
+      await unlinkOwnedFileIfPresent(
+        record.stage,
+        record.stageIdentityDigest,
+        record.nextHash,
+        'stage_changed',
+      )
+      await unlinkOwnedFileIfPresent(
+        record.claim,
+        record.claimIdentityDigest,
+        sha256(`${txid}\n`),
+        'claim_changed',
+      )
       return conflict(record, 'target_appeared')
     }
     throw error
   }
 
+  await hooks?.afterInstall?.(record)
   maybeCrash('create-after-install-before-journal', crashAt)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
-  if ((await hashRegularFile(record.target)) !== record.nextHash) {
-    throw new PublicationConflict('post_write_mismatch', 'CREATE target changed during installation')
+  if (!await fileMatches(record.target, record.stageIdentityDigest, record.nextHash)) {
+    return preserveUnknownInstall(record)
   }
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
-  await unlinkIfPresent(record.stage)
-  await unlinkIfPresent(record.claim)
+  await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
+  await unlinkOwnedFileIfPresent(
+    record.claim,
+    record.claimIdentityDigest,
+    sha256(`${txid}\n`),
+    'claim_changed',
+  )
   await fsyncParent(record.targetDir)
   return markWritten(record)
 }
@@ -470,15 +555,24 @@ export async function mergeBundle({
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await writeExclusiveFile(record.stage, nextBytes)
   await fsyncParent(record.targetDir)
-  record = await nextRecord(record, 'MERGE_STAGED')
+  const stageFacts = await observeRegularFile(record.stage)
+  if (!stageFacts || stageFacts.hash !== record.nextHash) {
+    throw new PublicationConflict('stage_write_mismatch', 'MERGE stage changed during preparation')
+  }
+  record = await nextRecord(record, 'MERGE_STAGED', {
+    stageIdentityDigest: stageFacts.identityDigest,
+  })
 
   if ((await hashRegularFile(record.target)) !== expectedHash) {
-    await unlinkIfPresent(record.stage)
+    await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
     return conflict(record, 'base_changed')
   }
 
   await hooks?.beforeBackupMove?.(record)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
+  if (!await fileMatches(record.stage, record.stageIdentityDigest, record.nextHash)) {
+    return conflict(record, 'stage_changed')
+  }
   record = await nextRecord(record, 'BACKUP_RESERVING', {
     backupReservationNonce: randomBytes(32).toString('hex'),
   })
@@ -486,7 +580,7 @@ export async function mergeBundle({
     await writeExclusiveFile(record.backup, backupReservationBytes(record))
   } catch (error) {
     if (error?.code === 'EEXIST') {
-      await unlinkIfPresent(record.stage)
+      await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
       return conflict(record, 'backup_exists')
     }
     throw error
@@ -496,7 +590,7 @@ export async function mergeBundle({
   await hooks?.beforeBackupRename?.(record)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   if ((await hashRegularFile(record.backup)) !== expectedBackupReservationHash(record)) {
-    await unlinkIfPresent(record.stage)
+    await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
     return conflict(record, 'backup_changed')
   }
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
@@ -504,40 +598,47 @@ export async function mergeBundle({
     await rename(record.target, record.backup)
   } catch (error) {
     if (['ENOENT', 'EEXIST', 'ENOTEMPTY'].includes(error?.code)) {
-      await unlinkIfPresent(record.stage)
+      await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
       return conflict(record, 'rename_race')
     }
     throw error
   }
 
   maybeCrash('merge-after-backup-move', crashAt)
-  record = await nextRecord(record, 'BACKUP_MOVED')
-
-  if ((await hashRegularFile(record.backup)) !== expectedHash) {
+  const backupFacts = await observeRegularFile(record.backup)
+  if (!backupFacts || backupFacts.hash !== expectedHash) {
     await restoreBackupWithoutOverwrite(record)
-    await unlinkIfPresent(record.stage)
+    await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
     return conflict(record, 'base_changed_during_cutover')
   }
+  record = await nextRecord(record, 'BACKUP_MOVED', {
+    backupIdentityDigest: backupFacts.identityDigest,
+  })
 
   await hooks?.beforeInstall?.(record)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
+  if (!await fileMatches(record.stage, record.stageIdentityDigest, record.nextHash)) {
+    await restoreBackupWithoutOverwrite(record)
+    return conflict(record, 'stage_changed')
+  }
   try {
     await link(record.stage, record.target)
   } catch (error) {
     if (error?.code === 'EEXIST') {
-      await unlinkIfPresent(record.stage)
+      await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
       return conflict(record, 'target_appeared')
     }
     throw error
   }
 
+  await hooks?.afterInstall?.(record)
   maybeCrash('merge-after-install-before-journal', crashAt)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
-  if ((await hashRegularFile(record.target)) !== record.nextHash) {
-    throw new PublicationConflict('post_write_mismatch', 'MERGE target changed during installation')
+  if (!await fileMatches(record.target, record.stageIdentityDigest, record.nextHash)) {
+    return preserveUnknownInstall(record)
   }
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
-  await unlinkIfPresent(record.stage)
+  await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
   await fsyncParent(record.targetDir)
   return markWritten(record)
 }
@@ -569,6 +670,9 @@ async function loadLatestRecord(rootReal, txid) {
         && (record.expectedHash === null || HASH_PATTERN.test(record.expectedHash))
         && (record.targetDirIdentityDigest === undefined || HASH_PATTERN.test(record.targetDirIdentityDigest))
         && (record.backupReservationNonce === undefined || HASH_PATTERN.test(record.backupReservationNonce))
+        && (record.stageIdentityDigest === undefined || HASH_PATTERN.test(record.stageIdentityDigest))
+        && (record.claimIdentityDigest === undefined || HASH_PATTERN.test(record.claimIdentityDigest))
+        && (record.backupIdentityDigest === undefined || HASH_PATTERN.test(record.backupIdentityDigest))
         && ['root', 'name', 'targetDir', 'target', 'stage', 'backup', 'claim']
           .every(key => typeof record[key] === 'string')
         && (record.createdRootSegments === undefined || (
@@ -628,27 +732,45 @@ export async function recoverTransaction({ root, txid }) {
   }
   await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
 
-  let targetHash = await hashRegularFile(record.target)
-  const stageHash = await hashRegularFile(record.stage)
+  let targetFacts = await observeRegularFile(record.target)
+  const stageFacts = await observeRegularFile(record.stage)
+  let targetHash = targetFacts?.hash ?? null
+  const stageHash = stageFacts?.hash ?? null
 
   if (record.kind === 'CREATE') {
-    const claim = await statOrNull(record.claim)
-    if (claim?.isSymbolicLink() || (claim && !claim.isFile())) {
-      throw new PublicationConflict('unsafe_path', 'CREATE claim is unsafe')
-    }
+    const claimFacts = await observeRegularFile(record.claim)
     if (
       (targetHash !== null && targetHash !== record.nextHash)
       || (stageHash !== null && stageHash !== record.nextHash)
+      || (stageFacts && stageFacts.identityDigest !== record.stageIdentityDigest)
+      || (claimFacts && (
+        claimFacts.identityDigest !== record.claimIdentityDigest
+        || claimFacts.hash !== sha256(`${record.txid}\n`)
+      ))
     ) {
       return conflict(record, 'recovery_observed_unknown_create_state')
     }
-    if (targetHash === record.nextHash) {
+    if (
+      targetHash === record.nextHash
+      && targetFacts?.identityDigest === record.stageIdentityDigest
+    ) {
       await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
-      await unlinkIfPresent(record.stage)
-      await unlinkIfPresent(record.claim)
+      await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
+      await unlinkOwnedFileIfPresent(
+        record.claim,
+        record.claimIdentityDigest,
+        sha256(`${record.txid}\n`),
+        'claim_changed',
+      )
       return markWritten(record)
     }
-    if (targetHash === null && stageHash === record.nextHash && claim) {
+    if (
+      targetHash === null
+      && stageHash === record.nextHash
+      && stageFacts?.identityDigest === record.stageIdentityDigest
+      && claimFacts
+      && claimFacts.identityDigest === record.claimIdentityDigest
+    ) {
       await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
       try {
         await link(record.stage, record.target)
@@ -656,28 +778,49 @@ export async function recoverTransaction({ root, txid }) {
         if (error?.code !== 'EEXIST') throw error
       }
       await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
-      targetHash = await hashRegularFile(record.target)
-      if (targetHash === record.nextHash) {
-        await unlinkIfPresent(record.stage)
-        await unlinkIfPresent(record.claim)
+      targetFacts = await observeRegularFile(record.target)
+      targetHash = targetFacts?.hash ?? null
+      if (
+        targetHash === record.nextHash
+        && targetFacts?.identityDigest === record.stageIdentityDigest
+      ) {
+        await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
+        await unlinkOwnedFileIfPresent(
+          record.claim,
+          record.claimIdentityDigest,
+          sha256(`${record.txid}\n`),
+          'claim_changed',
+        )
         return markWritten(record)
       }
     }
     return conflict(record, 'recovery_observed_unknown_create_state')
   }
 
-  let backupHash = await hashRegularFile(record.backup)
+  let backupFacts = await observeRegularFile(record.backup)
+  let backupHash = backupFacts?.hash ?? null
   let reservationHash = expectedBackupReservationHash(record)
   if (
     (targetHash !== null && targetHash !== record.expectedHash && targetHash !== record.nextHash)
     || (stageHash !== null && stageHash !== record.nextHash)
+    || (stageFacts && stageFacts.identityDigest !== record.stageIdentityDigest)
     || (backupHash !== null && backupHash !== record.expectedHash && backupHash !== reservationHash)
+    || (
+      backupHash === record.expectedHash
+      && record.backupIdentityDigest
+      && backupFacts?.identityDigest !== record.backupIdentityDigest
+    )
   ) {
     return conflict(record, 'recovery_observed_unknown_merge_state')
   }
-  if (targetHash === record.nextHash && backupHash === record.expectedHash) {
+  if (
+    targetHash === record.nextHash
+    && targetFacts?.identityDigest === record.stageIdentityDigest
+    && backupHash === record.expectedHash
+    && backupFacts?.identityDigest === record.backupIdentityDigest
+  ) {
     await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
-    await unlinkIfPresent(record.stage)
+    await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
     return markWritten(record)
   }
 
@@ -706,11 +849,30 @@ export async function recoverTransaction({ root, txid }) {
     await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     await rename(record.target, record.backup)
     targetHash = null
-    backupHash = await hashRegularFile(record.backup)
-    record = await nextRecord(record, 'RECOVERY_BACKUP_MOVED')
+    targetFacts = null
+    backupFacts = await observeRegularFile(record.backup)
+    backupHash = backupFacts?.hash ?? null
+    if (backupHash !== record.expectedHash || !backupFacts) {
+      return conflict(record, 'recovery_observed_unknown_merge_state')
+    }
+    record = await nextRecord(record, 'RECOVERY_BACKUP_MOVED', {
+      backupIdentityDigest: backupFacts.identityDigest,
+    })
   }
 
-  if (targetHash === null && backupHash === record.expectedHash && stageHash === record.nextHash) {
+  if (
+    targetHash === null
+    && backupHash === record.expectedHash
+    && backupFacts
+    && (!record.backupIdentityDigest || backupFacts.identityDigest === record.backupIdentityDigest)
+    && stageHash === record.nextHash
+    && stageFacts?.identityDigest === record.stageIdentityDigest
+  ) {
+    if (!record.backupIdentityDigest) {
+      record = await nextRecord(record, 'RECOVERY_BACKUP_MOVED', {
+        backupIdentityDigest: backupFacts.identityDigest,
+      })
+    }
     await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     try {
       await link(record.stage, record.target)
@@ -718,9 +880,13 @@ export async function recoverTransaction({ root, txid }) {
       if (error?.code !== 'EEXIST') throw error
     }
     await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
-    targetHash = await hashRegularFile(record.target)
-    if (targetHash === record.nextHash) {
-      await unlinkIfPresent(record.stage)
+    targetFacts = await observeRegularFile(record.target)
+    targetHash = targetFacts?.hash ?? null
+    if (
+      targetHash === record.nextHash
+      && targetFacts?.identityDigest === record.stageIdentityDigest
+    ) {
+      await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
       return markWritten(record)
     }
   }
@@ -735,17 +901,33 @@ export async function finalizeTransaction({ root, txid, confirmedExactReadback }
   const record = await loadLatestRecord(rootReal, txid)
   validateRecoveredRecord(rootReal, record)
   await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
-  if ((await hashRegularFile(record.target)) !== record.nextHash) {
+  if (!await fileMatches(record.target, record.stageIdentityDigest, record.nextHash)) {
     throw new PublicationConflict('readback_changed', 'Final target no longer matches approved bytes')
   }
-  if (record.kind === 'MERGE' && (await hashRegularFile(record.backup)) !== record.expectedHash) {
+  if (
+    record.kind === 'MERGE'
+    && !await fileMatches(record.backup, record.backupIdentityDigest, record.expectedHash)
+  ) {
     throw new PublicationConflict('backup_changed', 'Backup no longer matches the approved Base')
   }
 
   await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
-  await unlinkIfPresent(record.stage)
-  await unlinkIfPresent(record.claim)
-  await unlinkIfPresent(record.backup)
+  await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
+  if (record.kind === 'CREATE') {
+    await unlinkOwnedFileIfPresent(
+      record.claim,
+      record.claimIdentityDigest,
+      sha256(`${record.txid}\n`),
+      'claim_changed',
+    )
+  } else {
+    await unlinkOwnedFileIfPresent(
+      record.backup,
+      record.backupIdentityDigest,
+      record.expectedHash,
+      'backup_changed',
+    )
+  }
   const journalDir = await ensureJournalDirectory(rootReal)
   for (const entry of await readdir(journalDir)) {
     if (entry.startsWith(`${txid}.`)) await unlink(join(journalDir, entry))

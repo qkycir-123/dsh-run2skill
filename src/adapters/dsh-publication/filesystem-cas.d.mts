@@ -14,6 +14,7 @@ export interface PublicationHooks {
   readonly beforeInstall?: (record: Readonly<Record<string, unknown>>) => Promise<void>
   readonly beforeBackupMove?: (record: Readonly<Record<string, unknown>>) => Promise<void>
   readonly beforeBackupRename?: (record: Readonly<Record<string, unknown>>) => Promise<void>
+  readonly afterInstall?: (record: Readonly<Record<string, unknown>>) => Promise<void>
 }
 
 export class PublicationConflict extends Error {
