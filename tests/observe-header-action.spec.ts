@@ -66,7 +66,7 @@ describe('Observe Header action', () => {
     expect(element.props.children).toContain('已记录 2 条待处理事项')
   })
 
-  it('registers exactly one read-only Session Header slot and releases it through the slot lifecycle', () => {
+  it('registers exactly one Session Header entry with current-workspace review RPC and releases it', async () => {
     const remove = vi.fn()
     let injectedDispose: (() => void) | undefined
     const register = vi.fn((_options, _component) => remove)
@@ -75,6 +75,11 @@ describe('Observe Header action', () => {
     })
     const context = {
       connection: { rpc: { call: vi.fn() } },
+      workspaces: {
+        list: {
+          getSnapshot: () => ({ items: [{ workspaceId: 'workspace-a', sessionIds: ['session-a'] }] }),
+        },
+      },
       slots: { inject, register },
     }
 
@@ -85,6 +90,19 @@ describe('Observe Header action', () => {
       name: 'conversation.session.header.actions',
       id: 'run2skill-observe-summary',
     }), expect.any(Function))
+    const options = register.mock.calls[0]?.[0] as {
+      inject: {
+        callReview(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
+        getWorkspaceId(sessionId: string): string
+      }
+    }
+    expect(options.inject.getWorkspaceId('session-a')).toBe('workspace-a')
+    expect(options.inject.getWorkspaceId('unbound-session')).toBe('unbound-session')
+    const signal = new AbortController().signal
+    await options.inject.callReview('proposals/list', { apiVersion: 1 }, signal)
+    expect(context.connection.rpc.call).toHaveBeenCalledWith(
+      '/run2skill', 'proposals/list', { apiVersion: 1 }, signal,
+    )
     injectedDispose?.()
     expect(remove).toHaveBeenCalledTimes(1)
   })

@@ -22,9 +22,11 @@
     "@deepseek-ai/dsh-storage-sqlite": "workspace:^",
     "@deepseek-ai/dsh-workspace": "workspace:^",
     "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "jsdom": "^29.1.1",
     "vitest": "^4.1.8"
   }
 }
