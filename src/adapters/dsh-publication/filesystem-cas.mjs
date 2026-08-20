@@ -298,7 +298,10 @@ export async function verifyFinalizedTransaction({
     const paths = targetPaths(rootReal, name, txid)
     const targetDirIdentity = await observeBundleDirectory(paths)
     const target = await observeRegularFile(paths.target)
-    if (target?.hash !== expectedHash) return await finalizedMismatch()
+    if (target?.hash !== expectedHash) {
+      await finalizedMismatch()
+      throw new PublicationConflict('readback_changed', 'Final target no longer matches approved bytes')
+    }
     if (
       await statOrNull(paths.stage) !== null
       || await statOrNull(paths.backup) !== null

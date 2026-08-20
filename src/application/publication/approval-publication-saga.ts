@@ -85,6 +85,7 @@ const REFRESH_CONFLICTS = new Set([
   'base_changed_during_cutover',
   'backup_exists',
   'rename_race',
+  'readback_changed',
 ])
 
 function currentStage(item: CaptureWorkItemV1, stage: string): boolean {

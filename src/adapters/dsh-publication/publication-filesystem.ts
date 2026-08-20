@@ -123,13 +123,27 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
             'Publication root directory identity changed',
           )
         }
-        if (await verifyFinalizedTransaction({
-          root: binding.rootBinding.declaredRootPath,
-          name: input.proposal.name,
-          txid: input.attemptId,
-          expectedHash: input.proposal.skillBytesDigest,
-          expectedRootIdentityDigest: input.rootIdentityDigest,
-        })) return { status: 'finalized', txid: input.attemptId }
+        try {
+          if (await verifyFinalizedTransaction({
+            root: binding.rootBinding.declaredRootPath,
+            name: input.proposal.name,
+            txid: input.attemptId,
+            expectedHash: input.proposal.skillBytesDigest,
+            expectedRootIdentityDigest: input.rootIdentityDigest,
+          })) return { status: 'finalized', txid: input.attemptId }
+        } catch (verificationFailure) {
+          if (
+            verificationFailure instanceof PublicationConflict
+            && verificationFailure.code === 'readback_changed'
+          ) {
+            return {
+              status: 'conflict',
+              code: verificationFailure.code,
+              txid: input.attemptId,
+            }
+          }
+          throw verificationFailure
+        }
       }
       throw caught
     }

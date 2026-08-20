@@ -297,7 +297,10 @@ describe('ApprovalPublicationSaga', () => {
     expect(completed.review?.publicationOutcome).toBe('PUBLISHED')
   })
 
-  it('stops finalized recovery when the production C5 root identity changed', async () => {
+  it.each([
+    ['stops finalized recovery when the production C5 root disappears', 'ROOT_REMOVED'],
+    ['refreshes finalized recovery when the target changes after readback', 'TARGET_CHANGED'],
+  ] as const)('%s', async (_name, race) => {
     const workspace = await mkdtemp(join(tmpdir(), 'run2skill-saga-'))
     if (!basename(workspace).startsWith('run2skill-saga-')) throw new Error('unsafe cleanup')
     try {
@@ -363,7 +366,7 @@ describe('ApprovalPublicationSaga', () => {
         async verifyParity() { return true },
         async verifyIdentity(path, identityDigest) {
           const matches = await verifyPublicationDirectoryIdentity(path, identityDigest)
-          if (matches && replaceRootAfterIdentityCheck) {
+          if (matches && replaceRootAfterIdentityCheck && race === 'ROOT_REMOVED') {
             replaceRootAfterIdentityCheck = false
             await rename(rootPath, join(workspace, 'original-skills-root'))
           }
@@ -389,7 +392,12 @@ describe('ApprovalPublicationSaga', () => {
         revalidation: { async revalidate() { return { status: 'VALID' } } },
         fileSystem,
         readback: {
-          async confirmExact() { return { status: 'CONFIRMED', observedHash: proposal.skillBytesDigest } },
+          async confirmExact() {
+            if (race === 'TARGET_CHANGED' && failOutcomeWrite === false) {
+              await writeFile(skillFilePath, 'manual target change')
+            }
+            return { status: 'CONFIRMED', observedHash: proposal.skillBytesDigest }
+          },
         },
         now: fixedNow,
       })
@@ -419,15 +427,24 @@ describe('ApprovalPublicationSaga', () => {
         rootIdentityDigest,
       })).rejects.toMatchObject({ code: 'journal_missing' })
 
-      replaceRootAfterIdentityCheck = true
+      replaceRootAfterIdentityCheck = race === 'ROOT_REMOVED'
       const retried = await store.retry(failed.workItemId, failed.revision, proposalRefOf(proposal))
-      await expect(saga.run(retried.workItemId)).resolves.toMatchObject({
-        processingState: 'NEEDS_ATTENTION',
-        review: {
-          publicationOutcome: 'NEEDS_ATTENTION',
-          failure: { code: 'PUBLICATION_UNSAFE_STATE', retryable: false },
-        },
-      })
+      const recovered = await saga.run(retried.workItemId)
+      expect(recovered).toMatchObject(race === 'ROOT_REMOVED'
+        ? {
+            processingState: 'NEEDS_ATTENTION',
+            review: {
+              publicationOutcome: 'NEEDS_ATTENTION',
+              failure: { code: 'PUBLICATION_UNSAFE_STATE', retryable: false },
+            },
+          }
+        : {
+            processingState: 'NEEDS_ATTENTION',
+            review: {
+              publicationOutcome: 'NEEDS_REFRESH',
+              failure: { code: 'PUBLICATION_FACTS_CHANGED', retryable: false },
+            },
+          })
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }
