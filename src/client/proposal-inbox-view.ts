@@ -13,54 +13,19 @@ import {
 import {
   ProposalInboxController,
   ProposalTextView,
+  describeProposalListItem,
+  describeProcessingState,
+  describePublicationOutcome,
+  describeReviewDecision,
   makeExactLineDiff,
   makeSafeText,
   type ProposalDetail,
   type ProposalInboxState,
   type ProposalReviewCall,
 } from './proposal-inbox.js'
-
-const focusableSelector = [
-  'button:not([disabled])',
-  '[href]',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',')
-
-interface FocusRoot {
-  querySelectorAll(selector: string): ArrayLike<{ focus(): void }>
-}
-
-export function trapDialogTab(
-  key: string,
-  backwards: boolean,
-  preventDefault: () => void,
-  root: FocusRoot,
-  activeElement: unknown,
-): void {
-  if (key !== 'Tab') return
-  const focusable = Array.from(root.querySelectorAll(focusableSelector))
-  if (focusable.length === 0) {
-    preventDefault()
-    return
-  }
-  const first = focusable[0]!
-  const last = focusable.at(-1)!
-  if (!focusable.includes(activeElement as { focus(): void })) {
-    preventDefault()
-    ;(backwards ? last : first).focus()
-    return
-  }
-  if (backwards && activeElement === first) {
-    preventDefault()
-    last.focus()
-  } else if (!backwards && activeElement === last) {
-    preventDefault()
-    first.focus()
-  }
-}
+import { focusableSelector, trapDialogTab } from './dialog-focus.js'
+import { describeRun2skillHealth } from './status-copy.js'
+export { trapDialogTab } from './dialog-focus.js'
 
 export function proposalInboxContentBlocked(mutationPending: boolean, rejectConfirm: boolean): boolean {
   return mutationPending || rejectConfirm
@@ -70,6 +35,7 @@ function useDialogFocus(
   open: boolean,
   triggerRef: RefObject<HTMLButtonElement | null>,
   dialogRef: RefObject<HTMLDivElement | null>,
+  focusTrapSuspended: RefObject<boolean>,
 ): void {
   useEffect(() => {
     if (!open) return
@@ -78,6 +44,7 @@ function useDialogFocus(
     const initial = dialog?.querySelector<HTMLElement>('[data-initial-focus]')
       ?? dialog?.querySelector<HTMLElement>(focusableSelector)
     const recapture = (event: FocusEvent) => {
+      if (focusTrapSuspended.current) return
       if (dialog !== null && event.target instanceof Node && !dialog.contains(event.target)) initial?.focus()
     }
     document.addEventListener('focusin', recapture, true)
@@ -86,14 +53,34 @@ function useDialogFocus(
       document.removeEventListener('focusin', recapture, true)
       triggerRef.current?.focus()
     }
-  }, [dialogRef, open, triggerRef])
+  }, [dialogRef, focusTrapSuspended, open, triggerRef])
 }
 
 function countLabel(state: ProposalInboxState): string {
   const queue = state.summary?.queue
   if (queue === undefined || queue.completeness === 'UNKNOWN') return 'Skill 提案，待处理数量未知'
   const total = queue.pendingReview + queue.publishing + queue.needsAttention
-  return `${total} 条 Skill 提案待处理`
+  const facts = [
+    queue.pendingReview > 0 ? `${String(queue.pendingReview)} 条待审核` : undefined,
+    queue.publishing > 0 ? `${String(queue.publishing)} 条正在发布` : undefined,
+    queue.needsAttention > 0 ? `${String(queue.needsAttention)} 条需要处理` : undefined,
+  ].filter(fact => fact !== undefined)
+  return facts.length === 0
+    ? '当前没有待处理 Skill 提案'
+    : `${String(total)} 条 Skill 提案待处理：${facts.join('，')}`
+}
+
+export function describeProposalSummaryState(state: ProposalInboxState): string {
+  if (state.summaryPhase === 'LOADING') return 'Proposal 队列状态加载中'
+  if (state.summaryPhase === 'UNAVAILABLE') return 'Proposal 队列状态暂不可用'
+  if (state.summary === undefined) return 'Proposal 队列状态未知'
+  const health = describeRun2skillHealth(state.summary.status)
+  const queue = state.summary.queue.completeness === 'UNKNOWN'
+    ? '待处理数量未知'
+    : countLabel(state)
+  return state.summaryPhase === 'STALE'
+    ? `Proposal 队列状态可能已过期：${health}；${queue}`
+    : `${health}；${queue}`
 }
 
 export function ProposalInboxHeaderAction(props: {
@@ -111,9 +98,11 @@ export function ProposalInboxHeaderAction(props: {
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot, controller.snapshot)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
-  useDialogFocus(state.open, triggerRef, dialogRef)
   const [textMode, setTextMode] = useState<'SAFE' | 'RAW'>('SAFE')
   const [rejectConfirm, setRejectConfirm] = useState(false)
+  const focusTrapSuspended = useRef(false)
+  focusTrapSuspended.current = rejectConfirm
+  useDialogFocus(state.open, triggerRef, dialogRef, focusTrapSuspended)
   const label = countLabel(state)
 
   return createElement(Fragment, null,
@@ -221,6 +210,7 @@ export function ProposalInboxPanel(props: {
       }, '关闭'),
     ),
     createElement('p', { role: 'status' }, countLabel(state)),
+    createElement('p', { role: 'status', 'aria-live': 'polite' }, describeProposalSummaryState(state)),
     state.listPhase === 'LOADING' ? createElement('p', null, '正在加载待处理队列…') : null,
     state.listPhase === 'ERROR' ? createElement('p', { role: 'alert' }, '待处理队列暂不可用') : null,
     state.listPhase === 'READY' && state.items.length === 0
@@ -241,7 +231,7 @@ export function ProposalInboxPanel(props: {
             textAlign: 'start',
             outlineOffset: '0.15rem',
           },
-        }, `${item.kind} · ${makeSafeText(item.name)} · ${item.persistenceScope} · ${item.processingState}`),
+        }, `${item.kind} · ${makeSafeText(item.name)} · ${item.persistenceScope} · ${describeProposalListItem(item)}`),
       )),
     ),
   ),
@@ -371,8 +361,12 @@ export function ProposalDetailView(props: {
             createElement('dt', null, 'DSH Home identity'),
             createElement('dd', null, proposal.dshHomeBinding.identityDigest),
           ),
-      createElement('dt', null, '状态'),
-      createElement('dd', null, `${detail.reviewDecision} · ${detail.processingState} · ${detail.publicationOutcome}`),
+      createElement('dt', null, '审核决定'),
+      createElement('dd', null, describeReviewDecision(detail.reviewDecision)),
+      createElement('dt', null, '处理状态'),
+      createElement('dd', null, describeProcessingState(detail.processingState)),
+      createElement('dt', null, '发布结果'),
+      createElement('dd', null, describePublicationOutcome(detail.publicationOutcome)),
     ),
     createElement('h4', null, 'Why learned'),
     createElement('p', null, makeSafeText(proposal.curationRationale)),

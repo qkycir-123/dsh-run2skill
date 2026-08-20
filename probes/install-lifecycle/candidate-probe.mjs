@@ -10,7 +10,7 @@ import {
   safeFailure,
 } from '../support/safe-diagnostics.mjs'
 
-const [cloneArg, candidateArg, workArg] = process.argv.slice(2)
+const [cloneArg, candidateArg, workArg, mode] = process.argv.slice(2)
 if (!cloneArg || !candidateArg || !workArg) {
   throw new Error('usage: node candidate-probe.mjs <built-dsh-clone> <candidate-root> <work-root>')
 }
@@ -28,6 +28,7 @@ const patchPath = join(profile, 'cordis.patch.yml')
 const skillPath = join(home, 'skills', 'retained-skill', 'SKILL.md')
 const packageName = 'dsh-run2skill'
 const retainedSkill = '---\nname: retained-skill\ndescription: retained lifecycle fixture\n---\n\nretained\n'
+const webOnly = mode === '--web-only'
 
 await mkdir(workspace, { recursive: true })
 await mkdir(join(home, 'skills', 'retained-skill'), { recursive: true })
@@ -184,6 +185,18 @@ async function observe(present, expectedAutomaticLearning) {
       const body = await rpc.json()
       assert.equal(body.result?.ok, true)
       assert.equal(body.result?.value?.capturedCount, 0)
+      const workspaceRpcId = 'd3-workspace-create'
+      const workspaceResponse = await fetch(`${base}/api/workspace.create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request', rpcId: workspaceRpcId, method: 'workspace.create',
+          payload: { path: workspace },
+        }),
+      })
+      assert.equal(workspaceResponse.status, 200)
+      const workspaceBody = await workspaceResponse.json()
+      assert.equal(workspaceBody.rpcId, workspaceRpcId)
+      assert.equal(workspaceBody.result?.ok, true)
       browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
       const page = await browser.newPage()
       const errors = []
@@ -210,6 +223,15 @@ async function observe(present, expectedAutomaticLearning) {
       await card.getByRole('button', { name: /run2skill/i }).click()
       const toggle = card.getByRole('checkbox', { name: 'Automatic Learning' })
       assert.equal(await toggle.isChecked(), expectedAutomaticLearning)
+      const userPurge = card.getByRole('button', { name: '预览并清理 USER 数据' })
+      await userPurge.click()
+      const purgeDialog = page.getByRole('alertdialog', { name: '确认清理 USER run2skill 数据？' })
+      await purgeDialog.waitFor({ timeout: 10_000 })
+      assert.match(await purgeDialog.innerText(), /保留 DSH Session Log/u)
+      assert.match(await purgeDialog.innerText(), /保留所有已发布的原生 Skill/u)
+      await page.keyboard.press('Escape')
+      await purgeDialog.waitFor({ state: 'detached', timeout: 10_000 })
+      assert.equal(await userPurge.evaluate(element => element === document.activeElement), true)
       if (expectedAutomaticLearning) {
         const mutation = page.waitForResponse(response => response.url().endsWith('/api/settings.mutate'))
         await toggle.click()
@@ -236,23 +258,27 @@ assert.ok((await manifest()).dsh.profile.bundles.includes(packageName))
 assert.ok((await dsh(['--profile', 'web', '--dump-config'])).stdout.includes('id: run2skill'))
 await observe(true, true)
 
-console.log('CP_INS_A6_STAGE=disable')
-await writeFile(patchPath, '- id: run2skill\n  disabled: true\n')
-await observe(false)
+if (webOnly) {
+  console.log('CP_D3_WEB=PASS')
+} else {
+  console.log('CP_INS_A6_STAGE=disable')
+  await writeFile(patchPath, '- id: run2skill\n  disabled: true\n')
+  await observe(false)
 
-console.log('CP_INS_A6_STAGE=upgrade')
-await writeFile(patchPath, '[]\n')
-await dsh(['plugin', '--profile', 'web', 'add', v2])
-const installedManifest = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-assert.equal(installedManifest.version, '0.0.0-a6.2')
-await observe(true, false)
+  console.log('CP_INS_A6_STAGE=upgrade')
+  await writeFile(patchPath, '[]\n')
+  await dsh(['plugin', '--profile', 'web', 'add', v2])
+  const installedManifest = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
+  assert.equal(installedManifest.version, '0.0.0-a6.2')
+  await observe(true, false)
 
-const storageEntries = await readdir(join(home, 'storages'))
-assert.ok(storageEntries.some(entry => /run2skill/iu.test(entry)), 'run2skill domain was not retained')
+  const storageEntries = await readdir(join(home, 'storages'))
+  assert.ok(storageEntries.some(entry => /run2skill/iu.test(entry)), 'run2skill domain was not retained')
 
-console.log('CP_INS_A6_STAGE=uninstall')
-await dsh(['plugin', '--profile', 'web', 'remove', packageName])
-assert.equal((await manifest()).dsh.profile.bundles.includes(packageName), false)
-await observe(false)
-assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
-console.log('CP_INS_A6=PASS')
+  console.log('CP_INS_A6_STAGE=uninstall')
+  await dsh(['plugin', '--profile', 'web', 'remove', packageName])
+  assert.equal((await manifest()).dsh.profile.bundles.includes(packageName), false)
+  await observe(false)
+  assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
+  console.log('CP_INS_A6=PASS')
+}

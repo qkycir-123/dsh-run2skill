@@ -4,6 +4,12 @@ import {
   useSyncExternalStore,
   type ReactElement,
 } from 'react'
+import { RUN2SKILL_RPC_CHANNEL } from '../adapters/dsh-connection/observe-summary-rpc.js'
+import {
+  PurgeSettingsController,
+  PurgeSettingsSection,
+  type PurgeCall,
+} from './purge-settings.js'
 
 export interface AutomaticLearningClientSettings {
   readonly automaticLearning: boolean
@@ -93,6 +99,7 @@ export class AutomaticLearningSettingsController {
 
 export function AutomaticLearningSettingsCard(props: {
   readonly controller: AutomaticLearningSettingsController
+  readonly purgeController: PurgeSettingsController
 }): ReactElement | null {
   const state = useSyncExternalStore(
     props.controller.subscribe,
@@ -128,12 +135,31 @@ export function AutomaticLearningSettingsCard(props: {
           state.error === undefined
             ? null
             : createElement('p', { role: 'status' }, '设置已变化，请刷新后重试。'),
+          createElement(PurgeSettingsSection, { controller: props.purgeController }),
         )
       : null,
   )
 }
 
 export interface AutomaticLearningSettingsClientContext {
+  readonly connection: {
+    readonly rpc: {
+      call(
+        channel: string,
+        endpoint: string,
+        payload: unknown,
+        signal?: AbortSignal,
+      ): Promise<unknown>
+    }
+  }
+  readonly workspaces: {
+    readonly list: {
+      getSnapshot(): {
+        readonly recentWorkspaceId?: string | undefined
+        readonly items: readonly { readonly workspaceId: string }[]
+      }
+    }
+  }
   readonly settingsScope: {
     bind<T>(spec: { readonly namespace: string }): ClientSettingsScope<T>
   }
@@ -149,10 +175,24 @@ export function applyAutomaticLearningSettingsClient(
 ): void {
   const scope = context.settingsScope.bind<AutomaticLearningClientSettings>({ namespace: 'run2skill' })
   const controller = new AutomaticLearningSettingsController(scope)
-  context.effect?.(() => () => { controller.dispose() }, 'run2skill: automatic learning settings')
+  const callPurge: PurgeCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
+    RUN2SKILL_RPC_CHANNEL,
+    endpoint,
+    payload,
+    signal,
+  )
+  const purgeController = new PurgeSettingsController(callPurge, () => {
+    const snapshot = context.workspaces.list.getSnapshot()
+    return snapshot.recentWorkspaceId
+  })
+  purgeController.start()
+  context.effect?.(() => () => {
+    controller.dispose()
+    purgeController.dispose()
+  }, 'run2skill: settings and purge')
   context.slots.inject('settings.plugin.item', () => context.slots.register({
     name: 'settings.plugin.item',
     key: 'run2skill',
-    inject: () => ({ controller }),
+    inject: () => ({ controller, purgeController }),
   }, AutomaticLearningSettingsCard))
 }

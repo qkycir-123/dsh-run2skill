@@ -18,6 +18,8 @@ export {
 export * from './observe-summary-poller.js'
 export * from './proposal-inbox.js'
 export * from './proposal-inbox-view.js'
+export * from './purge-settings.js'
+export * from './status-copy.js'
 
 export const name = 'run2skill-client'
 export const inject = ['connection', 'slots', 'workspaces', 'remote', 'settingsScope'] as const

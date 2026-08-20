@@ -47,6 +47,12 @@ describe('Observe Header action', () => {
     expect(describeObserveState(readyState())).not.toContain('其中 1 条观察不完整')
   })
 
+  it('uses the same health wording expected by the Inbox', () => {
+    expect(describeObserveState(readyState({ status: 'INCOMPATIBLE' }))).toContain('run2skill 当前版本不兼容')
+    expect(describeObserveState(readyState({ status: 'DEGRADED' }))).toContain('run2skill 暂时降级')
+    expect(describeObserveState(readyState({ status: 'RECOVERING' }))).toContain('run2skill 正在恢复')
+  })
+
   it('shows only aggregate learning counts in the Header summary', () => {
     const description = describeObserveState(readyState({
       learning: { captured: 2, analyzing: 1, learned: 3, needsAttention: 1 },

@@ -13,6 +13,7 @@ import {
 } from '../src/client/proposal-inbox.js'
 import {
   RejectConfirmationBody,
+  describeProposalSummaryState,
   factsFromAction,
   proposalInboxContentBlocked,
   trapDialogTab,
@@ -131,6 +132,40 @@ describe('Proposal Inbox client', () => {
       .toContain('新的 Proposal')
   })
 
+  it('uses one factual vocabulary for publishing and retryable failure', () => {
+    expect(describeProposalOutcome({ processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' }))
+      .toBe('已批准，正在发布')
+    expect(describeProposalOutcome({ processingState: 'NEEDS_ATTENTION', publicationOutcome: 'PUBLISH_FAILED' }))
+      .toBe('发布失败，可重试')
+  })
+
+  it('gives UNKNOWN, RECOVERING, DEGRADED, and INCOMPATIBLE explicit summary copy', () => {
+    const base = {
+      open: false,
+      summaryPhase: 'READY' as const,
+      listPhase: 'IDLE' as const,
+      items: [],
+      detailPhase: 'IDLE' as const,
+      mutationPending: false,
+      announcement: '',
+    }
+    for (const [status, copy] of [
+      ['RECOVERING', 'run2skill 正在恢复历史观察'],
+      ['DEGRADED', 'run2skill 暂时降级'],
+      ['INCOMPATIBLE', 'run2skill 当前版本不兼容'],
+    ] as const) {
+      expect(describeProposalSummaryState({
+        ...base,
+        summary: {
+          apiVersion: 1,
+          status,
+          recoveryLag: status === 'RECOVERING',
+          queue: { completeness: 'UNKNOWN' },
+        },
+      })).toBe(`${copy}；待处理数量未知`)
+    }
+  })
+
   it('traps keyboard focus at both dialog boundaries', () => {
     const first = { focus: vi.fn() }
     const middle = { focus: vi.fn() }
@@ -206,6 +241,7 @@ describe('Proposal Inbox client', () => {
     await controller.open()
     expect(controller.snapshot()).toMatchObject({ open: true, listPhase: 'READY' })
     expect(controller.snapshot().items).toHaveLength(1)
+    expect(environment.timerDelay()).toBe(2_000)
     expect(call.mock.calls.some(([endpoint]) => endpoint === 'proposals/get')).toBe(false)
 
     await controller.select(staged.item.review!.proposal.proposalId)
@@ -232,6 +268,8 @@ describe('Proposal Inbox client', () => {
         digest: staged.item.review!.proposal.digest,
       },
     })
+    controller.close()
+    expect(environment.timerDelay()).toBe(10_000)
     controller.dispose()
   })
 
@@ -267,7 +305,7 @@ describe('Proposal Inbox client', () => {
     expect(controller.snapshot()).toMatchObject({
       mutationPending: false,
       summaryPhase: 'STALE',
-      announcement: 'Proposal 已批准，正在发布',
+      announcement: '已批准，正在发布',
       detail: { reviewDecision: 'APPROVED', processingState: 'PUBLISHING' },
     })
     controller.dispose()
