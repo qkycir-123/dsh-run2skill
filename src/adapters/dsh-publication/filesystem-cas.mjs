@@ -9,7 +9,7 @@ import {
   rename,
   unlink,
 } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 // Production filesystem primitive; the cross-platform probe imports this file directly.
@@ -21,6 +21,8 @@ const HASH_PATTERN = /^[a-f0-9]{64}$/
 const JOURNAL_KEYS = new Set([
   'version', 'seq', 'state', 'kind', 'root', 'name', 'txid', 'expectedHash', 'nextHash',
   'prevHash', 'recordHash', 'createdRootSegments', 'targetDir', 'target', 'stage', 'backup', 'claim',
+  'targetDirIdentityDigest',
+  'backupReservationNonce',
 ])
 
 export class PublicationConflict extends Error {
@@ -123,6 +125,11 @@ function samePath(left, right) {
   const a = resolve(left)
   const b = resolve(right)
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+function identityPath(path) {
+  const normalized = resolve(path)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
 function allowedMissingSegments(binding) {
@@ -235,12 +242,41 @@ function targetPaths(rootReal, name, txid) {
   return { targetDir, target, stage, backup, claim }
 }
 
-async function assertExistingBundleIsSafe(paths) {
-  const dirStat = await lstat(paths.targetDir)
-  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+async function observeBundleDirectory(paths) {
+  const dirStat = await statOrNull(paths.targetDir)
+  if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
     throw new PublicationConflict('unsafe_path', 'Skill bundle is a symlink, junction, or non-directory')
   }
+  let canonical
+  try {
+    canonical = await realpath(paths.targetDir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new PublicationConflict('target_identity_changed', 'Skill bundle directory disappeared')
+    }
+    throw error
+  }
+  if (!samePath(canonical, paths.targetDir)) {
+    throw new PublicationConflict('unsafe_path', 'Skill bundle changed canonical location')
+  }
+  return sha256(JSON.stringify([
+    String(dirStat.dev),
+    String(dirStat.ino),
+    String(dirStat.birthtimeMs),
+    identityPath(canonical),
+  ]))
+}
+
+async function assertExistingBundleIsSafe(paths) {
+  const identityDigest = await observeBundleDirectory(paths)
   await hashRegularFile(paths.target)
+  return identityDigest
+}
+
+async function assertBoundBundleDirectory(paths, expectedDigest) {
+  if (!expectedDigest || await observeBundleDirectory(paths) !== expectedDigest) {
+    throw new PublicationConflict('target_identity_changed', 'Skill bundle directory identity changed')
+  }
 }
 
 function maybeCrash(actual, requested) {
@@ -260,14 +296,29 @@ async function appendJournal(rootReal, record) {
   return sealed
 }
 
-async function nextRecord(current, state) {
-  if (current.state === state) return current
+async function nextRecord(current, state, additionalFacts = {}) {
+  if (current.state === state && Object.keys(additionalFacts).length === 0) return current
   const { recordHash, ...facts } = current
-  const record = { ...facts, seq: current.seq + 1, state, prevHash: recordHash }
+  const record = {
+    ...facts,
+    ...additionalFacts,
+    seq: current.seq + 1,
+    state,
+    prevHash: recordHash,
+  }
   return appendJournal(current.root, record)
 }
 
-async function beginRecord({ root, name, txid, kind, expectedHash, nextBytes, rootPreparation }) {
+async function beginRecord({
+  root,
+  name,
+  txid,
+  kind,
+  expectedHash,
+  nextBytes,
+  rootPreparation,
+  targetDirIdentityDigest,
+}) {
   const paths = targetPaths(root, name, txid)
   const record = {
     version: 1,
@@ -281,6 +332,7 @@ async function beginRecord({ root, name, txid, kind, expectedHash, nextBytes, ro
     nextHash: sha256(nextBytes),
     prevHash: null,
     ...(rootPreparation ? { createdRootSegments: [...rootPreparation.createdSegments] } : {}),
+    ...(targetDirIdentityDigest ? { targetDirIdentityDigest } : {}),
     ...paths,
   }
   return appendJournal(root, record)
@@ -303,7 +355,9 @@ async function markWritten(record) {
 
 async function restoreBackupWithoutOverwrite(record) {
   try {
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     await link(record.backup, record.target)
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     await unlink(record.backup)
     await fsyncParent(record.targetDir)
     return 'restored'
@@ -311,6 +365,15 @@ async function restoreBackupWithoutOverwrite(record) {
     if (error?.code === 'EEXIST') return 'preserved-both'
     throw error
   }
+}
+
+function backupReservationBytes(record) {
+  return `run2skill-backup-reservation-v1:${record.txid}:${record.backupReservationNonce}\n`
+}
+
+function expectedBackupReservationHash(record) {
+  if (!HASH_PATTERN.test(record.backupReservationNonce ?? '')) return null
+  return sha256(backupReservationBytes(record))
 }
 
 export async function createBundle({ root, name, txid, nextBytes, rootPreparation, crashAt, hooks }) {
@@ -345,12 +408,18 @@ export async function createBundle({ root, name, txid, nextBytes, rootPreparatio
     throw error
   }
 
+  const targetDirIdentityDigest = await observeBundleDirectory(record)
+  record = await nextRecord(record, 'TARGET_CLAIMED', { targetDirIdentityDigest })
+  maybeCrash('create-after-target-claim', crashAt)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await writeExclusiveFile(record.claim, `${txid}\n`)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await writeExclusiveFile(record.stage, nextBytes)
   await fsyncParent(record.targetDir)
   record = await nextRecord(record, 'CREATE_STAGED')
   maybeCrash('create-after-stage', crashAt)
   await hooks?.beforeInstall?.(record)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
 
   try {
     await link(record.stage, record.target)
@@ -364,9 +433,11 @@ export async function createBundle({ root, name, txid, nextBytes, rootPreparatio
   }
 
   maybeCrash('create-after-install-before-journal', crashAt)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   if ((await hashRegularFile(record.target)) !== record.nextHash) {
     throw new PublicationConflict('post_write_mismatch', 'CREATE target changed during installation')
   }
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await unlinkIfPresent(record.stage)
   await unlinkIfPresent(record.claim)
   await fsyncParent(record.targetDir)
@@ -385,7 +456,7 @@ export async function mergeBundle({
   validateIdentity(name, txid)
   const rootReal = await ensureRoot(root)
   const paths = targetPaths(rootReal, name, txid)
-  await assertExistingBundleIsSafe(paths)
+  const targetDirIdentityDigest = await assertExistingBundleIsSafe(paths)
   let record = await beginRecord({
     root: rootReal,
     name,
@@ -393,8 +464,10 @@ export async function mergeBundle({
     kind: 'MERGE',
     expectedHash,
     nextBytes,
+    targetDirIdentityDigest,
   })
 
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await writeExclusiveFile(record.stage, nextBytes)
   await fsyncParent(record.targetDir)
   record = await nextRecord(record, 'MERGE_STAGED')
@@ -405,10 +478,28 @@ export async function mergeBundle({
   }
 
   await hooks?.beforeBackupMove?.(record)
-  if (await statOrNull(record.backup)) {
-    await unlinkIfPresent(record.stage)
-    return conflict(record, 'backup_exists')
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
+  record = await nextRecord(record, 'BACKUP_RESERVING', {
+    backupReservationNonce: randomBytes(32).toString('hex'),
+  })
+  try {
+    await writeExclusiveFile(record.backup, backupReservationBytes(record))
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      await unlinkIfPresent(record.stage)
+      return conflict(record, 'backup_exists')
+    }
+    throw error
   }
+  record = await nextRecord(record, 'BACKUP_RESERVED')
+  maybeCrash('merge-after-backup-reservation', crashAt)
+  await hooks?.beforeBackupRename?.(record)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
+  if ((await hashRegularFile(record.backup)) !== expectedBackupReservationHash(record)) {
+    await unlinkIfPresent(record.stage)
+    return conflict(record, 'backup_changed')
+  }
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   try {
     await rename(record.target, record.backup)
   } catch (error) {
@@ -429,6 +520,7 @@ export async function mergeBundle({
   }
 
   await hooks?.beforeInstall?.(record)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   try {
     await link(record.stage, record.target)
   } catch (error) {
@@ -440,9 +532,11 @@ export async function mergeBundle({
   }
 
   maybeCrash('merge-after-install-before-journal', crashAt)
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   if ((await hashRegularFile(record.target)) !== record.nextHash) {
     throw new PublicationConflict('post_write_mismatch', 'MERGE target changed during installation')
   }
+  await assertBoundBundleDirectory(record, targetDirIdentityDigest)
   await unlinkIfPresent(record.stage)
   await fsyncParent(record.targetDir)
   return markWritten(record)
@@ -465,7 +559,7 @@ async function loadLatestRecord(rootReal, txid) {
         && record.txid === txid
         && (record.kind === 'CREATE' || record.kind === 'MERGE')
         && typeof record.state === 'string'
-        && /^(?:INTENT|ROOT_PREPARED|CREATE_STAGED|MERGE_STAGED|BACKUP_MOVED|RECOVERY_BACKUP_MOVED|DISK_WRITTEN|CONFLICT_[A-Z0-9_]+)$/.test(record.state)
+        && /^(?:INTENT|ROOT_PREPARED|TARGET_CLAIMED|CREATE_STAGED|MERGE_STAGED|BACKUP_RESERVING|BACKUP_RESERVED|BACKUP_MOVED|RECOVERY_BACKUP_MOVED|DISK_WRITTEN|CONFLICT_[A-Z0-9_]+)$/.test(record.state)
         && Number.isSafeInteger(record.seq)
         && record.seq >= 0
         && record.seq < MAX_JOURNAL_RECORDS
@@ -473,6 +567,8 @@ async function loadLatestRecord(rootReal, txid) {
         && (record.prevHash === null || HASH_PATTERN.test(record.prevHash))
         && HASH_PATTERN.test(record.nextHash)
         && (record.expectedHash === null || HASH_PATTERN.test(record.expectedHash))
+        && (record.targetDirIdentityDigest === undefined || HASH_PATTERN.test(record.targetDirIdentityDigest))
+        && (record.backupReservationNonce === undefined || HASH_PATTERN.test(record.backupReservationNonce))
         && ['root', 'name', 'targetDir', 'target', 'stage', 'backup', 'claim']
           .every(key => typeof record[key] === 'string')
         && (record.createdRootSegments === undefined || (
@@ -530,6 +626,7 @@ export async function recoverTransaction({ root, txid }) {
   if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
     throw new PublicationConflict('unsafe_path', 'Recovery target bundle is absent or unsafe')
   }
+  await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
 
   let targetHash = await hashRegularFile(record.target)
   const stageHash = await hashRegularFile(record.stage)
@@ -546,16 +643,19 @@ export async function recoverTransaction({ root, txid }) {
       return conflict(record, 'recovery_observed_unknown_create_state')
     }
     if (targetHash === record.nextHash) {
+      await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
       await unlinkIfPresent(record.stage)
       await unlinkIfPresent(record.claim)
       return markWritten(record)
     }
     if (targetHash === null && stageHash === record.nextHash && claim) {
+      await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
       try {
         await link(record.stage, record.target)
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error
       }
+      await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
       targetHash = await hashRegularFile(record.target)
       if (targetHash === record.nextHash) {
         await unlinkIfPresent(record.stage)
@@ -567,19 +667,43 @@ export async function recoverTransaction({ root, txid }) {
   }
 
   let backupHash = await hashRegularFile(record.backup)
+  let reservationHash = expectedBackupReservationHash(record)
   if (
     (targetHash !== null && targetHash !== record.expectedHash && targetHash !== record.nextHash)
     || (stageHash !== null && stageHash !== record.nextHash)
-    || (backupHash !== null && backupHash !== record.expectedHash)
+    || (backupHash !== null && backupHash !== record.expectedHash && backupHash !== reservationHash)
   ) {
     return conflict(record, 'recovery_observed_unknown_merge_state')
   }
   if (targetHash === record.nextHash && backupHash === record.expectedHash) {
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     await unlinkIfPresent(record.stage)
     return markWritten(record)
   }
 
-  if (targetHash === record.expectedHash && backupHash === null && stageHash === record.nextHash) {
+  if (
+    targetHash === record.expectedHash
+    && (backupHash === null || backupHash === reservationHash)
+    && stageHash === record.nextHash
+  ) {
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
+    if (backupHash === null) {
+      if (!reservationHash) {
+        record = await nextRecord(record, 'BACKUP_RESERVING', {
+          backupReservationNonce: randomBytes(32).toString('hex'),
+        })
+        reservationHash = expectedBackupReservationHash(record)
+      }
+      try {
+        await writeExclusiveFile(record.backup, backupReservationBytes(record))
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error
+        return conflict(record, 'backup_exists')
+      }
+      backupHash = reservationHash
+      record = await nextRecord(record, 'BACKUP_RESERVED')
+    }
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     await rename(record.target, record.backup)
     targetHash = null
     backupHash = await hashRegularFile(record.backup)
@@ -587,11 +711,13 @@ export async function recoverTransaction({ root, txid }) {
   }
 
   if (targetHash === null && backupHash === record.expectedHash && stageHash === record.nextHash) {
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     try {
       await link(record.stage, record.target)
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
     }
+    await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
     targetHash = await hashRegularFile(record.target)
     if (targetHash === record.nextHash) {
       await unlinkIfPresent(record.stage)
@@ -608,6 +734,7 @@ export async function finalizeTransaction({ root, txid, confirmedExactReadback }
   const rootReal = await ensureRoot(root)
   const record = await loadLatestRecord(rootReal, txid)
   validateRecoveredRecord(rootReal, record)
+  await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
   if ((await hashRegularFile(record.target)) !== record.nextHash) {
     throw new PublicationConflict('readback_changed', 'Final target no longer matches approved bytes')
   }
@@ -615,6 +742,7 @@ export async function finalizeTransaction({ root, txid, confirmedExactReadback }
     throw new PublicationConflict('backup_changed', 'Backup no longer matches the approved Base')
   }
 
+  await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
   await unlinkIfPresent(record.stage)
   await unlinkIfPresent(record.claim)
   await unlinkIfPresent(record.backup)
