@@ -216,6 +216,7 @@ describe('ApprovalPublicationSaga', () => {
     const { domain, item, proposal } = await approvedFixture()
     const store = new PublicationSagaStore(domain, fixedNow)
     let writtenAttemptId: string | undefined
+    let finalizedAttemptId: string | undefined
     let confirms = 0
     const dependencies = ports(proposal, {
       fileSystem: {
@@ -227,6 +228,10 @@ describe('ApprovalPublicationSaga', () => {
         async write(input) {
           writtenAttemptId = input.attemptId
           return { status: 'written', txid: 'written', target: 'target', backup: null }
+        },
+        async finalize(input) {
+          finalizedAttemptId = input.attemptId
+          return { status: 'finalized', txid: input.attemptId, target: 'target', backup: null }
         },
       },
       readback: {
@@ -251,6 +256,7 @@ describe('ApprovalPublicationSaga', () => {
     const completed = await saga.run(retried.workItemId)
 
     expect(write).toHaveBeenCalledTimes(1)
+    expect(finalizedAttemptId).toBe(writtenAttemptId)
     expect(completed.review?.publicationOutcome).toBe('PUBLISHED')
     expect(completed.publication?.attemptCount).toBe(2)
   })
@@ -259,12 +265,19 @@ describe('ApprovalPublicationSaga', () => {
     const { domain, item, proposal } = await approvedFixture()
     const store = new PublicationSagaStore(domain, fixedNow)
     let finalizeCalls = 0
+    let writtenAttemptId: string | undefined
+    const finalizedAttemptIds: string[] = []
     const dependencies = ports(proposal, {
       fileSystem: {
-        async finalize() {
+        async write(input) {
+          writtenAttemptId = input.attemptId
+          return { status: 'written', txid: input.attemptId, target: 'target', backup: null }
+        },
+        async finalize(input) {
           finalizeCalls += 1
+          finalizedAttemptIds.push(input.attemptId)
           if (finalizeCalls === 1) domain.failNextWorkItemWrites(1)
-          return { status: 'finalized', txid: 'finalized', target: 'target', backup: null }
+          return { status: 'finalized', txid: input.attemptId, target: 'target', backup: null }
         },
       },
     })
@@ -279,6 +292,7 @@ describe('ApprovalPublicationSaga', () => {
 
     expect(write).toHaveBeenCalledTimes(1)
     expect(finalizeCalls).toBe(2)
+    expect(finalizedAttemptIds).toEqual([writtenAttemptId, writtenAttemptId])
     expect(completed.review?.publicationOutcome).toBe('PUBLISHED')
   })
 

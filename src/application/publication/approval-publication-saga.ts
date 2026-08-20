@@ -341,9 +341,20 @@ export class ApprovalPublicationSaga {
     proposal: ProposalSnapshotV1,
   ): Promise<CaptureWorkItemV1> {
     try {
+      const filesystemAttemptId = item.publication!.journal.find(event => (
+        event.stage === 'TARGET_INSTALLED'
+      ))?.attemptId
+      if (filesystemAttemptId === undefined) {
+        return await this.#store.fail(
+          item.workItemId,
+          'PUBLISH_FAILED',
+          'FILESYSTEM_TRANSACTION_UNAVAILABLE',
+          true,
+        )
+      }
       const finalized = await this.#fileSystem.finalize({
         proposal,
-        attemptId: item.publication!.activeAttemptId,
+        attemptId: filesystemAttemptId,
       })
       if (finalized.status === 'conflict') return await this.#failConflict(item, finalized.code ?? 'unknown')
       if (finalized.status !== 'finalized') {
