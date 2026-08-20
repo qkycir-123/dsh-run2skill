@@ -21,6 +21,7 @@ export type PublicationRevalidationResult =
   }
 
 export interface PublicationRevalidationPort {
+  revalidateRootContract(item: CaptureWorkItemV1): Promise<PublicationRevalidationResult>
   revalidate(item: CaptureWorkItemV1): Promise<PublicationRevalidationResult>
 }
 
@@ -148,6 +149,21 @@ export class ApprovalPublicationSaga {
     let item = this.#store.get(workItemId)!
     const proposal = actionProposal(item)
     const publication = item.publication!
+
+    let contractRevalidated: PublicationRevalidationResult
+    try {
+      contractRevalidated = await this.#revalidation.revalidateRootContract(item)
+    } catch {
+      contractRevalidated = { status: 'NEEDS_ATTENTION', code: 'REVALIDATION_UNAVAILABLE' }
+    }
+    if (contractRevalidated.status !== 'VALID') {
+      return await this.#store.fail(
+        workItemId,
+        contractRevalidated.status,
+        contractRevalidated.code,
+        contractRevalidated.retryable ?? contractRevalidated.status === 'PUBLISH_FAILED',
+      )
+    }
 
     if (currentStage(item, 'LINEAGE_COMMITTED')) {
       return await this.#finalizeAndComplete(item, proposal)
@@ -329,8 +345,8 @@ export class ApprovalPublicationSaga {
     })
     return materializeLineage({
       scope: proposal.persistenceScope,
-      provider: binding.rootBinding.provider,
-      source: binding.rootBinding.source,
+      provider: binding.rootBinding.expectedProvider,
+      source: binding.rootBinding.expectedSource,
       skillName: proposal.name,
       canonicalTargetPath: binding.targetBinding.skillFilePath,
       targetIdentityDigest: publication.targetIdentityDigest,

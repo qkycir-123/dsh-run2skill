@@ -19,6 +19,12 @@ const publicationOutcome = z.enum([
 
 const rootDisplay = z.object({
   state: z.enum(['EXISTING', 'ABSENT']),
+  scope: z.enum(['PROJECT', 'USER']),
+  expectedProvider: identity,
+  expectedSource: z.enum(['project-dsh', 'user-dsh']),
+  resolverVersion: identity,
+  rootContractVersion: identity,
+  resolutionContractDigest: sha256,
   declaredRootPath: z.string().min(1).max(8_192),
 }).passthrough()
 const targetDisplay = z.object({
@@ -78,6 +84,12 @@ const proposal = z.object({
   workspaceBinding: z.object({
     workspaceId: identity,
     canonicalPath: z.string().min(1).max(8_192),
+    observedAt: z.string().min(1).max(64),
+  }).strict().optional(),
+  dshHomeBinding: z.object({
+    resolutionKind: z.enum(['CONFIGURATION', 'ENVIRONMENT', 'DEFAULT']),
+    canonicalPath: z.string().min(1).max(8_192),
+    identityDigest: sha256,
     observedAt: z.string().min(1).max(64),
   }).strict().optional(),
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),

@@ -30,6 +30,7 @@ pnpm --version
 
 ```powershell
 powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source>
+powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1
 powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 ```
@@ -40,23 +41,23 @@ powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1 -WslDistribution <distribution-name>
 ```
 
-第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第三条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
+第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条是 production-backed CP-ROOT-003，应以 15 个测试通过并结束于 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。第三条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第四条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
 
-## stock DSH 纯插件 root probe（待实现）
+## stock DSH 纯插件 root probe
 
-CP-ROOT-003 是新的默认生产门禁。Issue #48 将提供 production-backed runner；它必须使用本页固定的 clean、未修改 baseline，不得要求 DSH fork、未合并 roots API 或本地 patch。验收至少覆盖：
+CP-ROOT-003 是默认生产门禁。production-backed runner 使用本页固定的 clean、未修改 baseline，不要求 DSH fork、未合并 roots API 或本地 patch，覆盖：
 
 - PROJECT/USER 的标准默认 roots、existing/absent root、CREATE/MERGE；
 - Workspace/DSH Home identity、版本化 contract digest、文件 identity/expected-absence；
 - CAS/journal 后由原生 filesystem provider/source/path winner 和 exact `get()` content 回读确认；
-- incomplete snapshot、配置漂移、custom roots、`includeDefaultRoots=false`、重命名 provider/自定义 preset 均 fail closed；
+- incomplete snapshot、配置漂移、custom roots、`includeDefaultRoots=false`、重命名 provider/自定义 preset、mounted USER provider 的 `$DSH_HOME` 漂移均 fail closed；
 - 卸载插件后已发布 USER Skill 仍由 stock DSH 使用。
 
-该 runner 尚不存在、尚未运行，当前状态必须保持 `NOT_RUN`。
+固定 baseline 的当前结果为 1 个测试文件、15 个测试通过，并输出 `CP_ROOT_003=PASS`。production Host 通过 stock `standingMountFor(agent.ctx)` 定位 exact Agent 当前 joined generation，并从其 subtree 内真实 `skill-filesystem` fiber 读取唯一 composition witness；探针以同一真实 mount 和启动环境 witness 驱动 provider 与 production resolver。四种 composition 漂移、mounted USER provider 的 `$DSH_HOME` 环境漂移及两条 approved-ancestor identity 漂移恢复分支都经 production root-contract revalidator/saga 在 journal recover、root prepare、write、finalize 和 readback 前进入 `NEEDS_ATTENTION`。切换到新的 stock standing generation 后 USER Skill 仍由原生 filesystem provider 使用；实际包 add/remove 边界仍由 CP-INS-001 独立验证。
 
 ## 已放弃的历史实验
 
-`probes/run-dsh-root-contract-probe.ps1` 只接受历史候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca`，曾验证候选 `snapshot.roots` API。该实验不在默认命令中，不是兼容性门禁、生产依赖或 CP-ROOT-003 的替代证据。
+历史候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca` 曾验证候选 `snapshot.roots` API；对应测试与 runner 路线已移除，只在证据台账保留历史结论，不是兼容性门禁、生产依赖或 CP-ROOT-003 的替代证据。
 
 `pnpm run evaluate` 会同时运行 Observe 与 Learning 的版本化冻结评测；Learning 评测只输出 case id 和聚合指标，不输出样本正文。`pnpm run verify:candidate` 还会精确锁定候选包的 7 个文件，并对仓库、包内容和合成运行日志执行敏感信息门。
 

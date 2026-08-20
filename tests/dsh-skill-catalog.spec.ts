@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DshSkillCatalogAdapter } from '../src/adapters/dsh-skills/skill-catalog.js'
 
 describe('DSH Skill catalog adapter', () => {
-  it('keeps old snapshots compatible while preserving candidate root and path facts', async () => {
+  it('ignores candidate root extensions while preserving exact candidate path facts', async () => {
     const view = { cwd: 'D:\\workspace' }
     const old = new DshSkillCatalogAdapter({
       snapshot: async () => ({ skills: [], complete: true }),
@@ -31,8 +31,15 @@ describe('DSH Skill catalog adapter', () => {
         content: '# Review\n\nCheck the diff.',
       }),
     })
-    await expect(current.snapshot(view)).resolves.toMatchObject({
-      roots: [{ provider: 'filesystem', source: 'project-dsh' }],
+    await expect(current.snapshot(view)).resolves.toEqual({
+      complete: true,
+      skills: [{
+        name: 'review-hygiene',
+        description: 'Review carefully.',
+        invocation: { modelInvocable: true, userInvocable: false },
+        provider: 'filesystem',
+        source: 'project-dsh',
+      }],
     })
     await expect(current.get('review-hygiene', view)).resolves.toMatchObject({
       path: 'D:\\workspace\\.dsh\\skills\\review-hygiene\\SKILL.md',

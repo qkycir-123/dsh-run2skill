@@ -3,7 +3,7 @@ import type {
   PublicationFileSystemResult,
   PublicationRootPreparation,
 } from '../../application/publication/index.js'
-import type { RootBindingV1, ProposalSnapshotV1 } from '../../domain/review/index.js'
+import type { RootBindingV2, ProposalSnapshotV1 } from '../../domain/review/index.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 import {
   PublicationConflict,
@@ -19,7 +19,7 @@ import {
 
 export interface C5PublicationFileSystemOptions {
   readonly verifyParity: (
-    binding: RootBindingV1,
+    binding: RootBindingV2,
     canonicalRoot: string,
     item: CaptureWorkItemV1,
   ) => Promise<boolean>

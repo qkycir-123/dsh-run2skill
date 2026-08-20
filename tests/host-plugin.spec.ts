@@ -221,6 +221,7 @@ describe('Host plugin assembly', () => {
     const domain = createMemoryRun2skillDomain()
     const agent = {
       id: 'session-1',
+      ctx: { registry: { values: () => [] } },
       session: { header: { id: 'session-1', createdAt: 1_725_000_000_000, cwd: 'D:\\workspace' } },
     }
     let preStep: ((payload: { agent: typeof agent }, next: () => Promise<unknown>) => Promise<unknown>) | undefined

@@ -21,22 +21,33 @@ const path = utf8Limited(8 * 1024)
 const skillBytes = utf8Limited(64 * 1024)
 const skillName = z.string().min(1).max(128).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
 
+export const ROOT_CONTRACT_VERSION_V2 = 'stock-dsh-web-default-roots-v1'
+export const ROOT_RESOLVER_VERSION_V2 = 'stock-root-resolver-v2'
+
 const WorkspaceBindingV1Schema = z.object({
   workspaceId: identity,
   canonicalPath: path,
   observedAt: isoDateTime,
 }).strict()
 
+const DshHomeBindingV1Schema = z.object({
+  resolutionKind: z.enum(['CONFIGURATION', 'ENVIRONMENT', 'DEFAULT']),
+  canonicalPath: path,
+  identityDigest: sha256Hex,
+  observedAt: isoDateTime,
+}).strict()
+
 const RootBindingCommonSchema = z.object({
   scope: z.enum(['PROJECT', 'USER']),
-  provider: identity,
-  source: z.enum(['project-dsh', 'user-dsh']),
-  resolverVersion: identity,
-  observationDigest: sha256Hex,
+  expectedProvider: z.literal('filesystem'),
+  expectedSource: z.enum(['project-dsh', 'user-dsh']),
+  resolverVersion: z.literal(ROOT_RESOLVER_VERSION_V2),
+  rootContractVersion: z.literal(ROOT_CONTRACT_VERSION_V2),
+  resolutionContractDigest: sha256Hex,
   declaredRootPath: path,
 }).strict()
 
-export const RootBindingV1Schema = z.discriminatedUnion('state', [
+export const RootBindingV2Schema = z.discriminatedUnion('state', [
   RootBindingCommonSchema.extend({
     state: z.literal('EXISTING'),
     canonicalRootPath: path,
@@ -50,8 +61,8 @@ export const RootBindingV1Schema = z.discriminatedUnion('state', [
   }).strict(),
 ]).superRefine((value, context) => {
   const expectedSource = value.scope === 'PROJECT' ? 'project-dsh' : 'user-dsh'
-  if (value.source !== expectedSource) {
-    context.addIssue({ code: 'custom', path: ['source'], message: 'Root source must match scope' })
+  if (value.expectedSource !== expectedSource) {
+    context.addIssue({ code: 'custom', path: ['expectedSource'], message: 'Root source must match scope' })
   }
   if (value.state === 'ABSENT') {
     const segments = value.missingSegments.join('\0')
@@ -64,7 +75,7 @@ export const RootBindingV1Schema = z.discriminatedUnion('state', [
   }
 })
 
-export type RootBindingV1 = z.infer<typeof RootBindingV1Schema>
+export type RootBindingV2 = z.infer<typeof RootBindingV2Schema>
 
 const TargetBindingV1Schema = z.object({
   skillName,
@@ -116,14 +127,14 @@ const CoveringCandidateBindingV1Schema = z.object({
 
 const CreateBindingV1Schema = z.object({
   kind: z.literal('CREATE'),
-  rootBinding: RootBindingV1Schema,
+  rootBinding: RootBindingV2Schema,
   targetBinding: TargetBindingV1Schema,
   expectedAbsence: ExpectedAbsenceV1Schema,
 }).strict()
 
 const MergeBindingV1Schema = z.object({
   kind: z.literal('MERGE'),
-  rootBinding: RootBindingV1Schema,
+  rootBinding: RootBindingV2Schema,
   targetBinding: TargetBindingV1Schema,
   baseBinding: BaseBindingV1Schema,
 }).strict()
@@ -157,6 +168,7 @@ const ProposalSnapshotFactsV1Schema = z.object({
   rendererVersion: identity,
   persistenceScope: z.enum(['PROJECT', 'USER']),
   workspaceBinding: WorkspaceBindingV1Schema.optional(),
+  dshHomeBinding: DshHomeBindingV1Schema.optional(),
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
   catalogObservationDigest: sha256Hex,
   curationRationale: utf8Limited(4 * 1024),
@@ -170,6 +182,19 @@ const ProposalSnapshotFactsV1Schema = z.object({
   }
   if (value.persistenceScope === 'PROJECT' && value.workspaceBinding === undefined) {
     context.addIssue({ code: 'custom', path: ['workspaceBinding'], message: 'PROJECT Proposal requires a Workspace binding' })
+  }
+  if (value.persistenceScope === 'PROJECT' && value.dshHomeBinding !== undefined) {
+    context.addIssue({ code: 'custom', path: ['dshHomeBinding'], message: 'PROJECT Proposal cannot bind a DSH Home' })
+  }
+  if (
+    value.persistenceScope === 'USER'
+    && value.kind !== 'DISCARD'
+    && value.dshHomeBinding === undefined
+  ) {
+    context.addIssue({ code: 'custom', path: ['dshHomeBinding'], message: 'USER Proposal requires a DSH Home binding' })
+  }
+  if (value.persistenceScope === 'USER' && value.workspaceBinding !== undefined) {
+    context.addIssue({ code: 'custom', path: ['workspaceBinding'], message: 'USER Proposal cannot bind a Workspace' })
   }
   if (new Set(value.supportingExperienceIds).size !== value.supportingExperienceIds.length) {
     context.addIssue({ code: 'custom', path: ['supportingExperienceIds'], message: 'Supporting Experiences must be unique' })

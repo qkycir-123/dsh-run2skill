@@ -55,6 +55,12 @@ import {
   PublicationScheduler,
 } from '../application/publication/index.js'
 import { DshPublicationReadbackAdapter } from '../adapters/dsh-skills/publication-readback.js'
+import {
+  StockDshRootContractResolver,
+  deriveStockResolutionContractDigest,
+  resolveStockSkillRuntimeConfiguration,
+} from '../adapters/dsh-skills/stock-root-contract.js'
+import { stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
 
 export {
@@ -83,7 +89,7 @@ interface DshSessionProjection {
   readonly header: DshSessionHeader
 }
 
-type Run2skillAgent = object & AgentScopeProjection
+type Run2skillAgent = object & AgentScopeProjection & Parameters<typeof resolveStockSkillRuntimeConfiguration>[1]
 
 interface AgentPreStepPayload {
   readonly agent: Run2skillAgent
@@ -120,6 +126,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentDomain: Run2skillDomain | undefined
   currentScheduler: LearningScheduler | undefined
   currentPublicationScheduler: PublicationScheduler | undefined
+  readonly #stockRootResolver = new StockDshRootContractResolver()
 
   constructor(
     private readonly context: Run2skillHostContext,
@@ -157,10 +164,32 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
             }
       }
       const publicationFacts = new NodePublicationFactsAdapter()
+      const rootContract = {
+        resolve: async (input: {
+          readonly scope: 'PROJECT' | 'USER'
+          readonly workspaceBinding?: { readonly workspaceId: string; readonly canonicalPath: string } | undefined
+          readonly view: LearningSkillView<Run2skillAgent>
+        }) => {
+          const configuration = await resolveStockSkillRuntimeConfiguration(
+            stockPresetMounts,
+            input.view.scope,
+          )
+          if (configuration === undefined) {
+            return { status: 'UNSUPPORTED' as const, code: 'ROOT_CONTRACT_UNSUPPORTED' as const }
+          }
+          return this.#stockRootResolver.resolve({
+            scope: input.scope,
+            ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
+            configuration,
+          })
+        },
+        deriveResolutionContractDigest: deriveStockResolutionContractDigest,
+      }
       const proposalBuilder = new ProposalSnapshotBuilder(
         skillCatalog,
         publicationFacts,
         workspaceResolver,
+        { rootContract },
       )
       const publicationStore = new PublicationSagaStore(domain)
       const publicationSaga = new ApprovalPublicationSaga({
@@ -170,15 +199,13 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           verifyParity: async (binding, canonicalRoot, item) => {
             const view = publicationView(item)
             if (view === undefined) return false
-            const snapshot = await skillCatalog.snapshot(view)
-            if (!snapshot.complete || snapshot.roots === undefined) return false
-            const matches = snapshot.roots.filter(root => (
-              root.provider === binding.provider
-              && root.source === binding.source
-              && sameHostPath(root.path, binding.declaredRootPath)
-              && sameHostPath(root.path, canonicalRoot)
-            ))
-            return matches.length === 1
+            const revalidated = await proposalBuilder.revalidateApproved(item, view)
+            if (revalidated.status !== 'READY') return false
+            const current = revalidated.proposal.actionBinding
+            return current.kind !== 'DISCARD'
+              && current.rootBinding.resolutionContractDigest === binding.resolutionContractDigest
+              && sameHostPath(current.rootBinding.declaredRootPath, binding.declaredRootPath)
+              && sameHostPath(canonicalRoot, binding.declaredRootPath)
           },
         }),
         readback: new DshPublicationReadbackAdapter(skillCatalog, publicationView),

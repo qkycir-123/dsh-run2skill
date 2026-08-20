@@ -51,6 +51,7 @@ function ports(proposal: ProposalSnapshotV1, overrides: {
   readback?: PublicationReadbackPort
 } = {}) {
   const revalidation: PublicationRevalidationPort = overrides.revalidation ?? {
+    async revalidateRootContract() { return { status: 'VALID' } },
     async revalidate() { return { status: 'VALID' } },
   }
   const fileSystem: PublicationFileSystemPort = {
@@ -132,7 +133,10 @@ describe('ApprovalPublicationSaga', () => {
     const { domain, item, proposal } = await approvedFixture()
     const store = new PublicationSagaStore(domain, fixedNow)
     const dependencies = ports(proposal, {
-      revalidation: { async revalidate() { return { status: 'NEEDS_REFRESH', code: 'EXPECTED_ABSENCE_CHANGED' } } },
+      revalidation: {
+        async revalidateRootContract() { return { status: 'VALID' } },
+        async revalidate() { return { status: 'NEEDS_REFRESH', code: 'EXPECTED_ABSENCE_CHANGED' } },
+      },
     })
     const write = vi.spyOn(dependencies.fileSystem, 'write')
     const saga = new ApprovalPublicationSaga({ store, ...dependencies, now: fixedNow })
@@ -146,6 +150,42 @@ describe('ApprovalPublicationSaga', () => {
         reviewDecision: 'APPROVED',
         publicationOutcome: 'NEEDS_REFRESH',
         failure: { code: 'EXPECTED_ABSENCE_CHANGED', retryable: false },
+      },
+    })
+  })
+
+  it('stops before journal recovery when the approved root contract changed after a written crash', async () => {
+    const { domain, item, proposal } = await approvedFixture()
+    const store = new PublicationSagaStore(domain, fixedNow)
+    const recover = vi.fn(async () => ({ status: 'written' as const, txid: 'tx', target: 'target', backup: null }))
+    const readback = vi.fn(async () => ({
+      status: 'CONFIRMED' as const,
+      observedHash: proposal.skillBytesDigest,
+    }))
+    const saga = new ApprovalPublicationSaga({
+      store,
+      ...ports(proposal, {
+        revalidation: {
+          async revalidateRootContract() {
+            return { status: 'NEEDS_ATTENTION', code: 'ROOT_CONTRACT_UNSUPPORTED' }
+          },
+          async revalidate() { return { status: 'VALID' } },
+        },
+        fileSystem: { recover },
+        readback: { confirmExact: readback },
+      }),
+      now: fixedNow,
+    })
+
+    const result = await saga.run(item.workItemId)
+
+    expect(recover).not.toHaveBeenCalled()
+    expect(readback).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      review: {
+        publicationOutcome: 'NEEDS_ATTENTION',
+        failure: { code: 'ROOT_CONTRACT_UNSUPPORTED', retryable: false },
       },
     })
   })
@@ -181,8 +221,8 @@ describe('ApprovalPublicationSaga', () => {
     const publication = item.publication!
     const lineage = materializeLineage({
       scope: proposal.persistenceScope,
-      provider: binding.rootBinding.provider,
-      source: binding.rootBinding.source,
+      provider: binding.rootBinding.expectedProvider,
+      source: binding.rootBinding.expectedSource,
       skillName: proposal.name,
       canonicalTargetPath: binding.targetBinding.skillFilePath,
       targetIdentityDigest: publication.targetIdentityDigest,
@@ -334,10 +374,11 @@ describe('ApprovalPublicationSaga', () => {
           rootBinding: {
             state: 'ABSENT',
             scope: 'PROJECT',
-            provider: 'filesystem',
-            source: 'project-dsh',
-            resolverVersion: 'root-resolver-v1',
-            observationDigest: 'a'.repeat(64),
+            expectedProvider: 'filesystem',
+            expectedSource: 'project-dsh',
+            resolverVersion: 'stock-root-resolver-v2',
+            rootContractVersion: 'stock-dsh-web-default-roots-v1',
+            resolutionContractDigest: 'a'.repeat(64),
             declaredRootPath: rootPath,
             canonicalExistingAncestorPath: observed.canonicalExistingAncestorPath,
             ancestorIdentityDigest: observed.ancestorIdentityDigest,
@@ -391,7 +432,10 @@ describe('ApprovalPublicationSaga', () => {
       }
       const saga = new ApprovalPublicationSaga({
         store,
-        revalidation: { async revalidate() { return { status: 'VALID' } } },
+        revalidation: {
+          async revalidateRootContract() { return { status: 'VALID' } },
+          async revalidate() { return { status: 'VALID' } },
+        },
         fileSystem,
         readback: {
           async confirmExact() {

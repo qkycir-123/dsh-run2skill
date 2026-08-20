@@ -128,8 +128,8 @@ export class ProposalReviewStore {
           proposalId: review.proposal.proposalId,
           targetIdentityDigest: derivePublicationTargetIdentityDigest({
             scope: review.proposal.persistenceScope,
-            provider: actionBinding.rootBinding.provider,
-            source: actionBinding.rootBinding.source,
+            provider: actionBinding.rootBinding.expectedProvider,
+            source: actionBinding.rootBinding.expectedSource,
             skillName: review.proposal.name,
             canonicalTargetPath: actionBinding.targetBinding.skillFilePath,
           }),

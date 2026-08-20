@@ -1,6 +1,6 @@
 # DSH 兼容性基线
 
-状态：Architecture 级源码核验与既有基线探针轮次已完成；纯插件 stock-root 探针尚未运行
+状态：Architecture 级源码核验、既有基线探针轮次与纯插件 stock-root 探针已完成
 核验日期：2026-08-20
 
 ## 1. 上游来源
@@ -44,6 +44,7 @@
 | 受限 LLM 调用 | packages/llm/llm/src/types.ts、index.ts | ctx.llm.stream 支持明确 provider/model、AbortSignal、usage 和 terminal finish；GenerateOptions 没有原生 JSON response-format，也没有任意 purpose 扩展 |
 | Skill Registry | packages/skill/skill/src/index.ts | snapshot.complete 是完整性边界；winning candidate 按 scope layer/rank 解析；get 会重新读取完整 body；skills/change 用于失效通知 |
 | Filesystem Skill provider | packages/skill/skill-filesystem/src/index.ts | project-dsh/user-dsh rank、root 和 source 已确认；provider 支持 bundle/flat Skill 和热 watcher；watcher 故障可返回 complete=false |
+| Agent preset mounted-generation witness | packages/preset/agent-presets/src/mount.ts；vendor/cordis/src/fiber.ts、registry.ts；apps/cli/config/agent-presets/{standard,code}/agent.cordis.yml | `standingMountFor(agent.ctx)` 定位 exact joined generation；其 subtree 内唯一 active `skill-filesystem` fiber 保留 Schemastery 已解析 config，避免磁盘 composition 与旧 generation 竞态 |
 | Skill frontmatter | packages/skill/skill-filesystem/src/index.ts | name/description 必填；模型/用户调用键是 disable-model-invocation 与 user-invocable，不接受 run2skill 自造 camelCase 字段 |
 | Workspace identity | packages/workspace/workspace/src/types.ts、index.ts | ctx.workspaceRegistry 以 UUID 标识、用 fs.realpath 规范化路径，并可 resolveByPath/status；适合作为 PROJECT identity，不应由 run2skill 猜 Git root |
 | Settings | packages/settings/settings/src/index.ts | namespace 注册、frozen resolved value、watch、serialized write 和 expectedRevision 冲突可复用 |
@@ -51,7 +52,7 @@
 | Web trust / RPC | packages/client/connection/src/rpc.ts、rpc-host.ts、index.ts | 独立 RPC channel 可声明 authority=loopback；Host/Origin/cross-site 检查发生在业务 handler 前；该 fence 是可达性边界，不是远程认证 |
 | Client 插件与 slot | packages/client/modules、packages/client/ui-conversation/src/client/contract/slots.ts | 外部包可用 dsh.client + ./client 加载；conversation.session.header.actions 是 session-scoped list slot |
 | 原子文件工具 | packages/util/atomic-write/src/index.ts | writeFileAtomic 保证同目录完整替换，withFileLock 只协调遵守该锁的 writer；两者都不提供内容 compare-and-exchange 或 crash fsync |
-| DSH Home | packages/util/home-paths/src/index.ts | resolveDshHome 顺序为显式配置、DSH_HOME、默认目录；ctx.skills 当前未直接暴露 effective writable root 查询，但 v0.1 生产契约不以该 API 为前置 |
+| DSH Home | packages/util/home-paths/src/index.ts；packages/skill/skill-filesystem/src/index.ts | resolveDshHome 顺序为显式配置、DSH_HOME、默认目录；filesystem provider 在构造时固定 effective Home，Host 因此保存启动环境 witness 并对运行时环境漂移 fail closed；ctx.skills 当前未直接暴露 effective writable root 查询 |
 
 这些结论已转化为 docs/architecture/baseline.md 的模块边界、fail-open/fail-closed 规则和 Contract Probe 清单。
 
@@ -90,12 +91,13 @@ packages/subagent/
 - loopback RPC 的 Host/Origin 拒绝顺序、外部 Client manifest 和 Session header action slot；
 - Windows 与 WSL/Linux 上的 CREATE/MERGE hard-link no-replace、竞争、进程崩溃恢复、junction/symlink 防逃逸和 backup finalization。
 - 外部双面包在真实 Web profile 的 add、Host/Client 激活、禁用、升级、卸载，以及卸载后的原生 Skill 保留。
+- stock root contract 的 PROJECT/USER CREATE/MERGE、absent root、配置漂移 fail-closed、原生 filesystem winner 与 exact `get()` 回读。
 
 完整输入、环境、结果和运行命令见 `docs/architecture/contract-probes.md`。基线探针轮次已完成；进入对应纵向切片时仍须遵守以下剩余边界：
 
 - Session 取消、重复事件和 workspace identity 的精确解析；
 - `ctx.skills` 的 scope layer 和并发失效边界；
-- ADR-0001 的 stock configuration root contract、PROJECT/USER 精确写入和原生 Registry exact readback；Issue #48 完成并运行新探针前不得宣称 C7 通过；
+- ADR-0001 的 stock configuration root contract 已由 CP-ROOT-003 取得运行证据；该结果不等同于 C7 最终黄金验收；
 - `ctx.settings` namespace、默认值、冲突和 live update；
 - 真实 dsh-run2skill 发布候选包必须重复 Host/Client、profile、安装、禁用、升级和卸载验收。
 

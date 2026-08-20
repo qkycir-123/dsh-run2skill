@@ -276,10 +276,14 @@ export function ProposalInboxPanel(props: {
   )
 }
 
-function factsFromAction(detail: ProposalDetail): string {
+export function factsFromAction(detail: ProposalDetail): string {
   const action = detail.proposal.actionBinding
   if (action.kind === 'CREATE') {
     return [
+      `Root contract: ${action.rootBinding.rootContractVersion}`,
+      `Root resolver: ${action.rootBinding.resolverVersion}`,
+      `Expected provider/source: ${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
+      `Resolution digest: ${action.rootBinding.resolutionContractDigest}`,
       `Root state: ${action.rootBinding.state}`,
       `Declared root: ${action.rootBinding.declaredRootPath}`,
       `Bundle target: ${action.targetBinding.bundlePath}`,
@@ -293,6 +297,10 @@ function factsFromAction(detail: ProposalDetail): string {
   }
   if (action.kind === 'MERGE') {
     return [
+      `Root contract: ${action.rootBinding.rootContractVersion}`,
+      `Root resolver: ${action.rootBinding.resolverVersion}`,
+      `Expected provider/source: ${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
+      `Resolution digest: ${action.rootBinding.resolutionContractDigest}`,
       `Root state: ${action.rootBinding.state}`,
       `Declared root: ${action.rootBinding.declaredRootPath}`,
       `Target identity: ${action.baseBinding.candidateKey}`,
@@ -354,6 +362,14 @@ export function ProposalDetailView(props: {
         : createElement(Fragment, null,
             createElement('dt', null, 'Workspace'),
             createElement('dd', null, `${proposal.workspaceBinding.workspaceId} · ${makeSafeText(proposal.workspaceBinding.canonicalPath)}`),
+          ),
+      proposal.dshHomeBinding === undefined
+        ? null
+        : createElement(Fragment, null,
+            createElement('dt', null, 'DSH Home'),
+            createElement('dd', null, `${proposal.dshHomeBinding.resolutionKind} · ${makeSafeText(proposal.dshHomeBinding.canonicalPath)}`),
+            createElement('dt', null, 'DSH Home identity'),
+            createElement('dd', null, proposal.dshHomeBinding.identityDigest),
           ),
       createElement('dt', null, '状态'),
       createElement('dd', null, `${detail.reviewDecision} · ${detail.processingState} · ${detail.publicationOutcome}`),

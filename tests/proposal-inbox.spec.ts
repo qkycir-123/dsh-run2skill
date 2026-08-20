@@ -13,6 +13,7 @@ import {
 } from '../src/client/proposal-inbox.js'
 import {
   RejectConfirmationBody,
+  factsFromAction,
   proposalInboxContentBlocked,
   trapDialogTab,
 } from '../src/client/proposal-inbox-view.js'
@@ -210,6 +211,8 @@ describe('Proposal Inbox client', () => {
     await controller.select(staged.item.review!.proposal.proposalId)
     expect(controller.snapshot().detail?.proposal.exactSkillBytes)
       .toBe(staged.item.review!.proposal.exactSkillBytes)
+    expect(factsFromAction(controller.snapshot().detail!)).toContain('Root contract: stock-dsh-web-default-roots-v1')
+    expect(factsFromAction(controller.snapshot().detail!)).toContain('Expected provider/source: filesystem / project-dsh')
 
     await controller.mutate('APPROVE')
     expect(controller.snapshot().announcement).toContain('正在发布')
@@ -348,6 +351,44 @@ describe('Proposal Inbox client', () => {
     mismatched.value.proposal.kind = 'MERGE'
 
     expect(parseProposalDetail(mismatched)).toBeUndefined()
+  })
+
+  it('accepts and preserves the immutable USER DSH Home binding on the review wire', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const staged = await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const response = await createProposalReviewRpcHandler(() => domain)('proposals/get', {
+      apiVersion: 1,
+      proposalId: staged.item.review!.proposal.proposalId,
+    }, new AbortController().signal)
+    const userResponse = structuredClone(response) as {
+      value: { proposal: Record<string, unknown> & { actionBinding: { rootBinding: Record<string, unknown> } } }
+    }
+    userResponse.value.proposal.persistenceScope = 'USER'
+    delete userResponse.value.proposal.workspaceBinding
+    userResponse.value.proposal.dshHomeBinding = {
+      resolutionKind: 'ENVIRONMENT',
+      canonicalPath: 'D:\\dsh-home',
+      identityDigest: 'f'.repeat(64),
+      observedAt: '2026-08-20T00:00:00.000Z',
+    }
+    Object.assign(userResponse.value.proposal.actionBinding.rootBinding, {
+      scope: 'USER',
+      expectedSource: 'user-dsh',
+      declaredRootPath: 'D:\\dsh-home\\skills',
+    })
+
+    expect(parseProposalDetail(userResponse)?.proposal.dshHomeBinding).toEqual({
+      resolutionKind: 'ENVIRONMENT',
+      canonicalPath: 'D:\\dsh-home',
+      identityDigest: 'f'.repeat(64),
+      observedAt: '2026-08-20T00:00:00.000Z',
+    })
   })
 
   it('stops while hidden and refreshes on visibility, focus, and reconnect', async () => {

@@ -22,7 +22,7 @@ LEARNED
 
 本切片不允许用浏览器内容、模型建议、默认路径或普通覆盖写入替代 Host 权威事实。`APPROVED` 只表示用户授权；只有写盘、热刷新和精确回读全部成立，才记录 `PUBLISHED`。
 
-切片 C 的生产闭环采用 `docs/adr/0001-stock-dsh-publication-root-contract.md`：只支持固定 baseline 官方 `web` profile 的默认 filesystem roots，不依赖 DSH fork、未合并 roots API 或本地 patch。C1–C6 已合并，但现有实现仍携带候选 `snapshot.roots` 绑定；独立 Issue #48 必须先迁移为版本化纯插件 contract，之后 C7 才执行最终验收。配置、身份或 exact readback 无法证明时，Proposal 进入 `NEEDS_ATTENTION`。
+切片 C 的生产闭环采用 `docs/adr/0001-stock-dsh-publication-root-contract.md`：只支持固定 baseline 官方 `web` profile 的默认 filesystem roots，不依赖 DSH fork、未合并 roots API 或本地 patch。C1–C6 已合并，Issue #48 已把候选 `snapshot.roots` 绑定迁移为版本化纯插件 contract 并通过 CP-ROOT-003；C7 之后仍独立执行最终验收。配置、身份或 exact readback 无法证明时，Proposal 进入 `NEEDS_ATTENTION`。
 
 ## 2. 范围与阶段门
 
@@ -213,10 +213,11 @@ Similarity 只排序 shortlist，不能直接作出任何终态。
 
 ### 6.2 版本化 stock DSH root contract
 
-Issue #48 将当前候选 snapshot-roots 绑定迁移为 `RootBindingV2`。contract 只接受固定兼容性 baseline 的官方 `web` profile、默认 filesystem provider 和 `includeDefaultRoots=true`：
+Issue #48 已将候选 snapshot-roots 绑定迁移为 `RootBindingV2`。contract 只接受固定兼容性 baseline 的官方 `web` profile、默认 filesystem provider 和 `includeDefaultRoots=true`：
 
 - PROJECT：重新解析 `workspaceRegistry` 的 canonical Workspace，并追加固定 `.dsh/skills`；
 - USER：使用与目标 DSH 组合相同的有效 DSH Home resolution，并追加固定 `skills`；
+- Host 通过 stock `standingMountFor(agent.ctx)` 定位 exact Agent 当前 joined preset generation，并从该 subtree 中唯一 active 的 stock filesystem fiber 读取已解析实际配置；显式 `dshHome`、环境和默认 Home 继续服从 stock precedence，未显式配置时还必须保持 provider 构造与 USER 发布共用的启动环境 witness，fiber 缺失/重复/无效或 `$DSH_HOME` 漂移时 fail closed；
 - MERGE：完整 Catalog winner 的原生 filesystem provider、`project-dsh`/`user-dsh` source 和 `ctx.skills.get().path` 必须与标准 root 一致；
 - CREATE：标准目标、Catalog expected-absence 和文件 expected-absence 一并进入 immutable Approval；
 - custom roots、`includeDefaultRoots=false`、重命名 provider、自定义 preset 或无法重建的配置仍可参与 lookup，但 publication 进入 `NEEDS_ATTENTION`。
@@ -345,7 +346,7 @@ MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化
 
 ### 8.4 崩溃恢复
 
-启动先恢复 Publication Journal，再恢复 Learning 和 capture：
+启动先重新验证 immutable Approval 的 root contract；只有同一 contract 仍成立才恢复 Publication Journal，随后恢复 Learning 和 capture：
 
 - target 已是 approved bytes：继续 Registry 回读，不重复写；
 - target 是 Base、stage 完整：可在全部 bindings 仍成立时继续当前 attempt；
@@ -424,7 +425,7 @@ src/client/                     # Inbox/Review UI
 
 ### 11.3 固定 DSH probes
 
-- stock baseline 纯插件 root contract：证明 PROJECT/USER、absent root、unsupported config、MERGE existing path、原生 provider/source/path 与 exact readback；当前状态为 NOT_RUN，Issue #48 实现后执行；
+- CP-ROOT-003：stock baseline 纯插件 root contract 已证明 PROJECT/USER、absent root、unsupported config、MERGE existing path、原生 provider/source/path 与 exact readback；该 PASS 只解除 #48 门，不替代 C7；
 - 旧候选上游 roots 探针仅保留为已放弃的历史实验，不再是默认门禁或生产证据；
 - CP-PUB-001：Windows + WSL/Linux missing-root first CREATE、CREATE/MERGE race、crash、junction/symlink；
 - CP-WEB-001：真实 web profile、loopback fence、Host/Client slot；
@@ -477,7 +478,7 @@ src/client/                     # Inbox/Review UI
 
    四个黄金场景、故障注入、secret 阻断与跨重启证据；只做验收修复，不提前实现 D。
 
-C7 当前暂停。在 C6 与 C7 之间先完成独立 Issue #48：迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据。该 Issue 不承担 C7 最终产品验收。
+C7 在 #48 合并前保持暂停。独立 Issue #48 已迁移候选 snapshot-roots 依赖、实现 ADR-0001，并在 stock、clean、未修改的固定 DSH baseline 上取得纯插件 root-contract 运行证据；该 Issue 仍不承担 C7 最终产品验收。
 
 ## 13. 已知取舍
 
