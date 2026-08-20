@@ -58,8 +58,9 @@ import { DshPublicationReadbackAdapter } from '../adapters/dsh-skills/publicatio
 import {
   StockDshRootContractResolver,
   deriveStockResolutionContractDigest,
+  resolveStockSkillRuntimeConfiguration,
   resolveStockSessionPreset,
-  type StockSkillRuntimeConfiguration,
+  type StockLoaderProjection,
 } from '../adapters/dsh-skills/stock-root-contract.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
 
@@ -76,6 +77,7 @@ export * from '../application/publication/index.js'
 
 export const name = 'run2skill'
 export const inject = [
+  'loader',
   'sessions',
   'sessionPersistence',
   'storageDomain',
@@ -100,6 +102,7 @@ interface AgentDisposedPayload {
 }
 
 export interface Run2skillHostContext extends Run2skillStorageContext {
+  readonly loader: StockLoaderProjection
   readonly sessions: unknown
   readonly sessionPersistence: SessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
@@ -169,11 +172,21 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           readonly scope: 'PROJECT' | 'USER'
           readonly workspaceBinding?: { readonly workspaceId: string; readonly canonicalPath: string } | undefined
           readonly view: LearningSkillView<Run2skillAgent>
-        }) => stockRootResolver.resolve({
-          scope: input.scope,
-          ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
-          configuration: stockRuntimeConfiguration(resolveStockSessionPreset(input.view.scope.session)),
-        }),
+        }) => {
+          const configuration = resolveStockSkillRuntimeConfiguration(
+            this.context.loader,
+            input.view.scope,
+            resolveStockSessionPreset(input.view.scope.session),
+          )
+          if (configuration === undefined) {
+            return { status: 'UNSUPPORTED' as const, code: 'ROOT_CONTRACT_UNSUPPORTED' as const }
+          }
+          return stockRootResolver.resolve({
+            scope: input.scope,
+            ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
+            configuration,
+          })
+        },
         deriveResolutionContractDigest: deriveStockResolutionContractDigest,
       }
       const proposalBuilder = new ProposalSnapshotBuilder(
@@ -329,16 +342,6 @@ function sameHostPath(left: string, right: string): boolean {
   const a = normalize(resolve(left))
   const b = normalize(resolve(right))
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
-}
-
-function stockRuntimeConfiguration(agentPreset: string | undefined): StockSkillRuntimeConfiguration {
-  return {
-    profile: 'web',
-    ...(agentPreset === undefined ? {} : { presetId: agentPreset }),
-    providerName: 'filesystem',
-    includeDefaultRoots: true,
-    customSkillDirs: [],
-  }
 }
 
 function unavailableSummary(lifecycle: RecoveryLifecycle, notices: RuntimeNotices): ObserveSummaryV1 {

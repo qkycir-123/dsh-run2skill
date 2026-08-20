@@ -11,7 +11,7 @@ v0.1 生产发布只支持固定兼容性 baseline 的官方 `web` profile 和�
 - PROJECT：经 DSH Workspace Registry 解析并重新验证的 canonical Workspace 下 `.dsh/skills`；
 - USER：与目标 DSH 组合相同的有效 DSH Home 下 `skills`。
 
-写入前，Host 必须把版本化 root contract、解析算法版本、Workspace/DSH Home identity、canonical root、文件身份或 expected-absence、exact target 和 Proposal 内容纳入 immutable digest，并由用户批准。`customSkillDirs`、`includeDefaultRoots=false`、重命名 provider 或自定义 preset 可参与查重，但 v0.1 不承诺向其发布；无法证明官方默认目标契约时进入 `NEEDS_ATTENTION`。
+写入前，Host 必须从 exact Agent 的 active stock Loader filesystem 条目取得实际 provider/default/custom/explicit-home 配置，并把版本化 root contract、解析算法版本、Workspace/DSH Home identity、canonical root、文件身份或 expected-absence、exact target 和 Proposal 内容纳入 immutable digest，由用户批准。`customSkillDirs`、`includeDefaultRoots=false`、重命名 provider 或自定义 preset 可参与查重，但 v0.1 不承诺向其发布；无法证明官方默认目标契约时进入 `NEEDS_ATTENTION`。任何 retry 都先重验该 root contract，才允许 journal recovery 或后续写入动作。
 
 写入继续使用既有 compare-and-exchange、target single-flight 和 append-only journal/crash recovery 协议。MERGE 可由完整 Catalog winner 的现有 `ctx.skills.get().path` 绑定 Base 和目标；CREATE 使用经批准的标准目标，并同时证明 Catalog 与文件 expected-absence。
 

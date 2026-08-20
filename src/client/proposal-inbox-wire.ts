@@ -87,7 +87,7 @@ const proposal = z.object({
     observedAt: z.string().min(1).max(64),
   }).strict().optional(),
   dshHomeBinding: z.object({
-    resolutionKind: z.enum(['ENVIRONMENT', 'DEFAULT']),
+    resolutionKind: z.enum(['CONFIGURATION', 'ENVIRONMENT', 'DEFAULT']),
     canonicalPath: z.string().min(1).max(8_192),
     identityDigest: sha256,
     observedAt: z.string().min(1).max(64),

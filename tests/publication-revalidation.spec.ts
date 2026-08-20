@@ -6,11 +6,13 @@ describe('ApprovedProposalRevalidator', () => {
   it('maps mutable facts to refresh and missing authority to attention without widening approval', async () => {
     const item = makeLearnedWorkItem()
     const changedBuilder = {
+      async revalidateApprovedRootContract() { return { status: 'VALID' as const } },
       async revalidateApproved() {
         return { status: 'UNAVAILABLE' as const, failureCode: 'TARGET_ALREADY_EXISTS' as const }
       },
     }
     const unavailableBuilder = {
+      async revalidateApprovedRootContract() { return { status: 'VALID' as const } },
       async revalidateApproved() {
         return { status: 'UNAVAILABLE' as const, failureCode: 'ROOT_OBSERVATION_UNAVAILABLE' as const }
       },

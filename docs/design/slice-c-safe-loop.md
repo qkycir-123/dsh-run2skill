@@ -217,6 +217,7 @@ Issue #48 已将候选 snapshot-roots 绑定迁移为 `RootBindingV2`。contract
 
 - PROJECT：重新解析 `workspaceRegistry` 的 canonical Workspace，并追加固定 `.dsh/skills`；
 - USER：使用与目标 DSH 组合相同的有效 DSH Home resolution，并追加固定 `skills`；
+- Host 从 exact Agent 的唯一 active stock Loader filesystem 条目读取实际配置；显式 `dshHome`、环境和默认 Home 继续服从 stock precedence，条目缺失/重复/无效时 fail closed；
 - MERGE：完整 Catalog winner 的原生 filesystem provider、`project-dsh`/`user-dsh` source 和 `ctx.skills.get().path` 必须与标准 root 一致；
 - CREATE：标准目标、Catalog expected-absence 和文件 expected-absence 一并进入 immutable Approval；
 - custom roots、`includeDefaultRoots=false`、重命名 provider、自定义 preset 或无法重建的配置仍可参与 lookup，但 publication 进入 `NEEDS_ATTENTION`。
@@ -345,7 +346,7 @@ MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化
 
 ### 8.4 崩溃恢复
 
-启动先恢复 Publication Journal，再恢复 Learning 和 capture：
+启动先重新验证 immutable Approval 的 root contract；只有同一 contract 仍成立才恢复 Publication Journal，随后恢复 Learning 和 capture：
 
 - target 已是 approved bytes：继续 Registry 回读，不重复写；
 - target 是 Base、stage 完整：可在全部 bindings 仍成立时继续当前 attempt；

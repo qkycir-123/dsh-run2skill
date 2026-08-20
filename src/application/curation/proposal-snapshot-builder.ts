@@ -62,7 +62,7 @@ export interface RootContractResolutionProjection {
   readonly rootContractVersion: typeof ROOT_CONTRACT_VERSION_V2
   readonly declaredRootPath: string
   readonly dshHome?: {
-    readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+    readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'
     readonly declaredPath: string
   } | undefined
 }
@@ -71,7 +71,7 @@ export type RootContractScopeIdentity =
   | { readonly kind: 'WORKSPACE'; readonly workspaceId: string; readonly canonicalPath: string }
   | {
     readonly kind: 'DSH_HOME'
-    readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+    readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'
     readonly canonicalPath: string
     readonly identityDigest: string
   }
@@ -110,6 +110,10 @@ export type ProposalBuildFailureCode =
 
 export type ProposalBuildResult =
   | { readonly status: 'READY'; readonly proposal: ProposalSnapshotV1 }
+  | { readonly status: 'UNAVAILABLE'; readonly failureCode: ProposalBuildFailureCode }
+
+export type RootContractRevalidationResult =
+  | { readonly status: 'VALID' }
   | { readonly status: 'UNAVAILABLE'; readonly failureCode: ProposalBuildFailureCode }
 
 export interface ProposalSnapshotBuilderOptions<TView extends object> {
@@ -196,6 +200,43 @@ export class ProposalSnapshotBuilder<TView extends object> {
       || approved.actionBinding.kind === 'DISCARD'
     ) return unavailable('CURATION_CONFLICT')
     return await this.#build(item, view, approved)
+  }
+
+  async revalidateApprovedRootContract(
+    item: CaptureWorkItemV1,
+    view: TView,
+  ): Promise<RootContractRevalidationResult> {
+    const approved = item.review?.proposal
+    if (
+      item.processingState !== 'PUBLISHING'
+      || item.review?.reviewDecision !== 'APPROVED'
+      || item.review.publicationOutcome !== 'PENDING_REVIEW'
+      || item.learning?.proposal === undefined
+      || approved === undefined
+      || approved.actionBinding.kind === 'DISCARD'
+    ) return { status: 'UNAVAILABLE', failureCode: 'CURATION_CONFLICT' }
+    const workspaceBinding = await this.#revalidateWorkspace(
+      item,
+      item.learning.proposal.persistenceScope,
+      approved.createdAt,
+    )
+    if ('failureCode' in workspaceBinding) {
+      return { status: 'UNAVAILABLE', failureCode: workspaceBinding.failureCode }
+    }
+    const contract = await this.#resolveRootContract(
+      item.learning.proposal.persistenceScope,
+      workspaceBinding.value,
+      view,
+      approved.createdAt,
+    )
+    if ('failureCode' in contract) {
+      return { status: 'UNAVAILABLE', failureCode: contract.failureCode }
+    }
+    const approvedRoot = approved.actionBinding.rootBinding
+    return contract.resolutionContractDigest === approvedRoot.resolutionContractDigest
+      && samePath(contract.resolution.declaredRootPath, approvedRoot.declaredRootPath)
+      ? { status: 'VALID' }
+      : { status: 'UNAVAILABLE', failureCode: 'APPROVAL_FACTS_CHANGED' }
   }
 
   async #build(
@@ -507,7 +548,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
       readonly resolution: RootContractResolutionProjection
       readonly resolutionContractDigest: string
       readonly dshHomeBinding?: {
-        readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+        readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'
         readonly canonicalPath: string
         readonly identityDigest: string
         readonly observedAt: string
@@ -529,7 +570,7 @@ export class ProposalSnapshotBuilder<TView extends object> {
     if (resolution.status === 'UNSUPPORTED') return { failureCode: resolution.code }
     let identity: RootContractScopeIdentity
     let dshHomeBinding: {
-      readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+      readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'
       readonly canonicalPath: string
       readonly identityDigest: string
       readonly observedAt: string

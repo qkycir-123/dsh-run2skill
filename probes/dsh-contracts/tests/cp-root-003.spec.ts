@@ -18,6 +18,7 @@ import { DshPublicationReadbackAdapter } from '../src/adapters/dsh-skills/public
 import {
   StockDshRootContractResolver,
   deriveStockResolutionContractDigest,
+  resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
 import {
@@ -42,19 +43,11 @@ import { proposalRefOf } from '../src/domain/review/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeLearnedWorkItem } from './support/review-fixture.js'
 
-type SkillView = { readonly cwd: string }
+type SkillView = { readonly cwd: string; readonly scope: object }
 type Scope = 'PROJECT' | 'USER'
 type Decision = 'CREATE' | 'MERGE'
 
 const temporaryDirectories: string[] = []
-const standardConfiguration: StockSkillRuntimeConfiguration = {
-  profile: 'web',
-  presetId: 'standard',
-  providerName: 'filesystem',
-  includeDefaultRoots: true,
-  customSkillDirs: [],
-}
-
 afterEach(async () => {
   for (const directory of temporaryDirectories.splice(0)) {
     await rm(directory, { recursive: true, force: true })
@@ -90,26 +83,41 @@ async function writeExistingSkill(root: string): Promise<void> {
 }
 
 interface FileSystemCompositionOverrides {
+  readonly providerName?: string | undefined
   readonly includeDefaultRoots?: boolean | undefined
+  readonly dshHome?: string | undefined
   readonly customSkillDirs?: readonly string[] | undefined
 }
 
 interface StockCompositionWitness {
   readonly dshHome: string
-  readonly runtimeConfiguration: StockSkillRuntimeConfiguration
+  readonly presetId: string
   readonly fileSystem: FileSystemCompositionOverrides
 }
 
 function compositionWitness(
   dshHome: string,
-  runtimeOverrides: Partial<StockSkillRuntimeConfiguration> = {},
   fileSystem: FileSystemCompositionOverrides = {},
+  presetId = 'standard',
 ): StockCompositionWitness {
-  return {
-    dshHome,
-    runtimeConfiguration: { ...standardConfiguration, ...runtimeOverrides },
-    fileSystem,
-  }
+  return { dshHome, presetId, fileSystem }
+}
+
+function runtimeConfiguration(
+  composition: StockCompositionWitness,
+  agent: object,
+): StockSkillRuntimeConfiguration | undefined {
+  return resolveStockSkillRuntimeConfiguration({
+    entries: () => [{
+      disabled: false,
+      fiber: {},
+      ctx: { agent },
+      options: {
+        name: '@deepseek-ai/dsh-skill-filesystem',
+        config: composition.fileSystem,
+      },
+    }],
+  }, agent, composition.presetId)
 }
 
 function fileSystemOptions(
@@ -254,14 +262,21 @@ async function learnedFor(
   return scope === 'USER' ? withUserScope(learned) : learned
 }
 
-function rootContract(configuration: StockSkillRuntimeConfiguration): PublicationRootContractPort<SkillView> {
+function rootContract(
+  configuration: StockSkillRuntimeConfiguration | undefined,
+): PublicationRootContractPort<SkillView> {
   const resolver = new StockDshRootContractResolver()
   return {
-    resolve: input => resolver.resolve({
-      scope: input.scope,
-      configuration,
-      ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
-    }),
+    resolve: (input) => {
+      if (configuration === undefined) {
+        return { status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' }
+      }
+      return resolver.resolve({
+        scope: input.scope,
+        configuration,
+        ...(input.workspaceBinding === undefined ? {} : { workspaceBinding: input.workspaceBinding }),
+      })
+    },
     deriveResolutionContractDigest: deriveStockResolutionContractDigest,
   }
 }
@@ -269,7 +284,8 @@ function rootContract(configuration: StockSkillRuntimeConfiguration): Publicatio
 function makeBuilder(
   skills: DshSkillCatalogAdapter<SkillView>,
   workspaceRegistry: DshWorkspaceRegistryPort,
-  configuration = standardConfiguration,
+  composition: StockCompositionWitness,
+  agent: object,
 ) {
   return new ProposalSnapshotBuilder(
     skills,
@@ -277,7 +293,7 @@ function makeBuilder(
     new DshWorkspaceBindingResolver(workspaceRegistry),
     {
       now: () => '2026-08-20T02:00:00.000Z',
-      rootContract: rootContract(configuration),
+      rootContract: rootContract(runtimeConfiguration(composition, agent)),
     },
   )
 }
@@ -310,9 +326,9 @@ async function setupCase(scope: Scope, decision: Decision) {
   }
   try {
     const workspace = await mount.ctx.workspaceRegistry.create(canonicalProject)
-    const view = { cwd: workspace.path }
+    const view = { cwd: workspace.path, scope: {} }
     const skills = new DshSkillCatalogAdapter<SkillView>(mount.ctx.skills)
-    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, composition.runtimeConfiguration)
+    const builder = makeBuilder(skills, mount.ctx.workspaceRegistry, composition, view.scope)
     const learned = await learnedFor(skills, view, workspace.id, scope, decision)
     return {
       base,
@@ -442,82 +458,89 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
     ['custom roots', 'roots'],
     ['custom preset', 'preset'],
   ] as const)('fails closed with NEEDS_ATTENTION for %s drift', async (_label, drift) => {
-    const setup = await setupCase('PROJECT', 'CREATE')
-    try {
-      const built = await setup.builder.build(setup.learned, setup.view)
-      if (built.status !== 'READY') throw new Error('fixture proposal must be ready')
-      const domain = createMemoryRun2skillDomain()
-      domain.workItems.set(setup.learned.workItemId, setup.learned)
-      const reviews = new ProposalReviewStore(domain)
-      const staged = await reviews.stage(setup.learned.workItemId, setup.learned.revision, built.proposal)
-      const approved = await reviews.approve(
-        setup.learned.workItemId,
-        staged.item.revision,
-        proposalRefOf(built.proposal),
-      )
-      const customRoot = join(setup.base, 'custom-skills')
-      if (drift === 'roots') await mkdir(customRoot, { recursive: true })
-      const mismatchedComposition = compositionWitness(
-        setup.dshHome,
-        {
-          ...(drift === 'provider' ? { providerName: 'run2skill-filesystem' } : {}),
-          ...(drift === 'defaults' ? { includeDefaultRoots: false } : {}),
-          ...(drift === 'roots' ? { customSkillDirs: [customRoot] } : {}),
-          ...(drift === 'preset' ? { presetId: 'team-preset' } : {}),
-        },
-        {
-          ...(drift === 'defaults' ? { includeDefaultRoots: false } : {}),
-          ...(drift === 'roots' ? { customSkillDirs: [customRoot] } : {}),
-        },
-      )
-      await setup.mount.remountFileSystem(mismatchedComposition.fileSystem)
-      const mismatched = makeBuilder(
-        setup.skills,
-        setup.mount.ctx.workspaceRegistry,
-        mismatchedComposition.runtimeConfiguration,
-      )
-      const publicationView = () => setup.view
-      const revalidation = new ApprovedProposalRevalidator(mismatched, publicationView)
-      await expect(revalidation.revalidate(approved.item)).resolves.toEqual({
-        status: 'NEEDS_ATTENTION', code: 'ROOT_CONTRACT_UNSUPPORTED',
-      })
-      let writeBoundaryCalls = 0
-      const unreachable = async () => {
-        writeBoundaryCalls += 1
-        throw new Error('configuration drift must stop before prepare/write/readback')
-      }
-      const saga = new ApprovalPublicationSaga({
-        store: new PublicationSagaStore(domain),
-        revalidation,
-        fileSystem: {
-          recover: async () => ({ status: 'NO_JOURNAL' as const }),
-          prepareRoot: unreachable,
-          write: unreachable,
-          finalize: unreachable,
-        },
-        readback: { confirmExact: unreachable },
-      })
+    for (const recoveryStatus of ['NO_JOURNAL', 'written'] as const) {
+      const setup = await setupCase('PROJECT', 'CREATE')
+      try {
+        const built = await setup.builder.build(setup.learned, setup.view)
+        if (built.status !== 'READY') throw new Error('fixture proposal must be ready')
+        const domain = createMemoryRun2skillDomain()
+        domain.workItems.set(setup.learned.workItemId, setup.learned)
+        const reviews = new ProposalReviewStore(domain)
+        const staged = await reviews.stage(setup.learned.workItemId, setup.learned.revision, built.proposal)
+        const approved = await reviews.approve(
+          setup.learned.workItemId,
+          staged.item.revision,
+          proposalRefOf(built.proposal),
+        )
+        const customRoot = join(setup.base, 'custom-skills')
+        if (drift === 'roots') await mkdir(customRoot, { recursive: true })
+        const mismatchedComposition = compositionWitness(
+          setup.dshHome,
+          {
+            ...(drift === 'provider' ? { providerName: 'run2skill-filesystem' } : {}),
+            ...(drift === 'defaults' ? { includeDefaultRoots: false } : {}),
+            ...(drift === 'roots' ? { customSkillDirs: [customRoot] } : {}),
+          },
+          drift === 'preset' ? 'team-preset' : 'standard',
+        )
+        await setup.mount.remountFileSystem(mismatchedComposition.fileSystem)
+        const mismatched = makeBuilder(
+          setup.skills,
+          setup.mount.ctx.workspaceRegistry,
+          mismatchedComposition,
+          setup.view.scope,
+        )
+        const publicationView = () => setup.view
+        const revalidation = new ApprovedProposalRevalidator(mismatched, publicationView)
+        await expect(revalidation.revalidateRootContract(approved.item)).resolves.toEqual({
+          status: 'NEEDS_ATTENTION', code: 'ROOT_CONTRACT_UNSUPPORTED',
+        })
+        await expect(revalidation.revalidate(approved.item)).resolves.toEqual({
+          status: 'NEEDS_ATTENTION', code: 'ROOT_CONTRACT_UNSUPPORTED',
+        })
+        let boundaryCalls = 0
+        const unreachable = async () => {
+          boundaryCalls += 1
+          throw new Error('configuration drift must stop before recover/prepare/write/readback')
+        }
+        const saga = new ApprovalPublicationSaga({
+          store: new PublicationSagaStore(domain),
+          revalidation,
+          fileSystem: {
+            recover: async () => {
+              boundaryCalls += 1
+              return recoveryStatus === 'NO_JOURNAL'
+                ? { status: 'NO_JOURNAL' as const }
+                : { status: 'written' as const, txid: 'recovered', target: 'target', backup: null }
+            },
+            prepareRoot: unreachable,
+            write: unreachable,
+            finalize: unreachable,
+          },
+          readback: { confirmExact: unreachable },
+        })
 
-      const completed = await saga.run(approved.item.workItemId)
-      expect(completed).toMatchObject({
-        processingState: 'NEEDS_ATTENTION',
-        review: { publicationOutcome: 'NEEDS_ATTENTION' },
-      })
-      expect(writeBoundaryCalls).toBe(0)
-      await expect(new NodePublicationFactsAdapter().observeEntry(
-        join(setup.root, built.proposal.name, 'SKILL.md'),
-      )).resolves.toEqual({ status: 'ABSENT' })
-    } finally {
-      await setup.mount.dispose()
-      setup.restoreDshHome()
+        const completed = await saga.run(approved.item.workItemId)
+        expect(completed).toMatchObject({
+          processingState: 'NEEDS_ATTENTION',
+          review: { publicationOutcome: 'NEEDS_ATTENTION' },
+        })
+        expect(boundaryCalls).toBe(0)
+        await expect(new NodePublicationFactsAdapter().observeEntry(
+          join(setup.root, built.proposal.name, 'SKILL.md'),
+        )).resolves.toEqual({ status: 'ABSENT' })
+      } finally {
+        await setup.mount.dispose()
+        setup.restoreDshHome()
+      }
     }
   }, 30_000)
 
   it.each([
-    ['renamed provider', { ...standardConfiguration, providerName: 'run2skill-filesystem' }],
-    ['disabled defaults', { ...standardConfiguration, includeDefaultRoots: false }],
-    ['custom roots', { ...standardConfiguration, customSkillDirs: ['/custom/skills'] }],
-    ['custom preset', { ...standardConfiguration, presetId: 'team-preset' }],
+    ['renamed provider', { profile: 'web', presetId: 'standard', providerName: 'run2skill-filesystem', includeDefaultRoots: true, customSkillDirs: [] }],
+    ['disabled defaults', { profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: false, customSkillDirs: [] }],
+    ['custom roots', { profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true, customSkillDirs: ['/custom/skills'] }],
+    ['custom preset', { profile: 'web', presetId: 'team-preset', providerName: 'filesystem', includeDefaultRoots: true, customSkillDirs: [] }],
   ])('rejects %s without inventing a run2skill provider or root', (_label, configuration) => {
     const resolver = new StockDshRootContractResolver({ environment: { DSH_HOME: '/tmp/dsh-home' } })
     expect(resolver.resolve({

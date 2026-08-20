@@ -22,6 +22,18 @@ export interface StockSkillRuntimeConfiguration {
   readonly configuredDshHome?: string | undefined
 }
 
+export interface StockLoaderProjection {
+  entries(): Iterable<{
+    readonly disabled: boolean
+    readonly fiber?: unknown
+    readonly ctx: { readonly agent?: object | undefined }
+    readonly options: {
+      readonly name: string
+      readonly config?: unknown
+    }
+  }>
+}
+
 export interface StockWorkspaceContractBinding {
   readonly workspaceId: string
   readonly canonicalPath: string
@@ -39,7 +51,7 @@ export type StockRootContractResolution = {
   readonly configurationDigest: string
   readonly declaredRootPath: string
   readonly dshHome?: {
-    readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+    readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'
     readonly declaredPath: string
   } | undefined
 }
@@ -57,7 +69,7 @@ export type StockRootScopeIdentity =
   }
   | {
     readonly kind: 'DSH_HOME'
-    readonly resolutionKind: 'ENVIRONMENT' | 'DEFAULT'
+    readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'
     readonly canonicalPath: string
     readonly identityDigest: string
   }
@@ -83,6 +95,47 @@ export function resolveStockSessionPreset(session: StockPresetSessionProjection)
     return typeof selected === 'string' && selected.length > 0 ? selected : undefined
   }
   return session.header.agentPreset
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Reads the exact active stock filesystem row mounted for one Agent scope. */
+export function resolveStockSkillRuntimeConfiguration(
+  loader: StockLoaderProjection,
+  agent: object,
+  presetId: string | undefined,
+): StockSkillRuntimeConfiguration | undefined {
+  const entries = [...loader.entries()].filter(entry => (
+    !entry.disabled
+    && entry.fiber !== undefined
+    && entry.ctx.agent === agent
+    && entry.options.name === '@deepseek-ai/dsh-skill-filesystem'
+  ))
+  if (entries.length !== 1) return undefined
+  const raw = entries[0]!.options.config
+  if (raw !== undefined && !isRecord(raw)) return undefined
+  const config = raw ?? {}
+  const providerName = config.providerName ?? 'filesystem'
+  const includeDefaultRoots = config.includeDefaultRoots ?? true
+  const customSkillDirs = config.customSkillDirs ?? []
+  const configuredDshHome = config.dshHome
+  if (
+    typeof providerName !== 'string'
+    || typeof includeDefaultRoots !== 'boolean'
+    || !Array.isArray(customSkillDirs)
+    || !customSkillDirs.every(value => typeof value === 'string')
+    || (configuredDshHome !== undefined && typeof configuredDshHome !== 'string')
+  ) return undefined
+  return {
+    profile: 'web',
+    ...(presetId === undefined ? {} : { presetId }),
+    providerName,
+    includeDefaultRoots,
+    customSkillDirs: [...customSkillDirs],
+    ...(configuredDshHome === undefined ? {} : { configuredDshHome }),
+  }
 }
 
 function expandHomePath(value: string, homeDirectory: string): string {
@@ -114,7 +167,6 @@ function supportedConfiguration(
     && configuration.providerName === 'filesystem'
     && configuration.includeDefaultRoots
     && configuration.customSkillDirs.length === 0
-    && configuration.configuredDshHome === undefined
 }
 
 export class StockDshRootContractResolver {
@@ -154,19 +206,23 @@ export class StockDshRootContractResolver {
         declaredRootPath: join(input.workspaceBinding.canonicalPath, '.dsh', 'skills'),
       }
     }
+    const configuredHome = input.configuration.configuredDshHome
     const environmentHome = this.#environment.DSH_HOME
-    const selected = environmentHome !== undefined && environmentHome.trim().length > 0
-      ? environmentHome
-      : join(this.#homeDirectory(), '.dsh')
+    const selected = configuredHome
+      ?? (environmentHome !== undefined && environmentHome.trim().length > 0
+        ? environmentHome
+        : join(this.#homeDirectory(), '.dsh'))
     const declaredPath = resolve(expandHomePath(selected, this.#homeDirectory()))
     return {
       ...common,
       expectedSource: 'user-dsh',
       declaredRootPath: join(declaredPath, 'skills'),
       dshHome: {
-        resolutionKind: environmentHome !== undefined && environmentHome.trim().length > 0
-          ? 'ENVIRONMENT'
-          : 'DEFAULT',
+        resolutionKind: configuredHome !== undefined
+          ? 'CONFIGURATION'
+          : environmentHome !== undefined && environmentHome.trim().length > 0
+            ? 'ENVIRONMENT'
+            : 'DEFAULT',
         declaredPath,
       },
     }

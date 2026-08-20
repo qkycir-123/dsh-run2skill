@@ -31,7 +31,7 @@ const WorkspaceBindingV1Schema = z.object({
 }).strict()
 
 const DshHomeBindingV1Schema = z.object({
-  resolutionKind: z.enum(['ENVIRONMENT', 'DEFAULT']),
+  resolutionKind: z.enum(['CONFIGURATION', 'ENVIRONMENT', 'DEFAULT']),
   canonicalPath: path,
   identityDigest: sha256Hex,
   observedAt: isoDateTime,

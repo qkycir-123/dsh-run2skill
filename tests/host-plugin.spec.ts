@@ -5,6 +5,7 @@ import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.j
 
 function learningServices() {
   return {
+    loader: { entries: () => [] },
     llm: {
       async resolveModelInfo() { return { context: { contextWindow: 16_384 } } },
       async *stream() {
@@ -22,6 +23,7 @@ describe('Host plugin assembly', () => {
   it('declares only the approved DSH services', () => {
     expect(name).toBe('run2skill')
     expect(inject).toEqual([
+      'loader',
       'sessions',
       'sessionPersistence',
       'storageDomain',

@@ -4,6 +4,7 @@ import {
   STOCK_DSH_BASELINE_COMMIT,
   StockDshRootContractResolver,
   deriveStockResolutionContractDigest,
+  resolveStockSkillRuntimeConfiguration,
   resolveStockSessionPreset,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
@@ -26,6 +27,46 @@ function configuration(
 }
 
 describe('stock DSH root contract', () => {
+  it('derives the exact Agent filesystem configuration from one active stock Loader entry', () => {
+    const agent = {}
+    const configuredHome = resolve('configured-dsh-home')
+    const customRoot = resolve('custom-skills')
+    const entry = {
+      disabled: false,
+      fiber: {},
+      ctx: { agent },
+      options: {
+        name: '@deepseek-ai/dsh-skill-filesystem',
+        config: {
+          providerName: 'renamed-filesystem',
+          includeDefaultRoots: false,
+          dshHome: configuredHome,
+          customSkillDirs: [customRoot],
+        },
+      },
+    }
+
+    expect(resolveStockSkillRuntimeConfiguration({
+      entries: () => [entry],
+    }, agent, 'standard')).toEqual({
+      profile: 'web',
+      presetId: 'standard',
+      providerName: 'renamed-filesystem',
+      includeDefaultRoots: false,
+      customSkillDirs: [customRoot],
+      configuredDshHome: configuredHome,
+    })
+    expect(resolveStockSkillRuntimeConfiguration({
+      entries: () => [entry, { ...entry }],
+    }, agent, 'standard')).toBeUndefined()
+    expect(resolveStockSkillRuntimeConfiguration({
+      entries: () => [{ ...entry, disabled: true }],
+    }, agent, 'standard')).toBeUndefined()
+    expect(resolveStockSkillRuntimeConfiguration({
+      entries: () => [{ ...entry, ctx: { agent: {} } }],
+    }, agent, 'standard')).toBeUndefined()
+  })
+
   it('uses DSH last-selected preset semantics and fails closed on malformed selection facts', () => {
     expect(resolveStockSessionPreset({
       header: { agentPreset: 'standard' },
@@ -106,7 +147,6 @@ describe('stock DSH root contract', () => {
     ['renamed provider', { providerName: 'renamed-filesystem' }],
     ['defaults disabled', { includeDefaultRoots: false }],
     ['custom roots', { customSkillDirs: [resolve('custom-skills')] }],
-    ['explicit provider home', { configuredDshHome: resolve('configured-home') }],
   ] as const)('fails closed for %s', (_label, override) => {
     const resolver = new StockDshRootContractResolver({
       environment: { DSH_HOME: dshHome },
@@ -118,6 +158,23 @@ describe('stock DSH root contract', () => {
       configuration: configuration(override),
       workspaceBinding: { workspaceId: 'workspace-1', canonicalPath: workspace },
     })).toEqual({ status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' })
+  })
+
+  it('uses the stock provider explicit DSH Home before the environment', () => {
+    const configuredHome = resolve('configured-home')
+    const resolver = new StockDshRootContractResolver({
+      environment: { DSH_HOME: dshHome },
+      homeDirectory: () => resolve('unused-home'),
+    })
+
+    expect(resolver.resolve({
+      scope: 'USER',
+      configuration: configuration({ configuredDshHome: configuredHome }),
+    })).toMatchObject({
+      status: 'SUPPORTED',
+      declaredRootPath: join(configuredHome, 'skills'),
+      dshHome: { resolutionKind: 'CONFIGURATION', declaredPath: configuredHome },
+    })
   })
 
   it('fails closed when PROJECT has no exact Workspace binding', () => {

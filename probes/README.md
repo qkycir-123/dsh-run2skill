@@ -53,7 +53,7 @@ CP-ROOT-003 是默认生产门禁。production-backed runner 使用本页固定�
 - incomplete snapshot、配置漂移、custom roots、`includeDefaultRoots=false`、重命名 provider/自定义 preset 均 fail closed；
 - 卸载插件后已发布 USER Skill 仍由 stock DSH 使用。
 
-固定 baseline 的当前结果为 1 个测试文件、12 个测试通过，并输出 `CP_ROOT_003=PASS`。provider 与 resolver 从同一 `DSH_HOME`/stock preset composition witness 解析，四种配置漂移都经 production revalidator/saga 在 root prepare、write 和 readback 前进入 `NEEDS_ATTENTION`。其中插件生产对象结束后重新挂载 stock provider 的用例证明 USER Skill 是普通 filesystem Skill；实际包 add/remove 边界仍由 CP-INS-001 独立验证。
+固定 baseline 的当前结果为 1 个测试文件、12 个测试通过，并输出 `CP_ROOT_003=PASS`。production Host 从 exact Agent 的 active stock Loader filesystem 条目读取唯一 composition witness；探针用同一配置对象挂载真实 provider 并驱动该解析。四种配置漂移都经 production root-contract revalidator/saga 在 journal recover、root prepare、write、finalize 和 readback 前进入 `NEEDS_ATTENTION`，包括若继续会返回 `written` 的恢复分支。其中插件生产对象结束后重新挂载 stock provider 的用例证明 USER Skill 是普通 filesystem Skill；实际包 add/remove 边界仍由 CP-INS-001 独立验证。
 
 ## 已放弃的历史实验
 

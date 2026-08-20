@@ -44,6 +44,7 @@
 | 受限 LLM 调用 | packages/llm/llm/src/types.ts、index.ts | ctx.llm.stream 支持明确 provider/model、AbortSignal、usage 和 terminal finish；GenerateOptions 没有原生 JSON response-format，也没有任意 purpose 扩展 |
 | Skill Registry | packages/skill/skill/src/index.ts | snapshot.complete 是完整性边界；winning candidate 按 scope layer/rank 解析；get 会重新读取完整 body；skills/change 用于失效通知 |
 | Filesystem Skill provider | packages/skill/skill-filesystem/src/index.ts | project-dsh/user-dsh rank、root 和 source 已确认；provider 支持 bundle/flat Skill 和热 watcher；watcher 故障可返回 complete=false |
+| Loader composition witness | vendor/loader/src/config/entry.ts、config/tree.ts；apps/cli/config/agent-presets/{standard,code}/agent.cordis.yml | exact Agent scoped active entry 保留 module name、effective enablement、fiber 和 config；官方 preset 各挂载唯一 `@deepseek-ai/dsh-skill-filesystem` 条目 |
 | Skill frontmatter | packages/skill/skill-filesystem/src/index.ts | name/description 必填；模型/用户调用键是 disable-model-invocation 与 user-invocable，不接受 run2skill 自造 camelCase 字段 |
 | Workspace identity | packages/workspace/workspace/src/types.ts、index.ts | ctx.workspaceRegistry 以 UUID 标识、用 fs.realpath 规范化路径，并可 resolveByPath/status；适合作为 PROJECT identity，不应由 run2skill 猜 Git root |
 | Settings | packages/settings/settings/src/index.ts | namespace 注册、frozen resolved value、watch、serialized write 和 expectedRevision 冲突可复用 |
