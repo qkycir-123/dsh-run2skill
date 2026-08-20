@@ -317,6 +317,13 @@ export function createProposalReviewRpcHandler(
         result = await store.approve(request.workItemId, request.workItemRevision, request.proposalRef)
       } else if (endpoint === PROPOSALS_RETRY_ENDPOINT) {
         const current = domain.table('work_items').get(request.workItemId)
+        const currentRef = current?.review === undefined
+          ? undefined
+          : proposalRefOf(current.review.proposal)
+        const sameProposal = currentRef !== undefined
+          && currentRef.proposalId === request.proposalRef.proposalId
+          && currentRef.revision === request.proposalRef.revision
+          && currentRef.digest === request.proposalRef.digest
         if (
           current?.review?.reviewDecision === 'APPROVED'
           && current.review.publicationOutcome === 'PUBLISH_FAILED'
@@ -334,6 +341,14 @@ export function createProposalReviewRpcHandler(
             ),
             changed: true,
           }
+        } else if (
+          current?.processingState === 'PUBLISHING'
+          && current.review?.reviewDecision === 'APPROVED'
+          && current.review.publicationOutcome === 'PENDING_REVIEW'
+          && (current.publication?.attemptCount ?? 0) > 1
+          && sameProposal
+        ) {
+          result = { item: current, changed: false }
         } else {
           result = await store.requestCoverageRetry(
             request.workItemId,

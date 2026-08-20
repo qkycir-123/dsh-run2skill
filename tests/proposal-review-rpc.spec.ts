@@ -244,16 +244,24 @@ describe('Proposal Review RPC', () => {
       onPublicationRequested: wake,
     })
 
-    await expect(handler(PROPOSALS_RETRY_ENDPOINT, {
+    const retryRequest = {
       apiVersion: 1,
       workItemId: failed.workItemId,
       workItemRevision: failed.revision,
       proposalRef: proposalRefOf(failed.review!.proposal),
-    }, new AbortController().signal)).resolves.toMatchObject({
+    }
+    await expect(handler(PROPOSALS_RETRY_ENDPOINT, retryRequest, new AbortController().signal))
+      .resolves.toMatchObject({
       ok: true,
-      value: { processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' },
+      value: { changed: true, processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' },
     })
+    await expect(handler(PROPOSALS_RETRY_ENDPOINT, retryRequest, new AbortController().signal))
+      .resolves.toMatchObject({
+        ok: true,
+        value: { changed: false, processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' },
+      })
     expect(wake).toHaveBeenCalledWith(item.workItemId)
+    expect(wake).toHaveBeenCalledTimes(2)
     expect(domain.workItems.get(item.workItemId)?.publication?.attemptCount).toBe(2)
     expect(approved.item.review?.reviewDecision).toBe('APPROVED')
   })
