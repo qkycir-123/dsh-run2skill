@@ -41,7 +41,7 @@ powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1 -WslDistribution <distribution-name>
 ```
 
-第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、22 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条是 production-backed CP-ROOT-003，应以 15 个测试通过并结束于 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。第三条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第四条会在一次完整 DSH build 后依次验证基线 fixture 和当前候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
+第一条命令应结束于 `DSH_SOURCE_AFTER=unchanged` 和 `CONTRACT_PROBES=PASS`，当前固定 baseline 全量结果为 7 个文件、24 个测试，其中 CP-LLM/Skill 使用固定 fake Adapter，不调用外部模型。第二条是 production-backed CP-ROOT-003，应以 15 个测试通过并结束于 `DSH_SOURCE_AFTER=unchanged`、`CP_ROOT_003=PASS`。第三条直接执行生产 CAS/journal 源码，应结束于 `CP_PUB_001=PASS`，Windows 与 Linux 各通过 8 个测试。第四条会在一次完整 DSH build 后依次验证基线 fixture 和从当前源码实际 pack、再解包得到的候选包，并结束于 `CP_INS_001=PASS`、`CP_INS_A6=PASS` 和 `INSTALL_LIFECYCLE_PROBE=PASS`。
 
 ## stock DSH 纯插件 root probe
 
@@ -59,7 +59,7 @@ CP-ROOT-003 是默认生产门禁。production-backed runner 使用本页固定�
 
 历史候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca` 曾验证候选 `snapshot.roots` API；对应测试与 runner 路线已移除，只在证据台账保留历史结论，不是兼容性门禁、生产依赖或 CP-ROOT-003 的替代证据。
 
-`pnpm run evaluate` 会同时运行 Observe 与 Learning 的版本化冻结评测；Learning 评测只输出 case id 和聚合指标，不输出样本正文。`pnpm run verify:candidate` 还会精确锁定候选包的 7 个文件，并对仓库、包内容和合成运行日志执行敏感信息门。
+`pnpm run evaluate` 会同时运行 Observe 与 Learning 的版本化冻结评测；Learning 评测只输出 case id 和聚合指标，不输出样本正文。`pnpm run verify:candidate` 还会精确锁定候选包的 8 个文件，核对 package/manifest/bundle metadata 与内嵌依赖的第三方许可 notice，并对真实 tarball、仓库和合成运行日志执行 secret、本机路径与 redaction 门。
 
 ## 证据边界
 

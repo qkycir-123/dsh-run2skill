@@ -2,6 +2,14 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  name?: string
+  version?: string
+  private?: boolean
+  description?: string
+  license?: string
+  repository?: { type?: string; url?: string }
+  bugs?: { url?: string }
+  homepage?: string
   main?: string
   exports?: Record<string, unknown>
   files?: string[]
@@ -18,8 +26,25 @@ function readPortableText(path: string): string {
 
 const patch = readPortableText('../cordis.patch.yml')
 const workspace = readPortableText('../pnpm-workspace.yaml')
+const thirdPartyNotices = readPortableText('../THIRD_PARTY_NOTICES.md')
 
 describe('published package contract', () => {
+  it('pins the first public alpha identity and portable repository metadata', () => {
+    expect(manifest).toMatchObject({
+      name: 'dsh-run2skill',
+      version: '0.1.0-alpha',
+      description: 'A DSH-native, local-first Run to Skill plugin',
+      license: 'MIT',
+      repository: {
+        type: 'git',
+        url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
+      },
+      bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
+      homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
+    })
+    expect(manifest.private).not.toBe(true)
+  })
+
   it('exports Host and Client faces and declares the thin Web bundle layer', () => {
     expect(manifest.main).toBe('./lib/index.js')
     expect(manifest.exports).toMatchObject({
@@ -27,7 +52,13 @@ describe('published package contract', () => {
       './client': { default: './lib/client.js' },
       './package.json': './package.json',
     })
-    expect(manifest.files).toEqual(['lib', 'cordis.patch.yml'])
+    expect(manifest.files).toEqual([
+      'lib',
+      'cordis.patch.yml',
+      'README.md',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ])
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7',
     })
@@ -44,6 +75,12 @@ describe('published package contract', () => {
         ],
       },
     })
+  })
+
+  it('ships the license notice for the Zod code embedded in the Client bundle', () => {
+    expect(thirdPartyNotices).toContain('Zod 4.4.3')
+    expect(thirdPartyNotices).toContain('Copyright (c) 2025 Colin McDonnell')
+    expect(thirdPartyNotices).toContain('The above copyright notice and this permission notice')
   })
 
   it('runs the exact candidate verifier and permits only the required build helper', () => {

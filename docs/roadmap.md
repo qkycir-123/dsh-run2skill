@@ -1,7 +1,7 @@
 # dsh-run2skill 项目路线
 
-状态：切片 A/B/C 已验收；Slice D Design 已于 2026-08-20 获批，下一步拆分并执行 D1–D5
-更新时间：2026-08-20
+状态：切片 A/B/C 已验收；Slice D 的 D1–D4 已完成，下一步仅执行 D5 release-candidate 验收
+更新时间：2026-08-21
 
 ## 1. 路线目标
 
@@ -105,7 +105,7 @@
 
 ### 阶段 4：纵向切片与 Issues
 
-状态：进行中；切片 A/B/C 已验收。切片 C Design、C1–C7 与独立修正 #48 已完成；Slice D Design 已获批，可按 D1–D5 的边界创建 Issues。
+状态：进行中；切片 A/B/C 已验收。切片 C Design、C1–C7 与独立修正 #48 已完成；Slice D Design 已获批，D1–D4 已按顺序完成，D5 保持独立最终验收边界。
 
 按依赖顺序拆分：
 
@@ -126,7 +126,7 @@
 
 Design 获批后再拆 Issues。Issue 记录范围与验收，feature branch 承载实现和测试，PR 承载 Review 与可复核证据。
 
-当前交付物：切片 A/B/C 的独立 Design、公开 Issues、实现代码，以及三份 `docs/evidence/slice-*-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C7（#34–#40）与纯插件 root-contract 修正 #48 已完成；获批的 Slice D Design 位于 `docs/design/slice-d-productize.md`。
+当前交付物：切片 A/B/C 的独立 Design、公开 Issues、实现代码，以及三份 `docs/evidence/slice-*-acceptance.md`；切片 C Design 位于 `docs/design/slice-c-safe-loop.md`，C1–C7（#34–#40）与纯插件 root-contract 修正 #48 已完成；获批的 Slice D Design 位于 `docs/design/slice-d-productize.md`，D1–D4 已收口 Settings、Purge、Action Queue 可访问性、schema freeze 和纯插件打包生命周期。
 
 阶段门：当前切片 Design 可独立评审，Issues 具备明确验收条件。
 
@@ -143,7 +143,7 @@ Design → Review → Issues → Feature Branch → Implementation
 
 实现后只做一次简化自审，不使用 Compound Engineering、多角色或跨模型流程。PR 在稳定的精确 HEAD 上接受一次只读 `gpt-5.6-sol` / `high` 审查：P0/P1 阻塞；P2 仅在可复现且影响当前 Issue 验收、安全、用户数据、写错目录或主流程可用时阻塞；其余 P2/P3 建 GitHub backlog，不为字面 `CLEAN` 无限循环。只有修复阻塞 finding 的 push 才要求新的 exact-HEAD 审查；CI、必要探针和审查均无阻塞 finding 后，直接转 Ready 并 squash merge。需求或架构变化仍交由维护者决策，流程简化不改变产品范围。
 
-Slice A/B/C 已逐 Issue 完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 → #48 → C7 已完成。切片 D Design 已获批，按其中冻结的 D1 → D2 → D3 → D4 → D5 顺序执行；新的实现细节仍只在对应 Issue 开始前细化。
+Slice A/B/C 已逐 Issue 完成集成验收。C1 → C2 → C3 → C4 → C5 → C6 → #48 → C7 已完成。切片 D Design 已获批，D1 → D2 → D3 → D4 已完成；D5 的完整 release-candidate 矩阵、最终证据与发布建议不得由 D4 提前执行。
 
 ### 阶段 6：v0.1 集成验证
 

@@ -5,6 +5,16 @@ import {
 } from '../../domain/observe/schemas.js'
 import { LineageV1Schema } from '../../domain/publication/index.js'
 
+export const RUN2SKILL_ALPHA_SCHEMA_CONTRACT = Object.freeze({
+  release: '0.1.0-alpha',
+  dshBaselineCommit: '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca',
+  domainName: 'run2skill_v1',
+  domainVersion: 2,
+  globalSchemaVersion: 1,
+  workItemSchemaVersion: 1,
+  lineageSchemaVersion: 1,
+} as const)
+
 export function createInitialGlobalV1(): GlobalV1 {
   return {
     schemaVersion: 1,
@@ -17,10 +27,10 @@ export function createInitialGlobalV1(): GlobalV1 {
 }
 
 export const run2skillDomainSpec = {
-  name: 'run2skill_v1',
+  name: RUN2SKILL_ALPHA_SCHEMA_CONTRACT.domainName,
   // Pre-alpha schema break: legacy candidate-root approvals are intentionally not
   // opened under the stock-contract schema. Development data is rebuilt once.
-  version: 2,
+  version: RUN2SKILL_ALPHA_SCHEMA_CONTRACT.domainVersion,
   global: {
     schema: GlobalV1Schema,
     initial: createInitialGlobalV1(),

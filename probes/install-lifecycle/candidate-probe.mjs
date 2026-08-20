@@ -21,6 +21,7 @@ const work = resolve(workArg)
 const home = join(work, 'dsh-home')
 const workspace = join(work, 'workspace')
 const stages = join(work, 'stages')
+const archives = join(work, 'archives')
 const bin = join(clone, 'apps', 'cli', 'lib', 'bin.js')
 const profile = join(home, 'profiles', 'web')
 const manifestPath = join(profile, 'package.json')
@@ -39,19 +40,32 @@ async function stage(version) {
   await mkdir(root, { recursive: true })
   await cp(join(candidate, 'lib'), join(root, 'lib'), { recursive: true })
   await cp(join(candidate, 'cordis.patch.yml'), join(root, 'cordis.patch.yml'))
+  await cp(join(candidate, 'README.md'), join(root, 'README.md'))
+  await cp(join(candidate, 'LICENSE'), join(root, 'LICENSE'))
+  await cp(join(candidate, 'THIRD_PARTY_NOTICES.md'), join(root, 'THIRD_PARTY_NOTICES.md'))
   const manifest = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8'))
   await writeFile(join(root, 'package.json'), JSON.stringify({ ...manifest, version }, null, 2))
-  return root
+  const archiveDirectory = join(archives, version)
+  await mkdir(archiveDirectory, { recursive: true })
+  const packCommand = process.platform === 'win32'
+    ? {
+        executable: process.env.ComSpec ?? 'cmd.exe',
+        args: ['/d', '/s', '/c', 'pnpm', 'pack', '--pack-destination', archiveDirectory],
+      }
+    : { executable: 'pnpm', args: ['pack', '--pack-destination', archiveDirectory] }
+  const packed = await run(packCommand.executable, packCommand.args, 120_000, root)
+  if (packed.code !== 0) throw new Error(safeFailure('candidate staging pack failed', packed.stderr))
+  const tarballs = (await readdir(archiveDirectory)).filter(entry => entry.endsWith('.tgz'))
+  assert.equal(tarballs.length, 1)
+  return join(archiveDirectory, tarballs[0])
 }
 
-const v1 = await stage('0.0.0-a6.1')
-const v2 = await stage('0.0.0-a6.2')
 const env = { ...process.env, DSH_HOME: home, NO_COLOR: '1', FORCE_COLOR: '0' }
 
-async function run(executable, args, timeoutMs = 120_000) {
+async function run(executable, args, timeoutMs = 120_000, cwd = workspace) {
   return await new Promise((resolveResult, reject) => {
     const child = spawn(executable, args, {
-      cwd: workspace, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
     let stderr = ''
@@ -74,6 +88,9 @@ async function dsh(args) {
   ))
   return result
 }
+
+const v1 = await stage('0.1.0-alpha.1')
+const v2 = await stage('0.1.0-alpha.2')
 
 async function manifest() {
   return JSON.parse(await readFile(manifestPath, 'utf8'))
@@ -257,7 +274,7 @@ if (webOnly) {
   await writeFile(patchPath, '[]\n')
   await dsh(['plugin', '--profile', 'web', 'add', v2])
   const installedManifest = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-  assert.equal(installedManifest.version, '0.0.0-a6.2')
+  assert.equal(installedManifest.version, '0.1.0-alpha.2')
   await observe(true, false)
 
   const storageEntries = await readdir(join(home, 'storages'))

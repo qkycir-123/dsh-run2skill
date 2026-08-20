@@ -18,6 +18,7 @@ const expectedPackageFiles = [
   'LICENSE',
   'package.json',
   'README.md',
+  'THIRD_PARTY_NOTICES.md',
 ]
 const permittedSyntheticSecrets = new Set([
   'ghp_abcdefghijklmnopqrstuvwxyz123456',
@@ -103,6 +104,10 @@ const secretRules = [
   ['API_KEY', /\b(?:gh[pousr]_[a-z0-9]{20,}|glpat-[a-z0-9_-]{20,}|xox[baprs]-[a-z0-9-]{10,}|npm_[a-z0-9]{20,}|aiza[a-z0-9_-]{30,}|sk-[a-z0-9][a-z0-9_-]{18,}[a-z0-9]|(?:pk|rk)-(?:live|test)-[a-z0-9_-]{16,}|(?:akia|asia|aida|aroa|aipa|anpa|anva|asca)[a-z0-9]{16})\b/giu],
   ['CREDENTIAL_URL', /https?:\/\/[^\s/:]+:[^\s/@]+@/gu],
 ]
+const localPathRules = [
+  ['WINDOWS_HOME', /\b[a-z]:[\\/](?:users|data|home|tmp)[\\/][^\s"'`<>]*/giu],
+  ['POSIX_HOME', /\/(?:home\/[^/\s]+|users\/[^/\s]+|mnt\/[a-z]\/|root\/)[^\s"'`<>]*/giu],
+]
 
 function run(executable, args, options = {}) {
   const result = spawnSync(executable, args, {
@@ -165,6 +170,17 @@ function scan(name, content) {
   return findings
 }
 
+function scanLocalPaths(name, content) {
+  const findings = []
+  for (const [rule, pattern] of localPathRules) {
+    for (const match of content.matchAll(pattern)) {
+      const line = content.slice(0, match.index).split('\n').length
+      findings.push(`${name}:${rule}:${String(line)}`)
+    }
+  }
+  return findings
+}
+
 const rejectedAssignmentSamples = [
   ['pass' + 'word=ordinaryvalue123', 'SECRET_ASSIGNMENT'],
   ['deepseek_' + 'key=ordinaryvalue123', 'SECRET_ASSIGNMENT'],
@@ -188,6 +204,68 @@ const packOutput = process.env.npm_execpath === undefined
 const packed = JSON.parse(packOutput)
 const packageFiles = packed.files.map(file => file.path).sort()
 assert.deepEqual(packageFiles, [...expectedPackageFiles].sort(), 'candidate tarball file allowlist changed')
+const tarballPath = resolve(root, packed.filename)
+const archiveFiles = run('tar', ['-tzf', tarballPath])
+  .split(/\r?\n/u)
+  .filter(path => path.startsWith('package/') && !path.endsWith('/'))
+  .map(path => path.slice('package/'.length))
+  .sort()
+assert.deepEqual(archiveFiles, [...expectedPackageFiles].sort(), 'candidate archive entries changed')
+
+const packedManifest = JSON.parse(run('tar', ['-xOf', tarballPath, 'package/package.json']))
+assert.deepEqual({
+  name: packedManifest.name,
+  version: packedManifest.version,
+  private: packedManifest.private,
+  license: packedManifest.license,
+  files: packedManifest.files,
+  repository: packedManifest.repository,
+  bugs: packedManifest.bugs,
+  homepage: packedManifest.homepage,
+  exports: packedManifest.exports,
+  dsh: packedManifest.dsh,
+  peerDependencies: packedManifest.peerDependencies,
+}, {
+  name: 'dsh-run2skill',
+  version: '0.1.0-alpha',
+  private: undefined,
+  license: 'MIT',
+  files: ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'],
+  repository: {
+    type: 'git',
+    url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
+  },
+  bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
+  homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
+  exports: {
+    '.': { types: './lib/index.d.ts', default: './lib/index.js' },
+    './client': { default: './lib/client.js' },
+    './package.json': './package.json',
+  },
+  dsh: {
+    bundle: { patch: './cordis.patch.yml' },
+    client: {
+      platform: 'web',
+      inject: [
+        '@deepseek-ai/dsh-client-connection',
+        '@deepseek-ai/dsh-client-runtime',
+        '@deepseek-ai/dsh-client-ui-settings',
+        '@deepseek-ai/dsh-client-ui-settings-plugins',
+        '@deepseek-ai/dsh-api-remotes',
+      ],
+    },
+  },
+  peerDependencies: { '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7' },
+}, 'candidate package metadata changed')
+assert.equal(
+  run('tar', ['-xOf', tarballPath, 'package/cordis.patch.yml']).replaceAll('\r\n', '\n'),
+  '- insert:\n    - id: run2skill\n      name: dsh-run2skill\n',
+  'candidate bundle patch does not match the package identity',
+)
+const thirdPartyNotices = run('tar', ['-xOf', tarballPath, 'package/THIRD_PARTY_NOTICES.md'])
+assert.match(thirdPartyNotices, /Zod 4\.4\.3/u)
+assert.match(thirdPartyNotices, /Copyright \(c\) 2025 Colin McDonnell/u)
+assert.match(thirdPartyNotices, /The above copyright notice and this permission notice/u)
 
 const tracked = run('git', ['ls-files', '-z']).split('\0').filter(Boolean)
 const findings = []
@@ -196,8 +274,9 @@ for (const path of tracked) {
   if (content !== undefined) findings.push(...scan(path, content))
 }
 for (const path of packageFiles) {
-  const content = await readFile(resolve(root, path), 'utf8')
+  const content = run('tar', ['-xOf', tarballPath, `package/${path}`])
   findings.push(...scan(`package/${path}`, content))
+  findings.push(...scanLocalPaths(`package/${path}`, content))
 }
 assert.deepEqual([...new Set(findings)].sort(), [], 'secret-like material found in repository or package')
 
@@ -246,6 +325,9 @@ assert.equal(safeLog.includes('runtime-charlie'), false)
 assert.equal(isSafeDiagnosticOutput(safeLog), true)
 
 console.log(`CANDIDATE_PACKAGE_FILES=${String(packageFiles.length)}`)
+console.log('CANDIDATE_THIRD_PARTY_LICENSES=PASS')
+console.log('CANDIDATE_METADATA=PASS')
+console.log('CANDIDATE_LOCAL_PATH_SCAN=PASS')
 console.log('CANDIDATE_SECRET_SCAN=PASS')
 console.log('CANDIDATE_LOG_REDACTION=PASS')
 console.log('CANDIDATE_VERIFY=PASS')

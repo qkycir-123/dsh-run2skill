@@ -88,6 +88,43 @@ describe('A3 run2skill_v1 real Storage Domain portability', () => {
     }
   })
 
+  it.each([
+    { backend: 'json' as const, path: (directory: string) => join(directory, 'storages') },
+    { backend: 'sqlite' as const, path: (directory: string) => join(directory, 'run2skill.db') },
+  ])('fails loud on a $backend domain version mismatch without clearing durable data', async ({ backend, path }) => {
+    const directory = await mkdtemp(join(tmpdir(), `dsh-run2skill-schema-${backend}-`))
+    temporaryDirectories.push(directory)
+    const mediumPath = path(directory)
+    const first = await mount(mediumPath, backend)
+    await first.domain.global.set({
+      ...first.domain.global.get(),
+      lastSuccessfulStoreWriteAt: '2026-08-21T00:00:00.000Z',
+    })
+    await dispose(first)
+
+    const ctx = new Context()
+    const storageFiber = await ctx.plugin(Storage)
+    const backendFiber = backend === 'json'
+      ? await ctx.plugin(StorageJson, { root: mediumPath })
+      : await ctx.plugin(StorageSqlite, { path: mediumPath })
+    const domainFiber = await ctx.plugin(StorageDomain, { backend })
+    await vi.waitFor(() => expect(ctx.storageDomain).toBeDefined())
+    try {
+      await expect(ctx.storageDomain.open({ ...run2skillDomainSpec, version: 3 })).rejects.toThrow()
+    } finally {
+      await domainFiber.dispose()
+      await backendFiber.dispose()
+      await storageFiber.dispose()
+    }
+
+    const restored = await mount(mediumPath, backend)
+    try {
+      expect(restored.domain.global.get().lastSuccessfulStoreWriteAt).toBe('2026-08-21T00:00:00.000Z')
+    } finally {
+      await dispose(restored)
+    }
+  })
+
   it('batches 10,000 no-signal turns on the real DSH JSON Storage backend', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-run2skill-a3-json-batch-'))
     temporaryDirectories.push(directory)
