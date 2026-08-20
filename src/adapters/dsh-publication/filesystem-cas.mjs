@@ -25,6 +25,7 @@ const JOURNAL_KEYS = new Set([
   'backupReservationNonce',
   'stageIdentityDigest', 'claimIdentityDigest', 'backupIdentityDigest',
   'rootIdentityDigest',
+  'journalIdentityDigest', 'backupReservationIdentityDigest',
 ])
 
 export class PublicationConflict extends Error {
@@ -52,18 +53,18 @@ function regularFileIdentityDigest(stat) {
   return sha256(JSON.stringify([
     String(stat.dev),
     String(stat.ino),
-    String(stat.birthtimeMs),
+    String(stat.birthtimeNs),
   ]))
 }
 
 async function observeRegularFile(path) {
-  const before = await statOrNull(path)
+  const before = await identityStatOrNull(path)
   if (!before) return null
   if (before.isSymbolicLink() || !before.isFile()) {
     throw new PublicationConflict('unsafe_path', 'Expected a regular file')
   }
   const bytes = await readFile(path)
-  const after = await statOrNull(path)
+  const after = await identityStatOrNull(path)
   if (!after || after.isSymbolicLink() || !after.isFile()) {
     throw new PublicationConflict('file_identity_changed', 'Regular file identity changed during observation')
   }
@@ -165,7 +166,7 @@ function identityPath(path) {
 }
 
 async function observeDirectoryIdentity(path, label) {
-  const stat = await statOrNull(path)
+  const stat = await identityStatOrNull(path)
   if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new PublicationConflict('unsafe_path', `${label} is a symlink, junction, or non-directory`)
   }
@@ -184,7 +185,7 @@ async function observeDirectoryIdentity(path, label) {
   return sha256(JSON.stringify([
     String(stat.dev),
     String(stat.ino),
-    String(stat.birthtimeMs),
+    String(stat.birthtimeNs),
     identityPath(canonical),
   ]))
 }
@@ -290,6 +291,15 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
   }
 }
 
+async function identityStatOrNull(path) {
+  try {
+    return await lstat(path, { bigint: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
 function validateIdentity(name, txid) {
   if (name.length > 128 || !NAME_PATTERN.test(name)) {
     throw new PublicationConflict('unsafe_name', `Unsafe Skill name: ${name}`)
@@ -331,6 +341,15 @@ async function assertBoundBundleDirectory(paths, expectedDigest) {
   ) {
     throw new PublicationConflict('root_identity_changed', 'Publication root directory identity changed')
   }
+  if (paths.journalIdentityDigest) {
+    const journalDir = await ensureJournalDirectory(paths.root)
+    if (
+      await observeDirectoryIdentity(journalDir, 'Publication journal')
+      !== paths.journalIdentityDigest
+    ) {
+      throw new PublicationConflict('journal_identity_changed', 'Publication journal directory identity changed')
+    }
+  }
   if (!expectedDigest || await observeBundleDirectory(paths) !== expectedDigest) {
     throw new PublicationConflict('target_identity_changed', 'Skill bundle directory identity changed')
   }
@@ -345,11 +364,20 @@ async function appendJournal(rootReal, record) {
     throw new PublicationConflict('journal_limit', 'Publication journal record limit reached')
   }
   const journalDir = await ensureJournalDirectory(rootReal, true)
+  if (
+    !record.journalIdentityDigest
+    || await observeDirectoryIdentity(journalDir, 'Publication journal') !== record.journalIdentityDigest
+  ) {
+    throw new PublicationConflict('journal_identity_changed', 'Publication journal directory identity changed')
+  }
   const sealed = { ...record, recordHash: sha256(JSON.stringify(record)) }
   const filename = `${record.txid}.${String(record.seq).padStart(4, '0')}.${record.state}.json`
   const path = join(journalDir, filename)
   await writeExclusiveFile(path, `${JSON.stringify(sealed)}\n`)
   await fsyncParent(journalDir)
+  if (await observeDirectoryIdentity(journalDir, 'Publication journal') !== record.journalIdentityDigest) {
+    throw new PublicationConflict('journal_identity_changed', 'Publication journal directory identity changed')
+  }
   return sealed
 }
 
@@ -378,6 +406,8 @@ async function beginRecord({
   targetDirIdentityDigest,
 }) {
   const paths = targetPaths(root, name, txid)
+  const journalDir = await ensureJournalDirectory(root, true)
+  const journalIdentityDigest = await observeDirectoryIdentity(journalDir, 'Publication journal')
   const record = {
     version: 1,
     seq: 0,
@@ -390,6 +420,7 @@ async function beginRecord({
     nextHash: sha256(nextBytes),
     prevHash: null,
     rootIdentityDigest,
+    journalIdentityDigest,
     ...(rootPreparation ? { createdRootSegments: [...rootPreparation.createdSegments] } : {}),
     ...(targetDirIdentityDigest ? { targetDirIdentityDigest } : {}),
     ...paths,
@@ -622,11 +653,21 @@ export async function mergeBundle({
     }
     throw error
   }
-  record = await nextRecord(record, 'BACKUP_RESERVED')
+  const reservationFacts = await observeRegularFile(record.backup)
+  if (!reservationFacts || reservationFacts.hash !== expectedBackupReservationHash(record)) {
+    return conflict(record, 'backup_changed')
+  }
+  record = await nextRecord(record, 'BACKUP_RESERVED', {
+    backupReservationIdentityDigest: reservationFacts.identityDigest,
+  })
   maybeCrash('merge-after-backup-reservation', crashAt)
   await hooks?.beforeBackupRename?.(record)
   await assertBoundBundleDirectory(record, targetDirIdentityDigest)
-  if ((await hashRegularFile(record.backup)) !== expectedBackupReservationHash(record)) {
+  if (!await fileMatches(
+    record.backup,
+    record.backupReservationIdentityDigest,
+    expectedBackupReservationHash(record),
+  )) {
     await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
     return conflict(record, 'backup_changed')
   }
@@ -711,6 +752,11 @@ async function loadLatestRecord(rootReal, txid) {
         && (record.claimIdentityDigest === undefined || HASH_PATTERN.test(record.claimIdentityDigest))
         && (record.backupIdentityDigest === undefined || HASH_PATTERN.test(record.backupIdentityDigest))
         && HASH_PATTERN.test(record.rootIdentityDigest)
+        && HASH_PATTERN.test(record.journalIdentityDigest)
+        && (
+          record.backupReservationIdentityDigest === undefined
+          || HASH_PATTERN.test(record.backupReservationIdentityDigest)
+        )
         && ['root', 'name', 'targetDir', 'target', 'stage', 'backup', 'claim']
           .every(key => typeof record[key] === 'string')
         && (record.createdRootSegments === undefined || (
@@ -742,6 +788,9 @@ async function loadLatestRecord(rootReal, txid) {
     const candidate = candidates.get(seq)
     if (!candidate || candidate.prevHash !== latest.recordHash) break
     latest = candidate
+  }
+  if (await observeDirectoryIdentity(journalDir, 'Publication journal') !== latest.journalIdentityDigest) {
+    throw new PublicationConflict('journal_identity_changed', 'Publication journal directory identity changed')
   }
   return latest
 }
@@ -848,6 +897,11 @@ export async function recoverTransaction({ root, txid }) {
       && record.backupIdentityDigest
       && backupFacts?.identityDigest !== record.backupIdentityDigest
     )
+    || (
+      backupHash === reservationHash
+      && record.backupReservationIdentityDigest
+      && backupFacts?.identityDigest !== record.backupReservationIdentityDigest
+    )
   ) {
     return conflict(record, 'recovery_observed_unknown_merge_state')
   }
@@ -881,10 +935,27 @@ export async function recoverTransaction({ root, txid }) {
         if (error?.code !== 'EEXIST') throw error
         return conflict(record, 'backup_exists')
       }
-      backupHash = reservationHash
-      record = await nextRecord(record, 'BACKUP_RESERVED')
+      backupFacts = await observeRegularFile(record.backup)
+      backupHash = backupFacts?.hash ?? null
+      if (!backupFacts || backupHash !== reservationHash) {
+        return conflict(record, 'backup_changed')
+      }
+      record = await nextRecord(record, 'BACKUP_RESERVED', {
+        backupReservationIdentityDigest: backupFacts.identityDigest,
+      })
+    } else if (!record.backupReservationIdentityDigest && backupFacts) {
+      record = await nextRecord(record, 'BACKUP_RESERVED', {
+        backupReservationIdentityDigest: backupFacts.identityDigest,
+      })
     }
     await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
+    if (!await fileMatches(
+      record.backup,
+      record.backupReservationIdentityDigest,
+      reservationHash,
+    )) {
+      return conflict(record, 'backup_changed')
+    }
     await rename(record.target, record.backup)
     targetHash = null
     targetFacts = null

@@ -53,6 +53,13 @@ async function replaceDirectoryWithLink(directory, holdingRoot, movedName) {
   return moved
 }
 
+async function replaceDirectoryWithDirectory(directory, holdingRoot, movedName) {
+  const moved = join(holdingRoot, movedName)
+  await rename(directory, moved)
+  await mkdir(directory)
+  return moved
+}
+
 async function runCrashWorker(configPath) {
   const result = await new Promise((resolveResult, reject) => {
     const child = spawn(process.execPath, [worker, configPath], { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -228,6 +235,30 @@ test('MERGE rejects stale and cutover races while preserving user bytes', async 
   assert.equal(reservationRace.code, 'backup_changed')
   assert.equal(await readFile(reservedTarget, 'utf8'), base)
   assert.equal(await readFile(reservedPaths.backup, 'utf8'), '# changed reservation\n')
+
+  const identicalTarget = await seedBundle(root, 'identical-reservation', base)
+  const identicalPaths = probeInternals.targetPaths(root, 'identical-reservation', 'identical-reservation-tx')
+  let savedReservation
+  const identicalReservation = await mergeBundle({
+    root,
+    name: 'identical-reservation',
+    txid: 'identical-reservation-tx',
+    expectedHash: sha256(base),
+    nextBytes: proposal,
+    hooks: {
+      beforeBackupRename: async (record) => {
+        savedReservation = join(root, 'saved-identical-reservation')
+        await rename(record.backup, savedReservation)
+        await writeFile(
+          record.backup,
+          `run2skill-backup-reservation-v1:${record.txid}:${record.backupReservationNonce}\n`,
+        )
+      },
+    },
+  })
+  assert.equal(identicalReservation.code, 'backup_changed')
+  assert.equal(await readFile(identicalTarget, 'utf8'), base)
+  assert.equal(await readFile(identicalPaths.backup, 'utf8'), await readFile(savedReservation, 'utf8'))
 
   const stale = await mergeBundle({
     root,
@@ -456,6 +487,61 @@ test('path traversal and symlink or junction escape fail closed', async (t) => {
     recoverTransaction({ root: installSwapRoot, txid: 'install-swap-tx' }),
     (error) => error instanceof PublicationConflict && ['unsafe_path', 'target_identity_changed'].includes(error.code),
   )
+
+  const journalSwapHolding = await fixture(t)
+  const createJournalRoot = await fixture(t)
+  let movedCreateJournal
+  await assert.rejects(
+    createBundle({
+      root: createJournalRoot,
+      name: 'create-journal-swap',
+      txid: 'create-journal-swap-tx',
+      nextBytes: '# approved create\n',
+      hooks: {
+        beforeInstall: async () => {
+          movedCreateJournal = await replaceDirectoryWithDirectory(
+            join(createJournalRoot, probeInternals.JOURNAL_DIR),
+            journalSwapHolding,
+            'moved-create-journal',
+          )
+        },
+      },
+    }),
+    (error) => error instanceof PublicationConflict && error.code === 'journal_identity_changed',
+  )
+  await assert.rejects(readFile(join(createJournalRoot, 'create-journal-swap', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+  assert.deepEqual(await readdir(join(createJournalRoot, probeInternals.JOURNAL_DIR)), [])
+  assert.ok((await readdir(movedCreateJournal)).length > 0)
+
+  const mergeJournalRoot = await fixture(t)
+  await seedBundle(mergeJournalRoot, 'merge-journal-swap', '# base\n')
+  let movedMergeJournal
+  await assert.rejects(
+    mergeBundle({
+      root: mergeJournalRoot,
+      name: 'merge-journal-swap',
+      txid: 'merge-journal-swap-tx',
+      expectedHash: sha256('# base\n'),
+      nextBytes: '# approved merge\n',
+      hooks: {
+        beforeInstall: async () => {
+          movedMergeJournal = await replaceDirectoryWithDirectory(
+            join(mergeJournalRoot, probeInternals.JOURNAL_DIR),
+            journalSwapHolding,
+            'moved-merge-journal',
+          )
+        },
+      },
+    }),
+    (error) => error instanceof PublicationConflict && error.code === 'journal_identity_changed',
+  )
+  await assert.rejects(readFile(join(mergeJournalRoot, 'merge-journal-swap', 'SKILL.md'), 'utf8'), { code: 'ENOENT' })
+  assert.equal(
+    await readFile(join(mergeJournalRoot, 'merge-journal-swap', '.run2skill-merge-journal-swap-tx.backup'), 'utf8'),
+    '# base\n',
+  )
+  assert.deepEqual(await readdir(join(mergeJournalRoot, probeInternals.JOURNAL_DIR)), [])
+  assert.ok((await readdir(movedMergeJournal)).length > 0)
 })
 
 test('backup is retained until exact readback finalization', async (t) => {
