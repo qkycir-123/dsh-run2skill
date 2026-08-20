@@ -28,6 +28,7 @@ import {
   RestrictedLearningClient,
   type LearningCallLedger,
 } from '../src/adapters/dsh-llm/restricted-learning-client.js'
+import { DshSkillCatalogAdapter } from '../src/adapters/dsh-skills/skill-catalog.js'
 import { recallExistingSkills } from '../src/domain/learn/skill-recall.js'
 
 const temporaryDirectories: string[] = []
@@ -413,6 +414,8 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
 
       const initial = await mount.ctx.skills.snapshot({ cwd: workspace.path })
       expect(initial.complete).toBe(true)
+      expect((await new DshSkillCatalogAdapter(mount.ctx.skills).snapshot({ cwd: workspace.path })).roots)
+        .toBeUndefined()
       expect(initial.skills.map(skill => skill.name)).toEqual(['same-skill', 'user-only'])
       expect(initial.skills.find(skill => skill.name === 'same-skill')).toMatchObject({
         provider: 'filesystem',

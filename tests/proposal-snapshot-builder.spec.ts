@@ -17,6 +17,9 @@ import {
 } from '../src/domain/learn/index.js'
 import { CaptureWorkItemV1Schema, type CaptureWorkItemV1 } from '../src/domain/observe/schemas.js'
 import { makeLearnedWorkItem } from './support/review-fixture.js'
+import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
+import { proposalRefOf } from '../src/domain/review/index.js'
+import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 
 type View = { readonly cwd: string }
 
@@ -212,6 +215,46 @@ describe('ProposalSnapshotBuilder', () => {
     })
     expect(result.proposal.exactSkillBytes).toContain('disable-model-invocation: false')
     expect(result.proposal.exactSkillBytes).toContain('user-invocable: false')
+  })
+
+  it('revalidates the exact approved facts and accepts only an approved partial root preparation', async () => {
+    const skills = catalog(() => snapshot())
+    const learned = await learnedFor(skills, { decision: 'CREATE', rationale: 'Create it.' })
+    const initialBuilder = proposalBuilder(skills, publicationFacts(), {
+      now: () => '2026-08-20T01:00:00.000Z',
+    })
+    const built = await initialBuilder.build(learned, { cwd: workspace })
+    if (built.status !== 'READY') throw new Error('fixture proposal must be ready')
+    const domain = createMemoryRun2skillDomain()
+    domain.workItems.set(learned.workItemId, learned)
+    const reviews = new ProposalReviewStore(domain, () => '2026-08-20T01:00:01.000Z')
+    const staged = await reviews.stage(learned.workItemId, learned.revision, built.proposal)
+    const approved = await reviews.approve(
+      learned.workItemId,
+      staged.item.revision,
+      proposalRefOf(built.proposal),
+    )
+    const partialRootBuilder = proposalBuilder(skills, publicationFacts({
+      observeRoot: async () => ({
+        status: 'ABSENT',
+        canonicalExistingAncestorPath: join(workspace, '.dsh'),
+        ancestorIdentityDigest: 'f'.repeat(64),
+        missingSegments: ['skills'],
+      }),
+    }), { now: () => '2026-08-20T09:00:00.000Z' })
+
+    await expect(partialRootBuilder.revalidateApproved(
+      approved.item,
+      { cwd: workspace },
+    )).resolves.toEqual({ status: 'READY', proposal: built.proposal })
+
+    const occupiedTargetBuilder = proposalBuilder(skills, publicationFacts({
+      observeEntry: async path => ({ status: path === bundlePath ? 'DIRECTORY' : 'ABSENT' }),
+    }))
+    await expect(occupiedTargetBuilder.revalidateApproved(
+      approved.item,
+      { cwd: workspace },
+    )).resolves.toEqual({ status: 'UNAVAILABLE', failureCode: 'TARGET_ALREADY_EXISTS' })
   })
 
   it.each([

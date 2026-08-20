@@ -10,6 +10,10 @@ import {
   type ReviewStateV1,
 } from '../../domain/review/index.js'
 import type { Run2skillDomain } from './types.js'
+import {
+  createPublicationState,
+  derivePublicationTargetIdentityDigest,
+} from '../../domain/publication/index.js'
 
 export type ProposalReviewStoreErrorCode =
   | 'REVIEW_WORK_ITEM_NOT_FOUND'
@@ -112,11 +116,25 @@ export class ProposalReviewStore {
         || review.reviewDecision !== 'PENDING'
         || review.publicationOutcome !== 'PENDING_REVIEW'
         || review.proposal.kind === 'DISCARD'
+        || review.proposal.actionBinding.kind === 'DISCARD'
       ) throw new ProposalReviewStoreError('INVALID_REVIEW_STATE')
+      const actionBinding = review.proposal.actionBinding
       return {
         ...current,
         processingState: 'PUBLISHING',
         review: { ...review, reviewDecision: 'APPROVED', decidedAt: this.#now() },
+        publication: createPublicationState({
+          workItemId,
+          proposalId: review.proposal.proposalId,
+          targetIdentityDigest: derivePublicationTargetIdentityDigest({
+            scope: review.proposal.persistenceScope,
+            provider: actionBinding.rootBinding.provider,
+            source: actionBinding.rootBinding.source,
+            skillName: review.proposal.name,
+            canonicalTargetPath: actionBinding.targetBinding.skillFilePath,
+          }),
+          occurredAt: this.#now(),
+        }),
       }
     })
   }

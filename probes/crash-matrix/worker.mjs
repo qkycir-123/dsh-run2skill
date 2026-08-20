@@ -62,6 +62,7 @@ const host = await import(pathToFileURL(join(candidate, 'lib', 'index.js')).href
 let global = readJson(globalPath, {})
 delete global._placeholderLifecycleKey
 const items = new Map(Object.entries(readJson(itemsPath, {})))
+const lineages = new Map()
 let volatileEvents = readJson(sessionPath, [])
 let revision = `json:${String(volatileEvents.length)}`
 let crashAfterPut = mode === 'crash-after-work-item' || mode === 'volatile-old-crash'
@@ -95,24 +96,31 @@ const domain = {
     },
   },
   table: name => {
-    if (name !== 'work_items') throw new Error('unexpected table')
+    const records = name === 'work_items'
+      ? items
+      : name === 'lineages'
+        ? lineages
+        : undefined
+    if (records === undefined) throw new Error('unexpected table')
     return {
-      get: key => items.get(key),
-      entries: () => items.entries(),
-      keys: () => items.keys(),
-      get size() { return items.size },
+      get: key => records.get(key),
+      entries: () => records.entries(),
+      keys: () => records.keys(),
+      get size() { return records.size },
       put: async (key, value) => {
-        items.set(key, structuredClone(value))
-        persistItems()
-        if (crashAfterPut) process.exit(23)
+        records.set(key, structuredClone(value))
+        if (name === 'work_items') {
+          persistItems()
+          if (crashAfterPut) process.exit(23)
+        }
       },
-      delete: async key => items.delete(key),
+      delete: async key => records.delete(key),
       update: async (key, transform) => {
-        const current = items.get(key)
+        const current = records.get(key)
         if (current === undefined) throw new Error('missing item')
         const value = transform(structuredClone(current))
-        items.set(key, structuredClone(value))
-        persistItems()
+        records.set(key, structuredClone(value))
+        if (name === 'work_items') persistItems()
         return value
       },
     }

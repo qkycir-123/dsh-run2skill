@@ -1,9 +1,9 @@
-import { z } from 'zod'
 import {
   CaptureWorkItemV1Schema,
   GlobalV1Schema,
   type GlobalV1,
 } from '../../domain/observe/schemas.js'
+import { LineageV1Schema } from '../../domain/publication/index.js'
 
 export function createInitialGlobalV1(): GlobalV1 {
   return {
@@ -25,7 +25,7 @@ export const run2skillDomainSpec = {
   },
   tables: {
     work_items: { valueSchema: CaptureWorkItemV1Schema },
-    lineages: { valueSchema: z.never() },
+    lineages: { valueSchema: LineageV1Schema },
   },
 } as const
 

@@ -30,3 +30,12 @@ export function renderCanonicalSkill(input: CanonicalSkillInput): string {
   ]
   return `${metadata.join('\n')}\n\n${body}\n`
 }
+
+export function parseCanonicalSkillBody(value: string): string {
+  if (!value.startsWith('---\n') || !value.endsWith('\n')) {
+    throw new TypeError('Invalid canonical Skill bytes')
+  }
+  const boundary = value.indexOf('\n---\n\n', 4)
+  if (boundary < 0) throw new TypeError('Invalid canonical Skill frontmatter boundary')
+  return value.slice(boundary + 6, -1)
+}

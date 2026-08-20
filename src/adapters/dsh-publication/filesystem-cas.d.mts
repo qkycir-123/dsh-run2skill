@@ -25,9 +25,29 @@ export interface RootPreparation {
 
 export class PublicationConflict extends Error {
   readonly code: string
+  constructor(code: string, message: string)
 }
 
 export function sha256(value: string | Uint8Array): string
+export function observePublicationRoot(path: string): Promise<
+  | { readonly status: 'EXISTING'; readonly canonicalRootPath: string; readonly rootIdentityDigest: string }
+  | { readonly status: 'ABSENT'; readonly canonicalExistingAncestorPath: string; readonly ancestorIdentityDigest: string; readonly missingSegments: readonly string[] }
+  | { readonly status: 'UNAVAILABLE' }
+>
+export function observePublicationEntry(path: string): Promise<{
+  readonly status: 'ABSENT' | 'FILE' | 'DIRECTORY' | 'LINK' | 'OTHER'
+}>
+export function readPublicationText(path: string, maxBytes: number): Promise<
+  | { readonly status: 'AVAILABLE'; readonly text: string }
+  | { readonly status: 'UNAVAILABLE' }
+>
+export function verifyPublicationDirectoryIdentity(path: string, expectedIdentityDigest: string): Promise<boolean>
+export function verifyFinalizedTransaction(input: {
+  readonly root: string
+  readonly name: string
+  readonly txid: string
+  readonly expectedHash: string
+}): Promise<boolean>
 export function preparePublicationRoot(input: {
   readonly binding: RootBindingV1
   readonly verifyIdentity: (canonicalPath: string, identityDigest: string) => Promise<boolean>
