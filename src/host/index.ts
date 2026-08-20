@@ -99,10 +99,6 @@ interface AgentPreStepPayload {
   readonly agent: Run2skillAgent
 }
 
-interface AgentCreatedPayload {
-  readonly agent: Run2skillAgent
-}
-
 interface AgentDisposedPayload {
   readonly agent: Run2skillAgent
 }
@@ -465,12 +461,6 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
 
   context.on('session/event', (session: DshSessionProjection, event: DshSessionEvent) => {
     if (accepting) ingress.observe(session.header, event)
-  })
-  context.on('agent/created', ({ agent }: AgentCreatedPayload) => {
-    if (!accepting) return
-    void factory.captureRootConfiguration(agent).catch(() => {
-      notices.record({ healthCode: 'ROOT_CONTRACT_UNSUPPORTED', sessionId: agent.id || 'global' })
-    })
   })
   context.on('agent/pre-step', async ({ agent }: AgentPreStepPayload, next: () => Promise<unknown>) => {
     if (accepting && !scopeDisposers.has(agent)) {

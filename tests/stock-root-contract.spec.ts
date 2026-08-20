@@ -29,7 +29,7 @@ function configuration(
 }
 
 describe('stock DSH root contract', () => {
-  it('retains the exact pre-step configuration after the standing mount leaves its observation window', async () => {
+  it('invalidates a cached configuration when authoritative recapture becomes unsupported', async () => {
     const agent = { ctx: {} }
     let mounted = true
     const expected = configuration()
@@ -41,7 +41,7 @@ describe('stock DSH root contract', () => {
     mounted = false
 
     await expect(cache.capture(agent)).resolves.toBeUndefined()
-    expect(cache.get(agent)).toEqual(expected)
+    expect(cache.get(agent)).toBeUndefined()
     cache.release(agent)
     expect(cache.get(agent)).toBeUndefined()
   })

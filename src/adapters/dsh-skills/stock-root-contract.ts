@@ -94,7 +94,10 @@ export class StockSkillRuntimeConfigurationCache<TAgent extends object> {
 
   async capture(agent: TAgent): Promise<StockSkillRuntimeConfiguration | undefined> {
     const observed = await this.observe(agent)
-    if (observed === undefined) return undefined
+    if (observed === undefined) {
+      this.#entries.delete(agent)
+      return undefined
+    }
     const snapshot = Object.freeze({
       ...observed,
       customSkillDirs: Object.freeze([...observed.customSkillDirs]),
