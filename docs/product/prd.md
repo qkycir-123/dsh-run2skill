@@ -217,7 +217,7 @@ Learning Envelope 中的内容必须标注来源，例如 `USER_EVIDENCE`、`ASS
 - Review Decision；
 - Publication Outcome；
 - CREATE 的 expected-absence，或 MERGE 的 target Base content/hash/revision；
-- canonical workspace identity、effective DSH Skill root 和 exact target path。
+- scope identity（PROJECT 的 canonical workspace identity；USER 的 effective DSH Home identity）、effective DSH Skill root 和 exact target path。
 
 run2skill 的对象必须称为 `Skill Proposal`，不得与 DSH 的 `SkillCandidate` 类型混用。
 
@@ -392,7 +392,7 @@ v0.1 正式支持的审批面仅为 DSH `web` profile。Proposal Inbox 是 Actio
 默认 Inbox 只显示当前 PROJECT Proposal 和 USER Proposal，不得用其他项目 Proposal 干扰当前工作区。
 
 **REQ-REV-003**  
-CREATE Review 必须显示 Why learned、Evidence、Evidence Strength、Session/Turn coordinates、Scope、immutable Proposal revision/digest、canonical workspace identity、effective root、exact target path、expected-absence 和最终完整 Skill 内容。
+CREATE Review 必须显示 Why learned、Evidence、Evidence Strength、Session/Turn coordinates、Scope、immutable Proposal revision/digest、scope identity（PROJECT 的 canonical workspace identity 或 USER 的 effective DSH Home identity）、effective root、exact target path、expected-absence 和最终完整 Skill 内容。
 
 **REQ-REV-004**  
 MERGE Review 除上述证据来源信息外，还必须显示 target Skill、Base revision/content 和精确 Diff。
@@ -408,7 +408,7 @@ Approval 只能引用服务器端 immutable Proposal snapshot，不得使用浏�
 
 - Proposal revision/digest；
 - reviewed content；
-- canonical workspace identity；
+- scope identity：PROJECT 的 canonical workspace identity，或 USER 的 effective DSH Home identity；
 - effective DSH Skill root；
 - exact target path；
 - MERGE Base 或 CREATE expected-absence。

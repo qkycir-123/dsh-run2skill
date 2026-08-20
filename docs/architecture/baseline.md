@@ -125,7 +125,7 @@ digest 使用 canonical JSON envelope 的 SHA-256，至少覆盖：
 - name、description、whenToUse 与 invocation；
 - Curation Decision；
 - Persistence Scope；
-- WorkspaceBinding；
+- ScopeIdentityBinding（PROJECT 的 WorkspaceBinding 或 USER 的 DshHomeBinding）；
 - RootBinding 和 exact target path；
 - CREATE expected-absence 或 MERGE Base bytes/hash；
 - supporting Experience ids；
@@ -167,6 +167,7 @@ APPROVED 不能推导 PUBLISHED。磁盘写入事实、Registry 回读事实和�
 |---|---|---|
 | SignalKey | sessionId + SessionLifecycle（createdAt + cwd 原值身份摘要）+ turn/turnEndSeq + TurnInstanceDigest（边界 time + direct user message IDs）+ triggerPolicyVersion | 同一 durable turn/end 重投只能命中一个 WorkItem；Session ID 或未 durable 尾部 seq 被复用时不得混入旧事实 |
 | WorkspaceBinding | workspaceId + canonicalPath + observedAt | PROJECT 必填；发布前用 registry 重新解析和比较 |
+| DshHomeBinding | resolution kind + canonical effective DSH Home + observedAt | USER 必填；发布前按相同 composition/config 语义重新解析和比较 |
 | RootBinding | scope + canonicalRoot + resolverVersion + rootContractVersion/digest + Workspace/DSH Home 与文件身份 | 只接受 ADR-0001 的官方默认 project-dsh/user-dsh resolution contract；不依赖 snapshot roots observation |
 | TargetBinding | skillName + canonical target path + expected kind | 只能是批准 root 的直接子 Skill bundle |
 | BaseBinding | exact bytes + SHA-256 + format facts | MERGE 必填 |
@@ -249,7 +250,7 @@ v0.1 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 ### 7.6 scope-and-target-resolver
 
 输入：Evidence、Workspace registry、DSH home/config、完整 Skill observation、版本化官方默认 root contract。
-输出：WorkspaceBinding、RootBinding、TargetBinding 或 Needs Attention。  
+输出：ScopeIdentityBinding、RootBinding、TargetBinding 或 Needs Attention。
 错误：contract/profile/config、identity、containment、writability 无法证明。
 约束：歧义只收窄为 PROJECT 或 Needs Attention，不扩大 USER。
 

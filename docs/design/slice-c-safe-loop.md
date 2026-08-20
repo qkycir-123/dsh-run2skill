@@ -125,6 +125,7 @@ name, description, whenToUse, invocation
 exactSkillBytes, skillBytesDigest, rendererVersion, schemaVersion
 persistenceScope
 workspaceBinding?                 # PROJECT 必填
+dshHomeBinding?                   # USER 必填
 actionBinding:
   CREATE: rootBinding + targetBinding + expectedAbsence
   MERGE:  rootBinding + targetBinding + baseBinding
@@ -295,7 +296,7 @@ Settings 与 Purge endpoints 留给切片 D。请求 envelope 版本化、严格
 
 ### 7.3 Review 内容
 
-CREATE 必须展示 Why learned、过滤 Evidence、Strength、Session/Turn 坐标、Scope、Proposal revision/digest、workspace、root、exact target、expected-absence 和完整 raw bytes。
+CREATE 必须展示 Why learned、过滤 Evidence、Strength、Session/Turn 坐标、Scope、Proposal revision/digest、PROJECT Workspace 或 USER effective DSH Home identity、root、exact target、expected-absence 和完整 raw bytes。
 
 MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化 bidi/zero-width/control 字符；raw 视图展示真正批准的 exact bytes。两者都只用 text node/`pre`，不执行 HTML、不加载嵌入资源、不自动激活链接。
 
@@ -316,7 +317,7 @@ MERGE 额外展示 target identity、Base 和精确 Diff。安全视图可见化
 
 1. compare ProposalRef；
 2. durable `APPROVED + PUBLISHING`；
-3. 重新验证 workspace/root/target；
+3. 重新验证 PROJECT Workspace 或 USER effective DSH Home、root、target；
 4. 重新取得 `complete: true` Catalog，并重算版本化 root contract；
 5. 重算 renderer bytes/digest；
 6. 依次执行 source/scope、path、link/reparse、absence/Base、format、secret、writability Guard；
