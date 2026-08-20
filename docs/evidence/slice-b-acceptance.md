@@ -41,3 +41,5 @@ Slice B 已形成最小 Learning 闭环：完整的 durable WorkItem 可以在�
 - Learning Proposal 仍只是内部草案，不是 `PENDING_REVIEW`，更不是已发布 Skill。
 - CP-ROOT-001 仍禁止 PROJECT/USER publication；只有 Slice C 的授权与提交边界可以解除。
 - Slice C 尚未设计和冻结；本切片没有提前实现 Review、Approval、Publication 或 Skill 写入。
+
+以上“未解除约束/下一步”记录的是 Slice B 验收时状态；当前路线以 `docs/roadmap.md` 为准，历史验收结论不据此重写。

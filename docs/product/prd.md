@@ -2,7 +2,7 @@
 
 状态：v0.1 需求已冻结  
 文档版本：v0.1  
-更新时间：2026-08-19  
+更新时间：2026-08-20
 适用版本：`v0.1.0-alpha`
 
 冻结记录：维护者于 2026-08-19 接受当前需求设计，可进入 Architecture Baseline。后续新增能力原则上进入 v0.2/v0.3；只有歧义、安全缺口或无法实现的 v0.1 要求才修订本版本，并记录原因与重新接受。
@@ -121,6 +121,7 @@ v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功
 
 - 可安装、可禁用、可卸载的 DSH 插件；
 - `web` profile 的正式支持；
+- 固定兼容性 baseline 的官方 `web` profile 组合与默认 filesystem Skill roots；
 - Root Session `turn/end` 观察；
 - Cheap Trigger 和显式保存请求；
 - `CORRECTION`、`CONSTRAINT`、`WORKFLOW`；
@@ -431,7 +432,7 @@ v0.1 只允许写入：
 - PROJECT：`<project-root>/.dsh/skills/`；
 - USER：有效 `<DSH_HOME>/skills/`。
 
-其他 bundled、runtime、custom、Agents 等来源只参与查重，默认只读。
+其他 bundled、runtime、custom、Agents 等来源只参与查重，默认只读。`customSkillDirs`、`includeDefaultRoots=false`、重命名 provider 或自定义 preset 产生的 Skill 仍可参与 Effective Skill Catalog 查重，但 v0.1 不承诺向这些配置发布；无法证明标准目标仍由官方 filesystem provider 以预期 source 加载时，Proposal 必须进入 `NEEDS_ATTENTION`。
 
 **REQ-PUB-002**  
 CREATE 必须绑定 reviewed expected-absence。发布前若出现同名 effective Skill、文件或目录，必须进入 `NEEDS_REFRESH`，不得覆盖或接管。
@@ -457,8 +458,8 @@ MERGE 必须绑定 reviewed Base content/hash/revision。发布前 Base 不一�
 文件写入成功不等于发布成功。只有在相同 cwd/scope 下：
 
 1. 获得 `complete: true` 的 `ctx.skills` 观察；
-2. 精确解析到目标 Skill name；
-3. `ctx.skills.get()` 无需重启 DSH 即返回用户审核的内容；
+2. 精确解析到目标 Skill name、原生 filesystem provider、预期 `project-dsh`/`user-dsh` source 和 exact target path；
+3. `ctx.skills.get()` 无需重启 DSH 即返回相同 path 与用户审核的 content；
 
 Publication Outcome 才能记为 `PUBLISHED`。
 
@@ -579,7 +580,7 @@ Redaction 只是 defense-in-depth，不是完整秘密检测保证；第一道�
 
 - 不修改 DSH 源码；
 - DSH 相关调用集中在薄 Adapter；
-- 不依赖本地 DSH patch；
+- 生产能力不依赖 DSH fork、未合并的 roots API、本地 DSH patch 或其他未发布上游变更；
 - 上游更新不得自动移动已验证 baseline；
 - 兼容性失败时安全停用学习/发布能力，不影响 DSH 主 Agent。
 
@@ -629,6 +630,21 @@ MERGE Proposal 基于 `r2`，用户在 Review 完成前手工修改目标 Skill�
 4. 基于最新内容生成新 Proposal；
 5. 让用户重新 Review，旧 Approval 不得复用。
 
+### 14.4 场景 D：CREATE · USER 跨项目长期规则
+
+用户在一个已绑定 Workspace 的真实任务中明确说明：
+
+> “以后所有项目都先读项目自己的协作规则，再开始修改。”
+
+期望：
+
+1. `HIGH` 跨项目长期意图形成 USER Proposal；
+2. Web 展示有效 DSH Home、`<DSH_HOME>/skills/<name>/SKILL.md` 标准目标、证据和完整 Skill；
+3. 用户 Approve 后，Core 依照已批准的官方默认 root contract 执行 CAS/journal 写入；
+4. 未修改的 DSH 在相同 USER scope 下返回 `complete: true` snapshot，winning candidate 为原生 filesystem provider 的 `user-dsh` source，且 `ctx.skills.get()` 精确返回审核内容；
+5. 新项目中的相关任务能发现并使用该 Skill；
+6. 卸载 run2skill 后，原生 USER Skill 仍能被 DSH 使用。
+
 ## 15. v0.1 完成定义
 
 只有下列条件全部有可复核证据时，才能发布 `v0.1.0-alpha`：
@@ -642,17 +658,17 @@ MERGE Proposal 基于 `r2`，用户在 Review 完成前手工修改目标 Skill�
 - PROJECT/USER 判定、Existing Skill Lookup 和 `CREATE/MERGE/DISCARD` 可用；
 - `complete: false` 不被当作不存在或完整覆盖的证明；
 - Web 能安全、可访问地展示 Proposal、Evidence、Diff 和精确待写内容；
-- Approval 绑定 immutable Proposal、工作区、root、path、Base/expected-absence；
+- Approval 绑定 immutable Proposal、工作区/DSH Home、版本化 root contract、path、文件身份与 Base/expected-absence；
 - Review Decision 与 Publication Outcome 分离持久化；
 - Reject、Needs Attention、Needs Refresh、Publish Failed 都有不会绕过 Review 的恢复路径；
 - Base conflict、CREATE race、路径逃逸、symlink/junction escape、不可写目标和 secret-like value 全部 fail closed；
-- 发布成功经相同 cwd/scope 下 `complete: true` 观察和 `ctx.skills.get()` 精确回读确认；
+- 发布成功经相同 cwd/scope 下 `complete: true` 观察、原生 filesystem provider/source/path winner 和 `ctx.skills.get()` 精确回读确认；
 - 生成 Skill 默认 `modelInvocable = true`、`userInvocable = false`；
 - run2skill 错误、模型失败、Web 失败或 Store 暂时失败不影响 DSH 主 Agent；
 - 不静默切换 LLM Provider，不上传 telemetry/cloud 数据；
 - 用户能按 PROJECT/USER 清除 run2skill 自有数据，并看清不会删除的 DSH Session Log 与已发布 Skill；
 - 冻结评测集和第 5.2 节全部质量门槛通过；
-- 三个黄金场景通过；
+- 四个黄金场景通过；
 - 公开仓库包含 MIT `LICENSE`。
 
 ## 16. Alpha 评测集要求

@@ -1,8 +1,8 @@
 # dsh-run2skill v0.1 架构基线
 
-状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-19 Observe 频率/身份窄修订已随 Slice A Design 接受  
+状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-20 纯插件发布 root contract 窄修订已接受
 文档版本：v0.1  
-更新时间：2026-08-19  
+更新时间：2026-08-20
 产品输入：docs/product/prd.md v0.1（已冻结）  
 DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
@@ -46,7 +46,7 @@ dsh-run2skill 是一个双面 DSH 插件：Host 侧观察 Root Session 的 turn/
 | 类别 | 当前结论 |
 |---|---|
 | 已接受架构方向 | 双面单插件、薄 DSH Adapter、领域 Core、DSH Storage Domain、受限单阶段 Learning、完整 Catalog Lookup、Host 权威审批、原生 Skill 发布 |
-| 必须先探针验证 | turn/end 冷启动补偿、有效 Skill root 对齐、跨平台 compare-exchange、Web loopback 通道、Registry 热回读、安装/禁用/升级/卸载 |
+| 必须先探针验证 | turn/end 冷启动补偿、stock DSH 默认 Skill root contract、跨平台 compare-exchange、Web loopback 通道、Registry 热回读、安装/禁用/升级/卸载 |
 | 留给切片 Design | 具体类名、React 组件、内部函数签名、提示词措辞、精确超时常数、视觉样式 |
 | v0.1 不做 | 自动发布、远程审批、向量数据库、完整 History UI、Rollback UI、自动 Git 操作、独立模型选择器 |
 
@@ -167,7 +167,7 @@ APPROVED 不能推导 PUBLISHED。磁盘写入事实、Registry 回读事实和�
 |---|---|---|
 | SignalKey | sessionId + SessionLifecycle（createdAt + cwd 原值身份摘要）+ turn/turnEndSeq + TurnInstanceDigest（边界 time + direct user message IDs）+ triggerPolicyVersion | 同一 durable turn/end 重投只能命中一个 WorkItem；Session ID 或未 durable 尾部 seq 被复用时不得混入旧事实 |
 | WorkspaceBinding | workspaceId + canonicalPath + observedAt | PROJECT 必填；发布前用 registry 重新解析和比较 |
-| RootBinding | scope + provider + source + canonicalRoot + resolverVersion | 只接受经验证的 project-dsh/user-dsh writable root |
+| RootBinding | scope + canonicalRoot + resolverVersion + rootContractVersion/digest + Workspace/DSH Home 与文件身份 | 只接受 ADR-0001 的官方默认 project-dsh/user-dsh resolution contract；不依赖 snapshot roots observation |
 | TargetBinding | skillName + canonical target path + expected kind | 只能是批准 root 的直接子 Skill bundle |
 | BaseBinding | exact bytes + SHA-256 + format facts | MERGE 必填 |
 | ExpectedAbsence | skill name + catalog revision facts + filesystem absence facts | CREATE 必填 |
@@ -248,9 +248,9 @@ v0.1 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 
 ### 7.6 scope-and-target-resolver
 
-输入：Evidence、Workspace registry、DSH home/config、Skill observation。  
+输入：Evidence、Workspace registry、DSH home/config、完整 Skill observation、版本化官方默认 root contract。
 输出：WorkspaceBinding、RootBinding、TargetBinding 或 Needs Attention。  
-错误：root parity、identity、writability 无法证明。  
+错误：contract/profile/config、identity、containment、writability 无法证明。
 约束：歧义只收窄为 PROJECT 或 Needs Attention，不扩大 USER。
 
 ### 7.7 run2skill-store
@@ -530,23 +530,27 @@ PROJECT 使用 ctx.workspaceRegistry.resolveByPath(sessionHeader.cwd) 获得稳�
 - registry 负责 realpath 与目录存在性；
 - Proposal 保存 workspaceId + canonical path；
 - 发布前重新 get/resolve，并检查 status=ok；
-- root 候选为 canonical workspace path/.dsh/skills；
-- 还必须与 filesystem Skill provider 在相同 cwd 下的观察语义一致。
+- 标准 root 为 canonical workspace path/.dsh/skills；
+- CREATE 使用用户批准的版本化标准目标；MERGE 还必须让完整 Catalog winner 的 `ctx.skills.get().path` 位于该 root；
+- 写后必须由相同 cwd 下的原生 filesystem provider、`project-dsh` source、exact path/content 回读确认。
 
 没有已注册、可验证 Workspace 时，不从最近 Git root、进程 cwd 或文件路径猜 PROJECT。
 
 ### 12.2 USER
 
-USER root 候选通过 resolveDshHome(run2skill composition dshHome) + /skills 解析。run2skill 与 DSH filesystem Skill provider 必须使用同一个已解析 dshHome 和 includeDefaultRoots=true。
+USER root 通过与目标 DSH 组合相同的有效 DSH Home resolution + /skills 解析。run2skill 与官方 Web profile filesystem Skill provider 必须使用相同的 DSH Home 配置语义和 `includeDefaultRoots=true`。
 
-当前 ctx.skills 没有直接暴露“有效 writable roots”查询，因此这是一个承重契约缺口：
+### 12.3 版本化纯插件 root contract
 
-- CP-ROOT-001 必须验证目标 session-scoped provider 的实际 writable root，而不只验证候选路径可组合；
-- 启动时尽可能用已观察 user-dsh candidate 做 parity check；
-- 无法证明 parity 时允许形成 Needs Attention Proposal，但禁用 USER publication；
-- 不得因为默认值通常相同就声称 root 已验证。
+生产 RootBinding 遵守 `docs/adr/0001-stock-dsh-publication-root-contract.md`：
 
-CP-ROOT-001 已在 Windows 的真实组件手工组合中证明上述 PROJECT/USER 候选 root 与 Registry 读回路径一致；CP-WEB-001/CP-INS-001 也已证明外部插件可以进入真实 Web profile 并取得相关服务。但 `ctx.skills` 没有公开 session-scoped provider 的实际 writable root 查询，因此候选路径仍不能充当目标身份证据。root parity 保持 PARTIAL，Slice C 取得实际 provider root 与 Registry 精确回读前不得启用发布。
+- 固定 baseline、官方 `web` profile、默认 filesystem provider/source 与解析算法共同构成版本化 contract；
+- PROJECT 绑定重新验证的 Workspace identity，USER 绑定有效 DSH Home identity；两者都绑定 canonical root、root contract digest、exact target 与文件身份/expected-absence；
+- MERGE 使用完整 Catalog winner 的现有 `ctx.skills.get().path` 证明目标位于标准 root；CREATE 使用经用户批准的标准目标，并分别证明 Catalog 与文件 absence；
+- `customSkillDirs`、`includeDefaultRoots=false`、重命名 provider、自定义 preset 或无法重建的配置只参与查重；无法证明标准 contract 时进入 NEEDS_ATTENTION；
+- 写后只接受未修改 DSH 的 complete snapshot、原生 filesystem provider、预期 source/path 和 exact `get()` content 作为 PUBLISHED 证据。
+
+生产不等待、调用或探测 provider roots API，也不注册 run2skill 自有 Skill provider，不创建 sentinel。CP-ROOT-001 的旧 roots-observation 方向不再是承重缺口；独立 Issue #48 在 C7 前迁移现有实现，并以 stock DSH 探针取得运行证据。
 
 ## 13. Publication 与 Revision 事务
 
@@ -572,7 +576,7 @@ Approve RPC 只接收 ProposalRef。Host 在同一个 target 串行区执行：
 
 1. Store compare-revision：Proposal 仍是 PENDING、digest 相同；
 2. 持久化 Review Decision=APPROVED 和 processing=PUBLISHING；
-3. 重新解析 Workspace、root、target；
+3. 按版本化 contract 重新解析 Workspace/DSH Home、root、target；
 4. 取得 complete=true Catalog；
 5. 重算 Skill bytes 和 digest；
 6. 执行 path、source/scope、secret、format Guard；
@@ -591,8 +595,8 @@ Approve RPC 只接收 ProposalRef。Host 在同一个 target 串行区执行：
 Guard 按“便宜且不触盘 → 身份 → 观察 → 路径 → 内容 → 写入”执行：
 
 1. ProposalRef/revision/digest；
-2. Workspace/DSH Home/root resolver version；
-3. complete Catalog 与 writable provider/source；
+2. Workspace/DSH Home/root resolver 与 contract version/digest；
+3. complete Catalog；MERGE 还验证原生 filesystem provider/source 与现有 `get().path`；
 4. target name、path traversal、root containment；
 5. lstat/realpath、symlink/junction/reparse-point escape；
 6. expected-absence 或 Base exact bytes/hash；
@@ -844,7 +848,7 @@ storageDomain, workspaceRegistry, connection
 |---|---|---|
 | A Observe | 双面插件可加载；Root turn/end -> durable WorkItem/RuntimeNotice；无模型 | CP-SES-001、CP-STO-001、基本安装 |
 | B Learn | WorkItem -> bounded Envelope -> Experience/Proposal/Needs Attention | CP-LLM-001、Skill summary/read、Settings |
-| C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-001、CP-PUB-001、CP-WEB-001 |
+| C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-003、CP-PUB-001、CP-WEB-001 |
 | D Productize | Inbox 完善、Purge、迁移策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
 
 每个切片开始前仍需独立 Design。切片 A/B 不得宣称 Run -> Skill 闭环成功；只有切片 C 通过 Web Human Review 和回读后才可以。
@@ -878,7 +882,7 @@ storageDomain, workspaceRegistry, connection
 | CP-STO-001 | Web profile Storage Domain 可用、重启恢复、写序列、backend 错误 | durable pending 不成立 |
 | CP-LLM-001 | inherited provider/model one-shot stream、usage、cancel、invalid JSON 修复、无 tools | Slice B 不能开始 |
 | CP-SKL-001 | snapshot complete、scope/cwd、rank、get、skills/change 和精确热回读 | Curation/Published 判定不成立 |
-| CP-ROOT-001 | Workspace path 与 project-dsh root；effective dshHome 与 user-dsh root 的 parity | 相应 Scope publication 必须禁用 |
+| CP-ROOT-003 | stock DSH 官方默认 root contract、PROJECT/USER 写入与原生 Registry exact readback | Issue #48/C7 前不得宣称纯插件发布闭环通过 |
 | CP-PUB-001 | Windows/Linux CREATE/MERGE CAS、race、crash、symlink/junction、backup recovery | Slice C 不能发布；不得退化为覆盖 |
 | CP-WEB-001 | 外部双面插件、header slot、/run2skill loopback、LAN/cross-origin 拒绝 | Web Review 边界不成立 |
 | CP-INS-001 | plugin add、web profile、disable、upgrade、uninstall；Skill 卸载后仍可用 | v0.1 不能发布 |
@@ -901,7 +905,7 @@ storageDomain, workspaceRegistry, connection
 |---|---|---|
 | REQ-OBS-001..008 | session-adapter、trigger-coordinator、store | Unit + CP-SES-001 + restart integration |
 | REQ-LRN-001..007 | envelope-builder、sensitive-filter、learning-engine | Unit + CP-LLM-001 + frozen evaluation |
-| REQ-SCP-001..004 | scope-and-target-resolver、workspace adapter | Unit + CP-ROOT-001 |
+| REQ-SCP-001..004 | scope-and-target-resolver、workspace adapter | Unit + CP-ROOT-003 |
 | REQ-CUR-001..007 | skill-query-adapter、curation Guard | Unit + CP-SKL-001 + adversarial fixtures |
 | REQ-REV-001..010 | web-rpc-host、web-client、Proposal aggregate | Browser integration + accessibility + CP-WEB-001 |
 | REQ-PUB-001..009 | publication-service、CAS adapter、Registry readback | CP-PUB-001 + CP-SKL-001 + security integration |
@@ -909,7 +913,7 @@ storageDomain, workspaceRegistry, connection
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
 | 状态与恢复 | WorkItem aggregate、Journal recovery | crash matrix + restart E2E |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
-| 三个黄金场景 | 全系统 | Web profile E2E |
+| 四个黄金场景 | 全系统 | Web profile E2E |
 
 ## 24. 架构验收与批准记录
 
@@ -922,7 +926,7 @@ storageDomain, workspaceRegistry, connection
 - 接受单阶段语义调用、最多一次格式修复；
 - 接受 loopback unary RPC + v0.1 polling；
 - 接受 compare-exchange 为发布硬契约，CP-PUB-001 失败不能降级；
-- 接受 CP-ROOT-001 不能证明时禁用相应 Scope publication；
+- 接受 ADR-0001 的 stock DSH 版本化 root contract；配置或身份无法证明时禁用相应 Scope publication；
 - 接受阶段 3 探针通过后才进入对应纵向切片 Design。
 
 批准记录：
@@ -931,4 +935,4 @@ storageDomain, workspaceRegistry, connection
 - 接受方：项目维护者；
 - 批准日期：2026-08-19；
 - 批准的文档版本：v0.1；
-- 接受范围：进入阶段 3 Contract Probe；不跳过探针进入生产实现；2026-08-19 Observe 窄修订随 Slice A Design 一并纳入。
+- 接受范围：进入阶段 3 Contract Probe；不跳过探针进入生产实现；2026-08-19 Observe 窄修订随 Slice A Design 一并纳入；2026-08-20 纯插件 root contract 窄修订以 ADR-0001 为准。

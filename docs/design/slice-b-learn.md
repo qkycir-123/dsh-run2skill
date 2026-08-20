@@ -1,6 +1,6 @@
 # 切片 B：Learn 设计
 
-状态：Design Candidate（维护者已授权按批准的 PRD、Architecture 和滚动规划原则代为收口）
+状态：已接受；B1–B6 已合并并完成 Slice B 集成验收
 
 日期：2026-08-20
 
@@ -602,3 +602,5 @@ Header 只显示聚合状态，例如“2 条已学习草案，1 条需处理”
 ## 18. 接受记录
 
 本 Design 不修改 PRD 或 Architecture 的产品行为。维护者已明确授权：后续非重大边界决策由实现代理自行判断；按滚动规划完成一个切片后再设计下一个切片。因此本 Design 经 PR review、CI 和 exact-HEAD CLEAN 后视为 Slice B 实现基线，随后只创建 B1～B6 Issues。
+
+进度注记：B1–B6 已全部合并，固定评测与真实 DSH 集成验收已完成；上段“随后”描述的是 Design 接受时的执行顺序。

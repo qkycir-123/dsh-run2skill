@@ -1,7 +1,7 @@
 # DSH 兼容性基线
 
-状态：Architecture 级源码核验与基线探针轮次已完成；除 CP-ROOT-001 保持部分通过并锁住 Scope publication 外，其余承重契约均已取得运行证据  
-核验日期：2026-08-19
+状态：Architecture 级源码核验与既有基线探针轮次已完成；纯插件 stock-root 探针尚未运行
+核验日期：2026-08-20
 
 ## 1. 上游来源
 
@@ -51,7 +51,7 @@
 | Web trust / RPC | packages/client/connection/src/rpc.ts、rpc-host.ts、index.ts | 独立 RPC channel 可声明 authority=loopback；Host/Origin/cross-site 检查发生在业务 handler 前；该 fence 是可达性边界，不是远程认证 |
 | Client 插件与 slot | packages/client/modules、packages/client/ui-conversation/src/client/contract/slots.ts | 外部包可用 dsh.client + ./client 加载；conversation.session.header.actions 是 session-scoped list slot |
 | 原子文件工具 | packages/util/atomic-write/src/index.ts | writeFileAtomic 保证同目录完整替换，withFileLock 只协调遵守该锁的 writer；两者都不提供内容 compare-and-exchange 或 crash fsync |
-| DSH Home | packages/util/home-paths/src/index.ts | resolveDshHome 顺序为显式配置、DSH_HOME、默认目录；ctx.skills 当前未直接暴露 effective writable root 查询 |
+| DSH Home | packages/util/home-paths/src/index.ts | resolveDshHome 顺序为显式配置、DSH_HOME、默认目录；ctx.skills 当前未直接暴露 effective writable root 查询，但 v0.1 生产契约不以该 API 为前置 |
 
 这些结论已转化为 docs/architecture/baseline.md 的模块边界、fail-open/fail-closed 规则和 Contract Probe 清单。
 
@@ -95,17 +95,18 @@ packages/subagent/
 
 - Session 取消、重复事件和 workspace identity 的精确解析；
 - `ctx.skills` 的 scope layer 和并发失效边界；
-- 目标 session-scoped provider 中 PROJECT/USER root 的精确写入和 Registry 回读；未取得前禁用相应 Scope publication；
+- ADR-0001 的 stock configuration root contract、PROJECT/USER 精确写入和原生 Registry exact readback；Issue #48 完成并运行新探针前不得宣称 C7 通过；
 - `ctx.settings` namespace、默认值、冲突和 live update；
 - 真实 dsh-run2skill 发布候选包必须重复 Host/Client、profile、安装、禁用、升级和卸载验收。
 
-兼容性探针必须可丢弃，不得在 DSH 源码中留下 run2skill patch。
+兼容性探针必须可丢弃，不得在 DSH 源码中留下 run2skill patch。生产能力不得依赖 DSH fork、未合并 roots API、本地 patch、自有 Skill provider 或 sentinel 探测。
 
 ## 6. 兼容性策略
 
 - 项目开发和验收绑定明确 baseline commit，不绑定浮动分支。
 - DSH 专有调用集中在薄 Adapter；Core 不直接依赖不稳定实现。
 - 当前 baseline 运行完整兼容测试，最新 `origin/master` 只做预警验证。
+- 当前仍固定 `0.1.0-rc.7` / `99f6f02`；本次不升级 baseline。`0.1.0-rc.8` 由后续独立兼容性验证决定，不能随本次文档修订自动采纳。
 - 若上游更改默认分支，应在兼容性评审中更新名称，不得依赖永久存在的 `master`。
 - 不兼容时安全停用受影响的学习或发布能力，不得影响 DSH 主 Agent。
 

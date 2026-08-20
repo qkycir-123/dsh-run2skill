@@ -1,7 +1,7 @@
 # dsh-run2skill v0.1 Contract Probe 证据台账
 
-状态：基线探针轮次已完成；CP-ROOT-001 的剩余不确定性转为显式发布锁  
-更新时间：2026-08-19  
+状态：既有基线探针轮次已完成；stock-DSH 纯插件 root probe 为 NOT_RUN
+更新时间：2026-08-20
 DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
 ## 1. 目的与边界
@@ -28,6 +28,7 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 | PARTIAL | 只证明了部分平台、路径或故障分支 |
 | FAIL | 承重假设被推翻 |
 | BLOCKED | 缺少当前环境无法安全取得的外部条件 |
+| HISTORICAL | 只保留已放弃路线的历史结果，不解除当前阶段门 |
 
 ## 3. 总表
 
@@ -37,8 +38,9 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 | CP-STO-001 | Storage Domain、durable pending、重启、写序列和错误 | PASS（Windows） | Slice A 的 Storage 门已解除 |
 | CP-LLM-001 | inherit-session one-shot stream、usage、cancel、结构化修复、无 Tools | PASS（Windows） | Slice B 的 LLM 门已解除 |
 | CP-SKL-001 | snapshot complete、cwd/scope、rank、get、skills/change、热回读 | PASS（Windows） | Slice C 的 catalog 门已解除 |
-| CP-ROOT-001 | Workspace/project-dsh 与 effective DSH Home/user-dsh root parity | PARTIAL（Windows） | 固定 baseline 无 provider root 查询；publication 继续 fail closed |
-| CP-ROOT-002 | 候选 root contract、生产 saga 与 Registry exact readback | PASS（Windows；候选 commit） | 仅证明候选接口可闭环；不提升固定兼容性 baseline |
+| CP-ROOT-001 | Workspace/project-dsh 与 effective DSH Home/user-dsh 组合 parity | PARTIAL（Windows；历史） | 证明默认组合算法；不再等待 provider roots API |
+| CP-ROOT-002 | 候选 DSH roots API 实验 | HISTORICAL（曾在 Windows PASS） | 已放弃的历史实验；不是默认门禁或生产证据 |
+| CP-ROOT-003 | stock DSH 纯插件 root contract、PROJECT/USER 写入与原生 exact readback | NOT_RUN | Issue #48/C7 前必须取得运行证据 |
 | CP-PUB-001 | Windows/Linux CREATE/MERGE CAS、race、crash、路径逃逸与恢复 | PASS（Windows + WSL/Linux） | Slice C 的文件 CAS 门已解除 |
 | CP-WEB-001 | 外部双面插件、header slot、loopback RPC、远程/cross-origin 拒绝 | PASS（Windows） | Slice C 的 Web seam 门已解除 |
 | CP-INS-001 | add、web profile、disable、upgrade、uninstall及 Skill 保留 | PASS（Windows probe package） | 包形态契约通过；Alpha 候选必须复跑 |
@@ -79,10 +81,11 @@ Probe run ID
 
 1. CP-SES-001 与 CP-STO-001：先证明 durable signal 基础；
 2. CP-LLM-001：证明受限 Learning 调用；
-3. CP-SKL-001 与 CP-ROOT-001：证明 lookup、scope 和目标身份；
+3. CP-SKL-001 与 CP-ROOT-001：保留 lookup、scope 和默认组合历史证据；
 4. CP-WEB-001：证明 Human Review 的本机信任边界；
 5. CP-PUB-001：在前述身份事实成立后验证发布 CAS；
-6. CP-INS-001：最后验证完整安装生命周期。
+6. CP-INS-001：验证完整安装生命周期；
+7. CP-ROOT-003：Issue #48 实现后，在固定 stock DSH baseline 验证纯插件发布 root contract，再进入 C7。
 
 ## 7. 运行记录
 
@@ -151,12 +154,12 @@ Probe run ID
 失败注入：无；这是身份/组合一致性探针。  
 证据命令：与 CP-LLM-001 同一 5-test 运行。  
 清理：同 CP-SES-001。  
-结论：由同一组合层持有 configured dshHome，并同时传给 Root Resolver 与 Skill provider 的方案可行。CP-WEB-001/CP-INS-001 已证明外部插件能进入真实 Web profile 并取得相关服务，但 `ctx.skills` 仍不公开 session-scoped provider 的实际 writable root；仅凭候选路径不能证明最终发布目标。  
-架构影响：确认 Baseline 12.1 的 PROJECT 算法和 12.2 的显式配置候选；在 Slice C 取得“实际 provider root + Registry 精确回读”前，PROJECT/USER publication 继续 fail closed，故聚合状态保持 PARTIAL。
+结论：由同一官方 Web profile 组合持有 configured dshHome，并同时用于默认 filesystem provider 与 run2skill 版本化 resolver 的方案可行。该历史探针没有证明 PUBLISHED；写后仍必须由 stock DSH 的 complete snapshot、原生 filesystem winner 和 exact `get()` 回读确认。
+架构影响：确认 Baseline 12.1/12.2 的标准解析输入。`ctx.skills` 缺少 roots 查询不再是承重缺口；生产迁移与端到端证明转交 CP-ROOT-003。
 
-### CP-ROOT-002
+### CP-ROOT-002（已放弃的历史实验）
 
-状态：PASS（Windows；开发候选证据）。
+状态：HISTORICAL（曾在 Windows PASS）。
 
 环境：DSH 候选 commit `0fdc7a42a03693c41290d10af1725775af6598ca`；该 checkout 独立、clean，未替换固定 baseline。
 
@@ -166,15 +169,29 @@ Probe run ID
 
 实际：候选 snapshot 给出精确 project root；生产 `ApprovalPublicationSaga` 完成 CAS、bounded Registry exact readback、Lineage r1 和最终 outcome；1 个真实候选组合测试通过，候选源前后 HEAD/status 不变。
 
-失败注入：root 初始缺失，由 C5 安全创建；固定 baseline 的 CP-ROOT-001 继续验证 `roots` 不可用并保持发布锁。
+失败注入：root 初始缺失，由 C5 安全创建；固定 baseline 的 CP-ROOT-001 同时记录 `roots` 不可用。
 
 证据命令：`powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <path-to-clean-candidate-checkout>`。
 
 清理：runner 只操作 Git 忽略的 disposable clone 和测试临时目录。
 
-结论：root contract 足以支持 C6 生产闭环，但在该接口进入正式、重新固定的 DSH baseline 前，本项目不得把候选证据描述为默认可发布。
+结论：该候选 API 曾证明一种接口形状可以闭环，但项目已拒绝把 DSH fork、未合并 roots API 或本地 patch 作为 v0.1 生产前提。
 
-架构影响：解除实现可行性疑问，不解除 CP-ROOT-001 的兼容性锁；C7 仍需在最终目标 baseline 重跑黄金场景。
+架构影响：仅保留为历史实验记录；不再解除任何阶段门，也不属于默认复现路径。
+
+### CP-ROOT-003
+
+状态：NOT_RUN
+环境：固定、clean、未修改的 DSH `99f6f02`（`0.1.0-rc.7`）；官方 `web` profile；不得使用 fork、未合并 API 或本地 patch。
+输入：默认 filesystem provider；`includeDefaultRoots=true`；已注册 Workspace；显式 effective DSH Home；PROJECT/USER 的 existing 与 absent root；CREATE/MERGE Approval；另含 custom root、`includeDefaultRoots=false`、重命名 provider/自定义 preset 的不支持配置。
+预期：版本化 contract 精确解析 PROJECT `<workspace>/.dsh/skills` 和 USER `<DSH_HOME>/skills`；MERGE 绑定现有 `get().path`，CREATE 绑定标准目标与双重 absence；CAS/journal 后 complete snapshot 的原生 filesystem winner 精确匹配 provider/source/path，exact `get()` 返回审核内容；不支持配置只能 lookup 并进入 `NEEDS_ATTENTION`；卸载插件后 USER Skill 仍可用。
+步骤：由 Issue #48 提供 production-backed runner，在独立 DSH Home/Workspace 中覆盖 PROJECT/USER CREATE、MERGE、absent root、配置漂移、readback mismatch 和卸载后原生加载。
+实际：尚未运行。
+失败注入：incomplete snapshot、Base/absence race、Workspace/DSH Home identity 变化、link/reparse escape、unsupported config、provider/source/path/content mismatch。
+证据命令：由 Issue #48 添加并在实现 PR 固定；当前不得引用历史 candidate runner 代替。
+清理：只删除探针自己的临时 Workspace、DSH Home 和构建产物；不修改 DSH checkout。
+结论：NOT_RUN；不得写为 PASS。
+架构影响：#48 与 C7 的前置运行门。
 
 ### CP-WEB-001
 
@@ -202,7 +219,7 @@ Probe run ID
 证据命令：`powershell -File probes/run-publication-contract-probe.ps1`；如需指定非默认 WSL，再传入 `-WslDistribution <name>`。两端均输出 8 tests passed，最后输出 `CP_PUB_001=PASS`。该探针直接执行 `src/adapters/dsh-publication` 的生产原语，不读取或修改 DSH checkout。
 清理：每个测试只删除带固定随机前缀的 OS 临时目录；探针不写 DSH 源码，也不写真实 Skill root。  
 结论：候选 CAS 协议在 Node 的 Windows 与 Linux 文件系统原语上成立。最终安装必须使用 hard-link no-replace 或等价且经同等验证的原语，普通 rename/atomic replace 不能替代；MERGE backup 必须保留到 Registry exact readback。证据覆盖进程崩溃，不声称抵抗掉电或存储设备失效。  
-架构影响：Baseline 13.4 从候选方案收敛为已验证的 no-replace + append-only journal 协议；Slice C 的文件 CAS 探针门解除，但完整发布仍受 CP-ROOT-001 的实际 provider root 与 Registry 精确回读锁约束。
+架构影响：Baseline 13.4 从候选方案收敛为已验证的 no-replace + append-only journal 协议；Slice C 的文件 CAS 探针门解除。完整纯插件发布仍需 CP-ROOT-003 与 C7 证据。
 
 ### CP-INS-001
 
