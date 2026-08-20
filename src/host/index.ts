@@ -28,6 +28,7 @@ import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-s
 import { DshWorkspaceBindingResolver, type DshWorkspaceRegistryPort } from '../adapters/dsh-workspace/binding.js'
 import { BoundedGapScanner } from '../application/capture/bounded-gap-scanner.js'
 import { DurableCaptureCoordinator } from '../application/capture/durable-capture-coordinator.js'
+import { IncompleteCaptureRetrier } from '../application/capture/incomplete-capture-retrier.js'
 import {
   RecoveryLifecycle,
   type RecoveryRuntime,
@@ -342,9 +343,22 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         this.automaticLearning,
       )
       const scanner = new BoundedGapScanner(reader, checkpoint, processor, this.notices)
+      const incompleteRetrier = new IncompleteCaptureRetrier(
+        reader,
+        store,
+        checkpoint,
+        processor,
+        this.notices,
+      )
+      await incompleteRetrier.retryBatch()
       const checkpointTimer = setInterval(() => {
         void checkpoint.flushIfDue().catch(() => {
           this.notices.record({ healthCode: 'CHECKPOINT_WRITE_FAILED', sessionId: 'global' })
+        })
+        void incompleteRetrier.retryBatch().then((result) => {
+          if (result.resolved > 0) scheduler.wake()
+        }).catch(() => {
+          this.notices.record({ healthCode: 'WORK_ITEM_WRITE_FAILED', sessionId: 'global' })
         })
       }, 30_000)
 

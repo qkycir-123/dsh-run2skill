@@ -44,6 +44,29 @@ export class DurableCaptureStore {
     return this.#table.get(workItemId)
   }
 
+  getIncomplete(limit: number, afterWorkItemId?: string): readonly CaptureWorkItemV1[] {
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new TypeError('Incomplete capture limit must be a positive safe integer')
+    }
+    const items = [...this.#table.entries()]
+      .filter(([, item]) => item.scanStatus === 'INCOMPLETE')
+      .sort(([left], [right]) => left.localeCompare(right))
+    if (items.length === 0) return []
+    const start = afterWorkItemId === undefined
+      ? 0
+      : Math.max(0, items.findIndex(([workItemId]) => workItemId > afterWorkItemId))
+    const rotated = start === 0 ? items : [...items.slice(start), ...items.slice(0, start)]
+    return rotated.slice(0, limit).map(([, item]) => item)
+  }
+
+  countIncomplete(): number {
+    let count = 0
+    for (const [, item] of this.#table.entries()) {
+      if (item.scanStatus === 'INCOMPLETE') count += 1
+    }
+    return count
+  }
+
   async #persist(value: CaptureWorkItemV1): Promise<DurableCaptureResult> {
     const storedAtRequestedId = this.#table.get(value.workItemId)
     if (
