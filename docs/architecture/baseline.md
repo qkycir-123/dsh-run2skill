@@ -187,7 +187,7 @@ APPROVED 不能推导 PUBLISHED。磁盘写入事实、Registry 回读事实和�
 | 值对象 | 内容 | 规则 |
 |---|---|---|
 | SignalKey | sessionId + SessionLifecycle（createdAt + cwd 原值身份摘要）+ turn/turnEndSeq + TurnInstanceDigest（边界 time + direct user message IDs）+ triggerPolicyVersion | 同一 durable turn/end 重投只能命中一个 WorkItem；Session ID 或未 durable 尾部 seq 被复用时不得混入旧事实 |
-| TurnBaselineId | session lifecycle + turn + step=1 + baseline policy version | 在 Agent 首次模型调用前唯一标识可能保存意图的 durable 基线；可恢复、可过期，不含绝对路径 |
+| TurnBaselineId | `"tb_" + sha256Utf8(JSON.stringify({ rootSessionId, sessionCreatedAt, sessionCwdDigest, turn, step: 1, baselinePolicyVersion }))`；字段顺序固定如列示 | 使用与 SignalKey 相同的 UTF-8 canonical JSON + SHA-256 约定；同 lifecycle/turn/版本重放精确复用，不含绝对路径 |
 | EffectiveFilesystemRootSet | provider/config digest + project/cwd identity + 全部有效 root 的 source/rank/identity digest/completeness | 与 stock filesystem provider 的实际挂载一致；不能复用只允许发布 `.dsh/skills` 的 RootBinding |
 | GenerationEvidence | 文件工具、Shell、assistant/tool 参数与结果的 path-free 结构化摘要 | 失败写入、完整 Skill 参数、同内容重写或不可归因写入都表示可能已使用生成通道 |
 | IntentBinding | trigger evidence 摘要 + 显式 name/scope/target/behavior contract + matched Skill digest | 只有确定性绑定当前 SaveIntent 与 exact readback Skill 才允许 `RESOLVED_BY_AGENT` |
@@ -364,6 +364,8 @@ sequenceDiagram
 
 `agent/pre-step(step=1)` 的 prefilter 必须与最终 capture 使用同一版本 Cheap Trigger 规则，只读取 direct-user message；它的目的只是避免每个 Turn 都扫描昂贵的 root manifest/catalog，不能自行裁决所有权。明确 miss 不建基线；hit/UNKNOWN 才在调用 `next()` 前持久化 baseline。基线写入失败不得阻断 Agent，但该回合必须按证据不完整处理，不能进入 run2skill Learning。
 
+`baselinePolicyVersion` 取建立基线时实际执行的 prefilter policy，不能从恢复时的进程默认值补写。同一 session lifecycle/turn 已有 baseline 时，同版本 pre-step 或 Session 重放必须按 exact `TurnBaselineId` 复用原 manifest/catalog facts，不刷新也不覆盖；策略热变更不能为正在进行的旧 turn 另建并行 baseline。最终 ownership 对账必须比较 persisted `baselinePolicyVersion` 与 `SignalKey.triggerPolicyVersion`：不一致、exact baseline 缺失或 identity 冲突一律 `NEEDS_CONFIRMATION`，不得静默重建、补判 Agent 已解决或授予 run2skill 所有权。热变更后的新 turn 才使用新版本。
+
 DSH 的 Session observer 不等待异步 listener，故实现必须在插件自己的队列中承接错误。Learning Worker 只有在 WorkItem 写入成功且 ownership CAS 为 `RUN2SKILL_OWNED` 后才可启动。Store 失败时：
 
 - 主 Turn 正常结束；
@@ -395,7 +397,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。扫描水位�
 启动时按以下顺序恢复：
 
 1. 打开 Store 并校验 schema；
-2. 恢复尚未过期的 TurnBaseline 和 `ARBITRATING` / `NEEDS_CONFIRMATION` ownership 子状态；
+2. 恢复尚未过期的 TurnBaseline 和 `ARBITRATING` / `NEEDS_CONFIRMATION` ownership 子状态；同版本 exact ID 复用原 baseline，policy mismatch/identity conflict 直接 `NEEDS_CONFIRMATION`；
 3. 恢复 Publication Journal；
 4. 把中断的 ANALYZING 退回 CAPTURED，并增加 attempt，但仅在 ownership 仍为 `RUN2SKILL_OWNED` 时重新 eligible；
 5. 恢复 PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；
@@ -439,7 +441,7 @@ v0.1 复用 `ctx.storage.domain`，物理存储完全服从目标 profile 已装
 | lineages | targetIdentity | 完整 Revision snapshots、manual reconciliation facts |
 | global | 单记录 | schema/policy versions、恢复水位、短期 path-free TurnBaseline map、active Purge journal、completed Purge fences、健康信息索引 |
 
-global 的无信号扫描水位允许 write-behind；hit/UNKNOWN prefilter 的 TurnBaseline、命中/blocked WorkItem 和 ownership CAS 必须立即 durable，且对应水位不得先于 WorkItem。TurnBaseline 只保留 root identity/manifest/catalog digest、completeness、policy version、fence 和期限，不保存绝对路径或 Session 原文；转成 WorkItem、明确无信号或过期后幂等清理。确定性 WorkItem ID 负责重放去重，策略 activation fence 负责阻止规则升级重扫旧历史。
+global 的无信号扫描水位允许 write-behind；hit/UNKNOWN prefilter 的 TurnBaseline、命中/blocked WorkItem 和 ownership CAS 必须立即 durable，且对应水位不得先于 WorkItem。TurnBaseline 只保留 exact TurnBaselineId 输入字段、root identity/manifest/catalog digest、completeness、policy version、fence 和期限，不保存绝对路径或 Session 原文；转成 WorkItem、明确无信号或过期后幂等清理。同版本重放只能读取原记录，不能 upsert 新观察覆盖基线；baseline/trigger policy mismatch 保留待处理事实。确定性 WorkItem ID 负责重放去重，策略 activation fence 负责阻止规则升级重扫旧历史。
 
 Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 
@@ -998,7 +1000,7 @@ storageDomain, workspaceRegistry, connection
 | PRD 需求组 | 责任模块 | 主要验证 |
 |---|---|---|
 | REQ-OBS-001..008 | session-adapter、trigger-coordinator、store | Unit + CP-SES-001 + restart integration |
-| REQ-OBS-009..010 | ownership-arbitrator、skill-query-adapter、store | 全 root contract + intent-binding + generation-evidence + restart/CAS integration |
+| REQ-OBS-009..010 | ownership-arbitrator、skill-query-adapter、store | 全 root contract + exact TurnBaselineId replay/policy-mismatch + intent-binding + generation-evidence + restart/CAS integration |
 | REQ-LRN-001..007 | envelope-builder、sensitive-filter、learning-engine | Unit + CP-LLM-001 + frozen evaluation |
 | REQ-SCP-001..004 | scope-and-target-resolver、workspace adapter | Unit + CP-ROOT-003 |
 | REQ-CUR-001..007 | skill-query-adapter、curation Guard | Unit + CP-SKL-001 + adversarial fixtures |

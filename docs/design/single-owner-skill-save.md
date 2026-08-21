@@ -105,10 +105,21 @@ turn/end
 因为回合前还没有 `turnEndSeq` 和 turn instance 摘要，新增一个临时 `TurnBaselineId`：
 
 ```text
-hash(rootSessionId, sessionCreatedAt, sessionCwdDigest, turn)
+TurnBaselineId = "tb_" + sha256Utf8(JSON.stringify({
+  rootSessionId,
+  sessionCreatedAt,
+  sessionCwdDigest,
+  turn,
+  step: 1,
+  baselinePolicyVersion
+}))
 ```
 
-首个 `agent/pre-step` 只允许用 `put-if-absent` 写一次基线。`turn/end` 后，WorkItem 通过上述四项事实关联基线，再使用完整 `SignalKey` 形成最终 `SaveIntentId`。重复 `session/event`、gap replay 或进程重启只能合并同一记录。
+对象字段顺序固定如上，使用与现有 `SignalKey` 相同的 UTF-8 canonical `JSON.stringify` + SHA-256 约定；`step` 是字面量 `1`，不接受其他值。`baselinePolicyVersion` 是执行 prefilter/建立基线时的版本，不从进程当前默认值补写。
+
+首个 `agent/pre-step` 只允许用该 ID `put-if-absent` 写一次基线。同一 session lifecycle/turn 的同版本 pre-step 重放必须精确复用已持久 baseline，不能刷新 manifest、重算 ID 或覆盖原事实；同一 turn 已有 baseline 时，策略热变更也不能另建并行 baseline。`turn/end` 后，WorkItem 通过完整 ID 关联基线，再使用完整 `SignalKey` 形成最终 `SaveIntentId`。若持久 baseline 的 `baselinePolicyVersion` 与最终 `SignalKey.triggerPolicyVersion` 不一致，或重放时 exact baseline 缺失/冲突，必须进入 `NEEDS_CONFIRMATION`，不能以新策略静默重建、取得 run2skill 所有权或补判 `RESOLVED_BY_AGENT`。策略热变更只对变更后开始的新 turn 使用新 `baselinePolicyVersion`。
+
+重复 `session/event`、gap replay 或进程重启只能合并同一记录；同版本 exact baseline 是唯一权威回合前事实。
 
 没有触发信号的基线在该 turn 的完整扫描及 checkpoint 提交后清理。清理也要受 Purge fence 和可见性规则约束，避免重启复活。
 
@@ -170,6 +181,7 @@ Root Manifest 用来及时发现 Shell 间接写入，不依赖 watcher 是否�
 | Skill root 有删除、无效文件、被遮蔽候选或多个无法归属的变化 | 不能确认同一保存意图 | `NEEDS_CONFIRMATION` | 0 |
 | 外部进程改变了 Skill，但没有本回合工具关联 | 不能归因给 Agent | `NEEDS_CONFIRMATION` | 0 |
 | baseline 缺失、任一观察不完整、catalog 未刷新、root contract 改变或工具日志损坏 | 缺少不存在证明 | `NEEDS_CONFIRMATION` | 0 |
+| baselinePolicyVersion 与最终 triggerPolicyVersion 不一致，或重放无法取得 exact TurnBaselineId | 策略/回合前事实不可比 | `NEEDS_CONFIRMATION` | 0 |
 | Agent 只调用 `skill` 读取已有 Skill，全部 roots manifest 无变化且无生成迹象 | 可证明没有 Agent Skill 生成行为 | `RUN2SKILL_OWNED` | 1 |
 
 不同名称不影响判断：只要该 Skill 变化与同一回合来源确认关联，就直接 `RESOLVED_BY_AGENT`，不会因为名字不同再生成一份。
@@ -276,6 +288,7 @@ WorkItem.processingState = CAPTURED
 - 无效 Skill、删除、shadowed candidate、多文件变化、外部并发变化：`NEEDS_CONFIRMATION`，Learning Job `0`；
 - project-dsh、project-agents、每个 mounted custom、user-dsh、user-agents、bundled（如存在）、root scan、catalog、`get()`、工具日志或 IntentBinding 任一不完整：`NEEDS_CONFIRMATION`，Learning Job `0`；
 - 重复 `turn/end`、gap replay、重复 scheduler wake：不重复选 owner 或启动任务；
+- 同版本 pre-step/session 重放复用 exact `TurnBaselineId` 与原 manifest；baseline/trigger policy 版本不一致时 `NEEDS_CONFIRMATION`；策略热变更后的新 turn 使用新版本；
 - 在每个状态转换点崩溃并重启：保持单一所有者；
 - rc.7 与 rc.8 stock DSH 上验证首 step 基线、filesystem watcher 延迟和 catalog complete 行为；
 - 持久化快照、日志、RPC 与 UI 不包含 Skill 正文、Shell 命令、工具参数、绝对路径或凭据。
