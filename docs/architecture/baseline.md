@@ -392,18 +392,20 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 启动时按以下顺序恢复：
 
 1. 打开 v2 Store 并校验 schema/migration journal；未 COMMITTED 前不启用新 worker；
-2. 先恢复 active Purge journal/visibility fence，并从可见集合移除已隐藏 owner；Purge 未收敛前不得恢复 generation；
+2. 应用 active Purge journal 的 visibility/quiesce fence，但不等待物理删除；普通 generation 继续禁用；
 3. 恢复 `proposalCatalogMutationJournal`，扫描 Proposal body、sealed GenerationResult 和 unresolved barriers；
-4. 从这些 authoritative rows 修复 BehaviorSignatureIndex；
-5. 按 Design 11.2 的七类恢复事实收敛 ProposalGenerationLease；任何自动路径都不重复模型调用，且 unresolved barrier durable 后释放全局 lease；
-6. 重建 complete PendingProposalCatalog；不完整时保持 generation disabled；
-7. 恢复 Publication Journal/PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；完成后刷新 Runtime/Pending Catalog；
-8. 恢复 Session cursor、已冻结 batch、idle deadlines 和 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；durable 尾部已 idle 30 分钟则走同一 claim 路径；
-9. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
-10. 运行有界 Session gap scan并幂等补齐 TurnObservation；
-11. 解除启动缓冲并按序处理已接收的实时 `session/event`。
+4. 对当前 ProposalGenerationLease 只做 outcome reconciliation：按 call ledger 补成且只补成 sealed result 或 unresolved barrier，不调用模型、不复制 Proposal body；
+5. owner outcome durable 后完成 Purge 物理删除与被隐藏 owner/index/lease 清理；
+6. 重扫 purge-visible authoritative rows并修复 BehaviorSignatureIndex；
+7. 恢复 Publication Journal/PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；完成后刷新 Runtime Catalog；
+8. 重建 complete PendingProposalCatalog；不完整时保持 generation disabled；
+9. 对仍持有 lease 的 `RESULT_COMMITTED` / `PROPOSAL_COMMIT_AUTHORIZED` 使用当前 Runtime/Pending catalogs 重做排除 self 的写前复核与 CAS，再收敛 body/index/lease；停机前授权不能直接复用；
+10. 恢复 Session cursor、已冻结 batch、idle deadlines 和 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；durable 尾部已 idle 30 分钟则走同一 claim 路径；
+11. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
+12. 运行有界 Session gap scan并幂等补齐 TurnObservation；
+13. 解除启动缓冲并按序处理已接收的实时 `session/event`。
 
-为避免第 10 步 gap scan 期间出现观察空窗，Host 必须在扫描前注册一个只复制事件坐标的轻量 ingress listener；该 listener 不做触发扫描或 Store I/O。恢复水位就绪后再把缓冲事件送入同一幂等 capture 路径。这样“先 gap scan、后实时处理”的恢复语义不变，同时不会漏掉扫描期间新结束的 Turn。
+为避免第 12 步 gap scan 期间出现观察空窗，Host 必须在扫描前注册一个只复制事件坐标的轻量 ingress listener；该 listener 不做触发扫描或 Store I/O。恢复水位就绪后再把缓冲事件送入同一幂等 capture 路径。这样“先 gap scan、后实时处理”的恢复语义不变，同时不会漏掉扫描期间新结束的 Turn。
 
 所有 retry 使用持久 attempt 和 nextEligibleAt；超过上限进入 NEEDS_ATTENTION 或 PUBLISH_FAILED，不做无限自反。
 
@@ -471,10 +473,11 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 Purge 是持久 saga：
 
 1. global 写入 purgeId、scope binding 和 hideBefore epoch；
-2. UI 立即过滤命中数据；
-3. 扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，清理对应 BehaviorSignatureIndex/ProposalGenerationLease，并保持 v1 legacy 视图不可见；
-4. 从 purge-visible authoritative rows 重建 PendingProposalCatalog，校验无正常可见 Proposal、dangling index/lease 或其他残留；
-5. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
+2. UI 和所有 worker 立即应用 visibility/quiesce fence，命中数据不再对普通流程可见；
+3. 若命中当前 generation owner，尚无 call slot 时直接清除未消费 reservation/lease；已有 call slot 时只运行受限 outcome reconciliation，按 durable call ledger 提交且只提交 sealed result 或 unresolved barrier；该步骤不调用模型、不写 Proposal body，也不等待普通 generation worker；
+4. outcome durable 后扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，清理对应 GenerationResult/barrier、BehaviorSignatureIndex/ProposalGenerationLease，并保持 v1 legacy 视图不可见；
+5. 从 purge-visible authoritative rows 重建 PendingProposalCatalog，校验无正常可见 Proposal、dangling index/lease 或其他残留；
+6. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
 
 RPC scope contract 与作用域身份一致：PROJECT preview 必须携带当前有效 `workspaceId`，由 Host 重新解析 canonical workspace/root facts；USER preview 只绑定 effective DSH Home，请求不依赖也不接受 `workspaceId`。`status`、`confirm` 与 `retry` 只使用各自的 journal/immutable preview 标识，不携带 workspace identity。
 
@@ -1022,7 +1025,7 @@ storageDomain, workspaceRegistry, connection
 | REQ-LFC-001..005 | Lineage aggregate、reconciliation、installer | State-machine unit + manual edit/delete E2E + CP-INS-001 |
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
 | 状态与恢复 | SessionBatch/Intent aggregates、migration/publication journals | migration + crash matrix + restart E2E |
-| Generation lease 恢复 | call ledger、sealed result、body/index、unresolved barrier 七类组合 | crash matrix：不重复调用、不丢去重屏障、全局 lease 不永久阻塞 |
+| Generation lease 恢复 | call ledger、sealed result、commit authorization、body/index、unresolved barrier 八类组合 | crash matrix：不重复调用、不丢去重屏障、全局 lease 不永久阻塞 |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
 | 五个黄金场景 | 全系统 | Web profile E2E；场景 E 证明 Agent `.agents/skills` 写入只产生 `RESOLVED_BY_AGENT` 且 Learning/Proposal 为 0 |
 
