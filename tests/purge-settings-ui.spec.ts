@@ -20,12 +20,6 @@ const PROJECT_PREVIEW = {
   scopeBinding: {
     scope: 'PROJECT' as const,
     workspaceId: 'workspace-a',
-    canonicalWorkspacePath: 'D:\\workspace',
-    workspaceObservedAt: '2026-08-21T00:00:00.000Z',
-    canonicalRootPath: 'D:\\workspace\\.dsh\\skills',
-    rootContractVersion: 'stock-dsh-web-default-roots-v1',
-    resolverVersion: 'stock-root-resolver-v2',
-    resolutionContractDigest: 'c'.repeat(64),
   },
   hideBefore: '2026-08-21T00:00:00.000Z',
   workItemCount: 3,
@@ -147,7 +141,13 @@ describe('Purge native settings UI', () => {
     await controller.confirm()
     expect(call).toHaveBeenCalledWith(
       'purge/confirm',
-      { apiVersion: 1, previewId: PROJECT_PREVIEW.previewId, digest: PROJECT_PREVIEW.digest },
+      {
+        apiVersion: 1,
+        scope: 'PROJECT',
+        workspaceId: 'workspace-a',
+        previewId: PROJECT_PREVIEW.previewId,
+        digest: PROJECT_PREVIEW.digest,
+      },
       expect.any(AbortSignal),
     )
     expect(controller.snapshot()).toMatchObject({
@@ -155,6 +155,26 @@ describe('Purge native settings UI', () => {
       announcement: 'PROJECT run2skill 数据清理完成：3 条待处理数据，2 条发布沿袭记录。',
     })
     expect(controller.snapshot().preview).toBeUndefined()
+    controller.dispose()
+  })
+
+  it('invalidates a PROJECT preview when CurrentScope changes before confirm', async () => {
+    let workspaceId = 'workspace-a'
+    const call = vi.fn(async (endpoint: string) => endpoint === 'purge/preview'
+      ? { ok: true, value: PROJECT_PREVIEW }
+      : { ok: true, value: { apiVersion: 1, state: 'IDLE' } })
+    const controller = new PurgeSettingsController(call, () => workspaceId, environment())
+
+    await controller.preview('PROJECT')
+    workspaceId = 'workspace-b'
+    await controller.confirm()
+
+    expect(call.mock.calls.some(([endpoint]) => endpoint === 'purge/confirm')).toBe(false)
+    expect(controller.snapshot()).toMatchObject({
+      preview: undefined,
+      previewScope: undefined,
+      announcement: '清理预览已失效，请重新预览后确认。',
+    })
     controller.dispose()
   })
 
@@ -399,6 +419,25 @@ describe('Purge native settings UI', () => {
     expect(call).toHaveBeenCalledTimes(3)
     expect(poll.timerDelay()).toBe(10_000)
     controller.dispose()
+  })
+
+  it('pauses all host-tab polling and resumes without leaking timers', async () => {
+    const call = vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } }))
+    const poll = environment()
+    const controller = new PurgeSettingsController(call, () => 'workspace-a', poll)
+    controller.start()
+    await controller.whenIdle()
+    expect(poll.timerCount()).toBe(1)
+
+    controller.pause()
+    expect(poll.timerCount()).toBe(0)
+    controller.resume()
+    await controller.whenIdle()
+    expect(poll.timerCount()).toBe(1)
+    expect(call).toHaveBeenCalledTimes(2)
+
+    controller.dispose()
+    expect(poll.timerCount()).toBe(0)
   })
 
   it('uses the native modal with exact boundaries, focus trap, Escape, restoration, and live completion', async () => {

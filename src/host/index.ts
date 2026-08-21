@@ -623,6 +623,16 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     createAttentionRpcHandler(
       () => factory.currentDomain,
       notices,
+      async (workspaceId) => {
+        const workspace = context.workspaceRegistry.get?.(workspaceId)
+        if (
+          workspace === undefined
+          || workspace.id !== workspaceId
+          || workspace.path.length === 0
+          || (workspace.status !== undefined && await workspace.status() !== 'ok')
+        ) return undefined
+        return { workspaceId: workspace.id, canonicalPath: workspace.path }
+      },
       createPurgeRpcHandler(
         () => factory.currentPurgeService,
         reviewRpc,

@@ -57,7 +57,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:publication": "node --test probes/publication-cas/probe.spec.mjs",
+    "test:publication": "node --test probes/publication-cas/probe.spec.mjs probes/install-lifecycle/web-args.spec.mjs",
     "evaluate": "vitest run tests/frozen-evaluation.spec.ts tests/learning-frozen-evaluation.spec.ts --reporter=verbose",
     "probe:crash": "pnpm run build && node probes/crash-matrix/probe.mjs .",
     "build": "tsdown",
@@ -88,6 +88,7 @@
     "oxlint": "1.76.0",
     "react-dom": "^18.2.0",
     "tsdown": "^0.22.2",
+    "tsx": "4.20.6",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   }

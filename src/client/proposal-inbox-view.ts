@@ -250,10 +250,8 @@ export function factsFromAction(detail: ProposalDetail): string {
       `Expected provider/source: ${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
       `Resolution digest: ${action.rootBinding.resolutionContractDigest}`,
       `Root state: ${action.rootBinding.state}`,
-      `Declared root: ${action.rootBinding.declaredRootPath}`,
-      `Bundle target: ${action.targetBinding.bundlePath}`,
-      `Skill target: ${action.targetBinding.skillFilePath}`,
-      `Flat target checked: ${action.expectedAbsence.flatSkillFilePath}`,
+      `Skill name: ${action.targetBinding.skillName}`,
+      `Skill bytes digest: ${detail.proposal.skillBytesDigest}`,
       `Expected absence observed: ${action.expectedAbsence.observedAt}`,
       'Bundle absent: yes',
       'Skill file absent: yes',
@@ -267,11 +265,8 @@ export function factsFromAction(detail: ProposalDetail): string {
       `Expected provider/source: ${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
       `Resolution digest: ${action.rootBinding.resolutionContractDigest}`,
       `Root state: ${action.rootBinding.state}`,
-      `Declared root: ${action.rootBinding.declaredRootPath}`,
       `Target identity: ${action.baseBinding.candidateKey}`,
-      `Observed target path: ${action.baseBinding.path}`,
-      `Bundle target: ${action.targetBinding.bundlePath}`,
-      `Skill target: ${action.targetBinding.skillFilePath}`,
+      `Skill name: ${action.targetBinding.skillName}`,
       `Base digest: ${action.baseBinding.bytesDigest}`,
       `Base observed: ${action.baseBinding.observedAt}`,
     ].join('\n')
@@ -282,9 +277,6 @@ export function factsFromAction(detail: ProposalDetail): string {
     `Source: ${action.coveringCandidateBinding.source}`,
     `Digest: ${action.coveringCandidateBinding.contentDigest}`,
     `Observed: ${action.coveringCandidateBinding.observedAt}`,
-    ...(action.coveringCandidateBinding.path === undefined
-      ? []
-      : [`Path: ${action.coveringCandidateBinding.path}`]),
   ].join('\n')
 }
 
@@ -312,7 +304,7 @@ export function ProposalDetailView(props: {
   readonly setTextMode: (mode: 'SAFE' | 'RAW') => void
   readonly mutationPending: boolean
   readonly onApprove: () => void
-  readonly onReject: () => void
+  readonly onReject: (trigger?: HTMLButtonElement) => void
   readonly onRetry: () => void
   readonly onConfirmDiscard: () => void
 }): ReactElement {
@@ -343,13 +335,13 @@ export function ProposalDetailView(props: {
         ? null
         : createElement(Fragment, null,
             createElement('dt', null, 'Workspace'),
-            createElement('dd', null, `${proposal.workspaceBinding.workspaceId} · ${makeSafeText(proposal.workspaceBinding.canonicalPath)}`),
+            createElement('dd', null, `PROJECT · ${proposal.workspaceBinding.workspaceId}`),
           ),
       proposal.dshHomeBinding === undefined
         ? null
         : createElement(Fragment, null,
             createElement('dt', null, 'DSH Home'),
-            createElement('dd', null, `${proposal.dshHomeBinding.resolutionKind} · ${makeSafeText(proposal.dshHomeBinding.canonicalPath)}`),
+            createElement('dd', null, `USER · ${proposal.dshHomeBinding.resolutionKind}`),
             createElement('dt', null, 'DSH Home identity'),
             createElement('dd', null, proposal.dshHomeBinding.identityDigest),
           ),
@@ -426,7 +418,7 @@ export function ProposalDetailView(props: {
               variant: 'primary', disabled: !actionable, onClick: props.onApprove,
             }, detail.processingState === 'PUBLISHING' ? '正在发布…' : '批准并发布'),
             createElement(Button, {
-              variant: 'outline', disabled: !actionable, onClick: props.onReject,
+              variant: 'outline', disabled: !actionable, onClick: event => { props.onReject(event.currentTarget) },
             }, '拒绝 Proposal'),
           ),
     ),

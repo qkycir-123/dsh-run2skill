@@ -8,6 +8,10 @@ import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.j
 import { makeCreateProposalSnapshot, makeLearnedWorkItem } from './support/review-fixture.js'
 
 describe('Attention projection RPC', () => {
+  const workspace = async (workspaceId: string) => workspaceId === 'workspace-fixture'
+    ? { workspaceId, canonicalPath: 'D:\\workspace' }
+    : undefined
+
   it('projects only actionable current-project and USER proposals with stable non-sensitive keys', async () => {
     const domain = createMemoryRun2skillDomain()
     const project = makeLearnedWorkItem()
@@ -17,7 +21,7 @@ describe('Attention projection RPC', () => {
       project.revision,
       makeCreateProposalSnapshot(project),
     )
-    const host = createAttentionRpcHandler(() => domain, new RuntimeNotices())
+    const host = createAttentionRpcHandler(() => domain, new RuntimeNotices(), workspace)
 
     const first = await host('attention', {
       apiVersion: 1,
@@ -41,6 +45,7 @@ describe('Attention projection RPC', () => {
           subjectId: staged.item.workItemId,
           kind: 'REVIEW_PROPOSAL',
           scope: 'PROJECT',
+          proposalRef: proposalRefOf(staged.item.review!.proposal),
           availableActions: ['APPROVE', 'REJECT'],
         }],
         runtimeWarnings: [],
@@ -49,6 +54,32 @@ describe('Attention projection RPC', () => {
     const action = (first as { ok: true; value: { actions: Array<Record<string, unknown>> } }).value.actions[0]!
     expect(action.actionKey).toMatch(/^act_[a-f0-9]{64}$/)
     expect(JSON.stringify(action)).not.toMatch(/D:\\|SKILL\.md|session-fixture/)
+  })
+
+  it('fails a stale or unregistered PROJECT scope closed instead of returning a KNOWN empty queue', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const host = createAttentionRpcHandler(
+      () => domain,
+      new RuntimeNotices(),
+      async () => undefined,
+    )
+
+    const result = await host('attention', {
+      apiVersion: 1,
+      workspaceId: 'workspace-fixture',
+    }, new AbortController().signal)
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { projectCompleteness: 'UNKNOWN', actions: [] },
+    })
   })
 
   it('does not turn publishing, unavailable project scope, or non-actionable health into actions', async () => {
@@ -84,7 +115,7 @@ describe('Attention projection RPC', () => {
       'READBACK_TIMEOUT',
       true,
     )
-    const host = createAttentionRpcHandler(() => domain, new RuntimeNotices())
+    const host = createAttentionRpcHandler(() => domain, new RuntimeNotices(), workspace)
 
     const result = await host('attention', {
       apiVersion: 1,

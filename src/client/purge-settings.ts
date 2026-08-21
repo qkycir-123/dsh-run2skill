@@ -25,12 +25,6 @@ const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const projectBinding = z.object({
   scope: z.literal('PROJECT'),
   workspaceId: z.string().min(1).max(256),
-  canonicalWorkspacePath: z.string().min(1).max(32 * 1024),
-  workspaceObservedAt: isoDateTime,
-  canonicalRootPath: z.string().min(1).max(32 * 1024),
-  rootContractVersion: z.literal('stock-dsh-web-default-roots-v1'),
-  resolverVersion: z.literal('stock-root-resolver-v2'),
-  resolutionContractDigest: digest,
 }).strict()
 const scopeBinding = z.discriminatedUnion('scope', [
   projectBinding,
@@ -190,6 +184,7 @@ export class PurgeSettingsController {
   readonly #listeners = new Set<() => void>()
   #state: PurgeSettingsState = initialState
   #started = false
+  #active = true
   #disposed = false
   #pending: Promise<void> | undefined
   #abort: AbortController | undefined
@@ -216,15 +211,32 @@ export class PurgeSettingsController {
     if (this.#started || this.#disposed) return
     this.#started = true
     this.#removeVisibility = this.environment.onVisibilityChange(() => {
-      if (this.environment.isVisible()) {
+      if (this.#active && this.environment.isVisible()) {
         this.#schedule()
         void this.#refreshStatus()
       } else this.#unschedule()
     })
-    if (this.environment.isVisible()) {
+    if (this.#active && this.environment.isVisible()) {
       this.#schedule()
       void this.#refreshStatus()
     }
+  }
+
+  pause(): void {
+    if (this.#disposed || !this.#active) return
+    this.#active = false
+    this.#unschedule()
+    this.#statusAbort?.abort()
+  }
+
+  resume(): void {
+    if (this.#disposed || this.#active) return
+    this.#active = true
+    if (!this.#started || !this.environment.isVisible()) return
+    this.#schedule()
+    void this.whenIdle().then(() => {
+      if (this.#active && !this.#disposed) void this.#refreshStatus()
+    })
   }
 
   whenIdle(): Promise<void> {
@@ -285,11 +297,38 @@ export class PurgeSettingsController {
     const preview = this.#state.preview
     const scope = this.#state.previewScope
     if (this.#disposed || preview === undefined || scope === undefined || this.#state.mutationPending) return
+    const currentWorkspaceId = this.getWorkspaceId()
+    if (
+      scope === 'PROJECT'
+      && (
+        currentWorkspaceId === undefined
+        || preview.scopeBinding.scope !== 'PROJECT'
+        || preview.scopeBinding.workspaceId !== currentWorkspaceId
+      )
+    ) {
+      const error = { code: 'PURGE_PREVIEW_STALE' }
+      this.#publish({
+        ...this.#state,
+        preview: undefined,
+        previewScope: undefined,
+        error,
+        announcement: errorAnnouncement(error),
+      })
+      return
+    }
     await this.#execute(async signal => {
       this.#publish({ ...this.#state, mutationPending: true, error: undefined, announcement: '' })
       const receipt = parseValue(receiptSchema, await this.call(
         'purge/confirm',
-        { apiVersion: 1, previewId: preview.previewId, digest: preview.digest },
+        scope === 'PROJECT'
+          ? {
+              apiVersion: 1,
+              scope,
+              workspaceId: currentWorkspaceId!,
+              previewId: preview.previewId,
+              digest: preview.digest,
+            }
+          : { apiVersion: 1, scope, previewId: preview.previewId, digest: preview.digest },
         signal,
       ))
       this.#acceptReceipt(scope, receipt)
@@ -388,7 +427,7 @@ export class PurgeSettingsController {
   }
 
   async #refreshStatus(): Promise<void> {
-    if (this.#disposed || !this.environment.isVisible()) return
+    if (this.#disposed || !this.#active || !this.environment.isVisible()) return
     if (this.#statusPending !== undefined) return this.#statusPending
     const abort = new AbortController()
     this.#statusAbort = abort
@@ -451,7 +490,7 @@ export class PurgeSettingsController {
   }
 
   #schedule(): void {
-    if (this.#disposed) return
+    if (this.#disposed || !this.#active) return
     const delay = this.#state.status?.state === 'IN_PROGRESS'
       || this.#state.inProgressReceipt?.state === 'IN_PROGRESS'
       || this.#state.mutationPending
@@ -473,7 +512,7 @@ export class PurgeSettingsController {
   #publish(state: PurgeSettingsState): void {
     if (this.#disposed) return
     this.#state = state
-    if (this.#started && this.environment.isVisible()) this.#schedule()
+    if (this.#started && this.#active && this.environment.isVisible()) this.#schedule()
     for (const listener of this.#listeners) listener()
   }
 }
@@ -594,8 +633,17 @@ function PurgeConfirmationDialog(props: {
 
 export function PurgeSettingsSection(props: {
   readonly controller: PurgeSettingsController
+  readonly active?: boolean
 }): ReactElement {
-  useEffect(() => { props.controller.start() }, [props.controller])
+  const surfaceActive = props.active ?? true
+  useEffect(() => {
+    if (!surfaceActive) props.controller.pause()
+    props.controller.start()
+  }, [props.controller])
+  useEffect(() => {
+    if (surfaceActive) props.controller.resume()
+    else props.controller.pause()
+  }, [surfaceActive, props.controller])
   const state = useSyncExternalStore(
     props.controller.subscribe,
     props.controller.snapshot,

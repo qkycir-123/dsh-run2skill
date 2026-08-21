@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { normalize, resolve } from 'node:path'
 import { z } from 'zod'
 import type { Run2skillDomain } from '../dsh-storage/types.js'
 import { PurgeVisibility } from '../../application/purge/index.js'
@@ -25,6 +26,18 @@ interface ProjectedAttentionAction {
   readonly availableActions: readonly string[]
   readonly createdAt: string
   readonly updatedAt: string
+  readonly proposalRef: { readonly proposalId: string; readonly revision: number; readonly digest: string }
+}
+
+export type AttentionWorkspaceResolver = (workspaceId: string) => Promise<{
+  readonly workspaceId: string
+  readonly canonicalPath: string
+} | undefined>
+
+function sameWorkspacePath(left: string, right: string): boolean {
+  const a = normalize(resolve(left))
+  const b = normalize(resolve(right))
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 function actionKey(parts: readonly string[]): string {
@@ -42,6 +55,7 @@ function badRequest(): ObserveRpcResult<never> {
 export function createAttentionRpcHandler(
   getDomain: () => Run2skillDomain | undefined,
   notices: RuntimeNotices,
+  resolveWorkspace?: AttentionWorkspaceResolver,
   fallback?: ObserveSummaryRpcHandler,
 ): ObserveSummaryRpcHandler {
   const visibilities = new WeakMap<Run2skillDomain, PurgeVisibility>()
@@ -55,7 +69,20 @@ export function createAttentionRpcHandler(
       return { ok: false, error: { code: 'cancelled', message: 'attention request cancelled', details: {} } }
     }
     const domain = getDomain()
-    const workspaceId = parsed.data.workspaceId
+    const requestedWorkspaceId = parsed.data.workspaceId
+    let workspace: Awaited<ReturnType<AttentionWorkspaceResolver>>
+    if (requestedWorkspaceId !== undefined && resolveWorkspace !== undefined) {
+      try {
+        workspace = await resolveWorkspace(requestedWorkspaceId)
+      } catch {
+        workspace = undefined
+      }
+    }
+    const projectCompleteness = requestedWorkspaceId === undefined
+      ? 'UNAVAILABLE' as const
+      : domain === undefined || workspace === undefined
+        ? 'UNKNOWN' as const
+        : 'KNOWN' as const
     const actions = domain === undefined ? [] : (() => {
       let visibility = visibilities.get(domain)
       if (visibility === undefined) {
@@ -67,8 +94,9 @@ export function createAttentionRpcHandler(
         if (review === undefined || !visibility.workItemVisible(item)) return []
         const scope = review.proposal.persistenceScope
         if (scope === 'PROJECT' && (
-          workspaceId === undefined
-          || review.proposal.workspaceBinding?.workspaceId !== workspaceId
+          workspace === undefined
+          || review.proposal.workspaceBinding?.workspaceId !== workspace.workspaceId
+          || !sameWorkspacePath(review.proposal.workspaceBinding.canonicalPath, workspace.canonicalPath)
         )) return []
         const ref = proposalRefOf(review.proposal)
         if (
@@ -93,6 +121,7 @@ export function createAttentionRpcHandler(
             availableActions: ['RETRY'] as const,
             createdAt: review.proposal.createdAt,
             updatedAt: item.updatedAt,
+            proposalRef: ref,
           }]
         }
         if (
@@ -115,6 +144,7 @@ export function createAttentionRpcHandler(
             : ['APPROVE', 'REJECT'] as const,
           createdAt: review.proposal.createdAt,
           updatedAt: item.updatedAt,
+          proposalRef: ref,
         }]
       }).sort((left, right) => (
         left.createdAt.localeCompare(right.createdAt) || left.actionKey.localeCompare(right.actionKey)
@@ -148,9 +178,7 @@ export function createAttentionRpcHandler(
       value: {
         apiVersion: 1,
         userCompleteness: domain === undefined ? 'UNKNOWN' : 'KNOWN',
-        projectCompleteness: workspaceId === undefined
-          ? 'UNAVAILABLE'
-          : domain === undefined ? 'UNKNOWN' : 'KNOWN',
+        projectCompleteness,
         actions,
         runtimeCompleteness: notices.unsavedCompletenessKnown() ? 'KNOWN' : 'UNKNOWN',
         runtimeWarnings,

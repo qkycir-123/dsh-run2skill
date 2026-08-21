@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { dshWebArgs } from './web-args.mjs'
 
 const [cloneArg, fixtureRootArg, workRootArg] = process.argv.slice(2)
 if (!cloneArg || !fixtureRootArg || !workRootArg) {
@@ -214,7 +215,7 @@ const browserExecutable = await findBrowserExecutable()
 async function observeWeb({ expectedVersion, present }) {
   const port = await reservePort()
   const url = `http://127.0.0.1:${String(port)}/`
-  const child = spawn(process.execPath, [bin, 'web', '--port', String(port)], {
+  const child = spawn(process.execPath, [bin, ...dshWebArgs(port)], {
     cwd: workspace,
     env,
     windowsHide: true,

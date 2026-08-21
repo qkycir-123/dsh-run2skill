@@ -5,6 +5,7 @@ import { transform } from 'lightningcss'
 
 const CSS_PREFIX = '\0run2skill-css:'
 const CSS_SUFFIX = '.mjs'
+const STYLE_RUNTIME = resolve('src/client/style-lifecycle.ts')
 
 function inlineCssModules() {
   const files = new Map<string, string>()
@@ -28,15 +29,9 @@ function inlineCssModules() {
       })
       const classes = Object.fromEntries(Object.entries(exports ?? {}).map(([key, value]) => [key, value.name]))
       return [
-        `const styleId = ${JSON.stringify('dsh-run2skill/native-ui')};`,
+        `import { upsertRun2skillStyle } from ${JSON.stringify(STYLE_RUNTIME)};`,
         `const css = ${JSON.stringify(code.toString())};`,
-        'if (typeof document !== "undefined" && document.querySelector(`style[data-plugin-css="${styleId}"]`) === null) {',
-        '  const tag = document.createElement("style");',
-        '  tag.dataset.plugin = "dsh-run2skill";',
-        '  tag.dataset.pluginCss = styleId;',
-        '  tag.textContent = css;',
-        '  document.head.appendChild(tag);',
-        '}',
+        'if (typeof document !== "undefined") upsertRun2skillStyle(css);',
         `export default ${JSON.stringify(classes)};`,
       ].join('\n')
     },

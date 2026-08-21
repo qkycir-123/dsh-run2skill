@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { PurgeError, type PurgeService } from '../../application/purge/index.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
-import { PurgePhaseV1Schema, PurgeScopeBindingV1Schema } from '../../domain/purge/index.js'
+import { PurgePhaseV1Schema } from '../../domain/purge/index.js'
 
 export const PURGE_PREVIEW_ENDPOINT = 'purge/preview'
 export const PURGE_CONFIRM_ENDPOINT = 'purge/confirm'
@@ -17,7 +17,10 @@ const previewRequest = z.discriminatedUnion('scope', [
   z.object({ apiVersion: z.literal(1), scope: z.literal('PROJECT'), workspaceId }).strict(),
   z.object({ apiVersion: z.literal(1), scope: z.literal('USER') }).strict(),
 ])
-const confirmRequest = z.object({ apiVersion: z.literal(1), previewId, digest }).strict()
+const confirmRequest = z.discriminatedUnion('scope', [
+  z.object({ apiVersion: z.literal(1), scope: z.literal('PROJECT'), workspaceId, previewId, digest }).strict(),
+  z.object({ apiVersion: z.literal(1), scope: z.literal('USER'), previewId, digest }).strict(),
+])
 const statusRequest = z.object({ apiVersion: z.literal(1) }).strict()
 const retryRequest = z.object({ apiVersion: z.literal(1), purgeId }).strict()
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -26,7 +29,10 @@ const previewResponse = z.object({
   previewId,
   digest,
   expiresAt: z.string().datetime({ offset: true }),
-  scopeBinding: PurgeScopeBindingV1Schema,
+  scopeBinding: z.discriminatedUnion('scope', [
+    z.object({ scope: z.literal('PROJECT'), workspaceId }).strict(),
+    z.object({ scope: z.literal('USER') }).strict(),
+  ]),
   hideBefore: z.string().datetime({ offset: true }),
   workItemCount: count,
   lineageCount: count,
@@ -108,17 +114,32 @@ export function createPurgeRpcHandler(
     try {
       if (endpoint === PURGE_PREVIEW_ENDPOINT) {
         const request = previewRequest.parse(payload)
-        return {
-          ok: true,
-          value: previewResponse.parse(await activeService.preview(
+        const preview = await activeService.preview(
             request.scope,
             request.scope === 'PROJECT' ? request.workspaceId : undefined,
-          )),
+          )
+        return {
+          ok: true,
+          value: previewResponse.parse({
+            ...preview,
+            scopeBinding: preview.scopeBinding.scope === 'PROJECT'
+              ? { scope: 'PROJECT', workspaceId: preview.scopeBinding.workspaceId }
+              : { scope: 'USER' },
+          }),
         }
       }
       if (endpoint === PURGE_CONFIRM_ENDPOINT) {
         const request = confirmRequest.parse(payload)
-        return { ok: true, value: receiptResponse.parse(await runMutation(async () => await activeService.confirm(request.previewId, request.digest))) }
+        return {
+          ok: true,
+          value: receiptResponse.parse(await runMutation(async () => await activeService.confirm(
+            request.previewId,
+            request.digest,
+            request.scope === 'PROJECT'
+              ? { scope: 'PROJECT', workspaceId: request.workspaceId }
+              : { scope: 'USER' },
+          ))),
+        }
       }
       if (endpoint === PURGE_RETRY_ENDPOINT) {
         const request = retryRequest.parse(payload)

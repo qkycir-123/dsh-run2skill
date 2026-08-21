@@ -61,9 +61,14 @@ describe('Purge RPC v1', () => {
     expect(preview.ok).toBe(true)
     if (!preview.ok) throw new Error('preview failed')
     const value = preview.value as { previewId: string; digest: string }
+    expect(JSON.stringify(preview)).not.toContain(project)
 
     await expect(handler('purge/confirm', {
-      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+      apiVersion: 1,
+      scope: 'PROJECT',
+      workspaceId: binding.workspaceId,
+      previewId: value.previewId,
+      digest: value.digest,
     }, signal)).resolves.toMatchObject({ ok: true, value: { state: 'COMPLETED' } })
     await expect(handler('purge/status', { apiVersion: 1 }, signal))
       .resolves.toEqual({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })
@@ -77,6 +82,27 @@ describe('Purge RPC v1', () => {
       error: { code: 'bad-request', message: 'bad-request', details: {} },
     })
     expect(JSON.stringify(invalid)).not.toContain(project)
+  })
+
+  it('rejects confirm when its current PROJECT identity differs from the preview scope', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const service = new PurgeService(domain, { async resolve() { return binding } })
+    const handler = createPurgeRpcHandler(service)
+    const signal = new AbortController().signal
+    const preview = await handler('purge/preview', {
+      apiVersion: 1, scope: 'PROJECT', workspaceId: binding.workspaceId,
+    }, signal)
+    if (!preview.ok) throw new Error('preview failed')
+    const value = preview.value as { previewId: string; digest: string }
+
+    await expect(handler('purge/confirm', {
+      apiVersion: 1,
+      scope: 'PROJECT',
+      workspaceId: 'workspace-b',
+      previewId: value.previewId,
+      digest: value.digest,
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'PURGE_PREVIEW_STALE' } })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
   })
 
   it('delegates non-purge endpoints and rejects cancelled calls', async () => {

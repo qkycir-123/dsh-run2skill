@@ -32,11 +32,14 @@ import {
 import {
   ProposalInboxController,
   describeProposalListItem,
+  type ProposalListItem,
   type ProposalReviewCall,
 } from './proposal-inbox.js'
 import { ProposalDetailView } from './proposal-inbox-view.js'
+import { focusableSelector, trapDialogTab } from './dialog-focus.js'
 import { PurgeSettingsController, PurgeSettingsSection, type PurgeCall } from './purge-settings.js'
 import css from './run2skill-settings-page.module.css'
+import { acquireRun2skillStyle } from './style-lifecycle.js'
 
 export interface AttentionAction {
   readonly actionKey: string
@@ -45,6 +48,11 @@ export interface AttentionAction {
   readonly scope?: 'PROJECT' | 'USER'
   readonly reasonCode?: string
   readonly availableActions?: readonly string[]
+  readonly proposalRef?: {
+    readonly proposalId: string
+    readonly revision: number
+    readonly digest: string
+  }
 }
 
 export interface AttentionProjection {
@@ -160,25 +168,42 @@ function ProposalSettingsSection(props: {
   readonly workspaceId?: string
   readonly callReview: ProposalReviewCall
   readonly active: boolean
+  readonly actions: readonly AttentionAction[]
+  readonly attentionAvailable: boolean
+  readonly onMutationSettled: () => void
 }): ReactElement {
   const controller = useMemo(
-    () => new ProposalInboxController(props.workspaceId ?? '__run2skill_user_only__', props.callReview),
+    () => new ProposalInboxController(
+      props.workspaceId ?? '__run2skill_user_only__',
+      props.callReview,
+      undefined,
+      { attentionDriven: true },
+    ),
     [props.callReview, props.workspaceId],
   )
   useEffect(() => {
+    if (!props.active) controller.pause()
     controller.start()
     return () => { controller.dispose() }
   }, [controller])
   useEffect(() => {
-    if (props.active) void controller.open()
-    else controller.close()
+    if (props.active) {
+      controller.resume()
+      void controller.open()
+    } else {
+      controller.pause()
+      controller.close()
+    }
   }, [controller, props.active])
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot, controller.snapshot)
   const [filter, setFilter] = useState('')
   const [textMode, setTextMode] = useState<'SAFE' | 'RAW'>('SAFE')
   const [rejectConfirm, setRejectConfirm] = useState(false)
-  const items = state.items.filter(item => `${item.name} ${item.description} ${item.kind}`
+  const rejectTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const items = actionableProposalItems(props.actions, state.items)
+    .filter(item => `${item.name} ${item.description} ${item.kind}`
     .toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()))
+  const selectedActionable = items.some(item => item.proposalRef.proposalId === state.selectedProposalId)
   return createElement('div', { className: css.sectionBody },
     createElement('div', { className: css.toolbar },
       createElement(Input, {
@@ -194,12 +219,9 @@ function ProposalSettingsSection(props: {
         onClick: () => { void controller.open() },
       }, '刷新'),
     ),
-    state.summary?.queue.completeness === 'UNKNOWN'
-      ? createElement('p', { role: 'status' }, '待处理数量暂时无法确认。')
-      : null,
     state.listPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在加载待处理事项…') : null,
     state.listPhase === 'ERROR' ? createElement('p', { role: 'alert' }, '待处理事项暂不可用。') : null,
-    state.listPhase === 'READY' && state.items.length === 0
+    props.attentionAvailable && props.actions.length === 0
       ? createElement('p', null, props.workspaceId === undefined
           ? '当前没有 USER 待处理事项；未选择当前项目。'
           : '当前 PROJECT 与 USER 没有待处理事项。')
@@ -216,47 +238,119 @@ function ProposalSettingsSection(props: {
         )),
       ),
       createElement('div', { className: css.detail },
-        state.detailPhase === 'IDLE' ? createElement('p', null, '选择一项查看审核事实。') : null,
-        state.detailPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在加载详情…') : null,
-        state.detailPhase === 'ERROR' ? createElement('p', { role: 'alert' }, '详情暂不可用。') : null,
-        state.detail === undefined ? null : createElement(ProposalDetailView, {
+        !selectedActionable || state.detailPhase === 'IDLE'
+          ? createElement('p', null, '选择一项查看审核事实。')
+          : null,
+        selectedActionable && state.detailPhase === 'LOADING'
+          ? createElement('p', { role: 'status' }, '正在加载详情…')
+          : null,
+        selectedActionable && state.detailPhase === 'ERROR'
+          ? createElement('p', { role: 'alert' }, '详情暂不可用。')
+          : null,
+        !selectedActionable || state.detail === undefined ? null : createElement(ProposalDetailView, {
           detail: state.detail,
           textMode,
           setTextMode,
           mutationPending: state.mutationPending,
-          onApprove: () => { void controller.mutate('APPROVE') },
-          onReject: () => { setRejectConfirm(true) },
-          onRetry: () => { void controller.mutate('RETRY') },
-          onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD') },
+          onApprove: () => { void controller.mutate('APPROVE').finally(props.onMutationSettled) },
+          onReject: trigger => {
+            rejectTriggerRef.current = trigger ?? null
+            setRejectConfirm(true)
+          },
+          onRetry: () => { void controller.mutate('RETRY').finally(props.onMutationSettled) },
+          onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD').finally(props.onMutationSettled) },
         }),
       ),
     ),
     createElement('p', {
       role: 'status', 'aria-live': 'polite', 'aria-atomic': true, className: css.status,
     }, state.announcement),
-    createElement(Modal, {
+    createElement(RejectProposalModal, {
       open: rejectConfirm,
-      title: '确认拒绝 Proposal？',
-      closeLabel: '取消',
-      description: '现有 Skill 不会改变；该 Proposal 将离开待处理队列。',
+      disabled: state.mutationPending,
+      triggerRef: rejectTriggerRef,
       onClose: () => { setRejectConfirm(false) },
-      footer: createElement('div', { className: css.actions },
-        createElement(Button, {
-          variant: 'ghost',
-          disabled: state.mutationPending,
-          onClick: () => { setRejectConfirm(false) },
-        }, '取消'),
-        createElement(Button, {
-          variant: 'primary',
-          disabled: state.mutationPending,
-          onClick: () => {
-            setRejectConfirm(false)
-            void controller.mutate('REJECT')
-          },
-        }, '确认拒绝'),
-      ),
+      onConfirm: () => {
+        setRejectConfirm(false)
+        void controller.mutate('REJECT').finally(props.onMutationSettled)
+      },
     }),
   )
+}
+
+export function RejectProposalModal(props: {
+  readonly open: boolean
+  readonly disabled: boolean
+  readonly triggerRef: RefObject<HTMLButtonElement | null>
+  readonly onClose: () => void
+  readonly onConfirm: () => void
+}): ReactElement {
+  const contentRef = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef<(() => void) | null>(props.onClose)
+  onCloseRef.current = props.onClose
+  useEffect(() => {
+    if (!props.open || typeof document === 'undefined') return
+    const dialog = contentRef.current?.closest<HTMLElement>('[role="dialog"]')
+    const initial = dialog?.querySelector<HTMLElement>('[autofocus]')
+      ?? dialog?.querySelector<HTMLElement>(focusableSelector)
+    const onFocus = (event: FocusEvent) => {
+      if (dialog != null && event.target instanceof Node && !dialog.contains(event.target)) initial?.focus()
+    }
+    const onKeyboardEvent = (event: KeyboardEvent) => {
+      if (dialog == null) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        onCloseRef.current?.()
+      } else if (event.key === 'Tab') {
+        trapDialogTab(event.key, event.shiftKey, () => { event.preventDefault() }, dialog, document.activeElement)
+      }
+    }
+    document.addEventListener('focusin', onFocus, true)
+    document.addEventListener('keydown', onKeyboardEvent, true)
+    initial?.focus()
+    return () => {
+      document.removeEventListener('focusin', onFocus, true)
+      document.removeEventListener('keydown', onKeyboardEvent, true)
+      props.triggerRef.current?.focus()
+    }
+  }, [props.open, props.triggerRef])
+  return createElement(Modal, {
+    open: props.open,
+    title: '确认拒绝 Proposal？',
+    closeLabel: '取消',
+    description: '现有 Skill 不会改变；该 Proposal 将离开待处理队列。',
+    onClose: props.onClose,
+    footer: createElement('div', { className: css.actions },
+      createElement(Button, {
+        variant: 'ghost',
+        autoFocus: true,
+        disabled: props.disabled,
+        onClick: props.onClose,
+      }, '取消'),
+      createElement(Button, {
+        variant: 'primary',
+        disabled: props.disabled,
+        onClick: props.onConfirm,
+      }, '确认拒绝'),
+    ),
+  }, createElement('div', { ref: contentRef }))
+}
+
+export function actionableProposalItems(
+  actions: readonly AttentionAction[],
+  items: readonly ProposalListItem[],
+): readonly ProposalListItem[] {
+  const identities = new Set(actions.flatMap(action => (
+    action.subjectId === undefined
+    || action.proposalRef === undefined
+    || !['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')
+      ? []
+      : [`${action.subjectId}\u0000${action.proposalRef.proposalId}\u0000${String(action.proposalRef.revision)}\u0000${action.proposalRef.digest}`]
+  )))
+  return items.filter(item => identities.has(
+    `${item.workItemId}\u0000${item.proposalRef.proposalId}\u0000${String(item.proposalRef.revision)}\u0000${item.proposalRef.digest}`,
+  ))
 }
 
 export function hostTabVisible(element: Element | null): boolean {
@@ -288,6 +382,8 @@ function AttentionSettingsSummary(props: {
   readonly sessionId?: string
   readonly workspaceId?: string
   readonly callAttention: AttentionCall
+  readonly refreshGeneration: number
+  readonly onProjection: (value: AttentionProjection | undefined) => void
 }): ReactElement {
   const [state, setState] = useState<
     { readonly phase: 'LOADING' | 'READY' | 'UNAVAILABLE'; readonly value?: AttentionProjection }
@@ -295,6 +391,7 @@ function AttentionSettingsSummary(props: {
   const refresh = useCallback(() => {
     const abort = new AbortController()
     setState(previous => ({ ...previous, phase: 'LOADING' }))
+    props.onProjection(undefined)
     void props.callAttention({
       apiVersion: 1,
       ...(props.workspaceId === undefined ? {} : { workspaceId: props.workspaceId }),
@@ -302,9 +399,13 @@ function AttentionSettingsSummary(props: {
     }, abort.signal).then(result => {
       const value = attentionValue(result)
       setState(value === undefined ? { phase: 'UNAVAILABLE' } : { phase: 'READY', value })
-    }, () => { setState({ phase: 'UNAVAILABLE' }) })
+      props.onProjection(value)
+    }, () => {
+      setState({ phase: 'UNAVAILABLE' })
+      props.onProjection(undefined)
+    })
     return () => { abort.abort() }
-  }, [props.callAttention, props.sessionId, props.workspaceId])
+  }, [props.callAttention, props.onProjection, props.refreshGeneration, props.sessionId, props.workspaceId])
   useEffect(() => refresh(), [refresh])
   const value = state.value
   return createElement('div', { className: css.toolbar },
@@ -351,6 +452,8 @@ export function Run2skillSettingsPage(props: {
   const sessionId = props.useSessions === undefined ? props.sessionId : liveSessionId
   const [open, setOpen] = useState(() => new Set(['attention']))
   const hostTab = useHostTabVisibility()
+  const [attention, setAttention] = useState<AttentionProjection>()
+  const [attentionRefresh, setAttentionRefresh] = useState(0)
   const disclosure = (
     id: string,
     title: string,
@@ -383,11 +486,16 @@ export function Run2skillSettingsPage(props: {
           ...(sessionId === undefined ? {} : { sessionId }),
           ...(workspaceId === undefined ? {} : { workspaceId }),
           callAttention: props.callAttention,
+          refreshGeneration: attentionRefresh,
+          onProjection: setAttention,
         }),
         createElement(ProposalSettingsSection, {
           ...(workspaceId === undefined ? {} : { workspaceId }),
           callReview: props.callReview,
           active: hostTab.visible && open.has('attention'),
+          actions: attention?.actions ?? [],
+          attentionAvailable: attention !== undefined,
+          onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
         }),
       )),
     disclosure('activity', '最近活动', createElement(IconSparkle16),
@@ -398,7 +506,10 @@ export function Run2skillSettingsPage(props: {
       createElement(AutomaticLearningSection, { controller: props.controller })),
     disclosure('data', '数据管理', createElement(IconTrashOutline16),
       createElement('div', { className: css.sectionBody },
-        createElement(PurgeSettingsSection, { controller: props.purgeController }),
+        createElement(PurgeSettingsSection, {
+          controller: props.purgeController,
+          active: hostTab.visible && open.has('data'),
+        }),
       )),
   )
 }
@@ -420,7 +531,7 @@ export interface Run2skillClientContext {
     inject(name: string, install: () => unknown): void
     register(options: Record<string, unknown>, component: unknown): unknown
   }
-  effect?(install: () => (() => void), label?: string): void
+  effect(install: () => (() => void), label?: string): void
 }
 
 function currentSessionId(context: Run2skillClientContext): string | undefined {
@@ -449,9 +560,13 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
   const purgeController = new PurgeSettingsController(callPurge, () => (
     workspaceFor(context, currentSessionId(context))
   ))
-  context.effect?.(() => () => {
-    controller.dispose()
-    purgeController.dispose()
+  context.effect(() => {
+    const disposeStyle = acquireRun2skillStyle()
+    return () => {
+      controller.dispose()
+      purgeController.dispose()
+      disposeStyle()
+    }
   }, 'run2skill: native settings surface')
 
   context.slots.inject('settings.plugins.tab', () => context.slots.register({

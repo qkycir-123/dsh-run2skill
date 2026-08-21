@@ -20,6 +20,7 @@ $packageArchive = Join-Path $work 'package-archive'
 $packageExtract = Join-Path $work 'package-extract'
 $installLog = Join-Path $work 'pnpm-install.log'
 $buildLog = Join-Path $work 'dsh-build.log'
+$uiProbeFixture = Join-Path $work 'run2skill-ui-probe-fixture.json'
 
 function Assert-DshUnmodified {
   $head = (git -C $dshPath rev-parse HEAD).Trim()
@@ -37,6 +38,8 @@ Push-Location $repoRoot
 try {
   & pnpm run build
   if ($LASTEXITCODE -ne 0) { throw 'Candidate package build failed' }
+  & pnpm exec tsx probes/install-lifecycle/build-ui-probe-fixture.ts $uiProbeFixture
+  if ($LASTEXITCODE -ne 0) { throw 'Controlled UI probe fixture build failed' }
   New-Item -ItemType Directory -Path $packageArchive | Out-Null
   & pnpm pack --pack-destination $packageArchive
   if ($LASTEXITCODE -ne 0) { throw 'Candidate package pack failed' }
@@ -81,7 +84,7 @@ try {
 
 & node $probe $clone $fixtures $lifecycle
 if ($LASTEXITCODE -ne 0) { throw "Install lifecycle probe failed: $LASTEXITCODE" }
-& node $candidateProbe $clone $candidatePackage $candidateLifecycle
+& node $candidateProbe $clone $candidatePackage $candidateLifecycle $uiProbeFixture
 if ($LASTEXITCODE -ne 0) { throw "Candidate install lifecycle probe failed: $LASTEXITCODE" }
 
 Assert-DshUnmodified

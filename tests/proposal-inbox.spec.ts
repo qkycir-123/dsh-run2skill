@@ -145,6 +145,14 @@ describe('Proposal Inbox client', () => {
     }, false)).toBe('RETRY_PUBLICATION')
   })
 
+  it('never exposes absolute Workspace, DSH Home, root, or Skill target paths in review facts', () => {
+    const item = makeLearnedWorkItem()
+    const proposal = makeCreateProposalSnapshot(item)
+    const facts = factsFromAction({ proposal } as never)
+    expect(facts).toContain(`Skill name: ${proposal.name}`)
+    expect(facts).not.toMatch(/[A-Z]:\\|\/home\/|Declared root|Bundle target|Skill target|Flat target/iu)
+  })
+
   it('gives UNKNOWN, RECOVERING, DEGRADED, and INCOMPATIBLE explicit summary copy', () => {
     const base = {
       open: false,
@@ -276,6 +284,52 @@ describe('Proposal Inbox client', () => {
     })
     controller.close()
     expect(environment.timerDelay()).toBe(10_000)
+    controller.dispose()
+  })
+
+  it('pauses all host-tab summary/detail polling and resumes without timer leaks', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const host = createProposalReviewRpcHandler(() => domain)
+    const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
+      await host(endpoint, payload, signal)
+    ))
+    const environment = fakeEnvironment()
+    const controller = new ProposalInboxController('workspace-fixture', call, environment)
+    controller.start()
+    await controller.whenIdle()
+    expect(environment.timerCount()).toBe(1)
+
+    controller.pause()
+    expect(environment.timerCount()).toBe(0)
+    controller.resume()
+    await controller.whenIdle()
+    expect(environment.timerCount()).toBe(1)
+    expect(call.mock.calls.filter(([endpoint]) => endpoint === 'summary')).toHaveLength(2)
+
+    controller.dispose()
+    expect(environment.timerCount()).toBe(0)
+  })
+
+  it('uses Attention as the only queue summary when embedded in the settings surface', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const host = createProposalReviewRpcHandler(() => domain)
+    const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
+      await host(endpoint, payload, signal)
+    ))
+    const environment = fakeEnvironment()
+    const controller = new ProposalInboxController(
+      'workspace-fixture',
+      call,
+      environment,
+      { attentionDriven: true },
+    )
+
+    controller.start()
+    await controller.whenIdle()
+    await controller.open()
+
+    expect(call.mock.calls.some(([endpoint]) => endpoint === 'summary')).toBe(false)
+    expect(call.mock.calls.some(([endpoint]) => endpoint === 'proposals/list')).toBe(true)
     controller.dispose()
   })
 

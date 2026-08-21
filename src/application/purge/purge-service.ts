@@ -71,6 +71,10 @@ export type PurgeStatusV1 =
   | { readonly apiVersion: 1; readonly state: 'IDLE' }
   | ({ readonly apiVersion: 1; readonly state: 'IN_PROGRESS' } & Omit<PurgeJournalV1, 'schemaVersion' | 'scopeBinding' | 'candidateDigest'>)
 
+export type PurgeConfirmationScope =
+  | { readonly scope: 'USER' }
+  | { readonly scope: 'PROJECT'; readonly workspaceId: string }
+
 export interface PurgeScopeResolver {
   resolve(scope: 'PROJECT' | 'USER', workspaceId?: string): Promise<PurgeScopeBindingV1>
 }
@@ -199,7 +203,11 @@ export class PurgeService {
     return value
   }
 
-  confirm(previewId: string, digest: string): Promise<PurgeReceiptV1> {
+  confirm(
+    previewId: string,
+    digest: string,
+    confirmationScope?: PurgeConfirmationScope,
+  ): Promise<PurgeReceiptV1> {
     return this.#serialize(async () => {
       const completed = this.#completed.get(previewId)
       if (completed !== undefined) return completed
@@ -209,6 +217,14 @@ export class PurgeService {
         || stored.value.digest !== digest
         || Date.parse(stored.value.expiresAt) <= this.#now()
       ) throw new PurgeError('PURGE_PREVIEW_STALE')
+      if (confirmationScope !== undefined && (
+        confirmationScope.scope !== stored.value.scopeBinding.scope
+        || (
+          confirmationScope.scope === 'PROJECT'
+          && stored.value.scopeBinding.scope === 'PROJECT'
+          && confirmationScope.workspaceId !== stored.value.scopeBinding.workspaceId
+        )
+      )) throw new PurgeError('PURGE_PREVIEW_STALE')
       if (this.#global.get().purgeJournal !== undefined) throw new PurgeError('PURGE_ALREADY_RUNNING')
       let currentBinding: PurgeScopeBindingV1
       try {

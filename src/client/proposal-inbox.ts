@@ -180,6 +180,7 @@ export class ProposalInboxController {
   readonly #listeners = new Set<() => void>()
   #state: ProposalInboxState = initialState
   #started = false
+  #active = true
   #disposed = false
   #pending: Promise<void> | undefined
   #abort: AbortController | undefined
@@ -193,6 +194,7 @@ export class ProposalInboxController {
     private readonly workspaceId: string,
     private readonly call: ProposalReviewCall,
     private readonly environment: ProposalPollEnvironment = browserEnvironment(),
+    private readonly options: { readonly attentionDriven?: boolean } = {},
   ) {}
 
   snapshot = (): ProposalInboxState => this.#state
@@ -205,21 +207,38 @@ export class ProposalInboxController {
   start(): void {
     if (this.#started || this.#disposed) return
     this.#started = true
-    const refresh = () => { if (this.environment.isVisible()) void this.#refreshVisible() }
+    const refresh = () => { if (this.#active && this.environment.isVisible()) void this.#refreshVisible() }
     this.#removeFocus = this.environment.onFocus(refresh)
     this.#removeOnline = this.environment.onOnline(refresh)
     this.#removeVisibility = this.environment.onVisibilityChange(() => {
-      if (this.environment.isVisible()) {
+      if (this.#active && this.environment.isVisible()) {
         this.#schedule()
         void this.#refreshVisible()
       } else {
         this.#unschedule()
       }
     })
-    if (this.environment.isVisible()) {
+    if (this.#active && this.environment.isVisible()) {
       this.#schedule()
       void this.#refreshVisible()
     }
+  }
+
+  pause(): void {
+    if (this.#disposed || !this.#active) return
+    this.#active = false
+    this.#unschedule()
+    this.#abort?.abort()
+  }
+
+  resume(): void {
+    if (this.#disposed || this.#active) return
+    this.#active = true
+    if (!this.#started || !this.environment.isVisible()) return
+    this.#schedule()
+    void this.whenIdle().then(() => {
+      if (this.#active && !this.#disposed) void this.#refreshVisible()
+    })
   }
 
   whenIdle(): Promise<void> {
@@ -336,7 +355,7 @@ export class ProposalInboxController {
   }
 
   async #refreshVisible(): Promise<void> {
-    if (this.#disposed || !this.environment.isVisible()) return
+    if (this.#disposed || !this.#active || !this.environment.isVisible()) return
     await this.#execute(async signal => { await this.#refreshWithin(signal) }, () => {
       this.#publish({
         ...this.#state,
@@ -346,6 +365,12 @@ export class ProposalInboxController {
   }
 
   async #refreshWithin(signal: AbortSignal): Promise<void> {
+    if (this.options.attentionDriven === true) {
+      if (!this.#state.open) return
+      await this.#loadListWithin(signal)
+      await this.#refreshPublishingDetailWithin(signal)
+      return
+    }
     const summary = parseProposalSummary(await this.call(
       endpoint.summary,
       { apiVersion: 1, workspaceId: this.workspaceId },
@@ -355,6 +380,10 @@ export class ProposalInboxController {
     this.#publish({ ...this.#state, summaryPhase: 'READY', summary })
     if (!this.#state.open) return
     await this.#loadListWithin(signal)
+    await this.#refreshPublishingDetailWithin(signal)
+  }
+
+  async #refreshPublishingDetailWithin(signal: AbortSignal): Promise<void> {
     const selected = this.#state.selectedProposalId
     if (selected !== undefined && this.#state.detail?.processingState === 'PUBLISHING') {
       const detail = parseProposalDetail(await this.call(endpoint.get, { apiVersion: 1, proposalId: selected }, signal))
@@ -416,7 +445,7 @@ export class ProposalInboxController {
   }
 
   #schedule(): void {
-    if (this.#disposed) return
+    if (this.#disposed || !this.#active) return
     const delay = this.#state.open ? PROPOSAL_ACTIVE_POLL_INTERVAL_MS : PROPOSAL_POLL_INTERVAL_MS
     if (this.#timer !== undefined && this.#timerDelay === delay) return
     this.#unschedule()
@@ -434,7 +463,7 @@ export class ProposalInboxController {
   #publish(state: ProposalInboxState): void {
     if (this.#disposed) return
     this.#state = state
-    if (this.#started && this.environment.isVisible()) this.#schedule()
+    if (this.#started && this.#active && this.environment.isVisible()) this.#schedule()
     for (const listener of this.#listeners) listener()
   }
 }

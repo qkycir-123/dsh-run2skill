@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createServer as createHttpServer } from 'node:http'
 import { createRequire } from 'node:module'
-import { createServer } from 'node:net'
+import { createServer as createNetServer } from 'node:net'
 import { access, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -9,10 +10,11 @@ import {
   isSafeDiagnosticOutput,
   safeFailure,
 } from '../support/safe-diagnostics.mjs'
+import { dshWebArgs } from './web-args.mjs'
 
-const [cloneArg, candidateArg, workArg, mode] = process.argv.slice(2)
-if (!cloneArg || !candidateArg || !workArg) {
-  throw new Error('usage: node candidate-probe.mjs <built-dsh-clone> <candidate-root> <work-root>')
+const [cloneArg, candidateArg, workArg, uiFixtureArg, mode] = process.argv.slice(2)
+if (!cloneArg || !candidateArg || !workArg || !uiFixtureArg) {
+  throw new Error('usage: node candidate-probe.mjs <built-dsh-clone> <candidate-root> <work-root> <ui-fixture> [--web-only]')
 }
 
 const clone = resolve(cloneArg)
@@ -28,6 +30,8 @@ const manifestPath = join(profile, 'package.json')
 const patchPath = join(profile, 'cordis.patch.yml')
 const skillPath = join(home, 'skills', 'retained-skill', 'SKILL.md')
 const packageName = 'dsh-run2skill'
+const uiFixture = JSON.parse(await readFile(resolve(uiFixtureArg), 'utf8'))
+assert.equal(uiFixture.kind, 'run2skill-controlled-web-probe-fixture-v1')
 const retainedSkill = '---\nname: retained-skill\ndescription: retained lifecycle fixture\n---\n\nretained\n'
 const webOnly = mode === '--web-only'
 
@@ -98,7 +102,7 @@ async function manifest() {
 
 async function reservePort() {
   return await new Promise((resolvePort, reject) => {
-    const server = createServer()
+    const server = createNetServer()
     server.on('error', reject)
     server.listen(0, '127.0.0.1', () => {
       const address = server.address()
@@ -106,6 +110,34 @@ async function reservePort() {
       server.close(error => error ? reject(error) : resolvePort(address.port))
     })
   })
+}
+
+async function startProbeProvider() {
+  const server = createHttpServer((request, response) => {
+    request.resume()
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end([
+        'data: {"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}',
+        'data: {"choices":[{"delta":{"content":"done"}}]}',
+        'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}',
+        'data: [DONE]',
+        '',
+      ].join('\n\n'))
+    })
+  })
+  await new Promise((resolveListen, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolveListen)
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('controlled provider did not bind a TCP port')
+  return { server, baseUrl: `http://127.0.0.1:${String(address.port)}` }
+}
+
+async function closeServer(server) {
+  if (!server.listening) return
+  await new Promise((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose()))
 }
 
 async function stop(child) {
@@ -159,8 +191,16 @@ async function waitForAutomaticLearningSetting(expected) {
 async function observe(present, expectedAutomaticLearning) {
   const port = await reservePort()
   const base = `http://127.0.0.1:${String(port)}`
-  const child = spawn(process.execPath, [bin, 'web', '--port', String(port)], {
-    cwd: workspace, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  const provider = present ? await startProbeProvider() : undefined
+  const childEnv = provider === undefined
+    ? env
+    : {
+        ...env,
+        [['DEEPSEEK', 'API', 'KEY'].join('_')]: ['run2skill', 'controlled', 'probe'].join('-'),
+        [['DEEPSEEK', 'BASE', 'URL'].join('_')]: provider.baseUrl,
+      }
+  const child = spawn(process.execPath, [bin, ...dshWebArgs(port)], {
+    cwd: workspace, env: childEnv, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let logs = ''
   child.stdout.on('data', chunk => { logs += chunk.toString() })
@@ -202,12 +242,59 @@ async function observe(present, expectedAutomaticLearning) {
       const body = await rpc.json()
       assert.equal(body.result?.ok, true)
       assert.equal(body.result?.value?.capturedCount, 0)
+      const workspaceResponse = await fetch(`${base}/api/workspace.create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request', rpcId: 'a6-ui-workspace', method: 'workspace.create', payload: { path: workspace },
+        }),
+      })
+      const workspaceBody = await workspaceResponse.json()
+      assert.equal(workspaceBody.result?.ok, true, 'controlled UI probe could not register its disposable workspace')
+      const sessionResponse = await fetch(`${base}/api/session.create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request', rpcId: 'a6-ui-session', method: 'session.create', payload: { cwd: workspace },
+        }),
+      })
+      const sessionBody = await sessionResponse.json()
+      assert.equal(sessionBody.result?.ok, true, 'controlled UI probe could not create a DSH session')
       browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
+      console.log('CP_INS_A6_BROWSER_MODE=headless+dsh-no-open')
       const page = await browser.newPage()
       const errors = []
       page.on('pageerror', error => errors.push(String(error)))
+      let uiPhase = 'quiet'
+      await page.route('**/run2skill/**', async route => {
+        let request
+        try { request = route.request().postDataJSON() } catch { return await route.continue() }
+        const method = request?.method
+        const result = method === 'attention'
+          ? uiPhase === 'review'
+            ? uiFixture.review.attention
+            : uiPhase === 'failure'
+              ? uiFixture.failure.attention
+              : uiFixture.failure.doneAttention
+          : method === 'proposals/list'
+            ? uiPhase === 'review'
+              ? uiFixture.review.list
+              : uiPhase === 'failure'
+                ? uiFixture.failure.list
+                : uiFixture.failure.afterRetry
+            : method === 'proposals/get'
+              ? uiPhase === 'review' ? uiFixture.review.detail : uiFixture.failure.detail
+              : method === 'proposals/approve'
+                ? (() => { uiPhase = 'failure'; return uiFixture.review.approve })()
+                : method === 'proposals/retry'
+                  ? (() => { uiPhase = 'done'; return uiFixture.failure.retry })()
+                  : undefined
+        if (result === undefined) return await route.continue()
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ type: 'server-response', rpcId: request.rpcId, result }),
+        })
+      })
       await page.goto(`${base}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
-      await delay(2_000)
       assert.equal(errors.filter(error => /run2skill/iu.test(error)).length, 0)
       const onboarding = page.locator('[class*="onboardingOverlay"]')
       if (await onboarding.count() > 0) {
@@ -215,11 +302,26 @@ async function observe(present, expectedAutomaticLearning) {
         await onboarding.waitFor({ state: 'detached', timeout: 15_000 })
       }
       const acknowledgeNotice = page.getByRole('button', { name: /^(Continue|继续)$/ })
-      if (await acknowledgeNotice.count() > 0) await acknowledgeNotice.click()
+      const noticeVisible = await acknowledgeNotice.waitFor({ timeout: 10_000 })
+        .then(() => true, () => false)
+      if (noticeVisible) {
+        const noticeDialog = page.getByRole('dialog').filter({ has: acknowledgeNotice })
+        await acknowledgeNotice.click()
+        await noticeDialog.waitFor({ state: 'detached', timeout: 15_000 })
+      }
       const deferSetup = page.getByRole('button', { name: /^(Configure later|稍后配置)$/ })
       const setupVisible = await deferSetup.waitFor({ timeout: 10_000 })
         .then(() => true, () => false)
-      if (setupVisible) await deferSetup.click()
+      if (setupVisible) {
+        const setupDialog = page.getByRole('dialog').filter({ has: deferSetup })
+        await deferSetup.click()
+        await setupDialog.waitFor({ state: 'detached', timeout: 15_000 })
+      }
+      await page.getByRole('button', { name: /^(?:New session|新.*会话)$/ }).last().click()
+      await page.locator('textarea').last().fill('run2skill controlled UI probe draft')
+      uiPhase = 'review'
+      await page.locator('textarea').last().press('Enter')
+      await page.getByText(/run2skill 有 1 项需要处理/u).waitFor({ timeout: 15_000 })
       await page.getByRole('button', { name: /^(Settings|设置)$/ }).click()
       const dialog = page.getByRole('dialog', { name: /^(Settings|设置)$/ })
       await dialog.getByRole('button', { name: /^(Plugins|插件)$/ }).click()
@@ -227,6 +329,17 @@ async function observe(present, expectedAutomaticLearning) {
       const surface = dialog.locator('[data-run2skill-settings-page]')
       await surface.waitFor({ timeout: 10_000 })
       assert.equal(await page.locator('[data-run2skill-status], [data-run2skill-proposal-trigger]').count(), 0)
+      await surface.getByRole('button', { name: /CREATE · generated-file-hygiene/u }).click()
+      await surface.getByRole('button', { name: '批准并发布' }).waitFor({ timeout: 10_000 })
+      assert.equal((await surface.innerText()).includes('D:\\workspace'), false)
+      await surface.getByRole('button', { name: '批准并发布' }).click()
+      const retryPublication = surface.getByRole('button', { name: '重试发布' })
+      await retryPublication.waitFor({ timeout: 10_000 })
+      assert.match(await surface.innerText(), /发布失败，可重试/u)
+      await retryPublication.click()
+      await retryPublication.waitFor({ state: 'detached', timeout: 10_000 })
+      await surface.getByText('0 项可操作事项').waitFor({ timeout: 10_000 })
+      console.log('CP_INS_A6_ACTIONABLE_UI=PASS')
       await surface.getByRole('button', { name: '自动学习' }).click()
       const toggle = surface.getByRole('button', { name: /自动学习已(?:开启|关闭)/u })
       assert.equal(await toggle.getAttribute('aria-pressed'), String(expectedAutomaticLearning))
@@ -252,6 +365,7 @@ async function observe(present, expectedAutomaticLearning) {
     await browser?.close()
     await stop(child)
     await Promise.all([waitForOutputClose(child.stdout), waitForOutputClose(child.stderr)])
+    if (provider !== undefined) await closeServer(provider.server)
   }
   assert.equal(
     isSafeDiagnosticOutput(logs),
