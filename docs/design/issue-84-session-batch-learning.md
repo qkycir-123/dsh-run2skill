@@ -350,6 +350,8 @@ generation 只接受 Host 已提交的 `CREATE_AUTHORIZED` 或 `MERGE_AUTHORIZED
 
 `PendingProposalCatalog` 是按一次 Store consistent-read 序列从 `proposal_lineages`、`legacy_items`、Intent 中已密封但尚未复制为 Proposal 的 `GenerationResult`，以及 generation outcome unknown/failed 的去重屏障派生的 path-free snapshot，包含完整性、稳定排序和 catalog digest；它不在 global 中另存可漂移副本。Proposal/GenerationResult 提供完整正文；outcome unknown/failed 屏障只提供行为签名和 `UNAVAILABLE` capability，相关新 Intent 因此不能 CREATE。任一 authoritative record 无法解析、body/digest 不一致或扫描期间 revision 变化时 `complete=false`。CREATE absence proof 必须同时覆盖 Runtime Skill Catalog 和 complete PendingProposalCatalog。
 
+唯一的 self-exclusion 是 `REFRESH_STALE_RESULT` 创建的新 recall revision：完整 snapshot 仍包含其 refresh barrier，但该 revision 的 effective recall/coverage view 按精确 `intentId + priorGenerationRevision + barrierReceipt` 排除且只排除自己的 refresh barrier。调用输入和 absence proof 同时绑定未删减 `catalogDigest` 与 `selfExclusionDigest`；其他 Intent、其他 barrier 或 identity/revision 不匹配时都不得排除。这样当前 Intent 不会被自己永久阻塞，而任何并发 Intent 始终看到 `UNAVAILABLE` barrier。
+
 全部会改变 PendingProposalCatalog authoritative membership 的操作（Proposal create、GenerationResult/barrier create/resolve、Review/Publication 进入或离开 active、legacy migration、Purge hide/delete）通过同一个 `ProposalCatalogCoordinator` 单写序列，并使用 global `proposalCatalogMutationJournal + proposalCatalogEpoch`：先 durable PREPARED journal，再改 authoritative row，最后在同一次 global update 中推进 epoch并清 journal。派生 snapshot 必须在 journal 为空时读取 epoch-before，扫描全部 purge-visible active rows，再验证 epoch-after 相同；否则 `complete=false`。崩溃恢复先按 authoritative body/status 完成或回滚 journal并推进 epoch，完成前所有 CREATE/MERGE 为 0。
 
 ### 11.1 Proposal generation/commit single-flight
@@ -357,7 +359,7 @@ generation 只接受 Host 已提交的 `CREATE_AUTHORIZED` 或 `MERGE_AUTHORIZED
 BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或跨 scope 的 Proposal 由进程全局唯一的 durable `ProposalGenerationLease` 解决：
 
 1. CREATE/MERGE generation 前，通过 global CAS 取得唯一 lease；全部 scope 的其他 generation 排队，Detector/recall/coverage 仍可并行；
-2. lease 记录 owner intent/revision、action、input digest、acquiredAt 和 call slot，不靠内存锁；它与 ProposalCatalogCoordinator 共同阻止第二个 generation。lease 存续期间，Coordinator 排队其他 owner 的普通 membership mutation；Purge 先提交 visibility/quiesce fence，并在当前 owner 的 call outcome 收敛后再做物理删除；
+2. lease 记录 owner intent/revision、action、input digest、acquiredAt 和 call slot，不靠内存锁；它与 ProposalCatalogCoordinator 共同阻止第二个 generation。lease 存续期间，Coordinator 排队其他 owner 的普通 membership mutation；Purge 先提交 visibility/quiesce fence，并在当前 owner 的 call outcome 收敛后再做物理删除。启动恢复中的 Publication Journal 是另一项受限例外：只允许按既有 journal/hash/Registry 事实完成或回滚在途 publication并立即提交 membership receipt，不得发起新的 Publication；
 3. 持有 lease 后重新取得 Runtime Skill Catalog 与 PendingProposalCatalog 的 complete snapshot；其 digest 必须与 coverage 授权绑定值一致，否则释放 lease并重新 recall/coverage。lease 同时记录排除当前 owner Intent/GenerationResult/barrier 后的 `externalPendingDigest`；
 4. 只有复核仍允许 CREATE/MERGE 才预留 generation call 并调用模型；call terminal、usage 和非敏感 failure 必须先进入 durable ledger；
 5. call 返回或恢复流程从 durable ledger 判定调用事实后，lease owner 必须通过 Coordinator 提交且只提交一个互斥 outcome membership mutation：成功且 Guard 通过时密封完整 immutable `GenerationResult`（正文、digest、target/base binding、callId）；FAILED/ABORTED/TIMED_OUT、成功但结果无法 durable，或 outcome unknown 时提交 unresolved generation barrier。两者都产生绑定 `leaseId + intentId + generationRevision + callId` 的 mutation receipt；只有 sealed result 写入成功，call 才可进入 `RESULT_COMMITTED`，只有 barrier durable 才可释放失败路径的 lease；
@@ -391,14 +393,14 @@ BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或�
 
 `STALE_RESULT` 只提供：
 
-- `REFRESH_STALE_RESULT`：以 revision-CAS 将旧 sealed result 原子替换为同一 behavior owner 的 unresolved refresh barrier，新建一次 recall revision，重新取得 complete Runtime/Pending catalogs、summary、exact bodies 和 coverage；当前 Intent 的 coverage 排除自己的旧结果，其他 Intent 在替换完成前始终看见旧 result 或新 barrier，因此没有重复窗口；
+- `REFRESH_STALE_RESULT`：以 revision-CAS 将旧 sealed result 原子替换为同一 behavior owner 的 unresolved refresh barrier，新建一次 recall revision，重新取得 complete Runtime/Pending catalogs、summary、exact bodies 和 coverage；该 revision 按上述 self-exclusion contract 排除自己的 refresh barrier，其他 Intent 在替换完成前始终看见旧 result 或新 barrier，因此没有重复窗口；
 - `DISMISS_GENERATION`：用户确认后提交 `DISCARDED`，再由 Coordinator 原子移除 stale result/barrier 和 behavior reservation。
 
 refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结束并清理自身 barrier；若仍授权 CREATE/MERGE，新的 generation outcome 原子替换 refresh barrier。每个 Intent 最多一次 `staleRefreshUsed=true`，再次 stale 只允许用户丢弃或保留待处理，不能自动循环。
 
 自动恢复永不重新调用模型。无论用户是否操作，全局 lease 都在 unresolved barrier durable 后释放，因此单个 Intent 不能永久阻塞其他 Session/Scope；barrier 继续阻止相关重复 Proposal。
 
-启动时 generation/publication worker 之前使用两阶段恢复：打开 v2/migration -> 应用 active Purge visibility/quiesce fence（此时不等待物理删除） -> 恢复 proposalCatalogMutationJournal并扫描 Proposal/GenerationResult/barrier -> 对当前 lease 只做 outcome reconciliation，按第 5 步补成 sealed result 或 barrier，不复制 Proposal body -> outcome durable 后完成 Purge 物理删除并清除被隐藏 owner -> 重扫 authoritative rows并修复 BehaviorSignatureIndex -> 恢复 Publication Journal并刷新 Runtime Catalog -> 重建 complete PendingProposalCatalog -> 对仍持有 lease 的 RESULT_COMMITTED/PROPOSAL_COMMIT_AUTHORIZED 按当前两个 Catalog 重做第 6 步并收敛 body/index/lease -> 最后恢复 SessionBatch/Intent worker。Purge fence 与 outcome reconciliation 因此不会互等，停机前的 Catalog 授权也不会跨重启复用。
+启动时 generation/publication worker 之前使用两阶段恢复：打开 v2/migration -> 应用 active Purge visibility/quiesce fence（此时不等待物理删除） -> 恢复 proposalCatalogMutationJournal并扫描 Proposal/GenerationResult/barrier -> 对当前 lease 只做 outcome reconciliation，按第 5 步补成 sealed result 或 barrier，不复制 Proposal body -> outcome durable 后完成 Purge 物理删除并清除被隐藏 owner -> 重扫 authoritative rows并修复 BehaviorSignatureIndex -> 以受限恢复例外收敛 Publication Journal 的既有磁盘/Registry/membership 事实并留下 mutation receipt -> 刷新 Runtime Catalog并重建 complete PendingProposalCatalog -> 穷尽处理全部残留 lease：NOT_CALLED 校验后保留给恢复门结束后的同 owner 首次调用，恢复阶段本身不调用模型；RESULT_COMMITTED/PROPOSAL_COMMIT_AUTHORIZED 按当前两个 Catalog 重做第 6 步；BODY_COMMITTED_INDEX_PENDING 修复 index/journal并释放；ACTIVE_COMPLETE 校验 completion receipt并释放；失败/unknown 必须已由 barrier receipt 证明后释放 -> 最后恢复 SessionBatch/Intent worker和已校验的 NOT_CALLED generation owner。Publication receipt 是外部 mutation，旧 generation 的 revalidation 必须看见并转 stale；Purge/Publication 与 lease 因此不会互等，停机前的 Catalog 授权也不会跨重启复用。
 
 ## 12. Storage Migration ADR
 

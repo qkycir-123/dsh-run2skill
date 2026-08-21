@@ -397,9 +397,9 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 4. 对当前 ProposalGenerationLease 只做 outcome reconciliation：按 call ledger 补成且只补成 sealed result 或 unresolved barrier，不调用模型、不复制 Proposal body；
 5. owner outcome durable 后完成 Purge 物理删除与被隐藏 owner/index/lease 清理；
 6. 重扫 purge-visible authoritative rows并修复 BehaviorSignatureIndex；
-7. 恢复 Publication Journal/PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；完成后刷新 Runtime Catalog；
-8. 重建 complete PendingProposalCatalog；不完整时保持 generation disabled；
-9. 对仍持有 lease 的 `RESULT_COMMITTED` / `PROPOSAL_COMMIT_AUTHORIZED` 使用当前 Runtime/Pending catalogs 重做排除 self 的写前复核与 CAS，再收敛 body/index/lease；停机前授权不能直接复用；
+7. 以受限恢复例外收敛 Publication Journal/PUBLISHING：只按既有 journal、磁盘 hash 与 Registry 事实完成或回滚在途 publication并立即提交 membership receipt，不能发起新的 Publication，也不能因 generation lease 排队；
+8. 刷新 Runtime Catalog并重建 complete PendingProposalCatalog；不完整时保持 generation disabled；Publication receipt 必须进入 epoch/digest；
+9. 穷尽收敛全部残留 ProposalGenerationLease：`NOT_CALLED` 校验后保留给恢复门结束后的同一 owner/revision 首次调用，恢复阶段本身不调用模型；`RESULT_COMMITTED` / `PROPOSAL_COMMIT_AUTHORIZED` 使用当前 Runtime/Pending catalogs 重做排除 self 的写前复核与 CAS；`BODY_COMMITTED_INDEX_PENDING` 修复 index/journal并释放；`ACTIVE_COMPLETE` 校验 completion receipt并释放；失败/unknown 只有 barrier receipt durable 后才释放。停机前授权不能直接复用，Publication receipt 属于 external mutation并使旧 result stale；
 10. 恢复 Session cursor、已冻结 batch、idle deadlines 和 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；durable 尾部已 idle 30 分钟则走同一 claim 路径；
 11. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
 12. 运行有界 Session gap scan并幂等补齐 TurnObservation；
@@ -411,7 +411,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 
 ### 8.5 多 Session 同一 Skill
 
-Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，再以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 PendingProposalCatalog membership mutation（Proposal、sealed result、unresolved barrier、legacy、Purge/终态）经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。持有 lease 后及模型返回、写 body 前都必须重新取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale 或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；不同 target 的 publication 仍按 canonical target path 串行：
+Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，再以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 PendingProposalCatalog membership mutation（Proposal、sealed result、unresolved barrier、legacy、Purge/终态）经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。唯一 self-exclusion 是 stale refresh revision 按精确 intent/prior revision/barrier receipt 从自身 effective view 排除自己的 refresh barrier，调用仍绑定完整 catalog digest 与 exclusion digest，其他 Intent 始终看见该 barrier。持有 lease 后及模型返回、写 body 前都必须重新取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale 或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；不同 target 的 publication 仍按 canonical target path 串行：
 
 - 每次都重新取得完整 Catalog 和文件事实；
 - 先到者成功后，后到者的 Base/expected-absence 必然失效；
