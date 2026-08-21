@@ -19,6 +19,7 @@ export class WriteBehindCheckpoint {
   readonly #global
   readonly #now
   readonly #turnBatch
+  readonly #runMutation
   #state: GlobalV1
   #completedSinceFlush = 0
   #lastFlushAt: number
@@ -26,10 +27,15 @@ export class WriteBehindCheckpoint {
   readonly #dirtySessions = new Set<string>()
   readonly #holds = new Map<string, CheckpointHold>()
 
-  constructor(domain: Run2skillDomain, options: { now?: () => number; turnBatch?: number } = {}) {
+  constructor(domain: Run2skillDomain, options: {
+    now?: () => number
+    turnBatch?: number
+    runMutation?: <T>(operation: () => Promise<T>) => Promise<T>
+  } = {}) {
     this.#global = Run2skillGlobalStore.for(domain)
     this.#now = options.now ?? Date.now
     this.#turnBatch = options.turnBatch ?? CHECKPOINT_TURN_BATCH
+    this.#runMutation = options.runMutation ?? (operation => operation())
     if (!Number.isSafeInteger(this.#turnBatch) || this.#turnBatch < 1) {
       throw new TypeError('Checkpoint Turn batch must be a positive safe integer')
     }
@@ -250,12 +256,12 @@ export class WriteBehindCheckpoint {
       completedPurgeFences: _staleCompletedPurgeFences,
       ...checkpointState
     } = committed
-    return await this.#global.update(current => GlobalV1Schema.parse({
-      ...checkpointState,
-      ...(current.purgeJournal === undefined ? {} : { purgeJournal: current.purgeJournal }),
-      ...(current.completedPurgeFences === undefined
-        ? {}
-        : { completedPurgeFences: current.completedPurgeFences }),
-    }))
+    return await this.#runMutation(async () => await this.#global.update(current => GlobalV1Schema.parse({
+        ...checkpointState,
+        ...(current.purgeJournal === undefined ? {} : { purgeJournal: current.purgeJournal }),
+        ...(current.completedPurgeFences === undefined
+          ? {}
+          : { completedPurgeFences: current.completedPurgeFences }),
+      })))
   }
 }

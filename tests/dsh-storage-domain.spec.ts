@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   RUN2SKILL_ALPHA_SCHEMA_CONTRACT,
+  createInitialGlobalV1,
   run2skillDomainSpec,
 } from '../src/adapters/dsh-storage/domain.js'
+import { makeWorkItem } from './support/work-item-fixture.js'
+import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
 describe('run2skill_v1 domain contract', () => {
   it('freezes the public alpha storage identity and record versions', () => {
@@ -27,8 +30,14 @@ describe('run2skill_v1 domain contract', () => {
   })
 
   it('fails closed on incompatible Global, WorkItem, and Lineage record versions', () => {
-    expect(run2skillDomainSpec.global.schema.safeParse({ schemaVersion: 999 }).success).toBe(false)
-    expect(run2skillDomainSpec.tables.work_items.valueSchema.safeParse({ schemaVersion: 999 }).success).toBe(false)
-    expect(run2skillDomainSpec.tables.lineages.valueSchema.safeParse({ schemaVersion: 999 }).success).toBe(false)
+    const validGlobal = createInitialGlobalV1()
+    const validWorkItem = makeWorkItem()
+    const validLineage = createMinimalV2Fixtures().proposalLineage.legacySnapshot
+    expect(run2skillDomainSpec.global.schema.safeParse(validGlobal).success).toBe(true)
+    expect(run2skillDomainSpec.tables.work_items.valueSchema.safeParse(validWorkItem).success).toBe(true)
+    expect(run2skillDomainSpec.tables.lineages.valueSchema.safeParse(validLineage).success).toBe(true)
+    expect(run2skillDomainSpec.global.schema.safeParse({ ...validGlobal, schemaVersion: 999 }).success).toBe(false)
+    expect(run2skillDomainSpec.tables.work_items.valueSchema.safeParse({ ...validWorkItem, schemaVersion: 999 }).success).toBe(false)
+    expect(run2skillDomainSpec.tables.lineages.valueSchema.safeParse({ ...validLineage, schemaVersion: 999 }).success).toBe(false)
   })
 })

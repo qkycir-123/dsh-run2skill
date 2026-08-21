@@ -1,9 +1,7 @@
-export class HostMutationGate {
-  #tail: Promise<void> = Promise.resolve()
+import { LegacySourceCutoverGate } from './migration/legacy-source-cutover-gate.js'
 
+export class HostMutationGate extends LegacySourceCutoverGate {
   run<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#tail.then(operation)
-    this.#tail = result.then(() => {}, () => {})
-    return result
+    return this.runLegacyMutation(operation)
   }
 }

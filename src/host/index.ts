@@ -265,7 +265,9 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         diagnosticStore = undefined
         this.currentDiagnosticStore = undefined
       }
-      const checkpoint = new WriteBehindCheckpoint(domain)
+      const checkpoint = new WriteBehindCheckpoint(domain, {
+        runMutation: operation => this.mutationGate.run(operation),
+      })
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
       const visibility = new PurgeVisibility(domain)
       const store = new DurableCaptureStore(
@@ -371,7 +373,11 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
           })
           return
         }
-        await proposalReviewStore.stage(item.workItemId, item.revision, built.proposal)
+        await this.mutationGate.run(async () => await proposalReviewStore.stage(
+          item.workItemId,
+          item.revision,
+          built.proposal,
+        ))
       }
       let staging = Promise.resolve()
       this.currentCurationWake = () => {
@@ -408,7 +414,9 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       })
       const publicationScheduler = new PublicationScheduler({
         store: publicationStore,
-        worker: publicationSaga,
+        worker: {
+          run: workItemId => this.mutationGate.run(async () => await publicationSaga.run(workItemId)),
+        },
         eligible: item => publicationView(item) !== undefined,
         onError: () => {
           this.notices.record({ healthCode: 'PUBLICATION_WORKER_FAILED', sessionId: 'global' })
@@ -567,7 +575,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         },
       }
       try {
-        await purgeService.recover()
+        await this.mutationGate.run(async () => await purgeService.recover())
       } catch {
         this.notices.record({ healthCode: 'PURGE_RECOVERY_FAILED', sessionId: 'global' })
       }
