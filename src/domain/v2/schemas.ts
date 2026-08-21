@@ -66,6 +66,7 @@ export interface TurnObservationContentFactsV2 {
     readonly complete: boolean
   }
   readonly completeness: 'COMPLETE' | 'INCOMPLETE'
+  readonly explicitSaveRequested: boolean
   readonly scopeBinding: unknown
   readonly evidenceDigest: string
 }
@@ -77,6 +78,7 @@ export function deriveTurnObservationContentDigestV2(facts: TurnObservationConte
     toolOutcomeSummary: facts.toolOutcomeSummary,
     routeObservation: facts.routeObservation,
     completeness: facts.completeness,
+    explicitSaveRequested: facts.explicitSaveRequested,
     scopeBinding: facts.scopeBinding,
     evidenceDigest: facts.evidenceDigest,
   }))
@@ -112,6 +114,7 @@ export const TurnObservationV2Schema = z.object({
     complete: z.boolean(),
   }).strict(),
   completeness: z.enum(['COMPLETE', 'INCOMPLETE']),
+  explicitSaveRequested: z.boolean(),
   scopeBinding: ScopeBindingV2Schema,
   directUserEvidence: z.array(EvidenceRefSchema).max(RUN2SKILL_V2_LIMITS.maxObservationEvidence),
   evidenceDigest: sha256Hex,

@@ -37,6 +37,7 @@ export function createMinimalV2Fixtures() {
     toolOutcomeSummary: [],
     routeObservation: { provider: 'deepseek-official', model: 'deepseek-chat', complete: true },
     completeness: 'COMPLETE' as const,
+    explicitSaveRequested: false,
     scopeBinding: {
       status: 'PROJECT' as const,
       workspaceId: 'workspace-v2',
