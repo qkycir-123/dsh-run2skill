@@ -8,6 +8,8 @@ import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review
 import { ProposalInboxHeaderAction } from '../src/client/proposal-inbox-view.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeCreateProposalSnapshot, makeLearnedWorkItem } from './support/review-fixture.js'
+import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { PurgeVisibility } from '../src/application/purge/index.js'
 
 afterEach(() => { cleanup() })
 
@@ -21,10 +23,21 @@ describe('Proposal Inbox browser accessibility', () => {
       item.revision,
       makeCreateProposalSnapshot(item),
     )
-    const host = createProposalReviewRpcHandler(() => domain)
+    const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-fixture' }
+    const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({
+      workspaceId, canonicalPath: 'D:\\workspace',
+    }))
+    const actions = (await authorizer.project(domain, currentScope, new PurgeVisibility(domain))).flatMap(action => (
+      action.proposalRef === undefined ? [] : [{
+        actionKey: action.actionKey, subjectId: action.subjectId,
+        kind: action.kind as 'REVIEW_PROPOSAL', proposalRef: action.proposalRef,
+      }]
+    ))
+    const host = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
     render(createElement(ProposalInboxHeaderAction, {
       workspaceId: 'workspace-fixture',
       callReview: async (endpoint, payload, signal) => await host(endpoint, payload, signal),
+      scopeAccess: () => ({ currentScope, actions }),
     }))
 
     const trigger = await screen.findByRole('button', { name: '1 条 Skill 提案待处理：1 条待审核' })

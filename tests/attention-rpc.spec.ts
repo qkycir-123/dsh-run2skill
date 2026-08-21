@@ -25,12 +25,12 @@ describe('Attention projection RPC', () => {
 
     const first = await host('attention', {
       apiVersion: 1,
-      workspaceId: 'workspace-fixture',
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-fixture' },
       sessionId: 'session-fixture',
     }, new AbortController().signal)
     const second = await host('attention', {
       apiVersion: 1,
-      workspaceId: 'workspace-fixture',
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-fixture' },
       sessionId: 'session-fixture',
     }, new AbortController().signal)
 
@@ -73,18 +73,17 @@ describe('Attention projection RPC', () => {
 
     const result = await host('attention', {
       apiVersion: 1,
-      workspaceId: 'workspace-fixture',
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-fixture' },
     }, new AbortController().signal)
 
-    expect(result).toMatchObject({
-      ok: true,
-      value: { projectCompleteness: 'UNKNOWN', actions: [] },
-    })
+    expect(result).toMatchObject({ ok: false, error: { code: 'bad-request' } })
   })
 
   it('does not turn publishing, unavailable project scope, or non-actionable health into actions', async () => {
     const host = createAttentionRpcHandler(() => undefined, new RuntimeNotices())
-    const result = await host('attention', { apiVersion: 1 }, new AbortController().signal)
+    const result = await host('attention', {
+      apiVersion: 1, currentScope: { kind: 'USER_ONLY', generation: 1 },
+    }, new AbortController().signal)
     expect(result).toEqual({
       ok: true,
       value: {
@@ -119,7 +118,7 @@ describe('Attention projection RPC', () => {
 
     const result = await host('attention', {
       apiVersion: 1,
-      workspaceId: 'workspace-fixture',
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-fixture' },
     }, new AbortController().signal)
 
     expect(result).toMatchObject({
@@ -163,7 +162,7 @@ describe('Attention projection RPC', () => {
 
     const result = await host('attention', {
       apiVersion: 1,
-      workspaceId: 'workspace-fixture',
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-fixture' },
     }, new AbortController().signal)
 
     expect(result).toMatchObject({
@@ -200,6 +199,7 @@ describe('Attention projection RPC', () => {
     const host = createAttentionRpcHandler(() => undefined, notices)
     const result = await host('attention', {
       apiVersion: 1,
+      currentScope: { kind: 'USER_ONLY', generation: 1 },
       sessionId: 'session-a',
     }, new AbortController().signal)
 

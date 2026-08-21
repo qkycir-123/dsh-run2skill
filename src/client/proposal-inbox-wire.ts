@@ -25,12 +25,10 @@ const rootDisplay = z.object({
   resolverVersion: identity,
   rootContractVersion: identity,
   resolutionContractDigest: sha256,
-  declaredRootPath: z.string().min(1).max(8_192),
-}).passthrough()
+}).strict()
 const targetDisplay = z.object({
-  bundlePath: z.string().min(1).max(8_192),
-  skillFilePath: z.string().min(1).max(8_192),
-}).passthrough()
+  skillName: identity,
+}).strict()
 const actionBinding = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('CREATE'),
@@ -38,21 +36,19 @@ const actionBinding = z.discriminatedUnion('kind', [
     targetBinding: targetDisplay,
     expectedAbsence: z.object({
       observedAt: z.string().min(1).max(64),
-      flatSkillFilePath: z.string().min(1).max(8_192),
-    }).passthrough(),
-  }).passthrough(),
+    }).strict(),
+  }).strict(),
   z.object({
     kind: z.literal('MERGE'),
     rootBinding: rootDisplay,
     targetBinding: targetDisplay,
     baseBinding: z.object({
       candidateKey: z.string().regex(/^cand_[a-f0-9]{64}$/),
-      path: z.string().min(1).max(8_192),
       exactBytes: z.string().min(1).max(65_536),
       bytesDigest: sha256,
       observedAt: z.string().min(1).max(64),
-    }).passthrough(),
-  }).passthrough(),
+    }).strict(),
+  }).strict(),
   z.object({
     kind: z.literal('DISCARD'),
     coveringCandidateBinding: z.object({
@@ -62,9 +58,8 @@ const actionBinding = z.discriminatedUnion('kind', [
       content: z.string().min(1).max(65_536),
       contentDigest: sha256,
       observedAt: z.string().min(1).max(64),
-      path: z.string().min(1).max(8_192).optional(),
-    }).passthrough(),
-  }).passthrough(),
+    }).strict(),
+  }).strict(),
 ])
 
 const proposal = z.object({
@@ -83,14 +78,10 @@ const proposal = z.object({
   persistenceScope: z.enum(['PROJECT', 'USER']),
   workspaceBinding: z.object({
     workspaceId: identity,
-    canonicalPath: z.string().min(1).max(8_192),
-    observedAt: z.string().min(1).max(64),
   }).strict().optional(),
   dshHomeBinding: z.object({
     resolutionKind: z.enum(['CONFIGURATION', 'ENVIRONMENT', 'DEFAULT']),
-    canonicalPath: z.string().min(1).max(8_192),
     identityDigest: sha256,
-    observedAt: z.string().min(1).max(64),
   }).strict().optional(),
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
   catalogObservationDigest: sha256,

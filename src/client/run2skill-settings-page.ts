@@ -35,6 +35,7 @@ import {
   describeProposalListItem,
   type ProposalListItem,
   type ProposalReviewCall,
+  type ProposalScopeAccess,
 } from './proposal-inbox.js'
 import { ProposalDetailView } from './proposal-inbox-view.js'
 import { focusableSelector, trapDialogTab } from './dialog-focus.js'
@@ -69,7 +70,13 @@ export interface AttentionProjection {
 }
 
 export type AttentionCall = (
-  payload: { readonly apiVersion: 1; readonly workspaceId?: string; readonly sessionId?: string },
+  payload: {
+    readonly apiVersion: 1
+    readonly currentScope:
+      | { readonly kind: 'USER_ONLY'; readonly generation: number }
+      | { readonly kind: 'WORKSPACE'; readonly generation: number; readonly workspaceId: string }
+    readonly sessionId?: string
+  },
   signal: AbortSignal,
 ) => Promise<unknown>
 
@@ -120,21 +127,29 @@ function attentionValue(value: unknown): AttentionProjection | undefined {
 
 const seenAttentionKeys = new Set<string>()
 
+function currentScope(workspaceId: string | undefined, generation: number) {
+  return workspaceId === undefined
+    ? { kind: 'USER_ONLY' as const, generation }
+    : { kind: 'WORKSPACE' as const, generation, workspaceId }
+}
+
 export function Run2skillAttentionToast(props: {
   readonly sessionId: string
   readonly workspaceId?: string
   readonly callAttention: AttentionCall
 }): ReactElement | null {
   const [toast, setToast] = useState<{ readonly sequence: number; readonly count: number }>()
+  const scopeGeneration = useRef(0)
   useEffect(() => {
     const abort = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     let sequence = 0
+    const generation = ++scopeGeneration.current
     const refresh = async (): Promise<void> => {
       try {
         const projection = attentionValue(await props.callAttention({
           apiVersion: 1,
-          ...(props.workspaceId === undefined ? {} : { workspaceId: props.workspaceId }),
+          currentScope: currentScope(props.workspaceId, generation),
           sessionId: props.sessionId,
         }, abort.signal))
         if (projection === undefined || abort.signal.aborted) return
@@ -204,15 +219,38 @@ function ProposalSettingsSection(props: {
   readonly actions: readonly AttentionAction[]
   readonly attentionAvailable: boolean
   readonly onMutationSettled: () => void
+  readonly scopeGeneration: number
 }): ReactElement {
+  const scopeAccessRef = useRef<ProposalScopeAccess>({
+    currentScope: currentScope(props.workspaceId, props.scopeGeneration),
+    actions: [],
+  })
+  scopeAccessRef.current = {
+    currentScope: currentScope(props.workspaceId, props.scopeGeneration),
+    actions: props.actions.flatMap(action => (
+      action.subjectId === undefined
+      || action.proposalRef === undefined
+      || !['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')
+        ? []
+        : [{
+            actionKey: action.actionKey,
+            subjectId: action.subjectId,
+            kind: action.kind as 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION',
+            proposalRef: action.proposalRef,
+          }]
+    )),
+  }
   const controller = useMemo(
     () => new ProposalInboxController(
       props.workspaceId ?? '__run2skill_user_only__',
       props.callReview,
       undefined,
-      { attentionDriven: true },
+      {
+        attentionDriven: true,
+        scopeAccess: () => scopeAccessRef.current,
+      },
     ),
-    [props.callReview, props.workspaceId],
+    [props.callReview, props.scopeGeneration, props.workspaceId],
   )
   useEffect(() => {
     if (!props.active) controller.pause()
@@ -317,12 +355,14 @@ export function LearningFailureSection(props: {
   readonly active: boolean
   readonly actions: readonly AttentionAction[]
   readonly onMutationSettled: () => void
+  readonly scopeGeneration?: number
 }): ReactElement {
   const [phase, setPhase] = useState<'IDLE' | 'LOADING' | 'READY' | 'ERROR'>('IDLE')
   const [items, setItems] = useState<readonly LearningIssue[]>([])
   const [refreshGeneration, setRefreshGeneration] = useState(0)
   const [pending, setPending] = useState<string>()
   const [dismiss, setDismiss] = useState<LearningIssue>()
+  const dismissTriggerRef = useRef<HTMLButtonElement | null>(null)
   const learningActions = useMemo(() => new Map(props.actions.flatMap(action => (
     action.subjectId === undefined
     || !['RETRY_LEARNING', 'DISMISS_LEARNING'].includes(action.kind ?? '')
@@ -336,7 +376,6 @@ export function LearningFailureSection(props: {
       return
     }
     const abort = new AbortController()
-    const requestedWorkspaceId = props.workspaceId ?? '__run2skill_user_only__'
     setPhase('LOADING')
     void (async () => {
       const next: LearningIssue[] = []
@@ -346,7 +385,12 @@ export function LearningFailureSection(props: {
           'learning/issues/list',
           {
             apiVersion: 1,
-            workspaceId: requestedWorkspaceId,
+            currentScope: currentScope(props.workspaceId, props.scopeGeneration ?? 1),
+            actions: [...learningActions.values()].map(action => ({
+              actionKey: action.actionKey,
+              subjectId: action.subjectId!,
+              kind: action.kind as 'RETRY_LEARNING' | 'DISMISS_LEARNING',
+            })),
             ...(cursor === undefined ? {} : { cursor }),
           },
           abort.signal,
@@ -370,14 +414,23 @@ export function LearningFailureSection(props: {
       }
     })
     return () => { abort.abort() }
-  }, [learningActions, props.active, props.call, props.workspaceId, refreshGeneration])
+  }, [learningActions, props.active, props.call, props.scopeGeneration, props.workspaceId, refreshGeneration])
   const mutate = (endpoint: 'learning/issues/retry' | 'learning/issues/dismiss', item: LearningIssue) => {
     if (pending !== undefined) return
+    const selectedAction = learningActions.get(item.workItemId)
+    if (selectedAction?.subjectId === undefined || selectedAction.kind === undefined) return
     setPending(item.workItemId)
     void props.call(endpoint, {
       apiVersion: 1,
       workItemId: item.workItemId,
       workItemRevision: item.workItemRevision,
+      currentScope: currentScope(props.workspaceId, props.scopeGeneration ?? 1),
+      action: {
+        actionKey: selectedAction.actionKey,
+        subjectId: selectedAction.subjectId,
+        kind: selectedAction.kind,
+        ...(selectedAction.proposalRef === undefined ? {} : { proposalRef: selectedAction.proposalRef }),
+      },
       ...(endpoint === 'learning/issues/dismiss' ? { confirm: true } : {}),
     }, new AbortController().signal).then(result => {
       if (
@@ -428,30 +481,28 @@ export function LearningFailureSection(props: {
             ? createElement(Button, {
                 variant: 'outline',
                 disabled: busy || pending !== undefined,
-                onClick: () => { setDismiss(item) },
+                onClick: event => {
+                  dismissTriggerRef.current = event.currentTarget
+                  setDismiss(item)
+                },
               }, '关闭此失败')
             : null,
         ),
       )
     }),
-    createElement(Modal, {
+    createElement(ManagedConfirmationModal, {
       open: dismiss !== undefined,
       title: '确认关闭此学习失败？',
-      closeLabel: '取消',
       description: '该失败会从待处理列表隐藏；已有 Skill 和 DSH Session Log 不会改变。',
+      disabled: pending !== undefined,
+      triggerRef: dismissTriggerRef,
       onClose: () => { setDismiss(undefined) },
-      footer: createElement('div', { className: css.actions },
-        createElement(Button, { variant: 'ghost', onClick: () => { setDismiss(undefined) } }, '取消'),
-        createElement(Button, {
-          variant: 'primary',
-          disabled: pending !== undefined,
-          onClick: () => {
-            const selected = dismiss
-            setDismiss(undefined)
-            if (selected !== undefined) mutate('learning/issues/dismiss', selected)
-          },
-        }, '确认关闭'),
-      ),
+      confirmLabel: '确认关闭',
+      onConfirm: () => {
+        const selected = dismiss
+        setDismiss(undefined)
+        if (selected !== undefined) mutate('learning/issues/dismiss', selected)
+      },
     }),
   )
 }
@@ -460,6 +511,24 @@ export function RejectProposalModal(props: {
   readonly open: boolean
   readonly disabled: boolean
   readonly triggerRef: RefObject<HTMLButtonElement | null>
+  readonly onClose: () => void
+  readonly onConfirm: () => void
+}): ReactElement {
+  return createElement(ManagedConfirmationModal, {
+    ...props,
+    title: '确认拒绝 Proposal？',
+    description: '现有 Skill 不会改变；该 Proposal 将离开待处理队列。',
+    confirmLabel: '确认拒绝',
+  })
+}
+
+function ManagedConfirmationModal(props: {
+  readonly open: boolean
+  readonly disabled: boolean
+  readonly triggerRef: RefObject<HTMLButtonElement | null>
+  readonly title: string
+  readonly description: string
+  readonly confirmLabel: string
   readonly onClose: () => void
   readonly onConfirm: () => void
 }): ReactElement {
@@ -495,9 +564,9 @@ export function RejectProposalModal(props: {
   }, [props.open, props.triggerRef])
   return createElement(Modal, {
     open: props.open,
-    title: '确认拒绝 Proposal？',
+    title: props.title,
     closeLabel: '取消',
-    description: '现有 Skill 不会改变；该 Proposal 将离开待处理队列。',
+    description: props.description,
     onClose: props.onClose,
     footer: createElement('div', { className: css.actions },
       createElement(Button, {
@@ -510,7 +579,7 @@ export function RejectProposalModal(props: {
         variant: 'primary',
         disabled: props.disabled,
         onClick: props.onConfirm,
-      }, '确认拒绝'),
+      }, props.confirmLabel),
     ),
   }, createElement('div', { ref: contentRef }))
 }
@@ -556,7 +625,7 @@ function useHostTabVisibility(): {
   return { ref, visible }
 }
 
-function AttentionSettingsSummary(props: {
+export function AttentionSettingsSummary(props: {
   readonly sessionId?: string
   readonly workspaceId?: string
   readonly callAttention: AttentionCall
@@ -566,23 +635,33 @@ function AttentionSettingsSummary(props: {
   const [state, setState] = useState<
     { readonly phase: 'LOADING' | 'READY' | 'UNAVAILABLE'; readonly value?: AttentionProjection }
   >({ phase: 'LOADING' })
+  const requestGeneration = useRef(0)
+  const activeAbort = useRef<AbortController>()
   const refresh = useCallback(() => {
+    activeAbort.current?.abort()
     const abort = new AbortController()
-    setState(previous => ({ ...previous, phase: 'LOADING' }))
+    activeAbort.current = abort
+    const generation = ++requestGeneration.current
+    setState({ phase: 'LOADING' })
     props.onProjection(undefined)
     void props.callAttention({
       apiVersion: 1,
-      ...(props.workspaceId === undefined ? {} : { workspaceId: props.workspaceId }),
+      currentScope: currentScope(props.workspaceId, generation),
       ...(props.sessionId === undefined ? {} : { sessionId: props.sessionId }),
     }, abort.signal).then(result => {
+      if (abort.signal.aborted || requestGeneration.current !== generation) return
       const value = attentionValue(result)
       setState(value === undefined ? { phase: 'UNAVAILABLE' } : { phase: 'READY', value })
       props.onProjection(value)
     }, () => {
+      if (abort.signal.aborted || requestGeneration.current !== generation) return
       setState({ phase: 'UNAVAILABLE' })
       props.onProjection(undefined)
     })
-    return () => { abort.abort() }
+    return () => {
+      abort.abort()
+      if (activeAbort.current === abort) activeAbort.current = undefined
+    }
   }, [props.callAttention, props.onProjection, props.refreshGeneration, props.sessionId, props.workspaceId])
   useEffect(() => refresh(), [refresh])
   const value = state.value
@@ -632,6 +711,11 @@ export function Run2skillSettingsPage(props: {
   const hostTab = useHostTabVisibility()
   const [attention, setAttention] = useState<AttentionProjection>()
   const [attentionRefresh, setAttentionRefresh] = useState(0)
+  const [scopeGeneration, setScopeGeneration] = useState(1)
+  useEffect(() => {
+    setAttention(undefined)
+    setScopeGeneration(value => value + 1)
+  }, [sessionId, workspaceId])
   const disclosure = (
     id: string,
     title: string,
@@ -674,6 +758,7 @@ export function Run2skillSettingsPage(props: {
           actions: attention?.actions ?? [],
           attentionAvailable: attention !== undefined,
           onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
+          scopeGeneration,
         }),
         createElement(LearningFailureSection, {
           ...(workspaceId === undefined ? {} : { workspaceId }),
@@ -681,6 +766,7 @@ export function Run2skillSettingsPage(props: {
           active: hostTab.visible && open.has('attention'),
           actions: attention?.actions ?? [],
           onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
+          scopeGeneration,
         }),
       )),
     disclosure('activity', '最近活动', createElement(IconSparkle16),
@@ -775,10 +861,16 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
     order: 30,
     inject: () => ({
       callAttention,
-      getWorkspaceId: (sessionId: string) => workspaceFor(context, sessionId),
     }),
-  }, function HeaderAttention(props: { readonly sessionId: string; readonly callAttention: AttentionCall; readonly getWorkspaceId: (sessionId: string) => string | undefined }) {
-    const workspaceId = props.getWorkspaceId(props.sessionId)
+  }, function HeaderAttention(props: {
+    readonly sessionId: string
+    readonly callAttention: AttentionCall
+    readonly useWorkspaces: <T>(selector: (state: {
+      readonly items: readonly { readonly workspaceId: string; readonly sessionIds?: readonly string[] }[]
+    }) => T) => T
+  }) {
+    const workspaceId = props.useWorkspaces(state => state.items
+      .find(workspace => workspace.sessionIds?.includes(props.sessionId))?.workspaceId)
     return createElement(Run2skillAttentionToast, {
       sessionId: props.sessionId,
       ...(workspaceId === undefined ? {} : { workspaceId }),

@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { PurgeVisibility } from '../../application/purge/index.js'
 import {
-  intendedLearningPersistenceScope,
   isIgnoredLearningFailure,
   LearningCallV1Schema,
   LearningFailureCodeSchema,
@@ -12,6 +11,12 @@ import { LearningStoreError, LearningWorkItemStore } from '../dsh-storage/learni
 import type { LearningDiagnosticStore } from '../dsh-storage/learning-diagnostic-store.js'
 import type { Run2skillDomain } from '../dsh-storage/types.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
+import {
+  AttentionActionIdentityV1Schema,
+  CurrentScopeAuthorizer,
+  CurrentScopeAuthorizationError,
+  CurrentScopeV1Schema,
+} from './current-scope-authorizer.js'
 
 export const LEARNING_ISSUES_LIST_ENDPOINT = 'learning/issues/list'
 export const LEARNING_ISSUES_RETRY_ENDPOINT = 'learning/issues/retry'
@@ -26,13 +31,16 @@ const cursor = z.string().regex(/^c_[1-9][0-9]*$/).max(32)
 
 const listRequestSchema = z.object({
   apiVersion: z.literal(1),
-  workspaceId: identity,
+  currentScope: CurrentScopeV1Schema,
+  actions: z.array(AttentionActionIdentityV1Schema).max(64),
   cursor: cursor.optional(),
 }).strict()
 const mutationRequestShape = {
   apiVersion: z.literal(1),
   workItemId,
   workItemRevision: positiveSafeInteger,
+  currentScope: CurrentScopeV1Schema,
+  action: AttentionActionIdentityV1Schema,
 }
 const retryRequestSchema = z.object(mutationRequestShape).strict()
 const dismissRequestSchema = z.object({ ...mutationRequestShape, confirm: z.literal(true) }).strict()
@@ -99,15 +107,6 @@ function canRetry(item: CaptureWorkItemV1): boolean {
     && !isIgnoredLearningFailure(item)
 }
 
-function visibleInWorkspace(item: CaptureWorkItemV1, workspaceId: string): boolean {
-  const scope = intendedLearningPersistenceScope(item)
-  return scope === 'USER' || (
-    scope === 'PROJECT'
-    && item.workspaceBinding.status === 'BOUND'
-    && item.workspaceBinding.workspaceId === workspaceId
-  )
-}
-
 function mappedStoreError(value: unknown): ObserveRpcResult<never> {
   if (!(value instanceof LearningStoreError)) return error('internal')
   switch (value.code) {
@@ -119,6 +118,7 @@ function mappedStoreError(value: unknown): ObserveRpcResult<never> {
 }
 
 export interface LearningAttentionRpcOptions {
+  readonly authorizer?: CurrentScopeAuthorizer
   readonly onRetry?: (workItemId: string) => void
   readonly visibility?: (domain: Run2skillDomain) => PurgeVisibility
   readonly runMutation?: <T>(operation: () => Promise<T>) => Promise<T>
@@ -168,9 +168,21 @@ export function createLearningAttentionRpcHandler(
 
     if (endpoint === LEARNING_ISSUES_LIST_ENDPOINT) {
       const request = listRequestSchema.parse(payload)
+      if (options.authorizer === undefined) return error('internal')
       const offset = offsetOf(request.cursor)
       if (offset === undefined) return error('bad-request')
-      const eligible = [...domain.table('work_items').entries()].flatMap(([, item]) => {
+      const authorizedItems: CaptureWorkItemV1[] = []
+      try {
+        for (const action of request.actions) {
+          if (!['RETRY_LEARNING', 'DISMISS_LEARNING'].includes(action.kind)) continue
+          authorizedItems.push((await options.authorizer.authorize(
+            domain, request.currentScope, action, visibilityOf(domain),
+          )).item)
+        }
+      } catch (caught) {
+        return caught instanceof CurrentScopeAuthorizationError ? error('conflict') : error('internal')
+      }
+      const eligible = authorizedItems.flatMap(item => {
         const learning = item.learning
         if (
           !visibilityOf(domain).workItemVisible(item)
@@ -178,7 +190,6 @@ export function createLearningAttentionRpcHandler(
           || item.review !== undefined
           || learning?.failure === undefined
           || isIgnoredLearningFailure(item)
-          || !visibleInWorkspace(item, request.workspaceId)
         ) return []
         const failureDetail = options.diagnostics?.()?.detailFor(item)
         return [{
@@ -211,9 +222,19 @@ export function createLearningAttentionRpcHandler(
       ? retryRequestSchema.parse(payload)
       : dismissRequestSchema.parse(payload)
     try {
-      const result = await runMutation(async () => endpoint === LEARNING_ISSUES_RETRY_ENDPOINT
-        ? await storeOf(domain).retryFailed(request.workItemId, request.workItemRevision)
-        : await storeOf(domain).dismissFailed(request.workItemId, request.workItemRevision))
+      const result = await runMutation(async () => {
+        if (options.authorizer === undefined) throw new CurrentScopeAuthorizationError('SCOPE_UNAVAILABLE')
+        const requiredAction = endpoint === LEARNING_ISSUES_RETRY_ENDPOINT ? 'RETRY' : 'DISMISS'
+        const authorized = await options.authorizer.authorize(
+          domain, request.currentScope, request.action, visibilityOf(domain), requiredAction,
+        )
+        if (authorized.item.workItemId !== request.workItemId) {
+          throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        }
+        return endpoint === LEARNING_ISSUES_RETRY_ENDPOINT
+          ? await storeOf(domain).retryFailed(request.workItemId, request.workItemRevision)
+          : await storeOf(domain).dismissFailed(request.workItemId, request.workItemRevision)
+      })
       if (endpoint === LEARNING_ISSUES_RETRY_ENDPOINT && result.changed) {
         try {
           options.onRetry?.(result.item.workItemId)
@@ -230,6 +251,7 @@ export function createLearningAttentionRpcHandler(
         disposition: isIgnoredLearningFailure(result.item) ? 'IGNORED' : 'ACTIVE',
       }) }
     } catch (caught) {
+      if (caught instanceof CurrentScopeAuthorizationError) return error('conflict')
       return mappedStoreError(caught)
     }
   }

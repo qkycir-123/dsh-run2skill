@@ -30,6 +30,7 @@ import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/propo
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
 import { createAttentionRpcHandler } from '../adapters/dsh-connection/attention-rpc.js'
 import { createLearningAttentionRpcHandler } from '../adapters/dsh-connection/learning-attention-rpc.js'
+import { CurrentScopeAuthorizer } from '../adapters/dsh-connection/current-scope-authorizer.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
@@ -660,6 +661,17 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
           compatibility: 'COMPATIBLE',
         })
   }
+  const resolveCurrentWorkspace = async (workspaceId: string) => {
+    const workspace = context.workspaceRegistry.get?.(workspaceId)
+    if (
+      workspace === undefined
+      || workspace.id !== workspaceId
+      || workspace.path.length === 0
+      || (workspace.status !== undefined && await workspace.status() !== 'ok')
+    ) return undefined
+    return { workspaceId: workspace.id, canonicalPath: workspace.path }
+  }
+  const currentScopeAuthorizer = new CurrentScopeAuthorizer(resolveCurrentWorkspace)
   const reviewRpc = createProposalReviewRpcHandler(() => factory.currentDomain, () => {
     const summary = readSummary()
     return {
@@ -668,6 +680,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
       ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
     }
   }, {
+    authorizer: currentScopeAuthorizer,
     onPublicationRequested: () => { factory.wakePublication() },
     visibility: domain => new PurgeVisibility(domain),
     runMutation: operation => mutationGate.run(operation),
@@ -678,16 +691,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     createAttentionRpcHandler(
       () => factory.currentDomain,
       notices,
-      async (workspaceId) => {
-        const workspace = context.workspaceRegistry.get?.(workspaceId)
-        if (
-          workspace === undefined
-          || workspace.id !== workspaceId
-          || workspace.path.length === 0
-          || (workspace.status !== undefined && await workspace.status() !== 'ok')
-        ) return undefined
-        return { workspaceId: workspace.id, canonicalPath: workspace.path }
-      },
+      resolveCurrentWorkspace,
       createLearningAttentionRpcHandler(
         () => factory.currentDomain,
         createPurgeRpcHandler(
@@ -696,6 +700,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
           { runMutation: operation => mutationGate.run(operation) },
         ),
         {
+          authorizer: currentScopeAuthorizer,
           onRetry: () => { factory.wakeLearning() },
           visibility: domain => new PurgeVisibility(domain),
           runMutation: operation => mutationGate.run(operation),

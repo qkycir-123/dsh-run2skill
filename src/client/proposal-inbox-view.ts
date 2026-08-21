@@ -23,6 +23,7 @@ import {
   type ProposalDetail,
   type ProposalInboxState,
   type ProposalReviewCall,
+  type ProposalScopeAccess,
 } from './proposal-inbox.js'
 import { focusableSelector, trapDialogTab } from './dialog-focus.js'
 import { describeRun2skillHealth } from './status-copy.js'
@@ -88,10 +89,16 @@ export function describeProposalSummaryState(state: ProposalInboxState): string 
 export function ProposalInboxHeaderAction(props: {
   readonly workspaceId: string
   readonly callReview: ProposalReviewCall
+  readonly scopeAccess?: () => ProposalScopeAccess
 }): ReactElement {
   const controller = useMemo(
-    () => new ProposalInboxController(props.workspaceId, props.callReview),
-    [props.callReview, props.workspaceId],
+    () => new ProposalInboxController(
+      props.workspaceId,
+      props.callReview,
+      undefined,
+      props.scopeAccess === undefined ? {} : { scopeAccess: props.scopeAccess },
+    ),
+    [props.scopeAccess, props.callReview, props.workspaceId],
   )
   useEffect(() => {
     controller.start()

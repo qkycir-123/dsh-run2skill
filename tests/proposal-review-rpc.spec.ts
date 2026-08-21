@@ -11,6 +11,8 @@ import {
 } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-saga-store.js'
+import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { PurgeVisibility } from '../src/application/purge/index.js'
 import { deriveExperienceId, deriveLearningProposalId } from '../src/domain/learn/index.js'
 import { CaptureWorkItemV1Schema, type CaptureWorkItemV1 } from '../src/domain/observe/schemas.js'
 import { materializeProposalSnapshot, proposalRefOf } from '../src/domain/review/index.js'
@@ -84,6 +86,25 @@ function userDiscardSnapshot(item: CaptureWorkItemV1) {
   })
 }
 
+const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-fixture' }
+const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({
+  workspaceId,
+  canonicalPath: workspaceId === 'workspace-fixture' ? 'D:\\workspace' : 'D:\\other-workspace',
+}))
+async function actionsFor(domain: ReturnType<typeof createMemoryRun2skillDomain>) {
+  return (await authorizer.project(domain, currentScope, new PurgeVisibility(domain))).map(
+    ({ actionKey, subjectId, kind, proposalRef }) => ({
+      actionKey, subjectId, kind, ...(proposalRef === undefined ? {} : { proposalRef }),
+    }),
+  )
+}
+function securedHandler(
+  domain: ReturnType<typeof createMemoryRun2skillDomain>,
+  options: Parameters<typeof createProposalReviewRpcHandler>[2] = {},
+) {
+  return createProposalReviewRpcHandler(() => domain, undefined, { authorizer, ...options })
+}
+
 describe('Proposal Review RPC', () => {
   it('lists only the current PROJECT queue and returns immutable detail lazily', async () => {
     const domain = createMemoryRun2skillDomain()
@@ -100,10 +121,11 @@ describe('Proposal Review RPC', () => {
     await store.stage(other.workItemId, other.revision, otherProposal)
     const userProposal = userDiscardSnapshot(user)
     await store.stage(user.workItemId, user.revision, userProposal)
-    const handler = createProposalReviewRpcHandler(() => domain)
+    const handler = securedHandler(domain)
+    const actions = await actionsFor(domain)
 
     const listed = await handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-fixture',
+      apiVersion: 1, currentScope, actions,
     }, new AbortController().signal)
     expect(listed).toMatchObject({
       ok: true,
@@ -139,7 +161,9 @@ describe('Proposal Review RPC', () => {
     expect(JSON.stringify(listed)).not.toContain('exactSkillBytes')
 
     const detail = await handler(PROPOSALS_GET_ENDPOINT, {
-      apiVersion: 1, proposalId: currentProposal.proposalId,
+      apiVersion: 1, currentScope,
+      action: actions.find(action => action.subjectId === current.workItemId),
+      proposalId: currentProposal.proposalId,
     }, new AbortController().signal)
     expect(detail).toMatchObject({
       ok: true,
@@ -153,6 +177,30 @@ describe('Proposal Review RPC', () => {
         },
         proposal: { proposalId: currentProposal.proposalId, exactSkillBytes: currentProposal.exactSkillBytes },
       },
+    })
+    expect(JSON.stringify(detail)).not.toMatch(/canonicalPath|declaredRootPath|bundlePath|skillFilePath|"path"/)
+
+    const otherScope = { kind: 'WORKSPACE' as const, generation: 2, workspaceId: 'other-workspace' }
+    const otherAction = (await authorizer.project(
+      domain, otherScope, new PurgeVisibility(domain),
+    )).map(({ actionKey, subjectId, kind, proposalRef }) => ({
+      actionKey, subjectId, kind, ...(proposalRef === undefined ? {} : { proposalRef }),
+    }))[0]!
+    await expect(handler(PROPOSALS_GET_ENDPOINT, {
+      apiVersion: 1,
+      currentScope,
+      action: otherAction,
+      proposalId: otherProposal.proposalId,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'conflict' },
+    })
+    await expect(handler(PROPOSALS_GET_ENDPOINT, {
+      apiVersion: 1,
+      currentScope: { kind: 'USER_ONLY', generation: 3 },
+      action: actions.find(action => action.subjectId === current.workItemId),
+      proposalId: currentProposal.proposalId,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'conflict' },
     })
   })
 
@@ -189,8 +237,11 @@ describe('Proposal Review RPC', () => {
       item.workItemId, item.revision, makeCreateProposalSnapshot(item),
     )
     const ref = proposalRefOf(staged.item.review!.proposal)
+    const action = (await actionsFor(domain))[0]!
     const request = {
       apiVersion: 1 as const,
+      currentScope,
+      action,
       workItemId: item.workItemId,
       workItemRevision: staged.item.revision,
       proposalRef: ref,
@@ -199,7 +250,7 @@ describe('Proposal Review RPC', () => {
     const handler = createProposalReviewRpcHandler(
       () => domain,
       undefined,
-      { onPublicationRequested },
+      { authorizer, onPublicationRequested },
     )
 
     const approved = await handler(PROPOSALS_APPROVE_ENDPOINT, request, new AbortController().signal)
@@ -209,7 +260,7 @@ describe('Proposal Review RPC', () => {
     })
     expect(onPublicationRequested).toHaveBeenCalledWith(item.workItemId)
     await expect(handler(PROPOSALS_APPROVE_ENDPOINT, request, new AbortController().signal))
-      .resolves.toMatchObject({ ok: true, value: { changed: false, processingState: 'PUBLISHING' } })
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
 
     for (const payload of [
       { ...request, unknown: true },
@@ -241,11 +292,15 @@ describe('Proposal Review RPC', () => {
     )
     const wake = vi.fn()
     const handler = createProposalReviewRpcHandler(() => domain, undefined, {
+      authorizer,
       onPublicationRequested: wake,
     })
+    const action = (await actionsFor(domain))[0]!
 
     const retryRequest = {
       apiVersion: 1,
+      currentScope,
+      action,
       workItemId: failed.workItemId,
       workItemRevision: failed.revision,
       proposalRef: proposalRefOf(failed.review!.proposal),
@@ -257,11 +312,10 @@ describe('Proposal Review RPC', () => {
     })
     await expect(handler(PROPOSALS_RETRY_ENDPOINT, retryRequest, new AbortController().signal))
       .resolves.toMatchObject({
-        ok: true,
-        value: { changed: false, processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' },
+        ok: false, error: { code: 'conflict' },
       })
     expect(wake).toHaveBeenCalledWith(item.workItemId)
-    expect(wake).toHaveBeenCalledTimes(2)
+    expect(wake).toHaveBeenCalledTimes(1)
     expect(domain.workItems.get(item.workItemId)?.publication?.attemptCount).toBe(2)
     expect(approved.item.review?.reviewDecision).toBe('APPROVED')
   })
@@ -279,9 +333,12 @@ describe('Proposal Review RPC', () => {
     const discardStaged = await store.stage(
       discardItem.workItemId, discardItem.revision, makeDiscardProposalSnapshot(discardItem),
     )
-    const handler = createProposalReviewRpcHandler(() => domain)
+    const handler = securedHandler(domain)
+    const actions = await actionsFor(domain)
     const mutation = (item: typeof rejectStaged.item) => ({
       apiVersion: 1 as const,
+      currentScope,
+      action: actions.find(action => action.subjectId === item.workItemId),
       workItemId: item.workItemId,
       workItemRevision: item.revision,
       proposalRef: proposalRefOf(item.review!.proposal),
@@ -304,9 +361,13 @@ describe('Proposal Review RPC', () => {
     const retryStaged = await new ProposalReviewStore(retryDomain).stage(
       discardItem.workItemId, discardItem.revision, makeDiscardProposalSnapshot(discardItem),
     )
-    await expect(createProposalReviewRpcHandler(() => retryDomain)(
+    const retryActions = await actionsFor(retryDomain)
+    await expect(securedHandler(retryDomain)(
       PROPOSALS_RETRY_ENDPOINT,
-      mutation(retryStaged.item),
+      {
+        ...mutation(retryStaged.item),
+        action: retryActions.find(action => action.subjectId === retryStaged.item.workItemId),
+      },
       new AbortController().signal,
     )).resolves.toMatchObject({
       ok: true, value: { changed: true, processingState: 'NEEDS_ATTENTION' },
@@ -315,17 +376,17 @@ describe('Proposal Review RPC', () => {
 
   it('rejects invalid cursors, oversized payloads and cancellation before reading durable state', async () => {
     const getDomain = vi.fn(() => createMemoryRun2skillDomain())
-    const handler = createProposalReviewRpcHandler(getDomain)
+    const handler = createProposalReviewRpcHandler(getDomain, undefined, { authorizer })
     await expect(handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-fixture', cursor: 'invalid',
+      apiVersion: 1, currentScope, actions: [], cursor: 'invalid',
     }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
     await expect(handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'x'.repeat(9_000),
+      apiVersion: 1, currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'x'.repeat(9_000) }, actions: [],
     }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
     const aborted = new AbortController()
     aborted.abort()
     await expect(handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-fixture',
+      apiVersion: 1, currentScope, actions: [],
     }, aborted.signal)).resolves.toMatchObject({ ok: false, error: { code: 'cancelled' } })
     expect(getDomain).not.toHaveBeenCalled()
   })

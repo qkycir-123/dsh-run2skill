@@ -2,7 +2,7 @@ import { createElement, type ReactElement } from 'react'
 import css from './run2skill-settings-page.module.css'
 import type { ExperienceRecordV1 } from '../domain/learn/index.js'
 import type { EvidenceRef } from '../domain/observe/schemas.js'
-import type { ProposalRefV1, ProposalSnapshotV1 } from '../domain/review/index.js'
+import type { ProposalRefV1 } from '../domain/review/index.js'
 import {
   parseMutationReceipt,
   parseProposalDetail,
@@ -63,7 +63,7 @@ export interface ProposalDetail {
   readonly processingState: ProcessingState
   readonly reviewDecision: 'PENDING' | 'APPROVED' | 'REJECTED'
   readonly publicationOutcome: PublicationOutcome
-  readonly proposal: ProposalSnapshotV1
+  readonly proposal: SafeProposalDetail
   readonly sessionCoordinate: {
     readonly rootSessionId: string
     readonly sessionCreatedAt: number
@@ -143,6 +143,80 @@ export type ProposalReviewCall = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
+export interface ProposalScopeAccess {
+  readonly currentScope:
+    | { readonly kind: 'USER_ONLY'; readonly generation: number }
+    | { readonly kind: 'WORKSPACE'; readonly generation: number; readonly workspaceId: string }
+  readonly actions: readonly {
+    readonly actionKey: string
+    readonly subjectId: string
+    readonly kind: 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION'
+    readonly proposalRef: ProposalRefV1
+  }[]
+}
+
+export interface SafeProposalDetail {
+  readonly schemaVersion: 1
+  readonly revision: number
+  readonly createdAt: string
+  readonly sourceLearningProposalId: string
+  readonly kind: 'CREATE' | 'MERGE' | 'DISCARD'
+  readonly name: string
+  readonly description: string
+  readonly whenToUse: string
+  readonly invocation: { readonly modelInvocable: true; readonly userInvocable: false }
+  readonly exactSkillBytes: string
+  readonly skillBytesDigest: string
+  readonly rendererVersion: string
+  readonly persistenceScope: 'PROJECT' | 'USER'
+  readonly workspaceBinding?: { readonly workspaceId: string }
+  readonly dshHomeBinding?: { readonly resolutionKind: 'CONFIGURATION' | 'ENVIRONMENT' | 'DEFAULT'; readonly identityDigest: string }
+  readonly supportingExperienceIds: readonly string[]
+  readonly catalogObservationDigest: string
+  readonly curationRationale: string
+  readonly actionBinding:
+    | {
+        readonly kind: 'CREATE'
+        readonly rootBinding: SafeRootBinding
+        readonly targetBinding: { readonly skillName: string }
+        readonly expectedAbsence: { readonly observedAt: string }
+      }
+    | {
+        readonly kind: 'MERGE'
+        readonly rootBinding: SafeRootBinding
+        readonly targetBinding: { readonly skillName: string }
+        readonly baseBinding: {
+          readonly candidateKey: string
+          readonly exactBytes: string
+          readonly bytesDigest: string
+          readonly observedAt: string
+        }
+      }
+    | {
+        readonly kind: 'DISCARD'
+        readonly coveringCandidateBinding: {
+          readonly candidateKey: string
+          readonly name: string
+          readonly source: string
+          readonly content: string
+          readonly contentDigest: string
+          readonly observedAt: string
+        }
+      }
+  readonly proposalId: string
+  readonly digest: string
+}
+
+interface SafeRootBinding {
+  readonly state: 'EXISTING' | 'ABSENT'
+  readonly scope: 'PROJECT' | 'USER'
+  readonly expectedProvider: string
+  readonly expectedSource: 'project-dsh' | 'user-dsh'
+  readonly resolverVersion: string
+  readonly rootContractVersion: string
+  readonly resolutionContractDigest: string
+}
+
 function browserEnvironment(): ProposalPollEnvironment {
   return {
     isVisible: () => typeof document === 'undefined' || document.visibilityState === 'visible',
@@ -194,7 +268,10 @@ export class ProposalInboxController {
     private readonly workspaceId: string,
     private readonly call: ProposalReviewCall,
     private readonly environment: ProposalPollEnvironment = browserEnvironment(),
-    private readonly options: { readonly attentionDriven?: boolean } = {},
+    private readonly options: {
+      readonly attentionDriven?: boolean
+      readonly scopeAccess?: () => ProposalScopeAccess
+    } = {},
   ) {}
 
   snapshot = (): ProposalInboxState => this.#state
@@ -269,7 +346,12 @@ export class ProposalInboxController {
         detail: undefined,
         announcement: '',
       })
-      const detail = parseProposalDetail(await this.call(endpoint.get, { apiVersion: 1, proposalId }, signal))
+      const scopeAccess = this.#scopeAccess()
+      const action = scopeAccess.actions.find(candidate => candidate.proposalRef.proposalId === proposalId)
+      if (action === undefined) throw new Error('proposal action is stale')
+      const detail = parseProposalDetail(await this.call(endpoint.get, {
+        apiVersion: 1, proposalId, currentScope: scopeAccess.currentScope, action,
+      }, signal))
       if (detail === undefined) throw new Error('invalid detail response')
       this.#publish({
         ...this.#state,
@@ -303,9 +385,12 @@ export class ProposalInboxController {
       workItemId: detail.workItemId,
       workItemRevision: detail.workItemRevision,
       proposalRef,
+      currentScope: this.#scopeAccess().currentScope,
+      action: this.#scopeAccess().actions.find(candidate => candidate.proposalRef.proposalId === proposalRef.proposalId),
       ...(action === 'REJECT' ? { confirm: true as const } : {}),
     }
     await this.#execute(async signal => {
+      if (request.action === undefined) throw new Error('proposal action is stale')
       this.#publish({ ...this.#state, mutationPending: true, announcement: '' })
       const receipt = parseMutationReceipt(await this.call(targetEndpoint, request, signal))
       if (receipt === undefined) throw new Error('invalid mutation receipt')
@@ -386,7 +471,12 @@ export class ProposalInboxController {
   async #refreshPublishingDetailWithin(signal: AbortSignal): Promise<void> {
     const selected = this.#state.selectedProposalId
     if (selected !== undefined && this.#state.detail?.processingState === 'PUBLISHING') {
-      const detail = parseProposalDetail(await this.call(endpoint.get, { apiVersion: 1, proposalId: selected }, signal))
+      const scopeAccess = this.#scopeAccess()
+      const action = scopeAccess.actions.find(candidate => candidate.proposalRef.proposalId === selected)
+      if (action === undefined) return
+      const detail = parseProposalDetail(await this.call(endpoint.get, {
+        apiVersion: 1, proposalId: selected, currentScope: scopeAccess.currentScope, action,
+      }, signal))
       if (detail !== undefined) this.#publish({
         ...this.#state,
         detailPhase: 'READY',
@@ -409,7 +499,8 @@ export class ProposalInboxController {
     for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
       const page = parseProposalList(await this.call(endpoint.list, {
         apiVersion: 1,
-        workspaceId: this.workspaceId,
+        currentScope: this.#scopeAccess().currentScope,
+        actions: this.#scopeAccess().actions,
         ...(cursor === undefined ? {} : { cursor }),
       }, signal))
       if (page === undefined) throw new Error('invalid list response')
@@ -465,6 +556,13 @@ export class ProposalInboxController {
     this.#state = state
     if (this.#started && this.#active && this.environment.isVisible()) this.#schedule()
     for (const listener of this.#listeners) listener()
+  }
+
+  #scopeAccess(): ProposalScopeAccess {
+    return this.options.scopeAccess?.() ?? {
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: this.workspaceId },
+      actions: [],
+    }
   }
 }
 

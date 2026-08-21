@@ -329,7 +329,21 @@ async function observe(present, expectedAutomaticLearning) {
       const surface = dialog.locator('[data-run2skill-settings-page]')
       await surface.waitFor({ timeout: 10_000 })
       assert.equal(await page.locator('[data-run2skill-status], [data-run2skill-proposal-trigger]').count(), 0)
+      const detailResponsePromise = page.waitForResponse(response => {
+        if (!response.url().includes('/run2skill/')) return false
+        try { return response.request().postDataJSON()?.method === 'proposals/get' } catch { return false }
+      })
       await surface.getByRole('button', { name: /CREATE · generated-file-hygiene/u }).click()
+      const detailResponse = await detailResponsePromise
+      const detailPayload = await detailResponse.json()
+      const detailWire = JSON.stringify(detailPayload?.result)
+      assert.equal(detailPayload?.result?.ok, true)
+      assert.doesNotMatch(
+        detailWire,
+        /canonicalPath|declaredRootPath|bundlePath|skillFilePath|flatSkillFilePath|"path"|[A-Za-z]:\\/u,
+        'Proposal detail network DTO leaked an absolute or target path',
+      )
+      console.log('CP_INS_A6_DETAIL_NETWORK_PRIVACY=PASS')
       await surface.getByRole('button', { name: '批准并发布' }).waitFor({ timeout: 10_000 })
       assert.equal((await surface.innerText()).includes('D:\\workspace'), false)
       await surface.getByRole('button', { name: '批准并发布' }).click()

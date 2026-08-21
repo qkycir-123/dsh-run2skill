@@ -8,6 +8,8 @@ import { PublicationSagaStore } from '../../src/adapters/dsh-storage/publication
 import { createProposalReviewRpcHandler } from '../../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { proposalRefOf } from '../../src/domain/review/index.js'
 import { makeCreateProposalSnapshot, makeLearnedWorkItem } from '../../tests/support/review-fixture.js'
+import { CurrentScopeAuthorizer } from '../../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { PurgeVisibility } from '../../src/application/purge/index.js'
 
 const output = process.argv[2]
 if (output === undefined) throw new Error('usage: tsx build-ui-probe-fixture.ts <output-json>')
@@ -16,6 +18,13 @@ const signal = () => new AbortController().signal
 const workspace = async (workspaceId: string) => workspaceId === 'workspace-fixture'
   ? { workspaceId, canonicalPath: 'D:\\workspace' }
   : undefined
+const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-fixture' }
+const authorizer = new CurrentScopeAuthorizer(workspace)
+const identities = async (domain: ReturnType<typeof createMemoryRun2skillDomain>) => (
+  await authorizer.project(domain, currentScope, new PurgeVisibility(domain))
+).map(({ actionKey, subjectId, kind, proposalRef }) => ({
+  actionKey, subjectId, kind, ...(proposalRef === undefined ? {} : { proposalRef }),
+}))
 
 async function pendingFixture() {
   const domain = createMemoryRun2skillDomain()
@@ -26,19 +35,23 @@ async function pendingFixture() {
     item.revision,
     makeCreateProposalSnapshot(item),
   )
-  const review = createProposalReviewRpcHandler(() => domain)
+  const review = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
   const ref = proposalRefOf(staged.item.review!.proposal)
-  const base = { apiVersion: 1 as const, workspaceId: 'workspace-fixture' }
+  const base = { apiVersion: 1 as const, currentScope }
+  const actions = await identities(domain)
+  const action = actions[0]!
   const fixture = {
     attention: await createAttentionRpcHandler(
       () => domain,
       new RuntimeNotices(),
       workspace,
     )('attention', base, signal()),
-    list: await review('proposals/list', base, signal()),
-    detail: await review('proposals/get', { apiVersion: 1, proposalId: ref.proposalId }, signal()),
+    list: await review('proposals/list', { ...base, actions }, signal()),
+    detail: await review('proposals/get', { ...base, action, proposalId: ref.proposalId }, signal()),
     approve: await review('proposals/approve', {
       apiVersion: 1,
+      currentScope,
+      action,
       workItemId: staged.item.workItemId,
       workItemRevision: staged.item.revision,
       proposalRef: ref,
@@ -65,23 +78,27 @@ async function failedFixture() {
     'READBACK_TIMEOUT',
     true,
   )
-  const review = createProposalReviewRpcHandler(() => domain)
+  const review = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
   const ref = proposalRefOf(failed.review!.proposal)
-  const base = { apiVersion: 1 as const, workspaceId: 'workspace-fixture' }
+  const base = { apiVersion: 1 as const, currentScope }
+  const actions = await identities(domain)
+  const action = actions[0]!
   const attention = await createAttentionRpcHandler(
     () => domain,
     new RuntimeNotices(),
     workspace,
   )('attention', base, signal())
-  const list = await review('proposals/list', base, signal())
-  const detail = await review('proposals/get', { apiVersion: 1, proposalId: ref.proposalId }, signal())
+  const list = await review('proposals/list', { ...base, actions }, signal())
+  const detail = await review('proposals/get', { ...base, action, proposalId: ref.proposalId }, signal())
   const retry = await review('proposals/retry', {
     apiVersion: 1,
+    currentScope,
+    action,
     workItemId: failed.workItemId,
     workItemRevision: failed.revision,
     proposalRef: ref,
   }, signal())
-  const afterRetry = await review('proposals/list', base, signal())
+  const afterRetry = await review('proposals/list', { ...base, actions: [] }, signal())
   await domain.close()
   return {
     attention,
