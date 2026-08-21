@@ -171,7 +171,7 @@ describe('Proposal Inbox client', () => {
     const item = makeLearnedWorkItem()
     const proposal = makeCreateProposalSnapshot(item)
     const facts = factsFromAction({ proposal } as never)
-    expect(facts).toContain(`Skill name: ${proposal.name}`)
+    expect(facts).toContain(`Skill 名称：${proposal.name}`)
     expect(facts).not.toMatch(/[A-Z]:\\|\/home\/|Declared root|Bundle target|Skill target|Flat target/iu)
   })
 
@@ -283,8 +283,8 @@ describe('Proposal Inbox client', () => {
     await controller.select(staged.item.review!.proposal.proposalId)
     expect(controller.snapshot().detail?.proposal.exactSkillBytes)
       .toBe(staged.item.review!.proposal.exactSkillBytes)
-    expect(factsFromAction(controller.snapshot().detail!)).toContain('Root contract: stock-dsh-web-default-roots-v1')
-    expect(factsFromAction(controller.snapshot().detail!)).toContain('Expected provider/source: filesystem / project-dsh')
+    expect(factsFromAction(controller.snapshot().detail!)).toContain('Skill 存储规则版本：stock-dsh-web-default-roots-v1')
+    expect(factsFromAction(controller.snapshot().detail!)).toContain('预期存储方式 / 来源：filesystem / project-dsh')
 
     await controller.mutate('APPROVE')
     expect(controller.snapshot().announcement).toContain('正在保存')

@@ -7,7 +7,7 @@ import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/p
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { ProposalInboxHeaderAction } from '../src/client/proposal-inbox-view.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
-import { makeCreateProposalSnapshot, makeLearnedWorkItem } from './support/review-fixture.js'
+import { makeLearnedWorkItem, makeMergeProposalSnapshot } from './support/review-fixture.js'
 import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
 import { PurgeVisibility } from '../src/application/purge/index.js'
 
@@ -21,7 +21,7 @@ describe('Proposal Inbox browser accessibility', () => {
     const staged = await new ProposalReviewStore(domain).stage(
       item.workItemId,
       item.revision,
-      makeCreateProposalSnapshot(item),
+      makeMergeProposalSnapshot(item),
     )
     const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-fixture' }
     const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({
@@ -48,10 +48,16 @@ describe('Proposal Inbox browser accessibility', () => {
     await waitFor(() => { expect(document.activeElement).toBe(close) })
 
     const proposalButton = await screen.findByRole('button', {
-      name: new RegExp(`CREATE .* PROJECT .* 待审核`),
+      name: new RegExp(`MERGE .* PROJECT .* 待审核`),
     })
     fireEvent.click(proposalButton)
     await screen.findByText(staged.item.review!.proposal.digest)
+    expect(screen.getByText('项目工作区')).toBeTruthy()
+    expect(screen.getAllByText(/当前项目（PROJECT）/)).toHaveLength(2)
+    expect(screen.getAllByText(/消息序号/).length).toBeGreaterThan(0)
+    expect(screen.getByText('合并前的 Skill 内容')).toBeTruthy()
+    expect(screen.getByText('内容差异（精确对比）')).toBeTruthy()
+    expect(dialog.textContent).not.toMatch(/Workspace|DSH Home|message seq|Evidence|MERGE Base/)
     const reject = screen.getByRole('button', { name: '放弃草稿' })
     reject.focus()
     fireEvent.click(reject)
