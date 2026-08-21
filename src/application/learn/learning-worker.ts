@@ -71,6 +71,9 @@ const RETRYABLE_FAILURES = new Set<LearningFailureCode>([
   'CATALOG_INCOMPLETE',
   'CANDIDATE_UNAVAILABLE',
   'MODEL_TIMEOUT',
+  'MODEL_OUTPUT_TRUNCATED',
+  'MODEL_STREAM_FAILURE',
+  'MODEL_FINISH_MISSING',
   'MODEL_TERMINAL_FAILURE',
   'STORE_WRITE_FAILED',
 ])
@@ -286,12 +289,18 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
       }
       let learned: RestrictedLearningResult
       try {
+        const requestBudgetAvailable = 2 - (current.learning?.requestBudgetUsed ?? 0)
+        if (requestBudgetAvailable !== 1 && requestBudgetAvailable !== 2) {
+          return await fail('MODEL_TERMINAL_FAILURE', false)
+        }
         learned = await this.#client.learn({
           route: projected.projection.route,
           envelope: envelope.serialized,
           workItemId: current.workItemId,
           catalogObservationDigest: recalled.observation.catalogObservationDigest,
           shortlistDigests: recalled.observation.candidates.map(item => item.candidateDigest),
+          requestBudgetAvailable,
+          expectedPersistenceScope: scopeResolution.persistenceScope,
           ledger,
           signal,
         })

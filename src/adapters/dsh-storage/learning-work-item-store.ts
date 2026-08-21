@@ -114,12 +114,17 @@ export class LearningWorkItemStore {
         ...current,
         processingState: 'ANALYZING',
         learning: {
+          ...previous,
           policyVersion: 'learning-v1',
           attempt,
           requestBudgetUsed: previous?.requestBudgetUsed ?? 0,
           claimedAt,
           calls: previous?.calls ?? [],
           ...(previous?.modelRoute === undefined ? {} : { modelRoute: previous.modelRoute }),
+          failure: undefined,
+          publicationOutcome: undefined,
+          experiences: undefined,
+          proposal: undefined,
         },
       }
     })
@@ -296,6 +301,20 @@ export class LearningWorkItemStore {
     return reopened
   }
 
+  retryFailed(
+    workItemId: string,
+    expectedRevision: number,
+  ): Promise<{ readonly item: CaptureWorkItemV1; readonly changed: boolean }> {
+    return this.#attentionMutation(workItemId, expectedRevision, 'RECOVER')
+  }
+
+  dismissFailed(
+    workItemId: string,
+    expectedRevision: number,
+  ): Promise<{ readonly item: CaptureWorkItemV1; readonly changed: boolean }> {
+    return this.#attentionMutation(workItemId, expectedRevision, 'DISMISS')
+  }
+
   resetStale(workItemId: string, expectedAttempt: number): Promise<CaptureWorkItemV1> {
     return this.#updateLatest(workItemId, (current) => {
       const learning = this.#analyzing(current)
@@ -330,6 +349,79 @@ export class LearningWorkItemStore {
       throw new LearningStoreError('INVALID_LEARNING_STATE')
     }
     return current.learning
+  }
+
+  #attentionMutation(
+    workItemId: string,
+    expectedRevision: number,
+    kind: 'RECOVER' | 'DISMISS',
+  ): Promise<{ readonly item: CaptureWorkItemV1; readonly changed: boolean }> {
+    const operation = this.#tail.then(async () => {
+      const snapshot = this.#table.get(workItemId)
+      if (snapshot === undefined || !this.#visibility.workItemVisible(snapshot)) {
+        throw new LearningStoreError('LEARNING_WORK_ITEM_NOT_FOUND')
+      }
+      if (
+        snapshot.learning?.attentionAction?.kind === kind
+        && snapshot.learning.attentionAction.sourceRevision === expectedRevision
+      ) return { item: snapshot, changed: false }
+      if (snapshot.revision !== expectedRevision) {
+        throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
+      }
+      if (
+        snapshot.processingState !== 'NEEDS_ATTENTION'
+        || snapshot.review !== undefined
+        || snapshot.learning?.failure === undefined
+      ) throw new LearningStoreError('INVALID_LEARNING_STATE')
+      if (
+        kind === 'RECOVER'
+        && (
+          snapshot.learning.failure.retryable !== true
+          || (snapshot.learning.manualRecoveryCount ?? 0) >= 1
+        )
+      ) throw new LearningStoreError('INVALID_LEARNING_STATE')
+      const occurredAt = this.#now()
+      const item = await this.#table.update(workItemId, (current) => {
+        if (current.revision !== expectedRevision || current.processingState !== 'NEEDS_ATTENTION') {
+          throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
+        }
+        const learning = current.learning
+        if (learning === undefined) throw new LearningStoreError('INVALID_LEARNING_STATE')
+        const attentionAction = { kind, sourceRevision: expectedRevision, occurredAt }
+        const next = kind === 'RECOVER'
+          ? {
+              ...current,
+              processingState: 'CAPTURED' as const,
+              learning: {
+                policyVersion: 'learning-v1' as const,
+                attempt: 0,
+                requestBudgetUsed: 0,
+                calls: [],
+                manualRecoveryCount: 1 as const,
+                attentionAction,
+              },
+            }
+          : {
+              ...current,
+              processingState: 'DISMISSED' as const,
+              learning: withoutUndefined({
+                ...learning,
+                claimedAt: undefined,
+                nextEligibleAt: undefined,
+                publicationOutcome: undefined,
+                attentionAction,
+              }),
+            }
+        return CaptureWorkItemV1Schema.parse({
+          ...next,
+          revision: current.revision + 1,
+          updatedAt: occurredAt,
+        })
+      })
+      return { item, changed: true }
+    })
+    this.#tail = operation.then(() => {}, () => {})
+    return operation
   }
 
   #update(

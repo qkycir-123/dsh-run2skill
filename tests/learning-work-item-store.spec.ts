@@ -256,4 +256,77 @@ describe('LearningWorkItemStore', () => {
     })
     expect(store.listEligible(new Date().toISOString())).toEqual([])
   })
+
+  it('opens at most one explicit bounded recovery and makes duplicate requests idempotent', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 2, requestBudgetUsed: 2,
+        calls: [
+          { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'TRUNCATED', outputTokens: 4096 },
+          { requestOrdinal: 2, kind: 'TRUNCATION_RECOVERY', outcome: 'TRUNCATED', outputTokens: 4096 },
+        ],
+        failure: { code: 'MODEL_OUTPUT_TRUNCATED', retryable: true, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+
+    const recovered = await store.retryFailed(item.workItemId, item.revision)
+    expect(recovered).toMatchObject({
+      changed: true,
+      item: {
+        processingState: 'CAPTURED', revision: item.revision + 1,
+        learning: {
+          attempt: 0, requestBudgetUsed: 0, calls: [], manualRecoveryCount: 1,
+          attentionAction: { kind: 'RECOVER', sourceRevision: item.revision },
+        },
+      },
+    })
+    expect(recovered.item.learning).not.toHaveProperty('failure')
+    expect(await store.retryFailed(item.workItemId, item.revision)).toMatchObject({
+      changed: false, item: { revision: item.revision + 1 },
+    })
+
+    let current = await store.claim(item.workItemId, recovered.item.revision)
+    current = await store.reserveRequest(item.workItemId, current.revision, MODEL_ROUTE)
+    current = await store.recordCall(item.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED',
+    })
+    current = await store.fail(item.workItemId, current.revision, {
+      code: 'MODEL_STREAM_FAILURE', retryable: true, occurredAt: '2026-08-20T00:00:11.000Z',
+    })
+    expect(current.processingState).toBe('NEEDS_ATTENTION')
+    await expect(store.retryFailed(item.workItemId, current.revision))
+      .rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+  })
+
+  it('dismisses a failed learning item without deleting it and makes duplicate dismissal idempotent', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1,
+        calls: [{ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' }],
+        failure: { code: 'MODEL_USAGE_INVALID', retryable: false, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+
+    const dismissed = await store.dismissFailed(item.workItemId, item.revision)
+    expect(dismissed).toMatchObject({
+      changed: true,
+      item: {
+        processingState: 'DISMISSED',
+        learning: { attentionAction: { kind: 'DISMISS', sourceRevision: item.revision } },
+      },
+    })
+    expect(dismissed.item.learning).not.toHaveProperty('publicationOutcome')
+    expect(await store.dismissFailed(item.workItemId, item.revision)).toMatchObject({ changed: false })
+    expect(store.listEligible('2026-08-20T00:01:00.000Z')).toEqual([])
+  })
 })

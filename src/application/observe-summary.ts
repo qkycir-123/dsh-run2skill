@@ -67,6 +67,7 @@ export function createObserveSummary(sources: ObserveSummarySources): ObserveSum
       case 'LEARNED': learning.learned += 1; break
       case 'NEEDS_ATTENTION': learning.needsAttention += 1; break
       case 'RESOLVED_NO_SIGNAL': break
+      case 'DISMISSED': break
     }
   }
 

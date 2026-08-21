@@ -60,16 +60,16 @@ class RecordingLlm implements DshLlmPort {
 }
 
 class RecordingLedger implements LearningCallLedger {
-  readonly reservations: Array<'PRIMARY' | 'FORMAT_REPAIR'> = []
+  readonly reservations: Array<'PRIMARY' | 'FORMAT_REPAIR' | 'STRUCTURE_REPAIR' | 'TRUNCATION_RECOVERY'> = []
   readonly calls: Array<{
     requestOrdinal: 1 | 2
-    kind: 'PRIMARY' | 'FORMAT_REPAIR'
+    kind: 'PRIMARY' | 'FORMAT_REPAIR' | 'STRUCTURE_REPAIR' | 'TRUNCATION_RECOVERY'
     inputTokens?: number
     outputTokens?: number
-    outcome: 'SUCCEEDED' | 'FAILED' | 'ABORTED' | 'TIMED_OUT'
+    outcome: 'SUCCEEDED' | 'FAILED' | 'TRUNCATED' | 'ABORTED' | 'TIMED_OUT'
   }> = []
 
-  async reserve(kind: 'PRIMARY' | 'FORMAT_REPAIR') {
+  async reserve(kind: Parameters<LearningCallLedger['reserve']>[0]) {
     this.reservations.push(kind)
     return { requestOrdinal: this.reservations.length as 1 | 2 }
   }
@@ -91,6 +91,8 @@ function request(llm: DshLlmPort, ledger: LearningCallLedger, signal?: AbortSign
     workItemId: `wi_${digest('b')}`,
     catalogObservationDigest: digest('c'),
     shortlistDigests: [digest('d')],
+    requestBudgetAvailable: 2,
+    expectedPersistenceScope: 'PROJECT',
     ledger,
     ...(signal === undefined ? {} : { signal }),
   })
@@ -163,7 +165,7 @@ describe('RestrictedLearningClient', () => {
     expect(result.status).toBe('SUCCEEDED')
   })
 
-  it('permits exactly one format-only repair on the same route', async () => {
+  it('permits exactly one structure repair on the same route', async () => {
     const llm = new RecordingLlm([
       responseChunks('{"experiences":'),
       responseChunks(JSON.stringify(validModelOutput())),
@@ -178,9 +180,89 @@ describe('RestrictedLearningClient', () => {
       ['session-provider', 'session-model'],
       ['session-provider', 'session-model'],
     ])
-    expect(ledger.reservations).toEqual(['PRIMARY', 'FORMAT_REPAIR'])
+    expect(ledger.reservations).toEqual(['PRIMARY', 'STRUCTURE_REPAIR'])
     expect(llm.calls[1]?.messages).toHaveLength(1)
-    expect(llm.calls[1]?.messages[0]?.content[0]?.text).toContain('format only')
+    expect(llm.calls[1]?.messages[0]?.content[0]?.text).toContain('ORIGINAL_ENVELOPE')
+  })
+
+  it('normalizes fenced JSON and non-semantic optional placeholders without another model call', async () => {
+    const output = structuredClone(validModelOutput()) as Record<string, unknown>
+    const experiences = output['experiences'] as Array<Record<string, unknown>>
+    experiences[0]!['contextSummary'] = null
+    const proposal = output['proposal'] as Record<string, unknown>
+    const curation = proposal['curation'] as Record<string, unknown>
+    curation['candidateKey'] = ''
+    const llm = new RecordingLlm([responseChunks(`\`\`\`json\n${JSON.stringify(output)}\n\`\`\``)])
+    const ledger = new RecordingLedger()
+
+    const result = await request(llm, ledger)
+
+    expect(result.status).toBe('SUCCEEDED')
+    expect(llm.calls).toHaveLength(1)
+    expect(ledger.reservations).toEqual(['PRIMARY'])
+  })
+
+  it('uses structure repair when the model returns an empty experiences array', async () => {
+    const invalid = { ...validModelOutput(), experiences: [] }
+    const llm = new RecordingLlm([
+      responseChunks(JSON.stringify(invalid)),
+      responseChunks(JSON.stringify(validModelOutput())),
+    ])
+    const ledger = new RecordingLedger()
+
+    const result = await request(llm, ledger)
+
+    expect(result.status).toBe('SUCCEEDED')
+    expect(ledger.reservations).toEqual(['PRIMARY', 'STRUCTURE_REPAIR'])
+    expect(llm.calls[1]?.messages[0]?.content[0]?.text).toContain('INVALID_RESPONSE')
+  })
+
+  it('uses the second request for compact truncation recovery instead of repeating the primary prompt', async () => {
+    const truncated = responseChunks('{"experiences":').map(chunk => chunk.type === 'finish'
+      ? { type: 'finish' as const, reason: { kind: 'max-tokens' as const } }
+      : chunk.type === 'usage'
+        ? { type: 'usage' as const, usage: { inputTokens: 20, outputTokens: 4096 } }
+        : chunk)
+    const llm = new RecordingLlm([
+      truncated,
+      responseChunks(JSON.stringify(validModelOutput())),
+    ])
+    const ledger = new RecordingLedger()
+
+    const result = await request(llm, ledger)
+
+    expect(result.status).toBe('SUCCEEDED')
+    expect(llm.calls).toHaveLength(2)
+    expect(ledger.reservations).toEqual(['PRIMARY', 'TRUNCATION_RECOVERY'])
+    expect(ledger.calls).toMatchObject([
+      { kind: 'PRIMARY', outcome: 'TRUNCATED', outputTokens: 4096 },
+      { kind: 'TRUNCATION_RECOVERY', outcome: 'SUCCEEDED' },
+    ])
+    expect(llm.calls[1]?.system).toContain('compact recovery')
+    expect(llm.calls[1]?.system).not.toBe(llm.calls[0]?.system)
+    expect(llm.calls[1]?.messages[0]?.content[0]?.text).toBe(llm.calls[0]?.messages[0]?.content[0]?.text)
+  })
+
+  it('reports output truncation precisely when no recovery request remains', async () => {
+    const llm = new RecordingLlm([responseChunks('{}').map(chunk => chunk.type === 'finish'
+      ? { type: 'finish' as const, reason: { kind: 'max-tokens' as const } }
+      : chunk)])
+    const ledger = new RecordingLedger()
+    const client = new RestrictedLearningClient(llm)
+    const result = await client.learn({
+      route: { provider: 'session-provider', model: 'session-model' },
+      envelope: '{}',
+      workItemId: `wi_${digest('b')}`,
+      catalogObservationDigest: digest('c'),
+      shortlistDigests: [],
+      requestBudgetAvailable: 1,
+      expectedPersistenceScope: 'PROJECT',
+      ledger,
+    })
+
+    expect(result).toEqual({ status: 'FAILED', failureCode: 'MODEL_OUTPUT_TRUNCATED' })
+    expect(llm.calls).toHaveLength(1)
+    expect(ledger.calls[0]?.outcome).toBe('TRUNCATED')
   })
 
   it('rejects unknown model fields and never makes a third call', async () => {
@@ -227,26 +309,20 @@ describe('RestrictedLearningClient', () => {
   })
 
   it.each([
-    { chunks: responseChunks('{}').filter(chunk => chunk.type !== 'usage'), label: 'usage' },
-    { chunks: responseChunks('{}').filter(chunk => chunk.type !== 'finish'), label: 'finish' },
-    {
-      chunks: responseChunks('{}').map(chunk => chunk.type === 'finish'
-        ? { type: 'finish' as const, reason: { kind: 'max-tokens' as const } }
-        : chunk),
-      label: 'stop',
-    },
+    { chunks: responseChunks('{}').filter(chunk => chunk.type !== 'usage'), label: 'usage', code: 'MODEL_USAGE_INVALID' },
+    { chunks: responseChunks('{}').filter(chunk => chunk.type !== 'finish'), label: 'finish', code: 'MODEL_FINISH_MISSING' },
     {
       chunks: [
         { type: 'block-start' as const, index: 0, blockType: 'unknown' },
         { type: 'usage' as const, usage: { inputTokens: 1, outputTokens: 2 } },
         { type: 'finish' as const, reason: { kind: 'stop' } },
       ],
-      label: 'block assembly',
+      label: 'block assembly', code: 'MODEL_ASSEMBLY_FAILED',
     },
-  ])('fails closed when terminal $label is invalid', async ({ chunks }) => {
+  ])('fails closed with a precise diagnostic when terminal $label is invalid', async ({ chunks, code }) => {
     const ledger = new RecordingLedger()
     const result = await request(new RecordingLlm([chunks]), ledger)
-    expect(result).toEqual({ status: 'FAILED', failureCode: 'MODEL_TERMINAL_FAILURE' })
+    expect(result).toEqual({ status: 'FAILED', failureCode: code })
     expect(ledger.calls[0]?.outcome).toBe('FAILED')
   })
 
@@ -266,7 +342,7 @@ describe('RestrictedLearningClient', () => {
   })
 
   it('does not reserve or call when the fixed prompt and envelope exceed route context', async () => {
-    const llm = new RecordingLlm([], 7_400)
+    const llm = new RecordingLlm([], 7_800)
     const ledger = new RecordingLedger()
     expect(await request(llm, ledger)).toEqual({
       status: 'FAILED', failureCode: 'ENVELOPE_UNBUILDABLE',

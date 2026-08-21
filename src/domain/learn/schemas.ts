@@ -114,6 +114,12 @@ export const LearningFailureCodeSchema = z.enum([
   'ENVELOPE_UNBUILDABLE',
   'MODEL_TIMEOUT',
   'MODEL_ABORTED',
+  'MODEL_OUTPUT_TRUNCATED',
+  'MODEL_STREAM_FAILURE',
+  'MODEL_FINISH_MISSING',
+  'MODEL_USAGE_INVALID',
+  'MODEL_ASSEMBLY_FAILED',
+  'MODEL_UNEXPECTED_FINISH',
   'MODEL_TERMINAL_FAILURE',
   'MODEL_OUTPUT_LIMIT_EXCEEDED',
   'INVALID_STRUCTURED_OUTPUT',
@@ -129,10 +135,10 @@ export const LearningFailureV1Schema = z.object({
 
 export const LearningCallV1Schema = z.object({
   requestOrdinal: z.union([z.literal(1), z.literal(2)]),
-  kind: z.enum(['PRIMARY', 'FORMAT_REPAIR']),
+  kind: z.enum(['PRIMARY', 'FORMAT_REPAIR', 'STRUCTURE_REPAIR', 'TRUNCATION_RECOVERY']),
   inputTokens: safeNonNegativeInteger.optional(),
   outputTokens: safeNonNegativeInteger.optional(),
-  outcome: z.enum(['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED_OUT']),
+  outcome: z.enum(['SUCCEEDED', 'FAILED', 'TRUNCATED', 'ABORTED', 'TIMED_OUT']),
 }).strict()
 
 export const LearningStateV1Schema = z.object({
@@ -150,6 +156,12 @@ export const LearningStateV1Schema = z.object({
   experiences: z.array(ExperienceRecordV1Schema).min(1).max(3).optional(),
   proposal: LearningProposalV1Schema.optional(),
   publicationOutcome: z.literal('NEEDS_ATTENTION').optional(),
+  manualRecoveryCount: z.union([z.literal(0), z.literal(1)]).optional(),
+  attentionAction: z.object({
+    kind: z.enum(['RECOVER', 'DISMISS']),
+    sourceRevision: safeNonNegativeInteger.refine(value => value >= 1),
+    occurredAt: isoDateTime,
+  }).strict().optional(),
 }).strict().superRefine((value, context) => {
   const ordinals = value.calls.map(call => call.requestOrdinal)
   if (new Set(ordinals).size !== ordinals.length) {
@@ -160,6 +172,9 @@ export const LearningStateV1Schema = z.object({
   }
   if ((value.experiences === undefined) !== (value.proposal === undefined)) {
     context.addIssue({ code: 'custom', message: 'Experiences and Proposal must be committed together' })
+  }
+  if (value.attentionAction?.kind === 'RECOVER' && value.manualRecoveryCount !== 1) {
+    context.addIssue({ code: 'custom', message: 'Recovery action requires the bounded manual recovery count' })
   }
 })
 
