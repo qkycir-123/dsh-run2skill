@@ -6,6 +6,7 @@ import {
   deriveExperienceIntentIdV2,
   deriveNativeProposalLineageIdV2,
   deriveSessionBatchIdV2,
+  deriveRecallSelfExclusionDigestV2,
   deriveTurnObservationIdV2,
   deriveTurnObservationContentDigestV2,
 } from '../../src/domain/v2/index.js'
@@ -119,7 +120,12 @@ export function createMinimalV2Fixtures() {
     evidenceDigests: intentFacts.evidenceDigests,
     completeness: { status: 'COMPLETE' as const, blockers: [] },
     ownership: { state: 'NOT_STARTED' as const },
-    recall: { state: 'NOT_STARTED' as const, complete: false, candidateCapabilities: [] },
+    recall: {
+      state: 'NOT_STARTED' as const,
+      complete: false,
+      summaryScanComplete: false,
+      candidates: [],
+    },
     coverage: { state: 'NOT_STARTED' as const },
     generation: {
       state: 'NOT_STARTED' as const,
@@ -184,27 +190,40 @@ export function createMinimalV2Fixtures() {
   }
   nativeBody.skillBytesDigest = sha256Utf8(nativeBody.exactSkillBytes)
   const nativeProposalId = `prop_${'3'.repeat(64)}`
+  const nativeLeaseId = `lease_${'4'.repeat(64)}`
   const sealedResult = {
     resultId: `result_${'4'.repeat(64)}`,
+    leaseId: nativeLeaseId,
+    intentId: experienceIntent.intentId,
+    generationRevision: 1,
     callId: `call_${'5'.repeat(64)}`,
     action: 'CREATE' as const,
     body: nativeBody,
     targetDigest: '6'.repeat(64),
     runtimeCatalogDigest: '7'.repeat(64),
     pendingCatalogDigest: '8'.repeat(64),
+    catalogEpoch: 1,
     sealedAt: now,
+    mutationReceiptDigest: '4'.repeat(64),
     receiptDigest: '9'.repeat(64),
   }
   const proposalReadyIntent = {
     ...experienceIntent,
     status: 'PROPOSAL_READY' as const,
-    ownership: { state: 'RUN2SKILL_OWNED' as const, evidenceDigest: 'a'.repeat(64) },
+    ownership: {
+      state: 'RUN2SKILL_OWNED' as const,
+      evidenceDigest: 'a'.repeat(64),
+      receiptDigest: 'b'.repeat(64),
+    },
     recall: {
       state: 'COMPLETE' as const,
       runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
       pendingCatalogDigest: sealedResult.pendingCatalogDigest,
       complete: true,
-      candidateCapabilities: [],
+      summaryScanComplete: true,
+      catalogEpoch: sealedResult.catalogEpoch,
+      catalogMutationReceiptDigest: 'c'.repeat(64),
+      candidates: [],
     },
     coverage: { state: 'CREATE' as const, inputDigest: 'b'.repeat(64), targetDigest: sealedResult.targetDigest },
     generation: {
@@ -212,15 +231,39 @@ export function createMinimalV2Fixtures() {
       action: 'CREATE' as const,
       inputDigest: 'c'.repeat(64),
       resultDigest: sealedResult.receiptDigest,
+      leaseId: nativeLeaseId,
+      generationRevision: 1,
+      catalogEpoch: sealedResult.catalogEpoch,
       sealedResult,
       proposalId: nativeProposalId,
+      revalidationAuthorization: {
+        runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
+        pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+        externalPendingDigest: 'd'.repeat(64),
+        catalogEpoch: sealedResult.catalogEpoch,
+        sealedResultReceiptDigest: sealedResult.receiptDigest,
+        authorizedAt: now,
+      },
       userRetryUsed: false,
       staleRefreshUsed: false,
-      receipts: [{ kind: 'BODY_COMMITTED' as const, digest: 'd'.repeat(64), recordedAt: now }],
+      receipts: [
+        'LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED',
+        'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED',
+      ].map((kind, index) => ({
+        kind: kind as 'LEASE_ACQUIRED' | 'CALL_RESERVED' | 'CALL_TERMINAL' | 'RESULT_SEALED' | 'PROPOSAL_AUTHORIZED' | 'BODY_COMMITTED' | 'INDEX_COMMITTED',
+        digest: (index + 1).toString(16).repeat(64),
+        leaseId: nativeLeaseId,
+        intentId: experienceIntent.intentId,
+        generationRevision: 1,
+        ...(kind.includes('CALL') ? { callId: sealedResult.callId } : {}),
+        catalogEpoch: sealedResult.catalogEpoch,
+        recordedAt: now,
+      })),
     },
     stageCalls: [
       {
         stage: 'CATALOG_SCAN' as const,
+        intentRevision: 1,
         callId: `call_${'1'.repeat(64)}`,
         ordinal: 1,
         inputDigest: '1'.repeat(64),
@@ -232,6 +275,7 @@ export function createMinimalV2Fixtures() {
       },
       {
         stage: 'COVERAGE' as const,
+        intentRevision: 1,
         callId: `call_${'2'.repeat(64)}`,
         ordinal: 1,
         inputDigest: '3'.repeat(64),
@@ -243,6 +287,7 @@ export function createMinimalV2Fixtures() {
       },
       {
         stage: 'GENERATION' as const,
+        intentRevision: 1,
         callId: sealedResult.callId,
         ordinal: 1,
         inputDigest: '5'.repeat(64),
@@ -273,6 +318,68 @@ export function createMinimalV2Fixtures() {
       createdAt: now,
     }],
   }
+  const staleBarrier = {
+    barrierId: `barrier_${'e'.repeat(64)}`,
+    leaseId: nativeLeaseId,
+    intentId: experienceIntent.intentId,
+    generationRevision: 1,
+    kind: 'STALE_RESULT' as const,
+    behaviorSignature: experienceIntent.behaviorSignature,
+    inputDigest: proposalReadyIntent.generation.inputDigest,
+    callId: sealedResult.callId,
+    priorGenerationRevision: 1,
+    catalogEpoch: sealedResult.catalogEpoch,
+    mutationReceiptDigest: 'e'.repeat(64),
+    recordedAt: now,
+    receiptDigest: 'f'.repeat(64),
+  }
+  const {
+    revalidationAuthorization: _staleAuthorization,
+    proposalId: _staleProposalId,
+    ...staleGenerationBase
+  } = proposalReadyIntent.generation
+  const {
+    lineageId: _staleLineageId,
+    ...staleIntentBase
+  } = proposalReadyIntent
+  const staleSelfExclusion = {
+    intentId: experienceIntent.intentId,
+    priorGenerationRevision: 1,
+    barrierReceiptDigest: staleBarrier.receiptDigest,
+  }
+  const staleRefreshIntent = {
+    ...staleIntentBase,
+    revision: 2,
+    status: 'RECALLING' as const,
+    recall: {
+      state: 'SCANNING' as const,
+      complete: false,
+      summaryScanComplete: false,
+      candidates: [],
+      selfExclusion: {
+        ...staleSelfExclusion,
+        selfExclusionDigest: deriveRecallSelfExclusionDigestV2(staleSelfExclusion),
+      },
+    },
+    coverage: { state: 'NOT_STARTED' as const },
+    generation: {
+      ...staleGenerationBase,
+      state: 'NEEDS_ATTENTION' as const,
+      barrier: staleBarrier,
+      reasonCode: 'STALE_RESULT' as const,
+      staleRefreshUsed: true,
+      receipts: [...proposalReadyIntent.generation.receipts.slice(0, 4), {
+        kind: 'BARRIER_COMMITTED' as const,
+        digest: staleBarrier.mutationReceiptDigest,
+        leaseId: nativeLeaseId,
+        intentId: experienceIntent.intentId,
+        generationRevision: 1,
+        callId: sealedResult.callId,
+        catalogEpoch: sealedResult.catalogEpoch,
+        recordedAt: now,
+      }],
+    },
+  }
   return {
     global: createInitialGlobalV2(),
     turnObservation,
@@ -282,6 +389,7 @@ export function createMinimalV2Fixtures() {
     nativeProposalLineage,
     nativeActiveProposalLineage,
     proposalReadyIntent,
+    staleRefreshIntent,
     legacyItem,
   }
 }

@@ -7,6 +7,7 @@ import {
   SessionBatchV2Schema,
   TurnObservationV2Schema,
   deriveBehaviorSignatureIndexKeyV2,
+  deriveTurnObservationContentDigestV2,
 } from '../src/domain/v2/index.js'
 import {
   RUN2SKILL_V2_SCHEMA_CONTRACT,
@@ -53,6 +54,7 @@ describe('run2skill_v2 storage contract', () => {
     expect(ProposalLineageV2Schema.parse(fixture.nativeProposalLineage)).toEqual(fixture.nativeProposalLineage)
     expect(ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)).toEqual(fixture.nativeActiveProposalLineage)
     expect(ExperienceIntentV2Schema.parse(fixture.proposalReadyIntent)).toEqual(fixture.proposalReadyIntent)
+    expect(ExperienceIntentV2Schema.parse(fixture.staleRefreshIntent)).toEqual(fixture.staleRefreshIntent)
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
   })
 
@@ -83,6 +85,101 @@ describe('run2skill_v2 storage contract', () => {
     expect(TurnObservationV2Schema.safeParse({
       ...fixture.turnObservation,
       assistantOutcomeSummary: 'forged summary without a new content digest',
+    }).success).toBe(false)
+    for (const status of ['RECALLING', 'COVERED', 'CREATE_AUTHORIZED', 'GENERATING'] as const) {
+      expect(ExperienceIntentV2Schema.safeParse({
+        ...fixture.experienceIntent,
+        status,
+      }).success).toBe(false)
+    }
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.experienceIntent,
+      recall: { ...fixture.experienceIntent.recall, state: 'COMPLETE', complete: false },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.experienceIntent,
+      status: 'RUN2SKILL_OWNED',
+      ownership: { state: 'RUN2SKILL_OWNED' },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.proposalReadyIntent,
+      status: 'GENERATING',
+      generation: {
+        ...fixture.proposalReadyIntent.generation,
+        state: 'RESULT_COMMITTED',
+        receipts: [],
+      },
+      stageCalls: fixture.proposalReadyIntent.stageCalls.filter(call => call.stage !== 'GENERATION'),
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.staleRefreshIntent,
+      recall: {
+        ...fixture.staleRefreshIntent.recall,
+        selfExclusion: {
+          ...fixture.staleRefreshIntent.recall.selfExclusion,
+          selfExclusionDigest: '0'.repeat(64),
+        },
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.proposalReadyIntent,
+      recall: {
+        ...fixture.proposalReadyIntent.recall,
+        candidates: [{
+          candidateId: 'unavailable-related-candidate',
+          summary: {
+            name: 'Existing skill',
+            description: 'Potentially covers the same behavior',
+            provider: 'dsh',
+            source: 'runtime-catalog',
+            scope: 'PROJECT',
+            writable: true,
+          },
+          classification: 'RELEVANT',
+          capability: 'UNAVAILABLE',
+          unavailableReason: 'READ_FAILED',
+        }],
+      },
+    }).success).toBe(false)
+
+    const routeObservation = { complete: true }
+    const forgedRouteObservation = {
+      ...fixture.turnObservation,
+      routeObservation,
+      contentDigest: deriveTurnObservationContentDigestV2({
+        ...fixture.turnObservation,
+        routeObservation,
+      }),
+    }
+    expect(TurnObservationV2Schema.safeParse(forgedRouteObservation).success).toBe(false)
+
+    const publishedWithoutApproval = {
+      ...fixture.nativeActiveProposalLineage,
+      state: 'PUBLISHED' as const,
+      proposalRevisions: fixture.nativeActiveProposalLineage.proposalRevisions.map(revision => ({
+        ...revision,
+        state: 'PUBLISHED' as const,
+        publicationReceiptDigest: 'e'.repeat(64),
+      })),
+    }
+    expect(ProposalLineageV2Schema.safeParse(publishedWithoutApproval).success).toBe(false)
+
+    expect(GlobalV2Schema.safeParse({
+      ...fixture.global,
+      proposalGenerationLease: {
+        schemaVersion: 1,
+        leaseId: `lease_${'a'.repeat(64)}`,
+        ownerIntentId: fixture.experienceIntent.intentId,
+        ownerRevision: 1,
+        generationRevision: 1,
+        action: 'CREATE',
+        inputDigest: 'b'.repeat(64),
+        externalPendingDigest: 'c'.repeat(64),
+        catalogEpoch: 0,
+        acquiredAt: '2026-08-22T00:00:00.000Z',
+        completionReceiptDigest: 'd'.repeat(64),
+        state: 'NOT_CALLED',
+      },
     }).success).toBe(false)
   })
 

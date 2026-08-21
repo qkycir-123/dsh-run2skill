@@ -129,6 +129,9 @@ export const TurnObservationV2Schema = z.object({
   if (value.contentDigest !== deriveTurnObservationContentDigestV2(value)) {
     context.addIssue({ code: 'custom', path: ['contentDigest'], message: 'Observation content digest does not match normalized facts' })
   }
+  if (value.routeObservation.complete && (
+    value.routeObservation.provider === undefined || value.routeObservation.model === undefined
+  )) context.addIssue({ code: 'custom', path: ['routeObservation'], message: 'Complete route observation requires provider and model' })
 })
 
 export const SessionBatchTriggerReasonV2Schema = z.enum(['EXPLICIT', 'THRESHOLD', 'IDLE'])
@@ -280,6 +283,20 @@ export interface ExperienceIntentIdentityFactsV2 {
   readonly detectorPolicyVersion: string
 }
 
+export interface RecallSelfExclusionFactsV2 {
+  readonly intentId: string
+  readonly priorGenerationRevision: number
+  readonly barrierReceiptDigest: string
+}
+
+export function deriveRecallSelfExclusionDigestV2(facts: RecallSelfExclusionFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    intentId: facts.intentId,
+    priorGenerationRevision: facts.priorGenerationRevision,
+    barrierReceiptDigest: facts.barrierReceiptDigest,
+  }))
+}
+
 export function deriveExperienceIntentIdV2(facts: ExperienceIntentIdentityFactsV2): `intent_${string}` {
   return `intent_${sha256Utf8(canonicalJson({
     sessionLifecycleKey: facts.sessionLifecycleKey,
@@ -300,6 +317,7 @@ export const ExperienceIntentStatusV2Schema = z.enum([
   'COVERAGE_ANALYZING',
   'COVERED',
   'COVERED_NEEDS_CONFIRMATION',
+  'COVERAGE_RETRY_AUTHORIZED',
   'CREATE_AUTHORIZED',
   'MERGE_AUTHORIZED',
   'GENERATING',
@@ -322,22 +340,33 @@ const SealedSkillBodyV2Schema = z.object({
 
 const SealedGenerationResultV2Schema = z.object({
   resultId: z.string().regex(/^result_[a-f0-9]{64}$/),
+  leaseId: z.string().regex(/^lease_[a-f0-9]{64}$/),
+  intentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
+  generationRevision: positiveSafeInteger,
   callId: z.string().regex(/^call_[a-f0-9]{64}$/),
   action: z.enum(['CREATE', 'MERGE']),
   body: SealedSkillBodyV2Schema,
   targetDigest: sha256Hex,
   runtimeCatalogDigest: sha256Hex,
   pendingCatalogDigest: sha256Hex,
+  catalogEpoch: safeNonNegativeInteger,
   sealedAt: isoDateTime,
+  mutationReceiptDigest: sha256Hex,
   receiptDigest: sha256Hex,
 }).strict()
 
 const GenerationBarrierV2Schema = z.object({
   barrierId: z.string().regex(/^barrier_[a-f0-9]{64}$/),
+  leaseId: z.string().regex(/^lease_[a-f0-9]{64}$/),
+  intentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
+  generationRevision: positiveSafeInteger,
   kind: z.enum(['KNOWN_FAILED', 'RESULT_LOST', 'OUTCOME_UNKNOWN', 'STALE_RESULT']),
   behaviorSignature: sha256Hex,
   inputDigest: sha256Hex,
   callId: z.string().regex(/^call_[a-f0-9]{64}$/).optional(),
+  priorGenerationRevision: positiveSafeInteger.optional(),
+  catalogEpoch: safeNonNegativeInteger,
+  mutationReceiptDigest: sha256Hex,
   recordedAt: isoDateTime,
   receiptDigest: sha256Hex,
 }).strict()
@@ -367,6 +396,7 @@ export const ExperienceIntentV2Schema = z.object({
   ownership: z.object({
     state: z.enum(['NOT_STARTED', 'ARBITRATING', 'RESOLVED_BY_AGENT', 'NEEDS_CONFIRMATION', 'RUN2SKILL_OWNED']),
     evidenceDigest: sha256Hex.optional(),
+    receiptDigest: sha256Hex.optional(),
     reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
   }).strict(),
   recall: z.object({
@@ -374,10 +404,34 @@ export const ExperienceIntentV2Schema = z.object({
     runtimeCatalogDigest: sha256Hex.optional(),
     pendingCatalogDigest: sha256Hex.optional(),
     complete: z.boolean(),
-    candidateCapabilities: z.array(z.object({
-      candidateKey: identity,
-      classification: z.enum(['COVERING', 'MERGEABLE', 'UNRELATED', 'UNAVAILABLE']),
-      capability: z.enum(['SUMMARY', 'FULL_BODY', 'UNAVAILABLE']),
+    summaryScanComplete: z.boolean(),
+    catalogEpoch: safeNonNegativeInteger.optional(),
+    catalogMutationReceiptDigest: sha256Hex.optional(),
+    incompleteReason: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
+    selfExclusion: z.object({
+      intentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
+      priorGenerationRevision: positiveSafeInteger,
+      barrierReceiptDigest: sha256Hex,
+      selfExclusionDigest: sha256Hex,
+    }).strict().optional(),
+    candidates: z.array(z.object({
+      candidateId: identity,
+      summary: z.object({
+        name: z.string().min(1).max(128),
+        description: utf8Limited(2 * 1024),
+        whenToUse: utf8Limited(4 * 1024).optional(),
+        provider: identity,
+        source: identity,
+        scope: PersistenceScopeV2Schema,
+        writable: z.boolean(),
+      }).strict(),
+      classification: z.enum(['RELEVANT', 'POSSIBLE', 'UNRELATED']),
+      capability: z.enum(['AVAILABLE', 'READABLE_NOT_MERGEABLE', 'UNAVAILABLE']),
+      bodyDigest: sha256Hex.optional(),
+      unavailableReason: z.enum([
+        'CATALOG_INCOMPLETE', 'CANDIDATE_DISAPPEARED', 'IDENTITY_CHANGED', 'READ_FAILED',
+        'FILTERED_UNSAFE', 'INPUT_BUDGET_EXCEEDED', 'READ_TIMEOUT', 'SNAPSHOT_TIMEOUT',
+      ]).optional(),
     }).strict()).max(1024),
   }).strict(),
   coverage: z.object({
@@ -395,20 +449,38 @@ export const ExperienceIntentV2Schema = z.object({
     action: z.enum(['CREATE', 'MERGE']).optional(),
     inputDigest: sha256Hex.optional(),
     resultDigest: sha256Hex.optional(),
+    leaseId: z.string().regex(/^lease_[a-f0-9]{64}$/).optional(),
+    generationRevision: positiveSafeInteger.optional(),
+    catalogEpoch: safeNonNegativeInteger.optional(),
     sealedResult: SealedGenerationResultV2Schema.optional(),
     barrier: GenerationBarrierV2Schema.optional(),
     proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
     reasonCode: z.enum(['GENERATION_KNOWN_FAILED', 'GENERATION_RESULT_LOST', 'GENERATION_OUTCOME_UNKNOWN', 'STALE_RESULT']).optional(),
+    revalidationAuthorization: z.object({
+      runtimeCatalogDigest: sha256Hex,
+      pendingCatalogDigest: sha256Hex,
+      externalPendingDigest: sha256Hex,
+      catalogEpoch: safeNonNegativeInteger,
+      sealedResultReceiptDigest: sha256Hex,
+      selfExclusionDigest: sha256Hex.optional(),
+      authorizedAt: isoDateTime,
+    }).strict().optional(),
     userRetryUsed: z.boolean(),
     staleRefreshUsed: z.boolean(),
     receipts: z.array(z.object({
       kind: z.enum(['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED', 'BARRIER_COMMITTED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED']),
       digest: sha256Hex,
+      leaseId: z.string().regex(/^lease_[a-f0-9]{64}$/),
+      intentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
+      generationRevision: positiveSafeInteger,
+      callId: z.string().regex(/^call_[a-f0-9]{64}$/).optional(),
+      catalogEpoch: safeNonNegativeInteger.optional(),
       recordedAt: isoDateTime,
     }).strict()).max(32),
   }).strict(),
   stageCalls: z.array(z.object({
     stage: z.enum(['CATALOG_SCAN', 'COVERAGE', 'GENERATION']),
+    intentRevision: positiveSafeInteger,
     callId: z.string().regex(/^call_[a-f0-9]{64}$/),
     ordinal: positiveSafeInteger,
     inputDigest: sha256Hex,
@@ -440,17 +512,234 @@ export const ExperienceIntentV2Schema = z.object({
   if (value.evidenceRefs.some(ref => ref.sessionLifecycleKey !== value.sessionLifecycleKey)) {
     context.addIssue({ code: 'custom', path: ['evidenceRefs'], message: 'Intent evidence must stay within one lifecycle' })
   }
-  const ownershipByStatus: Partial<Record<typeof value.status, typeof value.ownership.state>> = {
-    READY: 'NOT_STARTED',
-    OWNERSHIP_ARBITRATING: 'ARBITRATING',
-    RESOLVED_BY_AGENT: 'RESOLVED_BY_AGENT',
-    NEEDS_CONFIRMATION: 'NEEDS_CONFIRMATION',
-    RUN2SKILL_OWNED: 'RUN2SKILL_OWNED',
+  const expectStage = (
+    actual: string,
+    expected: string | readonly string[],
+    path: (string | number)[],
+  ) => {
+    const allowed = typeof expected === 'string' ? [expected] : expected
+    if (!allowed.includes(actual)) context.addIssue({ code: 'custom', path, message: 'Intent substate does not match authoritative status' })
   }
-  const expectedOwnership = ownershipByStatus[value.status]
-  if (expectedOwnership !== undefined && value.ownership.state !== expectedOwnership) {
-    context.addIssue({ code: 'custom', path: ['ownership', 'state'], message: 'Ownership state does not match Intent status' })
+  const noDownstreamWork = () => {
+    expectStage(value.recall.state, 'NOT_STARTED', ['recall', 'state'])
+    expectStage(value.coverage.state, 'NOT_STARTED', ['coverage', 'state'])
+    expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
   }
+  switch (value.status) {
+    case 'READY':
+      expectStage(value.ownership.state, 'NOT_STARTED', ['ownership', 'state']); noDownstreamWork(); break
+    case 'OWNERSHIP_ARBITRATING':
+      expectStage(value.ownership.state, 'ARBITRATING', ['ownership', 'state']); noDownstreamWork(); break
+    case 'RESOLVED_BY_AGENT':
+      expectStage(value.ownership.state, 'RESOLVED_BY_AGENT', ['ownership', 'state']); noDownstreamWork(); break
+    case 'NEEDS_CONFIRMATION':
+      expectStage(value.ownership.state, 'NEEDS_CONFIRMATION', ['ownership', 'state']); noDownstreamWork(); break
+    case 'RUN2SKILL_OWNED':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state']); noDownstreamWork(); break
+    case 'RECALLING':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'SCANNING', ['recall', 'state'])
+      expectStage(value.coverage.state, 'NOT_STARTED', ['coverage', 'state'])
+      expectStage(
+        value.generation.state,
+        value.recall.selfExclusion === undefined ? 'NOT_STARTED' : 'NEEDS_ATTENTION',
+        ['generation', 'state'],
+      )
+      break
+    case 'COVERAGE_READY':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'COMPLETE', ['recall', 'state'])
+      expectStage(value.coverage.state, 'NOT_STARTED', ['coverage', 'state'])
+      expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
+      break
+    case 'COVERAGE_ANALYZING':
+    case 'COVERAGE_RETRY_AUTHORIZED':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'COMPLETE', ['recall', 'state'])
+      expectStage(value.coverage.state, 'ANALYZING', ['coverage', 'state'])
+      expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
+      break
+    case 'COVERED':
+    case 'COVERED_NEEDS_CONFIRMATION':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'COMPLETE', ['recall', 'state'])
+      expectStage(value.coverage.state, 'COVERED', ['coverage', 'state'])
+      expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
+      break
+    case 'CREATE_AUTHORIZED':
+    case 'MERGE_AUTHORIZED': {
+      const action = value.status === 'CREATE_AUTHORIZED' ? 'CREATE' : 'MERGE'
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'COMPLETE', ['recall', 'state'])
+      expectStage(value.coverage.state, action, ['coverage', 'state'])
+      expectStage(value.generation.state, 'GENERATION_AUTHORIZED', ['generation', 'state'])
+      expectStage(value.generation.action ?? '', action, ['generation', 'action'])
+      break
+    }
+    case 'GENERATING':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'COMPLETE', ['recall', 'state'])
+      expectStage(value.coverage.state, ['CREATE', 'MERGE'], ['coverage', 'state'])
+      expectStage(value.generation.state, [
+        'GENERATION_LEASED', 'GENERATION_CALL_RESERVED', 'GENERATION_CALL_TERMINAL',
+        'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED',
+      ], ['generation', 'state'])
+      break
+    case 'PROPOSAL_READY':
+      expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
+      expectStage(value.recall.state, 'COMPLETE', ['recall', 'state'])
+      expectStage(value.coverage.state, ['CREATE', 'MERGE'], ['coverage', 'state'])
+      expectStage(value.generation.state, 'PROPOSAL_READY', ['generation', 'state'])
+      break
+    case 'NEEDS_ATTENTION':
+      if (
+        value.ownership.state !== 'NEEDS_CONFIRMATION'
+        && value.recall.state !== 'INCOMPLETE'
+        && value.coverage.state !== 'NEEDS_ATTENTION'
+        && value.generation.state !== 'NEEDS_ATTENTION'
+      ) context.addIssue({ code: 'custom', path: ['status'], message: 'Attention status requires an authoritative attention substate' })
+      break
+    case 'DISCARDED':
+      if (value.reasonReceipts.length === 0) context.addIssue({ code: 'custom', path: ['reasonReceipts'], message: 'Discarded Intent requires a durable user/action receipt' })
+      break
+    default: {
+      const unreachable: never = value.status
+      void unreachable
+    }
+  }
+  if (value.ownership.state === 'RUN2SKILL_OWNED' && (
+    value.ownership.evidenceDigest === undefined || value.ownership.receiptDigest === undefined
+  )) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Run2Skill ownership requires evidence and a durable receipt' })
+  if (value.recall.complete !== (value.recall.state === 'COMPLETE')) {
+    context.addIssue({ code: 'custom', path: ['recall', 'complete'], message: 'Recall completeness must match its state' })
+  }
+  if (value.recall.state === 'COMPLETE' && (
+    !value.recall.summaryScanComplete
+    || value.recall.runtimeCatalogDigest === undefined
+    || value.recall.pendingCatalogDigest === undefined
+    || value.recall.catalogEpoch === undefined
+    || value.recall.catalogMutationReceiptDigest === undefined
+  )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Complete recall requires full Catalog and summary-scan facts' })
+  if (value.recall.state === 'NOT_STARTED' && (
+    value.recall.summaryScanComplete
+    || value.recall.candidates.length > 0
+    || value.recall.runtimeCatalogDigest !== undefined
+    || value.recall.pendingCatalogDigest !== undefined
+  )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Unstarted recall cannot contain Catalog results' })
+  if (value.recall.state === 'INCOMPLETE' && value.recall.incompleteReason === undefined) {
+    context.addIssue({ code: 'custom', path: ['recall', 'incompleteReason'], message: 'Incomplete recall requires a reason' })
+  }
+  for (const [index, candidate] of value.recall.candidates.entries()) {
+    if ((candidate.capability === 'UNAVAILABLE') !== (candidate.unavailableReason !== undefined)) {
+      context.addIssue({ code: 'custom', path: ['recall', 'candidates', index], message: 'Unavailable capability requires exactly one reason' })
+    }
+    if (candidate.capability !== 'UNAVAILABLE' && candidate.bodyDigest === undefined) {
+      context.addIssue({ code: 'custom', path: ['recall', 'candidates', index, 'bodyDigest'], message: 'Readable candidate requires a full body digest' })
+    }
+  }
+  if (value.recall.selfExclusion !== undefined && (
+    value.recall.selfExclusion.intentId !== value.intentId
+    || value.recall.selfExclusion.priorGenerationRevision >= value.revision
+    || !value.generation.staleRefreshUsed
+    || value.generation.barrier?.kind !== 'STALE_RESULT'
+    || value.recall.selfExclusion.priorGenerationRevision !== value.generation.barrier.generationRevision
+    || value.recall.selfExclusion.barrierReceiptDigest !== value.generation.barrier.receiptDigest
+    || value.recall.selfExclusion.selfExclusionDigest !== deriveRecallSelfExclusionDigestV2(value.recall.selfExclusion)
+  )) context.addIssue({ code: 'custom', path: ['recall', 'selfExclusion'], message: 'Self-exclusion is only valid for an exact stale refresh revision' })
+  if (value.coverage.state === 'CREATE' && value.recall.candidates.some(candidate => (
+    candidate.classification !== 'UNRELATED' && candidate.capability === 'UNAVAILABLE'
+  ))) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Create authorization cannot use absence proof with unavailable relevant candidates' })
+  const generation = value.generation
+  const generationCalls = value.stageCalls.filter(call => call.stage === 'GENERATION')
+  const hasReceipt = (kind: typeof generation.receipts[number]['kind']) => generation.receipts.some(receipt => receipt.kind === kind)
+  const receiptFor = (kind: typeof generation.receipts[number]['kind']) => generation.receipts.find(receipt => receipt.kind === kind)
+  if (generation.state === 'NOT_STARTED') {
+    if (
+      generation.action !== undefined
+      || generation.inputDigest !== undefined
+      || generation.leaseId !== undefined
+      || generation.generationRevision !== undefined
+      || generation.catalogEpoch !== undefined
+      || generation.sealedResult !== undefined
+      || generation.barrier !== undefined
+      || generation.proposalId !== undefined
+      || generation.revalidationAuthorization !== undefined
+      || generation.receipts.length > 0
+      || generationCalls.length > 0
+    ) context.addIssue({ code: 'custom', path: ['generation'], message: 'Unstarted generation cannot contain future recovery facts' })
+  } else if (
+    generation.action === undefined
+    || generation.inputDigest === undefined
+    || generation.generationRevision === undefined
+    || generation.generationRevision > value.revision
+  ) context.addIssue({ code: 'custom', path: ['generation'], message: 'Active generation requires action, input, and bounded revision facts' })
+  const leaseStates = new Set([
+    'GENERATION_LEASED', 'GENERATION_CALL_RESERVED', 'GENERATION_CALL_TERMINAL', 'RESULT_COMMITTED',
+    'PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY', 'NEEDS_ATTENTION',
+  ])
+  if (leaseStates.has(generation.state) && generation.leaseId === undefined) {
+    context.addIssue({ code: 'custom', path: ['generation', 'leaseId'], message: 'Leased generation state requires the durable lease identity' })
+  }
+  for (const [index, receipt] of generation.receipts.entries()) {
+    if (
+      receipt.intentId !== value.intentId
+      || receipt.generationRevision !== generation.generationRevision
+      || receipt.leaseId !== generation.leaseId
+    ) context.addIssue({ code: 'custom', path: ['generation', 'receipts', index], message: 'Generation receipt is outside its exact owner revision and lease' })
+  }
+  if (generation.state === 'GENERATION_LEASED' && !hasReceipt('LEASE_ACQUIRED')) {
+    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Leased generation requires an acquisition receipt' })
+  }
+  if (generation.state === 'GENERATION_CALL_RESERVED' && (
+    generationCalls.length !== 1
+    || generationCalls[0]?.outcome !== 'RESERVED'
+    || !hasReceipt('CALL_RESERVED')
+  )) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Reserved generation call requires one ledger slot and receipt' })
+  if (generation.state === 'GENERATION_CALL_TERMINAL' && (
+    generationCalls.length === 0
+    || generationCalls.some(call => call.outcome === 'RESERVED')
+    || !hasReceipt('CALL_TERMINAL')
+  )) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal generation call requires terminal ledger and receipt facts' })
+  if (generation.sealedResult !== undefined && (
+    generation.sealedResult.intentId !== value.intentId
+    || generation.sealedResult.leaseId !== generation.leaseId
+    || generation.sealedResult.generationRevision !== generation.generationRevision
+    || generation.sealedResult.catalogEpoch !== generation.catalogEpoch
+    || generation.sealedResult.mutationReceiptDigest !== receiptFor('RESULT_SEALED')?.digest
+  )) context.addIssue({ code: 'custom', path: ['generation', 'sealedResult'], message: 'Sealed result is outside its exact lease/Intent revision' })
+  if (generation.barrier !== undefined && (
+    generation.barrier.intentId !== value.intentId
+    || generation.barrier.leaseId !== generation.leaseId
+    || generation.barrier.generationRevision !== generation.generationRevision
+    || generation.barrier.catalogEpoch !== generation.catalogEpoch
+    || generation.barrier.mutationReceiptDigest !== receiptFor('BARRIER_COMMITTED')?.digest
+  )) context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation barrier is outside its exact lease/Intent revision' })
+  if (generation.barrier?.kind === 'STALE_RESULT' && generation.barrier.priorGenerationRevision === undefined) {
+    context.addIssue({ code: 'custom', path: ['generation', 'barrier', 'priorGenerationRevision'], message: 'Stale-result barrier requires the prior generation revision' })
+  }
+  if (generation.state === 'RESULT_COMMITTED' && (
+    generation.sealedResult === undefined
+    || !hasReceipt('RESULT_SEALED')
+    || generationCalls.length === 0
+    || generationCalls.some(call => call.outcome !== 'SUCCEEDED')
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Committed result requires successful call, sealed body, and mutation receipt' })
+  if (['PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY'].includes(generation.state) && (
+    generation.revalidationAuthorization === undefined || !hasReceipt('PROPOSAL_AUTHORIZED')
+  )) context.addIssue({ code: 'custom', path: ['generation', 'revalidationAuthorization'], message: 'Proposal commit requires Catalog-bound revalidation authorization' })
+  if (generation.revalidationAuthorization !== undefined && (
+    generation.revalidationAuthorization.catalogEpoch !== generation.catalogEpoch
+    || generation.revalidationAuthorization.sealedResultReceiptDigest !== generation.sealedResult?.receiptDigest
+    || generation.revalidationAuthorization.selfExclusionDigest !== value.recall.selfExclusion?.selfExclusionDigest
+  )) context.addIssue({ code: 'custom', path: ['generation', 'revalidationAuthorization'], message: 'Revalidation authorization must bind the sealed result and Catalog epoch' })
+  if (['PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY'].includes(generation.state) && !hasReceipt('BODY_COMMITTED')) {
+    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Committed Proposal body requires a body receipt' })
+  }
+  if (generation.state === 'PROPOSAL_READY' && !hasReceipt('INDEX_COMMITTED')) {
+    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Proposal-ready generation requires index completion receipt' })
+  }
+  if (generation.state === 'NEEDS_ATTENTION' && (
+    generation.barrier === undefined || generation.reasonCode === undefined || !hasReceipt('BARRIER_COMMITTED')
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Generation attention requires reason and a durable barrier mutation receipt' })
   if (value.status === 'PROPOSAL_READY' && (
     value.generation.state !== 'PROPOSAL_READY'
     || value.generation.sealedResult === undefined
@@ -473,6 +762,9 @@ export const ExperienceIntentV2Schema = z.object({
   ) context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation barrier must bind the Intent behavior signature' })
   if (value.stageCalls.some(call => call.outcome === 'SUCCEEDED' && call.outputDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Successful stage call requires an output digest' })
+  }
+  if (value.stageCalls.some(call => call.intentRevision > value.revision)) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Stage call cannot belong to a future Intent revision' })
   }
   const callsFor = (stage: 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION') => value.stageCalls.filter(call => call.stage === stage)
   if (value.recall.state === 'COMPLETE' && callsFor('CATALOG_SCAN').length === 0) {
@@ -641,6 +933,9 @@ const NativeProposalLineageV2Schema = z.object({
   if (value.state === 'PUBLISHED' && latestRevision?.publicationReceiptDigest === undefined) {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Published native Proposal requires a publication receipt' })
   }
+  if (value.state === 'PUBLISHED' && latestRevision?.reviewReceiptDigest === undefined) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Published native Proposal requires an approval receipt' })
+  }
 })
 
 export const ProposalLineageV2Schema = z.union([
@@ -740,9 +1035,11 @@ const ProposalGenerationLeaseV2Schema = z.object({
   leaseId: z.string().regex(/^lease_[a-f0-9]{64}$/),
   ownerIntentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
   ownerRevision: positiveSafeInteger,
+  generationRevision: positiveSafeInteger,
   action: z.enum(['CREATE', 'MERGE']),
   inputDigest: sha256Hex,
   externalPendingDigest: sha256Hex,
+  catalogEpoch: safeNonNegativeInteger,
   acquiredAt: isoDateTime,
   callId: z.string().regex(/^call_[a-f0-9]{64}$/).optional(),
   callOutcomeReceiptDigest: sha256Hex.optional(),
@@ -761,8 +1058,18 @@ const ProposalGenerationLeaseV2Schema = z.object({
     'ACTIVE_COMPLETE',
   ]),
 }).strict().superRefine((value, context) => {
-  if (value.state === 'NOT_CALLED' && value.callId !== undefined) {
-    context.addIssue({ code: 'custom', path: ['callId'], message: 'Uncalled lease cannot retain a call identity' })
+  const present = (field: 'callId' | 'callOutcomeReceiptDigest' | 'sealedResultReceiptDigest' | 'barrierReceiptDigest' | 'proposalAuthorizationReceiptDigest' | 'completionReceiptDigest') => value[field] !== undefined
+  const rejectPresent = (fields: readonly Parameters<typeof present>[0][]) => {
+    for (const field of fields) if (present(field)) {
+      context.addIssue({ code: 'custom', path: [field], message: 'Lease state contains a future or conflicting receipt' })
+    }
+  }
+  if (value.state === 'NOT_CALLED') rejectPresent([
+    'callId', 'callOutcomeReceiptDigest', 'sealedResultReceiptDigest', 'barrierReceiptDigest',
+    'proposalAuthorizationReceiptDigest', 'completionReceiptDigest',
+  ])
+  if (value.generationRevision > value.ownerRevision) {
+    context.addIssue({ code: 'custom', path: ['generationRevision'], message: 'Lease generation revision cannot exceed its owner Intent revision' })
   }
   if (value.state !== 'NOT_CALLED' && (value.callId === undefined || value.callOutcomeReceiptDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['callId'], message: 'Called lease requires durable call identity and outcome receipt' })
@@ -771,6 +1078,9 @@ const ProposalGenerationLeaseV2Schema = z.object({
     ['KNOWN_FAILED', 'SUCCEEDED_RESULT_MISSING', 'OUTCOME_UNKNOWN'].includes(value.state)
     && value.barrierReceiptDigest === undefined
   ) context.addIssue({ code: 'custom', path: ['barrierReceiptDigest'], message: 'Unresolved generation lease requires a duplicate barrier receipt' })
+  if (['KNOWN_FAILED', 'SUCCEEDED_RESULT_MISSING', 'OUTCOME_UNKNOWN'].includes(value.state)) {
+    rejectPresent(['sealedResultReceiptDigest', 'proposalAuthorizationReceiptDigest', 'completionReceiptDigest'])
+  }
   if (
     ['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE'].includes(value.state)
     && value.sealedResultReceiptDigest === undefined
@@ -782,6 +1092,13 @@ const ProposalGenerationLeaseV2Schema = z.object({
   if (value.state === 'ACTIVE_COMPLETE' && value.completionReceiptDigest === undefined) {
     context.addIssue({ code: 'custom', path: ['completionReceiptDigest'], message: 'Completed lease requires an index completion receipt' })
   }
+  if (value.state === 'RESULT_COMMITTED') rejectPresent([
+    'barrierReceiptDigest', 'proposalAuthorizationReceiptDigest', 'completionReceiptDigest',
+  ])
+  if (value.state === 'PROPOSAL_COMMIT_AUTHORIZED' || value.state === 'BODY_COMMITTED_INDEX_PENDING') {
+    rejectPresent(['barrierReceiptDigest', 'completionReceiptDigest'])
+  }
+  if (value.state === 'ACTIVE_COMPLETE') rejectPresent(['barrierReceiptDigest'])
 })
 
 const ProposalCatalogMutationJournalV2Schema = z.object({
