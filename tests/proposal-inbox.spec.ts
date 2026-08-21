@@ -15,6 +15,7 @@ import {
   RejectConfirmationBody,
   describeProposalSummaryState,
   factsFromAction,
+  proposalDetailAction,
   proposalInboxContentBlocked,
   trapDialogTab,
 } from '../src/client/proposal-inbox-view.js'
@@ -137,6 +138,11 @@ describe('Proposal Inbox client', () => {
       .toBe('已批准，正在发布')
     expect(describeProposalOutcome({ processingState: 'NEEDS_ATTENTION', publicationOutcome: 'PUBLISH_FAILED' }))
       .toBe('发布失败，可重试')
+    expect(proposalDetailAction({
+      reviewDecision: 'APPROVED',
+      processingState: 'NEEDS_ATTENTION',
+      publicationOutcome: 'PUBLISH_FAILED',
+    }, false)).toBe('RETRY_PUBLICATION')
   })
 
   it('gives UNKNOWN, RECOVERING, DEGRADED, and INCOMPATIBLE explicit summary copy', () => {

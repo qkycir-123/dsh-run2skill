@@ -1,4 +1,5 @@
 import { createElement, type ReactElement } from 'react'
+import css from './run2skill-settings-page.module.css'
 import type { ExperienceRecordV1 } from '../domain/learn/index.js'
 import type { EvidenceRef } from '../domain/observe/schemas.js'
 import type { ProposalRefV1, ProposalSnapshotV1 } from '../domain/review/index.js'
@@ -489,16 +490,7 @@ export function ProposalTextView(props: {
   return createElement('pre', {
     'aria-label': props.label,
     'data-run2skill-text-mode': props.mode,
-    style: {
-      whiteSpace: 'pre-wrap',
-      overflowWrap: 'anywhere',
-      maxHeight: '24rem',
-      overflow: 'auto',
-      padding: '0.75rem',
-      border: '1px solid currentColor',
-      borderRadius: '0.375rem',
-      unicodeBidi: 'isolate',
-    },
+    className: css.textBlock,
   }, props.mode === 'SAFE' ? makeSafeText(props.value) : props.value)
 }
 

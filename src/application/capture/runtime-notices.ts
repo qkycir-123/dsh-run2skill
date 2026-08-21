@@ -4,6 +4,7 @@ export interface RuntimeNoticeInput {
   readonly healthCode: string
   readonly sessionId: string
   readonly turnEndSeq?: number
+  readonly signalClass?: 'EXPLICIT_SAVE' | 'OTHER_HIGH'
 }
 
 export type RuntimeNoticeKind = 'HEALTH' | 'UNSAVED_SIGNAL'
@@ -13,6 +14,7 @@ export interface RuntimeNotice extends RuntimeNoticeInput {
   readonly count: number
   readonly firstObservedAt: number
   readonly lastObservedAt: number
+  readonly requiresAttention: boolean
 }
 
 export class RuntimeNotices {
@@ -65,11 +67,19 @@ export class RuntimeNotices {
           healthCode: input.healthCode,
           sessionId: input.sessionId,
           ...(input.turnEndSeq === undefined ? {} : { turnEndSeq: input.turnEndSeq }),
+          ...(input.signalClass === undefined ? {} : { signalClass: input.signalClass }),
           count: 1,
           firstObservedAt: now,
           lastObservedAt: now,
+          requiresAttention: false,
         }
-      : { ...existing, kind: retainedKind, count: existing.count + 1, lastObservedAt: now })
+      : {
+          ...existing,
+          kind: retainedKind,
+          ...(input.signalClass === undefined ? {} : { signalClass: input.signalClass }),
+          count: existing.count + 1,
+          lastObservedAt: now,
+        })
     while (this.#notices.size > this.#limit) {
       const oldest = this.#notices.keys().next().value as string | undefined
       if (oldest === undefined) break
@@ -83,6 +93,16 @@ export class RuntimeNotices {
       if (notice.sessionId === sessionId && notice.turnEndSeq === turnEndSeq) {
         this.#notices.delete(key)
       }
+    }
+  }
+
+  markUnsavedAttention(sessionId: string, turnEndSeq: number): void {
+    for (const [key, notice] of this.#notices) {
+      if (
+        notice.kind === 'UNSAVED_SIGNAL'
+        && notice.sessionId === sessionId
+        && notice.turnEndSeq === turnEndSeq
+      ) this.#notices.set(key, { ...notice, requiresAttention: true })
     }
   }
 

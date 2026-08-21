@@ -34,6 +34,9 @@ export class DurableCaptureCoordinator {
         healthCode: 'WORK_ITEM_WRITE_FAILED',
         sessionId: item.signalKey.rootSessionId,
         turnEndSeq: item.signalKey.turnEndSeq,
+        signalClass: item.triggerHits.some(hit => hit.kind === 'EXPLICIT_SAVE')
+          ? 'EXPLICIT_SAVE'
+          : 'OTHER_HIGH',
       })
       throw error
     }

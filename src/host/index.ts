@@ -23,6 +23,7 @@ import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
 import { registerObserveSummaryRpc, type ObserveSummaryHostConnection } from '../adapters/dsh-connection/observe-summary-rpc.js'
 import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/proposal-review-rpc.js'
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
+import { createAttentionRpcHandler } from '../adapters/dsh-connection/attention-rpc.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
@@ -619,10 +620,14 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   const disposeRpc = registerObserveSummaryRpc(
     context.connection,
     readSummary,
-    createPurgeRpcHandler(
-      () => factory.currentPurgeService,
-      reviewRpc,
-      { runMutation: operation => mutationGate.run(operation) },
+    createAttentionRpcHandler(
+      () => factory.currentDomain,
+      notices,
+      createPurgeRpcHandler(
+        () => factory.currentPurgeService,
+        reviewRpc,
+        { runMutation: operation => mutationGate.run(operation) },
+      ),
     ),
   )
 

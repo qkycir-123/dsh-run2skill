@@ -1,0 +1,139 @@
+.page {
+  display: grid;
+  gap: 20px;
+  max-width: 960px;
+  padding: 8px 0 32px;
+  color: var(--dsw-alias-content-primary, inherit);
+}
+
+.intro,
+.muted {
+  margin: 0;
+  color: var(--dsw-alias-content-secondary, currentColor);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.section {
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-subtle, color-mix(in srgb, currentColor 16%, transparent));
+  border-radius: 16px;
+  background: var(--dsw-alias-surface-primary, transparent);
+}
+
+.sectionBody {
+  display: grid;
+  gap: 14px;
+  padding: 0 18px 18px 48px;
+}
+
+.toolbar,
+.actions,
+.modeGroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.attentionList,
+.proposalList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proposalLayout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.6fr);
+  gap: 16px;
+}
+
+.proposalListButton {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: start;
+  white-space: normal;
+}
+
+.detail {
+  min-width: 0;
+  max-height: 640px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--dsw-alias-border-subtle, color-mix(in srgb, currentColor 16%, transparent));
+  border-radius: 12px;
+  background: var(--dsw-alias-surface-secondary, transparent);
+}
+
+.detail pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  unicode-bidi: isolate;
+}
+
+.status {
+  min-height: 20px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.danger {
+  color: var(--dsw-alias-content-negative, var(--dsw-alias-content-primary, currentColor));
+}
+
+.backdrop,
+.rejectOverlay {
+  position: fixed;
+  inset: 0;
+  background: var(--dsw-alias-overlay, color-mix(in srgb, currentColor 35%, transparent));
+}
+
+.backdrop { z-index: 999; }
+.rejectOverlay { z-index: 1001; display: grid; place-items: center; padding: 16px; }
+
+.legacyDialog {
+  position: fixed;
+  inset: 5vh 5vw;
+  z-index: 1000;
+  display: grid;
+  grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr);
+  gap: 16px;
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-subtle, currentColor);
+  border-radius: 16px;
+  background: var(--dsw-alias-surface-primary, inherit);
+  color: var(--dsw-alias-content-primary, inherit);
+  box-shadow: var(--dsw-alias-shadow-modal, 0 16px 48px color-mix(in srgb, currentColor 35%, transparent));
+}
+
+.blocked { display: contents; pointer-events: none; }
+.queue, .legacyDetail { min-width: 0; overflow: auto; }
+.legacyHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.legacyList { margin: 0; padding: 0; list-style: none; }
+.rejectCard { max-width: 32rem; padding: 16px; border-radius: 16px; background: var(--dsw-alias-surface-primary, inherit); }
+.textBlock { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
+
+.previewFacts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+}
+
+.previewFacts dt,
+.previewFacts dd {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .proposalLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .sectionBody {
+    padding-left: 18px;
+  }
+}

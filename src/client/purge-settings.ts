@@ -2,15 +2,17 @@ import {
   Fragment,
   createElement,
   useEffect,
+  useMemo,
   useRef,
-  useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type RefObject,
 } from 'react'
 import { z } from 'zod'
+import { Button, IconRefreshOutline16, IconTrashOutline16, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { trapDialogTab } from './dialog-focus.js'
+import css from './run2skill-settings-page.module.css'
 
 export const PURGE_IDLE_POLL_INTERVAL_MS = 10_000
 export const PURGE_ACTIVE_POLL_INTERVAL_MS = 2_000
@@ -509,36 +511,63 @@ function PurgeConfirmationDialog(props: {
   const scope = props.state.previewScope
   useEffect(() => {
     if (preview === undefined || typeof document === 'undefined') return
-    const dialog = dialogRef.current
-    const initial = dialog?.querySelector<HTMLElement>('[data-initial-focus]')
+    const dialog = dialogRef.current?.closest<HTMLElement>('[role="dialog"]')
+    const initial = dialog?.querySelector<HTMLElement>('[autofocus]')
     const recapture = (event: FocusEvent) => {
-      if (dialog !== null && event.target instanceof Node && !dialog.contains(event.target)) initial?.focus()
+      if (dialog != null && event.target instanceof Node && !dialog.contains(event.target)) initial?.focus()
+    }
+    const captureKeyboard = (event: KeyboardEvent) => {
+      if (dialog == null || (event.key !== 'Escape' && event.key !== 'Tab')) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        props.controller.cancelPreview()
+        return
+      }
+      trapDialogTab(
+        event.key,
+        event.shiftKey,
+        () => { event.preventDefault() },
+        dialog,
+        document.activeElement,
+      )
     }
     document.addEventListener('focusin', recapture, true)
+    document.addEventListener('keydown', captureKeyboard, true)
     initial?.focus()
     return () => {
       document.removeEventListener('focusin', recapture, true)
+      document.removeEventListener('keydown', captureKeyboard, true)
       props.restoreFocusRef.current?.focus()
     }
   }, [preview?.previewId, props.restoreFocusRef])
   if (preview === undefined || scope === undefined) return null
-  const titleId = 'run2skill-purge-confirm-title'
-  const descriptionId = 'run2skill-purge-confirm-description'
-  return createElement(Fragment, null,
-    createElement('div', {
-      'aria-hidden': true,
-      style: { position: 'fixed', inset: 0, zIndex: 1999, background: 'rgb(0 0 0 / 35%)' },
-    }),
-    createElement('div', {
+  return createElement(Modal, {
+    open: true,
+    title: `确认清理 ${scope} run2skill 数据？`,
+    description: '此操作只清理本次预览边界内的 run2skill 数据，不会卸载插件。',
+    closeLabel: '关闭清理确认框',
+    onClose: () => { props.controller.cancelPreview() },
+    footer: createElement('div', { className: css.actions },
+      createElement(Button, {
+        variant: 'ghost',
+        autoFocus: true,
+        disabled: props.state.mutationPending,
+        onClick: () => { props.controller.cancelPreview() },
+      }, '取消清理'),
+      createElement(Button, {
+        variant: 'primary',
+        icon: createElement(IconTrashOutline16),
+        disabled: props.state.mutationPending,
+        onClick: () => { void props.controller.confirm() },
+      }, props.state.mutationPending ? '正在清理…' : '确认清理'),
+    ),
+  }, createElement('div', {
       ref: dialogRef,
-      role: 'alertdialog',
-      'aria-modal': true,
-      'aria-labelledby': titleId,
-      'aria-describedby': descriptionId,
       onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
+        event.stopPropagation()
         if (event.key === 'Escape') {
           event.preventDefault()
-          event.stopPropagation()
           props.controller.cancelPreview()
         } else if (dialogRef.current !== null) {
           trapDialogTab(
@@ -550,21 +579,7 @@ function PurgeConfirmationDialog(props: {
           )
         }
       },
-      style: {
-        position: 'fixed',
-        inset: '10vh max(1rem, 20vw)',
-        zIndex: 2000,
-        overflow: 'auto',
-        padding: '1rem',
-        background: 'Canvas',
-        color: 'CanvasText',
-        border: '2px solid currentColor',
-        borderRadius: '0.5rem',
-      },
     },
-    createElement('h3', { id: titleId }, `确认清理 ${scope} run2skill 数据？`),
-    createElement('div', { id: descriptionId },
-      createElement('p', null, '此操作只清理本次预览边界内的 run2skill 数据，不会卸载插件。'),
       createElement('ul', null,
         createElement('li', null,
           '删除 run2skill 的过滤 Evidence、Experience、pending、Proposal、Revision metadata、usage 和相关审计事实。',
@@ -573,34 +588,20 @@ function PurgeConfirmationDialog(props: {
         createElement('li', null, '保留所有已发布的原生 Skill。'),
         createElement('li', null, '删除 Lineage 后，保留的 Skill 将作为普通现有 Skill 使用。'),
       ),
-    ),
-    createElement(PreviewSummary, { preview }),
-    createElement('button', {
-      type: 'button',
-      'data-initial-focus': true,
-      disabled: props.state.mutationPending,
-      onClick: () => { props.controller.cancelPreview() },
-    }, '取消清理'),
-    createElement('button', {
-      type: 'button',
-      disabled: props.state.mutationPending,
-      onClick: () => { void props.controller.confirm() },
-    }, props.state.mutationPending ? '正在清理…' : '确认清理'),
-    ),
-  )
+      createElement(PreviewSummary, { preview }),
+    ))
 }
 
 export function PurgeSettingsSection(props: {
   readonly controller: PurgeSettingsController
 }): ReactElement {
+  useEffect(() => { props.controller.start() }, [props.controller])
   const state = useSyncExternalStore(
     props.controller.subscribe,
     props.controller.snapshot,
     props.controller.snapshot,
   )
-  const projectRef = useRef<HTMLButtonElement>(null)
-  const userRef = useRef<HTMLButtonElement>(null)
-  const [restoreRef, setRestoreRef] = useState<RefObject<HTMLButtonElement | null>>(projectRef)
+  const restoreRef = useMemo(() => ({ current: null as HTMLButtonElement | null }), [])
   const active = state.status?.state === 'IN_PROGRESS' ? state.status : undefined
   const activeReceipt = state.inProgressReceipt?.state === 'IN_PROGRESS' ? state.inProgressReceipt : undefined
   const activePhase = active?.phase ?? activeReceipt?.phase ?? (activeReceipt === undefined ? undefined : 'HIDING')
@@ -608,24 +609,25 @@ export function PurgeSettingsSection(props: {
   return createElement('section', { 'aria-labelledby': 'run2skill-purge-heading' },
     createElement('h3', { id: 'run2skill-purge-heading' }, '清理 run2skill 数据'),
     createElement('p', null, '清理只影响 run2skill 派生数据；不会删除 DSH Session Log 或已发布 Skill。'),
-    createElement('button', {
-      ref: projectRef,
-      type: 'button',
+    createElement('div', { className: css.actions },
+    createElement(Button, {
+      variant: 'outline',
+      icon: createElement(IconTrashOutline16),
       disabled,
-      onClick: () => {
-        setRestoreRef(projectRef)
+      onClick: (event) => {
+        restoreRef.current = event.currentTarget
         void props.controller.preview('PROJECT')
       },
     }, '预览并清理当前 PROJECT 数据'),
-    createElement('button', {
-      ref: userRef,
-      type: 'button',
+    createElement(Button, {
+      variant: 'outline',
+      icon: createElement(IconTrashOutline16),
       disabled,
-      onClick: () => {
-        setRestoreRef(userRef)
+      onClick: (event) => {
+        restoreRef.current = event.currentTarget
         void props.controller.preview('USER')
       },
-    }, '预览并清理 USER 数据'),
+    }, '预览并清理 USER 数据')),
     state.statusPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在读取 Purge 状态…') : null,
     state.statusPhase === 'UNAVAILABLE' ? createElement('p', { role: 'alert' }, 'Purge 状态暂不可用') : null,
     state.statusPhase === 'STALE' ? createElement('p', { role: 'status' }, 'Purge 状态可能已过期') : null,
@@ -641,8 +643,9 @@ export function PurgeSettingsSection(props: {
             ? null
             : createElement(Fragment, null,
                 createElement('p', { role: 'alert' }, `清理失败：${active.lastError.code}`),
-                createElement('button', {
-                  type: 'button',
+                createElement(Button, {
+                  variant: 'outline',
+                  icon: createElement(IconRefreshOutline16),
                   disabled: state.mutationPending,
                   onClick: () => { void props.controller.retry() },
                 }, state.mutationPending ? '正在重试…' : '重试清理'),

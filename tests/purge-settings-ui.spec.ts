@@ -401,7 +401,7 @@ describe('Purge native settings UI', () => {
     controller.dispose()
   })
 
-  it('uses an alertdialog with exact boundaries, focus trap, Escape, restoration, and live completion', async () => {
+  it('uses the native modal with exact boundaries, focus trap, Escape, restoration, and live completion', async () => {
     const call = vi.fn(async (endpoint: string) => {
       if (endpoint === 'purge/status') return { ok: true, value: { apiVersion: 1, state: 'IDLE' } }
       if (endpoint === 'purge/preview') return { ok: true, value: PROJECT_PREVIEW }
@@ -433,7 +433,7 @@ describe('Purge native settings UI', () => {
     fireEvent.click(screen.getByRole('button', { name: /run2skill/ }))
     const projectButton = screen.getByRole('button', { name: '预览并清理当前 PROJECT 数据' })
     fireEvent.click(projectButton)
-    const dialog = await screen.findByRole('alertdialog', { name: '确认清理 PROJECT run2skill 数据？' })
+    const dialog = await screen.findByRole('dialog', { name: '确认清理 PROJECT run2skill 数据？' })
     expect(dialog.textContent).toContain('3 条待处理数据')
     expect(dialog.textContent).toContain('2 条发布沿袭记录')
     expect(dialog.textContent).toContain('1 条无法证明作用域的数据将保留')
@@ -441,10 +441,11 @@ describe('Purge native settings UI', () => {
     expect(dialog.textContent).toContain('保留 DSH Session Log')
     expect(dialog.textContent).toContain('保留所有已发布的原生 Skill')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '取消清理' }))
+    screen.getByRole('button', { name: '关闭清理确认框' }).focus()
     fireEvent.keyDown(dialog, { key: 'Tab', ['shift' + 'Key']: true })
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '确认清理' }))
     fireEvent.keyDown(dialog, { key: 'Escape' })
-    await waitFor(() => { expect(screen.queryByRole('alertdialog')).toBeNull() })
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: '确认清理 PROJECT run2skill 数据？' })).toBeNull() })
     expect(outerEscape).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(projectButton)
 
@@ -453,7 +454,7 @@ describe('Purge native settings UI', () => {
     await waitFor(() => {
       expect(screen.getByRole('status', { name: 'Purge 状态播报' }).textContent).toContain('清理完成')
     })
-    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '确认清理 PROJECT run2skill 数据？' })).toBeNull()
     purge.dispose()
     settings.dispose()
   })

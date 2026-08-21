@@ -319,6 +319,9 @@ export class RecoveryLifecycle<Candidate = TurnIngressCandidate> {
         this.#candidateKeys.delete(entry.key)
       } else if (result.status === 'EXHAUSTED') {
         this.#failedKeys.add(entry.key)
+        if (coordinate.turnEndSeq !== undefined) {
+          this.notices.markUnsavedAttention(coordinate.sessionId, coordinate.turnEndSeq)
+        }
         this.#degrade('WORK_ITEM_WRITE_FAILED', coordinate, false)
         return
       } else {

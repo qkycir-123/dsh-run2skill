@@ -1,2 +1,3 @@
 export * from './observe-summary-rpc.js'
 export * from './purge-rpc.js'
+export * from './attention-rpc.js'

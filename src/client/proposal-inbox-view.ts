@@ -10,6 +10,7 @@ import {
   type ReactElement,
   type RefObject,
 } from 'react'
+import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ProposalInboxController,
   ProposalTextView,
@@ -25,6 +26,7 @@ import {
 } from './proposal-inbox.js'
 import { focusableSelector, trapDialogTab } from './dialog-focus.js'
 import { describeRun2skillHealth } from './status-copy.js'
+import css from './run2skill-settings-page.module.css'
 export { trapDialogTab } from './dialog-focus.js'
 
 export function proposalInboxContentBlocked(mutationPending: boolean, rejectConfirm: boolean): boolean {
@@ -114,7 +116,6 @@ export function ProposalInboxHeaderAction(props: {
       'aria-expanded': state.open,
       'data-run2skill-proposal-trigger': true,
       onClick: () => { void controller.open() },
-      style: { outlineOffset: '0.2rem' },
     }, label),
     state.open
       ? createElement(ProposalInboxPanel, {
@@ -164,12 +165,7 @@ export function ProposalInboxPanel(props: {
   createElement('div', {
     'aria-hidden': true,
     'data-run2skill-proposal-backdrop': true,
-    style: {
-      position: 'fixed',
-      inset: 0,
-      zIndex: 999,
-      background: 'rgb(0 0 0 / 35%)',
-    },
+    className: css.backdrop,
   }),
   createElement('div', {
     ref: props.dialogRef,
@@ -179,29 +175,15 @@ export function ProposalInboxPanel(props: {
     onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
       closeOnKeyboard(event, controller, props.dialogRef.current)
     },
-    style: {
-      position: 'fixed',
-      inset: '5vh 5vw',
-      zIndex: 1000,
-      display: 'grid',
-      gridTemplateColumns: 'minmax(16rem, 24rem) minmax(0, 1fr)',
-      gap: '1rem',
-      padding: '1rem',
-      overflow: 'hidden',
-      background: 'Canvas',
-      color: 'CanvasText',
-      border: '2px solid currentColor',
-      borderRadius: '0.5rem',
-      boxShadow: '0 1rem 3rem rgb(0 0 0 / 35%)',
-    },
+    className: css.legacyDialog,
   },
   createElement('div', {
     'aria-hidden': props.rejectConfirm || undefined,
     inert: props.rejectConfirm ? '' : undefined,
-    style: { display: 'contents', pointerEvents: props.rejectConfirm ? 'none' : undefined },
+    className: props.rejectConfirm ? css.blocked : undefined,
   },
-  createElement('section', { 'aria-label': 'Proposal 待处理队列', style: { overflow: 'auto' } },
-    createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+  createElement('section', { 'aria-label': 'Proposal 待处理队列', className: css.queue },
+    createElement('div', { className: css.legacyHeader },
       createElement('h2', { id: 'run2skill-proposal-inbox-title' }, 'Skill Proposal Inbox'),
       createElement('button', {
         type: 'button',
@@ -216,26 +198,19 @@ export function ProposalInboxPanel(props: {
     state.listPhase === 'READY' && state.items.length === 0
       ? createElement('p', null, '当前没有待处理 Proposal')
       : null,
-    createElement('ul', { style: { listStyle: 'none', padding: 0 } },
+    createElement('ul', { className: css.legacyList },
       ...state.items.map(item => createElement('li', { key: item.proposalRef.proposalId },
         createElement('button', {
           type: 'button',
           disabled: contentBlocked || state.detailPhase === 'LOADING',
           'aria-current': state.selectedProposalId === item.proposalRef.proposalId ? 'true' : undefined,
           onClick: () => { void controller.select(item.proposalRef.proposalId) },
-          style: {
-            display: 'block',
-            width: '100%',
-            padding: '0.75rem',
-            marginBlock: '0.25rem',
-            textAlign: 'start',
-            outlineOffset: '0.15rem',
-          },
+          className: css.proposalListButton,
         }, `${item.kind} · ${makeSafeText(item.name)} · ${item.persistenceScope} · ${describeProposalListItem(item)}`),
       )),
     ),
   ),
-  createElement('section', { 'aria-label': 'Proposal 详情', style: { overflow: 'auto', minWidth: 0 } },
+  createElement('section', { 'aria-label': 'Proposal 详情', className: css.legacyDetail },
     state.detailPhase === 'IDLE' ? createElement('p', null, '选择一个 Proposal 查看完整事实') : null,
     state.detailPhase === 'LOADING' ? createElement('p', null, '正在加载 Proposal 详情…') : null,
     state.detailPhase === 'ERROR' ? createElement('p', { role: 'alert' }, 'Proposal 详情暂不可用') : null,
@@ -313,6 +288,24 @@ export function factsFromAction(detail: ProposalDetail): string {
   ].join('\n')
 }
 
+export function proposalDetailAction(
+  detail: Pick<ProposalDetail, 'reviewDecision' | 'processingState' | 'publicationOutcome'>,
+  mutationPending: boolean,
+): 'REVIEW' | 'RETRY_PUBLICATION' | 'NONE' {
+  if (mutationPending) return 'NONE'
+  if (
+    detail.reviewDecision === 'PENDING'
+    && detail.processingState === 'READY_FOR_REVIEW'
+    && detail.publicationOutcome === 'PENDING_REVIEW'
+  ) return 'REVIEW'
+  if (
+    detail.reviewDecision === 'APPROVED'
+    && detail.processingState === 'NEEDS_ATTENTION'
+    && detail.publicationOutcome === 'PUBLISH_FAILED'
+  ) return 'RETRY_PUBLICATION'
+  return 'NONE'
+}
+
 export function ProposalDetailView(props: {
   readonly detail: ProposalDetail
   readonly textMode: 'SAFE' | 'RAW'
@@ -325,9 +318,8 @@ export function ProposalDetailView(props: {
 }): ReactElement {
   const { detail, mutationPending } = props
   const proposal = detail.proposal
-  const actionable = detail.reviewDecision === 'PENDING'
-    && detail.processingState === 'READY_FOR_REVIEW'
-    && !mutationPending
+  const action = proposalDetailAction(detail, mutationPending)
+  const actionable = action === 'REVIEW'
   const coordinate = detail.sessionCoordinate
   const baseBytes = proposal.actionBinding.kind === 'MERGE'
     ? proposal.actionBinding.baseBinding.exactBytes
@@ -385,15 +377,15 @@ export function ProposalDetailView(props: {
     )),
     createElement('h4', null, '绑定事实'),
     createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '绑定事实' }),
-    createElement('div', { role: 'group', 'aria-label': '内容显示方式' },
-      createElement('button', {
-        type: 'button',
+    createElement('div', { role: 'group', 'aria-label': '内容显示方式', className: css.modeGroup },
+      createElement(Pill, {
         'aria-pressed': props.textMode === 'SAFE',
+        active: props.textMode === 'SAFE',
         onClick: () => { props.setTextMode('SAFE') },
       }, '安全视图'),
-      createElement('button', {
-        type: 'button',
+      createElement(Pill, {
         'aria-pressed': props.textMode === 'RAW',
+        active: props.textMode === 'RAW',
         onClick: () => { props.setTextMode('RAW') },
       }, '原始内容'),
     ),
@@ -407,7 +399,7 @@ export function ProposalDetailView(props: {
       createElement('h4', null, 'MERGE Base'),
       createElement(ProposalTextView, { value: baseBytes, mode: props.textMode, label: 'MERGE Base' }),
       createElement('h4', null, '精确 Diff'),
-      createElement('pre', { 'aria-label': '精确 Diff', style: { whiteSpace: 'pre-wrap', unicodeBidi: 'isolate' } },
+      createElement('pre', { 'aria-label': '精确 Diff' },
         diff.map(line => `${line.kind === 'ADD' ? '+' : line.kind === 'REMOVE' ? '-' : ' '} ${makeSafeText(line.text)}`).join('\n'),
       ),
     ),
@@ -415,22 +407,26 @@ export function ProposalDetailView(props: {
       createElement('h4', null, '覆盖已有 Skill 的完整内容'),
       createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '覆盖已有 Skill 的完整内容' }),
     ),
-    createElement('div', { role: 'group', 'aria-label': 'Proposal 操作' },
-      proposal.kind === 'DISCARD'
+    createElement('div', { role: 'group', 'aria-label': 'Proposal 操作', className: css.actions },
+      action === 'RETRY_PUBLICATION'
+        ? createElement(Button, {
+            variant: 'primary', disabled: mutationPending, onClick: props.onRetry,
+          }, '重试发布')
+        : proposal.kind === 'DISCARD'
         ? createElement(Fragment, null,
-            createElement('button', {
-              type: 'button', disabled: !actionable, onClick: props.onConfirmDiscard,
+            createElement(Button, {
+              variant: 'primary', disabled: !actionable, onClick: props.onConfirmDiscard,
             }, '确认无需新建 Skill'),
-            createElement('button', {
-              type: 'button', disabled: !actionable, onClick: props.onRetry,
+            createElement(Button, {
+              variant: 'outline', disabled: !actionable, onClick: props.onRetry,
             }, '不同意，重新分析一次'),
           )
         : createElement(Fragment, null,
-            createElement('button', {
-              type: 'button', disabled: !actionable, onClick: props.onApprove,
+            createElement(Button, {
+              variant: 'primary', disabled: !actionable, onClick: props.onApprove,
             }, detail.processingState === 'PUBLISHING' ? '正在发布…' : '批准并发布'),
-            createElement('button', {
-              type: 'button', disabled: !actionable, onClick: props.onReject,
+            createElement(Button, {
+              variant: 'outline', disabled: !actionable, onClick: props.onReject,
             }, '拒绝 Proposal'),
           ),
     ),
@@ -498,25 +494,10 @@ function RejectConfirmation(props: {
         )
       }
     },
-    style: {
-      position: 'fixed',
-      inset: 0,
-      zIndex: 1001,
-      display: 'grid',
-      placeItems: 'center',
-      padding: '1rem',
-      background: 'rgb(0 0 0 / 35%)',
-    },
+    className: css.rejectOverlay,
   },
   createElement('div', {
-    style: {
-      maxWidth: '32rem',
-      padding: '1rem',
-      background: 'Canvas',
-      color: 'CanvasText',
-      border: '2px solid currentColor',
-      borderRadius: '0.5rem',
-    },
+    className: css.rejectCard,
   }, createElement(RejectConfirmationBody, props)),
   )
 }

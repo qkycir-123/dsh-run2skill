@@ -154,7 +154,9 @@ function scan(name, content) {
     const coordinateKey = [
       'candidate_key',
       'coordinate_key',
+      'action_key',
       'lifecycle_key',
+      'notice_key',
       'session_lifecycle_key',
       'signal_key',
     ].includes(normalized)
@@ -251,13 +253,17 @@ assert.deepEqual({
       inject: [
         '@deepseek-ai/dsh-client-connection',
         '@deepseek-ai/dsh-client-runtime',
+        '@deepseek-ai/dsh-client-ui-primitives',
         '@deepseek-ai/dsh-client-ui-settings',
         '@deepseek-ai/dsh-client-ui-settings-plugins',
         '@deepseek-ai/dsh-api-remotes',
       ],
     },
   },
-  peerDependencies: { '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7 || 0.1.0-rc.8' },
+  peerDependencies: {
+    '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7 || 0.1.0-rc.8',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.1.0-rc.7 || 0.1.0-rc.8',
+  },
 }, 'candidate package metadata changed')
 assert.equal(
   run('tar', ['-xOf', tarballPath, 'package/cordis.patch.yml']).replaceAll('\r\n', '\n'),

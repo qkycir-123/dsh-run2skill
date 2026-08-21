@@ -44,6 +44,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-api-remotes"
@@ -72,15 +73,18 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.7 || 0.1.0-rc.8"
+    "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.7 || 0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.7 || 0.1.0-rc.8"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.8",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "^18.2.25",
     "jsdom": "^30.0.1",
+    "lightningcss": "^1.30.2",
     "oxlint": "1.76.0",
     "react-dom": "^18.2.0",
     "tsdown": "^0.22.2",
