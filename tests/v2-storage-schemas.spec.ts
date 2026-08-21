@@ -278,6 +278,16 @@ describe('run2skill_v2 storage contract', () => {
       },
     }).success).toBe(false)
     expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.staleAttentionIntent,
+      revision: fixture.staleAttentionIntent.revision + 1,
+      status: 'DISCARDED',
+      reasonReceipts: [{
+        revision: fixture.staleAttentionIntent.revision + 1,
+        reasonCode: 'DISMISS_GENERATION',
+        recordedAt: fixture.staleAttentionIntent.updatedAt,
+      }],
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
       ...fixture.proposalReadyIntent,
       generation: {
         ...fixture.proposalReadyIntent.generation,

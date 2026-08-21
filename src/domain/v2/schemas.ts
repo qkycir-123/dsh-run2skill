@@ -604,6 +604,8 @@ export const ExperienceIntentV2Schema = z.object({
       break
     case 'DISCARDED':
       if (value.reasonReceipts.length === 0) context.addIssue({ code: 'custom', path: ['reasonReceipts'], message: 'Discarded Intent requires a durable user/action receipt' })
+      expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
+      if (value.lineageId !== undefined) context.addIssue({ code: 'custom', path: ['lineageId'], message: 'Discarded Intent cannot retain active Proposal membership' })
       break
     default: {
       const unreachable: never = value.status
