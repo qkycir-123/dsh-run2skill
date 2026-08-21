@@ -4,6 +4,7 @@ import { sha256Utf8 } from '../../src/domain/observe/hashing.js'
 import { derivePublicationTargetIdentityDigest, materializeLineage } from '../../src/domain/publication/schemas.js'
 import {
   deriveExperienceIntentIdV2,
+  deriveBehaviorSignatureV2,
   deriveNativeProposalLineageIdV2,
   deriveSessionBatchIdV2,
   deriveRecallSelfExclusionDigestV2,
@@ -90,14 +91,21 @@ export function createMinimalV2Fixtures() {
       maxInputBytes: 32 * 1024,
       maxOutputBytes: 8 * 1024,
     },
-    detector: { result: 'NOT_RUN' as const, calls: [], intentIds: [] },
+    detector: { result: 'NOT_RUN' as const, calls: [], intentIds: [], carry: [] },
     state: 'FROZEN' as const,
     createdAt: now,
     updatedAt: now,
   }
+  const behaviorFacts = {
+    experienceType: 'WORKFLOW' as const,
+    persistenceScope: 'PROJECT' as const,
+    applicabilitySummary: 'Apply the fixture workflow.',
+    keySteps: ['Observe', 'Verify'],
+    prohibitions: ['Do not skip verification'],
+  }
   const intentFacts = {
     sessionLifecycleKey,
-    behaviorSignature: 'd'.repeat(64),
+    behaviorSignature: deriveBehaviorSignatureV2(behaviorFacts),
     evidenceDigests: [turnObservation.evidenceDigest],
     detectorPolicyVersion: batchFacts.detectorPolicyVersion,
   }
@@ -109,8 +117,8 @@ export function createMinimalV2Fixtures() {
     ordinal: 1,
     sessionLifecycleKey,
     detectorPolicyVersion: intentFacts.detectorPolicyVersion,
-    persistenceScope: 'PROJECT' as const,
     explicitSave: true,
+    ...behaviorFacts,
     behaviorSignature: intentFacts.behaviorSignature,
     evidenceRefs: [{
       observationId: turnObservation.observationId,

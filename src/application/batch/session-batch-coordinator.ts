@@ -236,6 +236,7 @@ export class SessionBatchCoordinator {
     const sessions = { ...current.sessions }
     const grouped = new Map<string, TurnObservationV2[]>()
     const detectedBySession = new Map<string, number>()
+    const carryBySession = new Map<string, { readonly through: number; readonly carry: SessionBatchV2['detector']['carry'] }>()
     for (const [, raw] of this.#observations.entries()) {
       const item = TurnObservationV2Schema.parse(raw)
       const values = grouped.get(item.sessionLifecycleKey) ?? []
@@ -250,6 +251,13 @@ export class SessionBatchCoordinator {
           batch.sessionLifecycleKey,
           Math.max(detectedBySession.get(batch.sessionLifecycleKey) ?? 0, batch.lastTurnEndSeq),
         )
+        const previousCarry = carryBySession.get(batch.sessionLifecycleKey)
+        if (previousCarry === undefined || batch.lastTurnEndSeq > previousCarry.through) {
+          carryBySession.set(batch.sessionLifecycleKey, {
+            through: batch.lastTurnEndSeq,
+            carry: batch.detector.result === 'DEFER' ? batch.detector.carry : [],
+          })
+        }
         continue
       }
       const active = activeBySession.get(batch.sessionLifecycleKey) ?? []
@@ -271,7 +279,7 @@ export class SessionBatchCoordinator {
         ...(existing?.batchManifestBaseline === undefined
           ? {}
           : { batchManifestBaseline: existing.batchManifestBaseline }),
-        openExperienceCarry: existing?.openExperienceCarry ?? [],
+        openExperienceCarry: carryBySession.get(lifecycleKey)?.carry ?? existing?.openExperienceCarry ?? [],
         updatedAt: this.#isoNow(),
       }
     }
@@ -281,6 +289,7 @@ export class SessionBatchCoordinator {
       sessions[lifecycleKey] = {
         ...withoutUndefinedActiveBatch(cursor),
         detectedThroughTurnEndSeq: Math.max(cursor.detectedThroughTurnEndSeq, detectedThrough),
+        openExperienceCarry: carryBySession.get(lifecycleKey)?.carry ?? cursor.openExperienceCarry,
         updatedAt: this.#isoNow(),
       }
     }
@@ -394,7 +403,7 @@ export class SessionBatchCoordinator {
       batchManifestBaseline: baseline,
       manifestEndObservation: { state: 'PENDING' },
       routeSnapshot,
-      detector: { result: 'NOT_RUN', calls: [], intentIds: [] },
+      detector: { result: 'NOT_RUN', calls: [], intentIds: [], carry: [] },
       state: 'FROZEN',
       createdAt: now,
       updatedAt: now,
