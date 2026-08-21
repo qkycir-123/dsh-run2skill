@@ -1,11 +1,11 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [string]$DshSource
+  [string]$DshSource,
+  [string]$ExpectedDshHead = '141eb6fef83422698aef7a981029e843e8161534'
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedCommit = '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $DshSource = (Resolve-Path -LiteralPath $DshSource).Path
 
@@ -20,8 +20,8 @@ function Invoke-GitCapture {
 
 $sourceHeadBefore = Invoke-GitCapture -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $DshSource
 $sourceStatusBefore = Invoke-GitCapture -Arguments @('status', '--porcelain') -WorkingDirectory $DshSource
-if ($sourceHeadBefore -ne $expectedCommit) {
-  throw "Stock DSH HEAD is $sourceHeadBefore; expected $expectedCommit"
+if ($sourceHeadBefore -ne $ExpectedDshHead) {
+  throw "Stock DSH HEAD is $sourceHeadBefore; expected $ExpectedDshHead"
 }
 if ($sourceStatusBefore.Length -ne 0) {
   throw "Stock DSH source is not clean: $sourceStatusBefore"
@@ -41,7 +41,7 @@ Write-Output "PROBE_RUN_ID=$runId"
 
 & git clone --local --no-hardlinks --no-checkout $DshSource $cloneRoot
 if ($LASTEXITCODE -ne 0) { throw 'Failed to create disposable stock DSH clone.' }
-& git -C $cloneRoot checkout --detach $expectedCommit
+& git -C $cloneRoot checkout --detach $ExpectedDshHead
 if ($LASTEXITCODE -ne 0) { throw 'Failed to check out the pinned stock DSH commit.' }
 
 Push-Location $cloneRoot

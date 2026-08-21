@@ -11,6 +11,10 @@
     "url": "https://github.com/qkycir-123/dsh-run2skill/issues"
   },
   "homepage": "https://github.com/qkycir-123/dsh-run2skill#readme",
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  },
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -68,9 +72,10 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.7"
+    "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.7 || 0.1.0-rc.8"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.8",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
