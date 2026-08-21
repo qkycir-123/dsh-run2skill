@@ -58,6 +58,7 @@ interface FreezeCandidate {
 }
 
 type SessionCursorV2 = NonNullable<GlobalV2['sessions'][string]>
+type CursorBatchManifestBaseline = NonNullable<SessionCursorV2['batchManifestBaseline']>
 
 function withoutUndefinedActiveBatch(
   cursor: SessionCursorV2,
@@ -105,8 +106,13 @@ export class SessionBatchCoordinator {
   prepareSessionWindow(sessionLifecycleKey: string): Promise<boolean> {
     return this.#global.runExclusive(async current => {
       const cursor = current.sessions[sessionLifecycleKey]
-      if (cursor?.batchManifestBaseline !== undefined) return { value: false }
-      const baseline = await this.#safeBaseline(sessionLifecycleKey, true)
+      const afterTurnEndSeq = this.#windowStart(cursor)
+      if (cursor?.batchManifestBaseline?.afterTurnEndSeq === afterTurnEndSeq) return { value: false }
+      const baseline = await this.#safeBaseline(
+        sessionLifecycleKey,
+        afterTurnEndSeq,
+        (cursor?.observedThroughTurnEndSeq ?? 0) === afterTurnEndSeq,
+      )
       const nextCursor: SessionCursorV2 = {
         observedThroughTurnEndSeq: cursor?.observedThroughTurnEndSeq ?? 0,
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
@@ -140,8 +146,14 @@ export class SessionBatchCoordinator {
 
       const observationChanged = stored === undefined
       if (observationChanged) await this.#observations.put(observation.observationId, observation)
-      const baseline = cursor?.batchManifestBaseline ?? (
-        stored === undefined ? await this.#safeBaseline(observation.sessionLifecycleKey, false) : undefined
+      const windowStart = this.#windowStart(cursor)
+      const boundBaseline = cursor?.batchManifestBaseline?.afterTurnEndSeq === windowStart
+        ? cursor.batchManifestBaseline
+        : undefined
+      const baseline = boundBaseline ?? (
+        stored === undefined
+          ? await this.#safeBaseline(observation.sessionLifecycleKey, windowStart, false)
+          : undefined
       )
       const nextCursor: SessionCursorV2 = {
         observedThroughTurnEndSeq: Math.max(cursor?.observedThroughTurnEndSeq ?? 0, observation.turnEndSeq),
@@ -278,6 +290,20 @@ export class SessionBatchCoordinator {
       if (cursor === undefined) throw new SessionBatchStateConflictError('Active batch has no durable Session cursor')
       sessions[lifecycleKey] = { ...cursor, activeBatchId: active[0]!.batchId, updatedAt: this.#isoNow() }
     }
+    for (const [lifecycleKey, cursor] of Object.entries(sessions)) {
+      const windowStart = this.#windowStart(cursor)
+      const baseline = cursor.batchManifestBaseline
+      if (baseline?.afterTurnEndSeq === windowStart) continue
+      if (cursor.observedThroughTurnEndSeq > windowStart) {
+        sessions[lifecycleKey] = {
+          ...cursor,
+          batchManifestBaseline: this.#unavailableBaseline(windowStart),
+          updatedAt: this.#isoNow(),
+        }
+      } else if (baseline !== undefined) {
+        sessions[lifecycleKey] = withoutBatchManifestBaseline(cursor)
+      }
+    }
     return { ...current, sessions }
   }
 
@@ -303,7 +329,11 @@ export class SessionBatchCoordinator {
     if (candidate === undefined) return { global: current, changed: false }
     const first = candidate.observations[0]!
     const last = candidate.observations.at(-1)!
-    const baseline = cursor.batchManifestBaseline ?? await this.#safeBaseline(lifecycleKey, false)
+    const windowStart = cursor.detectedThroughTurnEndSeq
+    const boundBaseline = cursor.batchManifestBaseline?.afterTurnEndSeq === windowStart
+      ? cursor.batchManifestBaseline
+      : await this.#safeBaseline(lifecycleKey, windowStart, false)
+    const { afterTurnEndSeq: _afterTurnEndSeq, ...baseline } = boundBaseline
     const routeSnapshot = await this.#captureRouteSnapshot(lifecycleKey, candidate.observations)
     const facts = {
       sessionLifecycleKey: lifecycleKey,
@@ -423,18 +453,36 @@ export class SessionBatchCoordinator {
 
   async #safeBaseline(
     sessionLifecycleKey: string,
+    afterTurnEndSeq: number,
     atPreTurnBoundary: boolean,
-  ): Promise<SessionBatchV2['batchManifestBaseline']> {
+  ): Promise<CursorBatchManifestBaseline> {
     try {
       const baseline = await this.#captureBaseline(sessionLifecycleKey)
-      return { ...baseline, complete: atPreTurnBoundary && baseline.complete }
-    } catch {
       return {
-        observedAt: this.#isoNow(),
-        rootManifestDigest: sha256Utf8(''),
-        runtimeCatalogDigest: sha256Utf8(''),
-        complete: false,
+        ...baseline,
+        afterTurnEndSeq,
+        complete: atPreTurnBoundary && baseline.complete,
       }
+    } catch {
+      return this.#unavailableBaseline(afterTurnEndSeq)
     }
+  }
+
+  #unavailableBaseline(afterTurnEndSeq: number): CursorBatchManifestBaseline {
+    return {
+      observedAt: this.#isoNow(),
+      rootManifestDigest: sha256Utf8(''),
+      runtimeCatalogDigest: sha256Utf8(''),
+      complete: false,
+      afterTurnEndSeq,
+    }
+  }
+
+  #windowStart(cursor: SessionCursorV2 | undefined): number {
+    if (cursor?.activeBatchId !== undefined) {
+      const active = this.#batches.get(cursor.activeBatchId)
+      if (active !== undefined && !TERMINAL_BATCH_STATES.has(active.state)) return active.lastTurnEndSeq
+    }
+    return cursor?.detectedThroughTurnEndSeq ?? 0
   }
 }

@@ -203,6 +203,50 @@ describe('v2 SessionBatch coordinator', () => {
     expect([...domain.sessionBatches.values()][0]?.batchManifestBaseline.complete).toBe(false)
   })
 
+  it('keeps a missing pre-turn baseline incomplete after an observation-only crash window', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const value = observation({ seq: 1, observedAt: 1 })
+    await domain.table('turn_observations').put(value.observationId, value)
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await recovered.recover(1)
+    const lifecycleKey = value.sessionLifecycleKey
+    expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline).toMatchObject({
+      afterTurnEndSeq: 0,
+      complete: false,
+    })
+    expect(await recovered.prepareSessionWindow(lifecycleKey)).toBe(false)
+    expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline?.complete).toBe(false)
+  })
+
+  it('does not reuse the consumed baseline after a batch-only crash window', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    let digest = '1'.repeat(64)
+    const options = coordinatorOptions({
+      captureBaseline: async () => ({ ...context().batchManifestBaseline, rootManifestDigest: digest }),
+    })
+    const first = new SessionBatchCoordinator(domain, options)
+    const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+    await first.prepareSessionWindow(lifecycleKey)
+    for (let index = 1; index <= 4; index += 1) {
+      await first.recordObservation(observation({ seq: index, observedAt: index }))
+    }
+    const beforeBatchCommit = domain.global.get()
+    await first.recordObservation(observation({ seq: 5, observedAt: 5 }))
+    await domain.global.set(beforeBatchCommit)
+    digest = '2'.repeat(64)
+
+    const recovered = new SessionBatchCoordinator(domain, options)
+    await recovered.recover(5)
+    expect(domain.global.get().sessions[lifecycleKey]?.activeBatchId).toBeDefined()
+    expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline).toBeUndefined()
+    expect(await recovered.prepareSessionWindow(lifecycleKey)).toBe(true)
+    expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline).toMatchObject({
+      afterTurnEndSeq: 5,
+      rootManifestDigest: '2'.repeat(64),
+      complete: true,
+    })
+  })
+
   it('rejects changed facts at an existing observation identity', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())

@@ -1117,7 +1117,9 @@ const SessionCursorV2Schema = z.object({
   detectedThroughTurnEndSeq: safeNonNegativeInteger,
   activeBatchId: z.string().regex(/^batch_[a-f0-9]{64}$/).optional(),
   lastActivityAt: isoDateTime.optional(),
-  batchManifestBaseline: BatchManifestBaselineV2Schema.optional(),
+  batchManifestBaseline: BatchManifestBaselineV2Schema.extend({
+    afterTurnEndSeq: safeNonNegativeInteger,
+  }).strict().optional(),
   openExperienceCarry: z.array(z.object({
     summary: z.string().min(1).max(2048),
     behaviorSignatureDraft: sha256Hex,
@@ -1129,6 +1131,15 @@ const SessionCursorV2Schema = z.object({
   if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
     context.addIssue({ code: 'custom', path: ['detectedThroughTurnEndSeq'], message: 'Detected cursor cannot exceed observed cursor' })
   }
+  if (value.batchManifestBaseline !== undefined && (
+    value.batchManifestBaseline.afterTurnEndSeq < value.detectedThroughTurnEndSeq
+    || value.batchManifestBaseline.afterTurnEndSeq > value.observedThroughTurnEndSeq
+  )) context.addIssue({ code: 'custom', path: ['batchManifestBaseline'], message: 'Batch baseline binding must stay inside the durable cursor range' })
+  if (
+    value.activeBatchId === undefined
+    && value.batchManifestBaseline !== undefined
+    && value.batchManifestBaseline.afterTurnEndSeq !== value.detectedThroughTurnEndSeq
+  ) context.addIssue({ code: 'custom', path: ['batchManifestBaseline'], message: 'Pending batch baseline must bind the detected cursor' })
 })
 
 const ObserverStartWatermarkV2Schema = z.object({
