@@ -85,6 +85,7 @@ dsh plugin --profile web remove dsh-run2skill
 - [版本变化](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/CHANGELOG.md)
 - [DSH 兼容性](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/docs/compatibility.md)
 - [数据存储与升级](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/docs/storage-and-upgrades.md)
+- [同一 Skill 保存意图的单一生成所有者设计](docs/design/single-owner-skill-save.md)
 - [贡献指南](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/CONTRIBUTING.md)
 - [维护者兼容性探针](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/probes/README.md)
 
