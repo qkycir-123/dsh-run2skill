@@ -261,8 +261,10 @@ export function createMinimalV2Fixtures() {
         intentId: experienceIntent.intentId,
         generationRevision: 1,
         ...(['CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'].includes(kind) ? { callId: sealedResult.callId } : {}),
-        catalogEpoch: ['RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED'].includes(kind)
-          ? sealedResult.outcomeCatalogEpoch
+        catalogEpoch: ['BODY_COMMITTED', 'INDEX_COMMITTED'].includes(kind)
+          ? sealedResult.outcomeCatalogEpoch + 1
+          : ['RESULT_SEALED', 'PROPOSAL_AUTHORIZED'].includes(kind)
+            ? sealedResult.outcomeCatalogEpoch
           : sealedResult.inputCatalogEpoch,
         recordedAt: now,
       })),
@@ -319,7 +321,10 @@ export function createMinimalV2Fixtures() {
       action: 'CREATE' as const,
       body: nativeBody,
       runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
-      pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+      pendingCatalogDigest: proposalReadyIntent.generation.revalidationAuthorization.pendingCatalogDigest,
+      generationResultReceiptDigest: sealedResult.receiptDigest,
+      catalogMutationReceiptDigest: proposalReadyIntent.generation.receipts[5]!.digest,
+      catalogEpoch: sealedResult.outcomeCatalogEpoch + 1,
       targetIdentityDigest: sealedResult.targetDigest,
       state: 'ACTIVE_PROPOSAL' as const,
       createdAt: now,

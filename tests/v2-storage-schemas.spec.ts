@@ -78,6 +78,74 @@ describe('run2skill_v2 storage contract', () => {
       status: 'COVERAGE_ANALYZING',
       coverage: { state: 'ANALYZING' },
     })
+    const refreshedLeaseId = `lease_${'a'.repeat(64)}`
+    const refreshedCallId = `call_${'b'.repeat(64)}`
+    const refreshedSealedResult = {
+      ...fixture.proposalReadyIntent.generation.sealedResult,
+      resultId: `result_${'c'.repeat(64)}`,
+      leaseId: refreshedLeaseId,
+      generationRevision: 2,
+      callId: refreshedCallId,
+      inputDigest: 'd'.repeat(64),
+      pendingCatalogDigest: refreshedRecall.pendingCatalogDigest,
+      inputCatalogEpoch: refreshedRecall.catalogEpoch,
+      outcomeCatalogEpoch: refreshedRecall.catalogEpoch + 1,
+      mutationReceiptDigest: '4'.repeat(64),
+      receiptDigest: '9'.repeat(64),
+    }
+    const {
+      duplicateBarrier: _replacedRefreshBarrier,
+      ...coverageReadyWithoutBarrier
+    } = coverageReadyAfterRefresh
+    const staleAgainAfterRefresh = {
+      ...coverageReadyWithoutBarrier,
+      status: 'NEEDS_ATTENTION' as const,
+      coverage: {
+        state: 'CREATE' as const,
+        inputDigest: 'b'.repeat(64),
+        targetDigest: refreshedSealedResult.targetDigest,
+      },
+      generation: {
+        state: 'NEEDS_ATTENTION' as const,
+        action: 'CREATE' as const,
+        inputDigest: refreshedSealedResult.inputDigest,
+        resultDigest: refreshedSealedResult.receiptDigest,
+        leaseId: refreshedLeaseId,
+        generationRevision: 2,
+        catalogEpoch: refreshedSealedResult.inputCatalogEpoch,
+        externalPendingDigest: refreshedSealedResult.externalPendingDigest,
+        selfExclusionDigest: coverageReadyAfterRefresh.recall.selfExclusion.selfExclusionDigest,
+        sealedResult: refreshedSealedResult,
+        reasonCode: 'STALE_RESULT' as const,
+        userRetryUsed: false,
+        staleRefreshUsed: true,
+        receipts: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'].map((kind, index) => ({
+          kind: kind as 'LEASE_ACQUIRED' | 'CALL_RESERVED' | 'CALL_TERMINAL' | 'RESULT_SEALED',
+          digest: (index + 1).toString(16).repeat(64),
+          leaseId: refreshedLeaseId,
+          intentId: coverageReadyAfterRefresh.intentId,
+          generationRevision: 2,
+          ...(['CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'].includes(kind) ? { callId: refreshedCallId } : {}),
+          catalogEpoch: kind === 'RESULT_SEALED'
+            ? refreshedSealedResult.outcomeCatalogEpoch
+            : refreshedSealedResult.inputCatalogEpoch,
+          recordedAt: coverageReadyAfterRefresh.updatedAt,
+        })),
+      },
+      stageCalls: [...coverageReadyAfterRefresh.stageCalls, {
+        stage: 'GENERATION' as const,
+        intentRevision: 2,
+        callId: refreshedCallId,
+        ordinal: 1,
+        inputDigest: refreshedSealedResult.inputDigest,
+        outputDigest: 'e'.repeat(64),
+        provider: 'deepseek-official',
+        model: 'deepseek-chat',
+        policyVersion: 'generation-v1',
+        outcome: 'SUCCEEDED' as const,
+      }],
+    }
+    expect(ExperienceIntentV2Schema.parse(staleAgainAfterRefresh)).toEqual(staleAgainAfterRefresh)
     const coveredNeedsConfirmation = {
       ...coverageReadyAfterRefresh,
       status: 'COVERED_NEEDS_CONFIRMATION' as const,
@@ -125,6 +193,17 @@ describe('run2skill_v2 storage contract', () => {
     expect(ExperienceIntentV2Schema.safeParse({
       ...fixture.experienceIntent,
       status: 'PROPOSAL_READY',
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.proposalReadyIntent,
+      generation: {
+        ...fixture.proposalReadyIntent.generation,
+        receipts: fixture.proposalReadyIntent.generation.receipts.map(receipt => (
+          ['BODY_COMMITTED', 'INDEX_COMMITTED'].includes(receipt.kind)
+            ? { ...receipt, catalogEpoch: fixture.proposalReadyIntent.generation.sealedResult.outcomeCatalogEpoch }
+            : receipt
+        )),
+      },
     }).success).toBe(false)
     expect(TurnObservationV2Schema.safeParse({
       ...fixture.turnObservation,

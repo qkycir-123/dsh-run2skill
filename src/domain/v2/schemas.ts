@@ -703,8 +703,12 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Generation receipt digests must be unique durable identities' })
   }
   for (const [index, receipt] of generation.receipts.entries()) {
-    const expectedCatalogEpoch = ['RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED'].includes(receipt.kind)
-      ? generation.sealedResult?.outcomeCatalogEpoch
+    const expectedCatalogEpoch = ['BODY_COMMITTED', 'INDEX_COMMITTED'].includes(receipt.kind)
+      ? generation.revalidationAuthorization === undefined
+        ? undefined
+        : generation.revalidationAuthorization.catalogEpoch + 1
+      : ['RESULT_SEALED', 'PROPOSAL_AUTHORIZED'].includes(receipt.kind)
+        ? generation.sealedResult?.outcomeCatalogEpoch
       : receipt.kind === 'BARRIER_COMMITTED'
         ? value.duplicateBarrier?.outcomeCatalogEpoch
         : generation.catalogEpoch
@@ -810,7 +814,7 @@ export const ExperienceIntentV2Schema = z.object({
   if (generation.staleRefreshUsed !== (selfExclusion !== undefined)) {
     context.addIssue({ code: 'custom', path: ['generation', 'staleRefreshUsed'], message: 'Stale refresh marker must match its durable self-exclusion proof' })
   }
-  const resultReplacedBarrier = committedResultStates.has(generation.state)
+  const resultReplacedBarrier = hasAuthoritativeSealedResult
   const hasTerminalCleanupReceipt = value.reasonReceipts.some(receipt => (
     receipt.revision === value.revision
     && ['CONFIRM_DISCARD', 'DISMISS_GENERATION'].includes(receipt.reasonCode)
@@ -1000,6 +1004,9 @@ const NativeProposalRevisionV2Schema = z.object({
   body: SealedSkillBodyV2Schema,
   runtimeCatalogDigest: sha256Hex,
   pendingCatalogDigest: sha256Hex,
+  generationResultReceiptDigest: sha256Hex,
+  catalogMutationReceiptDigest: sha256Hex,
+  catalogEpoch: safeNonNegativeInteger,
   targetIdentityDigest: sha256Hex.optional(),
   state: z.enum(['ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
   reviewReceiptDigest: sha256Hex.optional(),
