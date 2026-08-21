@@ -1,14 +1,14 @@
-# dsh-run2skill v0.1 架构基线
+# dsh-run2skill v0.2 架构基线
 
-状态：已接受；阶段 3 基线 Contract Probe 轮次已完成；2026-08-20 纯插件发布 root contract 与原生 Settings RPC 窄修订已接受；2026-08-21 durable completed Purge fence 与单一生成所有者窄修订已接受
-文档版本：v0.1
-更新时间：2026-08-21
-产品输入：docs/product/prd.md v0.1（已冻结）
+状态：已接受的发布基线 + #84 核心流程修订待 Design PR 评审
+文档版本：v0.2
+更新时间：2026-08-22
+产品输入：docs/product/prd.md v0.2
 DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
 ## 1. 文档目的与效力
 
-本文把冻结需求转化为 v0.1 的模块职责、稳定契约、状态模型和验证边界。它约束后续 Contract Probe、纵向切片 Design 和实现，但不改变 PRD。
+本文把产品需求转化为 v0.2 的模块职责、稳定契约、状态模型和验证边界。它约束后续 Contract Probe、纵向切片 Design 和实现，但不改变 PRD。
 
 维护者已于 2026-08-19 接受本 Architecture Baseline。该决定允许进入阶段 3 的可丢弃 Contract Probe，但不等于允许跳过探针开始大规模生产实现：
 
@@ -24,40 +24,43 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
 2026-08-21，维护者进一步接受“无感自动沉淀且同一保存意图不能让 Agent 与 run2skill 各生成一次”的产品决定。显式保存和其他 `HIGH` evidence 在 run2skill Learning 前必须先做 durable ownership arbitration：有效 Agent Skill 已经与当前意图精确绑定时以 `RESOLVED_BY_AGENT` 静默完成；只有完整证据证明本回合没有发生 Skill 生成行为时，run2skill 才取得生成所有权。该窄修订不授权自动发布，也不能退化为两边生成后再去重。
 
+2026-08-22，#84 把逐 Turn Cheap Trigger/WorkItem/单阶段 Learning 替换为 `TurnObservation -> SessionBatch -> ExperienceIntent`：每 5 个完整 Turn、idle 30 分钟或显式保存触发一次批次检测，随后依次执行 Agent-first ownership、complete Catalog 全量摘要筛选、完整候选 coverage 与独立 generation。完整状态机、调用账本和 `run2skill_v1 -> run2skill_v2` Migration ADR 见 [`docs/design/issue-84-session-batch-learning.md`](../design/issue-84-session-batch-learning.md)；与本节旧机制冲突的逐 Turn描述均以该 Design 和本文修订段落为准。
+
 本文中的“必须”来自冻结 PRD 或为满足它而不可缺少的技术约束；“候选”表示可在 Design 中细化但不得破坏稳定契约；“Contract Probe”表示源码不足以证明、必须在固定 DSH baseline 上运行验证的事项。
 
 ## 2. 架构摘要与不变量
 
 ### 2.1 一句话架构
 
-dsh-run2skill 是一个双面 DSH 插件：Host 在 Root Session 首步为可能的保存意图建立轻量基线，在 turn/end 把高置信信号持久化为本地 Work Item，并基于全部有效 filesystem roots、工具生成迹象和 exact Skill readback 先裁决唯一生成所有者；只有 `RUN2SKILL_OWNED` 才通过继承当前 Session 路由的受限 LLM 调用形成可审核 Proposal。Web Client 只展示和提交不可变授权；Host 在完整 Skill 观察、路径、秘密、Base/expected-absence 和格式 Guards 全部通过后发布原生 SKILL.md，并以 DSH Registry 精确回读确认最终结果。
+dsh-run2skill 是一个双面 DSH 插件：Host 在每个 durable root turn/end 只持久化最小 TurnObservation，在 5 Turn、idle 30 分钟或显式保存边界冻结 SessionBatch 并检测 ExperienceIntent；Intent 先经 Agent-first 单一所有者裁决，再用 complete Catalog 的全量摘要扫描和完整候选正文做独立 coverage，只有明确 CREATE 或唯一安全 MERGE 才进入 generation。Web Client 只展示和提交不可变授权；Host 在完整 Skill 观察、路径、秘密、Base/expected-absence 和格式 Guards 全部通过后发布原生 SKILL.md，并以 DSH Registry 精确回读确认最终结果。
 
 ### 2.2 不可违反的不变量
 
 1. Core 不实现 Agent Runtime、Session、Skill Registry、Model Router、Settings 或 Web Server。
 2. DSH 专有调用只存在于 Adapter；领域 Core 不导入 Cordis 或 DSH Runtime。
-3. 自动学习主边界仅为 Root/User-facing Session 的 turn/end。
-4. 显式保存与 HIGH evidence 必须先进入 durable Work Item，并完成单一所有者裁决，Learning 才能开始。
-5. 同一 `SaveIntentId` 只能有一个生成所有者；不得让 Agent 与 run2skill 都生成后再丢弃其中一个。
-6. `RESOLVED_BY_AGENT` 必须由全部有效 filesystem roots 的完整观察、winning Skill exact readback 和当前 SaveIntent 的目标/行为绑定共同证明；只复用既有 Agent 回复/工具结果，不额外显示 Toast 或 Proposal。
-7. root/catalog 不完整、意图绑定不确定或存在失败写入、完整 Skill 参数、Shell 重写等可能生成迹象时必须等待确认，不能调用 Learning。
-8. 同一 Root Session 最多一个 Learning Analysis；重复事件和重复点击必须幂等。
+3. `turn/end` 只形成 TurnObservation；普通自动语义检测边界是 5 个完整 Turn、idle 30 分钟或显式保存。
+4. READY ExperienceIntent 必须完成单一所有者裁决，recall/coverage/generation 才能开始。
+5. 同一 behavior signature + scope 只能有一个生成所有者、一个 active lineage 和一个 Proposal；不得让 Agent 与 Run2Skill 都生成后再丢弃其中一个。
+6. `RESOLVED_BY_AGENT` 必须由 batch baseline、全部有效 filesystem roots 的完整观察、winning Skill exact readback 和当前 Intent 的目标/行为绑定共同证明；只复用既有 Agent 回复/工具结果，不额外显示 Toast 或 Proposal。
+7. baseline/root/catalog/get 不完整、意图绑定不确定或存在失败写入、完整 Skill 参数、Shell 重写等可能生成迹象时必须等待确认，后续模型调用为 0。
+8. 同一 Session lifecycle 最多一个 active SessionBatch worker；重复 event、idle/threshold 竞争和重复点击必须幂等。
 9. 模型只通过 ctx.llm，provider/model 继承实际 Session 请求，不做静默 fallback。
-10. 不完整 Skill Catalog 只能提供候选，不能证明 absence、coverage、所有权或可发布。
-11. 浏览器不拥有 Proposal 内容；Approve 只引用 Host 保存的 revision 和 digest。
-12. Review Decision 与 Publication Outcome 分开保存。
-13. 发布是 fail-closed 的 compare-and-exchange 流程；普通原子覆盖不够。
-14. 写盘不等于 PUBLISHED；相同 cwd/scope 下完整 Registry 精确回读才等于 PUBLISHED。
-15. run2skill 的任何故障不得阻断 DSH 主 Agent。
+10. 不完整 Catalog 或未完整扫描的 summary 不能证明 absence、coverage、所有权或可发布；候选正文不得截断后用于 MERGE/DISCARD。
+11. Detector、Catalog scan、coverage、generation 使用独立 schema、预算和 durable ledger；COVERED 不生成 Proposal。
+12. 浏览器不拥有 Proposal 内容；Approve 只引用 Host 保存的 revision 和 digest。
+13. Review Decision 与 Publication Outcome 分开保存。
+14. 发布是 fail-closed 的 compare-and-exchange 流程；普通原子覆盖不够。
+15. 写盘不等于 PUBLISHED；相同 cwd/scope 下完整 Registry 精确回读才等于 PUBLISHED。
+16. Run2Skill 的任何故障不得阻断 DSH 主 Agent。
 
 ### 2.3 决策成熟度
 
 | 类别 | 当前结论 |
 |---|---|
-| 已接受架构方向 | 双面单插件、薄 DSH Adapter、领域 Core、DSH Storage Domain、受限单阶段 Learning、完整 Catalog Lookup、Host 权威审批、原生 Skill 发布 |
+| 已接受架构方向 | 双面单插件、薄 DSH Adapter、领域 Core、DSH Storage Domain、SessionBatch 检测、Agent-first ownership、全量 Catalog 摘要扫描、full-body coverage、独立 generation、Host 权威审批、原生 Skill 发布 |
 | 必须先探针验证 | turn/end 冷启动补偿、stock DSH 默认 Skill root contract、跨平台 compare-exchange、Web loopback 通道、Registry 热回读、安装/禁用/升级/卸载 |
 | 留给切片 Design | 具体类名、React 组件、内部函数签名、提示词措辞、精确超时常数、视觉样式 |
-| v0.1 不做 | 自动发布、远程审批、向量数据库、完整 History UI、Rollback UI、自动 Git 操作、独立模型选择器 |
+| v0.2 不做 | 自动发布、大型 Skill 自动 patch merge、远程审批、向量数据库、完整 History UI、Rollback UI、自动 Git 操作、独立模型选择器 |
 
 ## 3. 系统上下文
 
@@ -88,13 +91,13 @@ flowchart LR
 
 | 能力 | DSH owns / 直接复用 | run2skill owns |
 |---|---|---|
-| Session | SessionHeader、session/event、turn/end、持久日志与事件坐标 | Root 判定、Cheap Trigger、TurnObservation、幂等 key、冷启动补偿 |
+| Session | SessionHeader、session/event、turn/end、持久日志与事件坐标 | Root 判定、TurnObservation、SessionBatch 水位/idle、幂等 key、冷启动补偿 |
 | Workspace | ctx.workspaceRegistry 的稳定 id、realpath 规范化路径和状态 | Proposal 的 WorkspaceBinding、scope 证据、发布时重新验证 |
-| LLM | ctx.llm 路由、Adapter、stream、usage、取消、失败协议 | Learning Envelope、提示词、结构化解析、上限、重试与结果校验 |
-| Skill Catalog | ctx.skills.snapshot/list/get、rank、complete、热失效、stock filesystem provider 的有效 root 配置 | recall、writable 判定、语义策展、全部有效 root 的 ownership manifest、完整性 Guard、精确回读 |
+| LLM | ctx.llm 路由、Adapter、stream、usage、取消、失败协议 | Detector/Catalog/Coverage/Generation Envelope、独立账本、结构化解析、上限与结果校验 |
+| Skill Catalog | ctx.skills.snapshot/list/get、rank、complete、热失效、stock filesystem provider 的有效 root 配置 | 全量 summary classification、完整正文能力、coverage、writable 判定、全部有效 root 的 ownership manifest、完整性 Guard、精确回读 |
 | Skill 文件格式 | DSH Skill name、frontmatter、invocation 语义 | canonical renderer、Proposal digest、secret/path/Base Guards |
 | Settings | ctx.settings namespace、默认值、revision、live watch | run2skill 可编辑字段及 Analysis 启动快照 |
-| Storage | ctx.storage.domain、backend durability、单 domain 写序列 | WorkItem/Lineage schema、恢复 saga、Purge 语义 |
+| Storage | ctx.storage.domain、backend durability、单 domain 写序列 | v2 TurnObservation/SessionBatch/Intent/Lineage schema、v1 migration、恢复 saga、Purge 语义 |
 | Web transport | ctx.connection、Host/Origin fence、client module system、slot | /run2skill loopback RPC、DTO、Client Inbox 与轮询 |
 | 文件发布 | DSH home path helper、原子 staging/锁工具可复用部分 | compare-and-exchange、journal、路径证明、回读事务 |
 | 插件生命周期 | Cordis Loader、dsh.client、profile/plugin 命令 | 一个可发布包的 Host/Client entry、兼容检查与安装验收 |
@@ -105,26 +108,17 @@ flowchart LR
 
 ### 5.1 核心聚合
 
-#### WorkItem
+#### TurnObservation
 
-一个 WorkItem 对应一个 Root Session 中一个确定性学习检查点，可合并同一 Turn 内的多个相关信号。它是 pending、Learning、Proposal、Review、Publication Journal 的事务聚合。
+一个 TurnObservation 对应一个 durable Root Turn 的不可变最小投影，保存 lifecycle/turn/event 坐标、WorkspaceBinding、脱敏 direct-user evidence、Assistant/Tool outcome 摘要、route、completeness 和 content digest。它不保存 Whole Session、原始 Tool output 或文件全文。
 
-稳定字段至少包含：
+#### SessionBatch
 
-- workItemId；
-- signalKey；
-- rootSessionId、turn、turnEndSeq、createdAt、updatedAt；
-- trigger kinds 与过滤后的 EvidenceRef；
-- WorkspaceBinding 或明确的无 workspace 原因；
-- ownershipState、TurnBaselineId、EffectiveFilesystemRootSet digest 与各 root completeness；
-- path-free 的 manifest/catalog 摘要、GenerationEvidence 与 IntentBinding；
-- processingState；
-- Experience Records；
-- immutable ProposalSnapshot；
-- Review Decision；
-- Publication Outcome；
-- retry counters、usage、结构化 failure；
-- Publication Journal。
+一个 SessionBatch 对应 `detectedThrough + 1` 到冻结尾部的连续 Turn 范围。`batchId` 由 lifecycle、首尾 turnEndSeq 和 detector policy 派生；threshold/idle/explicit 只作为可合并 triggerReasons。聚合保存冻结 observations、manifest 前后事实、Detector 状态和阶段调用账本。
+
+#### ExperienceIntent
+
+一个 ExperienceIntent 对应 Detector 识别出的可复用行为，保存 behavior signature、evidence digests、scope intent、所有权、Catalog observation、候选能力、coverage、generation 和唯一 lineage。它是 Proposal 生成前的事务聚合；同一 scope + behavior signature 只能有一个 active lineage owner。
 
 #### ProposalSnapshot
 
@@ -150,7 +144,7 @@ Lineage 以 scope + canonical target identity 为 key，保存完整 Revision sn
 
 ### 5.2 独立状态维度
 
-所有权裁决是 WorkItem 的持久子状态，不替代完整处理生命周期：
+所有权裁决是 ExperienceIntent 的持久子状态，不替代完整处理生命周期：
 
 ```text
 Ownership State:
@@ -158,14 +152,15 @@ ARBITRATING -> RUN2SKILL_OWNED | RESOLVED_BY_AGENT | NEEDS_CONFIRMATION
 NEEDS_CONFIRMATION -> RUN2SKILL_OWNED | RESOLVED_BY_AGENT | HANDLED_BY_USER
 ```
 
-`RUN2SKILL_OWNED` 表示 WorkItem 可以继续 Learning，不是整个 WorkItem 的终态；`RESOLVED_BY_AGENT` 和 `HANDLED_BY_USER` 是不会进入 Learning/Proposal/Publication 的终态。`NEEDS_CONFIRMATION` 是可恢复等待态，不得同时称为终态。用户确认“Agent 未保存”、重新观察证明 Agent 已保存，或选择“已处理/不再沉淀”时，Host 必须以 `workItemId + expectedRevision + actionId` 执行 CAS；重复 action 返回同一 receipt，stale revision 拒绝，崩溃恢复后不能把已处理项重新投递给 Learning。
+`RUN2SKILL_OWNED` 表示 Intent 可以继续 recall，不是整个 Intent 的终态；`RESOLVED_BY_AGENT` 和 `HANDLED_BY_USER` 不进入后续模型或 Publication。用户动作必须以 `intentId + expectedRevision + actionId` 执行 CAS；重复 action 返回同一 receipt，stale revision 拒绝。
 
 processingState 是内部执行状态，不得替代产品状态：
 
 ```text
-CAPTURED -> ANALYZING -> READY_FOR_REVIEW
-         -> NEEDS_ATTENTION
-CAPTURED(scanStatus=INCOMPLETE) -> CAPTURED(scanStatus=COMPLETE) | RESOLVED_NO_SIGNAL
+SessionBatch: FROZEN -> DETECTION_CLAIMED -> COMMITTED_NONE | COMMITTED_DEFER | COMMITTED_READY | NEEDS_ATTENTION
+ExperienceIntent: READY -> OWNERSHIP_ARBITRATING -> RUN2SKILL_OWNED | RESOLVED_BY_AGENT | NEEDS_CONFIRMATION
+RUN2SKILL_OWNED -> RECALLING -> COVERAGE_ANALYZING -> COVERED | CREATE_AUTHORIZED | MERGE_AUTHORIZED | NEEDS_ATTENTION
+CREATE_AUTHORIZED | MERGE_AUTHORIZED -> GENERATING -> READY_FOR_REVIEW | NEEDS_ATTENTION
 READY_FOR_REVIEW -> PUBLISHING -> TERMINAL
 ```
 
@@ -186,8 +181,10 @@ APPROVED 不能推导 PUBLISHED。磁盘写入事实、Registry 回读事实和�
 
 | 值对象 | 内容 | 规则 |
 |---|---|---|
-| SignalKey | sessionId + SessionLifecycle（createdAt + cwd 原值身份摘要）+ turn/turnEndSeq + TurnInstanceDigest（边界 time + direct user message IDs）+ triggerPolicyVersion | 同一 durable turn/end 重投只能命中一个 WorkItem；Session ID 或未 durable 尾部 seq 被复用时不得混入旧事实 |
-| TurnBaselineId | `"tb_" + sha256Utf8(JSON.stringify({ rootSessionId, sessionCreatedAt, sessionCwdDigest, turn, step: 1, baselinePolicyVersion }))`；字段顺序固定如列示 | 使用与 SignalKey 相同的 UTF-8 canonical JSON + SHA-256 约定；同 lifecycle/turn/版本重放精确复用，不含绝对路径 |
+| ObservationId | SessionLifecycle + turnEndSeq + TurnInstanceDigest | 同一 durable turn/end 重投只能命中一个不可变 TurnObservation |
+| BatchId | SessionLifecycle + first/lastTurnEndSeq + detectorPolicyVersion | threshold/idle/explicit 竞争同一范围时收敛到一个 SessionBatch |
+| IntentId | SessionLifecycle + behaviorSignature + evidenceDigestSet + detectorPolicyVersion | batch replay 与 DEFER carry 不重复 Intent |
+| BehaviorSignatureIndex | persistenceScope + canonical behavior signature | 跨批次/Session 同一行为最多一个 active lineage owner |
 | EffectiveFilesystemRootSet | provider/config digest + project/cwd identity + 全部有效 root 的 source/rank/identity digest/completeness | 与 stock filesystem provider 的实际挂载一致；不能复用只允许发布 `.dsh/skills` 的 RootBinding |
 | GenerationEvidence | 文件工具、Shell、assistant/tool 参数与结果的 path-free 结构化摘要 | 失败写入、完整 Skill 参数、同内容重写或不可归因写入都表示可能已使用生成通道 |
 | IntentBinding | trigger evidence 摘要 + 显式 name/scope/target/behavior contract + matched Skill digest | 只有确定性绑定当前 SaveIntent 与 exact readback Skill 才允许 `RESOLVED_BY_AGENT` |
@@ -205,8 +202,8 @@ APPROVED 不能推导 PUBLISHED。磁盘写入事实、Registry 回读事实和�
 
 Host 负责：
 
-- 观察 Session、构建并持久化 WorkItem；
-- 调用 LLM、查询 Skills、计算 Proposal；
+- 观察 Session，构建并持久化 TurnObservation、SessionBatch 与 ExperienceIntent；
+- 分阶段调用 LLM、完整查询 Skills、计算 coverage 与 Proposal；
 - 保存所有状态与审计事实；
 - 重新验证 Approval 的全部绑定；
 - 发布和回读；
@@ -233,7 +230,7 @@ ctx.connection.rpc.handle('/run2skill', handler, { authority: 'loopback' })
 
 这样每个 /run2skill endpoint 在业务 dispatch 前复用 DSH 的 Host、Origin、Fetch-Metadata 与 loopback 检查。Client 的 ctx.connection.isLoopback 只用于隐藏/禁用 UX，不能代替 Host 授权。
 
-v0.1 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审批。
+v0.2 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审批。
 
 ## 7. 模块职责与稳定契约
 
@@ -254,30 +251,30 @@ v0.1 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 ### 7.3 trigger-coordinator
 
 输入：TurnObservation、Settings snapshot。
-输出：零或一个新/合并 WorkItem。
+输出：幂等 TurnObservation 写入、Session cursor 推进、零或一个 frozen SessionBatch。
 错误：Store 失败进入 RuntimeNotice 和有界重试。
-约束：只做确定性扫描；无信号时不调用模型；显式保存/HIGH evidence 必须先持久化并交给 ownership-arbitrator。
+约束：普通 turn/end 不调用模型；threshold/idle/explicit 竞争通过同一 batchId 和 CAS 收敛。
 
 ### 7.4 ownership-arbitrator
 
-输入：TurnBaseline、TurnObservation、EffectiveFilesystemRootSet、完整前后 manifest/catalog、GenerationEvidence 和 IntentBinding。
+输入：BatchManifest baseline/end、ExperienceIntent、EffectiveFilesystemRootSet、完整前后 manifest/catalog、GenerationEvidence 和 IntentBinding。
 输出：`RUN2SKILL_OWNED`、`RESOLVED_BY_AGENT` 或 `NEEDS_CONFIRMATION` 的 revision-CAS 状态转换。
 错误：任一 root/config/manifest/catalog/readback/intent 事实不完整时返回 `NEEDS_CONFIRMATION`，不调用模型。
-约束：只有能够证明无 Skill 生成行为且完整 manifest 无变化时才授予 run2skill 所有权；Agent 已生成的结论必须由 exact readback 和当前 SaveIntent 绑定证明。
+约束：只有能够证明无 Skill 生成行为且完整 manifest 无变化时才授予 Run2Skill 所有权；Agent 已生成的结论必须由 exact readback 和当前 ExperienceIntent 绑定证明。
 
-### 7.5 learning-engine
+### 7.5 staged-learning-engine
 
-输入：已过滤 Learning Envelope、精确 provider/model、完整 Skill shortlist。
-输出：经 schema 校验的 Experiences、Proposal draft、Curation rationale。
+输入：冻结的 stage-specific Envelope、精确 provider/model、durable StageCallLedger。
+输出：Detector 的 NONE/DEFER/READY、Catalog summary classification、full-body coverage 或已授权 generation 的 Proposal draft。
 错误：timeout、cancel、terminal model failure、invalid structured output。
-约束：无 Tools、Browser、Shell、MCP、Subagent；无 provider fallback。
+约束：各阶段 schema/预算独立；无 Tools、Browser、Shell、MCP、Subagent；无 provider fallback。
 
 ### 7.6 skill-query-adapter
 
-输入：cwd、scope、query tokens、AbortSignal。
-输出：CatalogObservation、EffectiveFilesystemRootSet、有限 shortlist、完整 SkillDefinition。
-错误：complete=false、candidate 消失、provider/source 不支持。
-约束：similarity 只做 recall，不直接决定 MERGE。
+输入：cwd、scope、ExperienceIntent、route budget、AbortSignal。
+输出：complete CatalogObservation、每个 summary 的完整分类、相关候选 exact body 与 capability。
+错误：complete=false、summary scan 不完整、candidate 消失/changed/read failure/body 超总预算。
+约束：不得用 Top N 或未扫描项证明不存在；候选正文不静默截断。
 
 ### 7.7 scope-and-target-resolver
 
@@ -288,7 +285,7 @@ v0.1 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 
 ### 7.8 run2skill-store
 
-输入：WorkItem/Lineage 的 compare-revision 更新与 Purge 请求。
+输入：TurnObservation/SessionBatch/ExperienceIntent/Lineage 的 compare-revision 更新、v1 migration 与 Purge 请求。
 输出：durable snapshot、冲突、恢复扫描。
 错误：backend unavailable、schema mismatch、write conflict。
 约束：使用 DSH Storage Domain；不绕过 Web profile 已装配的 backend，也不自建第二套持久化连接。
@@ -309,7 +306,7 @@ v0.1 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 
 ## 8. 事件、并发与幂等
 
-### 8.1 Root 与触发判定
+### 8.1 Root 与观察边界
 
 Root 判定使用显式事实：
 
@@ -318,91 +315,89 @@ Root 判定使用显式事实：
 - 缺少关键身份且无法从持久 Header 恢复：Needs Attention，不猜测；
 - Child 事件可在 Root 的有界窗口中作为带来源 Evidence。
 
-Cheap Trigger 只读取直接用户来源的消息和显式允许的用户输入，不把 synthetic/tool user-role message 当作 HIGH。规则集版本化，至少识别显式保存、Correction、Constraint、Workflow；Agent 自述、网页文本和 Tool output 不能独立触发 HIGH。每个 Root `turn/end` 都是及时判定机会，但轻量 ingress 只维护坐标级 TurnBuffer；无 direct user 坐标时不读取正文，无信号时不建 WorkItem、不调用模型、不改变 UI。
+每个 Root `turn/end` 只形成脱敏、限长的 TurnObservation。direct-user evidence 可以确定性标记显式保存并触发 immediate batch flush；Correction、Constraint、Workflow 的普通语义归类由 Batch Detector 完成。Agent 自述、网页文本和 Tool output 只能作为带来源数据，不能独立成为指令。1～4 个完整 Turn 且未 idle 30 分钟时不调用额外模型。
 
-### 8.2 Agent 首步基线到 durable ownership
+### 8.2 Batch baseline 到 durable ownership
 
 ```mermaid
 sequenceDiagram
     participant S as DSH Session
     participant O as Session Adapter
-    participant C as Coordinator
+    participant C as Batch Coordinator
     participant R as Store
+    participant D as Batch Detector
     participant A as Ownership Arbitrator
-    participant L as Learning Worker
+    participant L as Recall/Coverage/Generation
 
-    S->>O: agent/pre-step(step=1)
-    O->>O: direct-user Cheap Trigger prefilter
-    alt 明确 miss
-        O-->>S: 不建基线，立即放行
-    else hit / UNKNOWN
-        O->>R: put TurnBaseline before next()
-        R-->>O: durable / incomplete marker
-        O-->>S: 主 Agent 继续
-    end
+    S->>O: batch 首个 agent/pre-step
+    O->>R: put BatchManifest baseline once
+    O-->>S: 主 Agent 继续
     S->>O: session/event(turn/end)
-    O->>O: Root + TurnObservation + Cheap Trigger
-    alt 无信号
-        O->>R: 清理/过期基线
-        O-->>S: 立即返回
-    else 有信号
-        O->>C: enqueue(signalKey, filtered seed)
-        C->>R: put/update WorkItem(CAPTURED, ARBITRATING)
-        R-->>C: durable
-        C->>A: reconcile baseline, roots, catalog, generation, intent
+    O->>R: immutable TurnObservation
+    O->>C: wake cursor scheduler
+    alt 未到 5 Turn/idle/explicit
+        C-->>S: 结束；LLM=0
+    else 到达批次边界
+        C->>R: CAS freeze deterministic SessionBatch
+        C->>D: detect(batchId)
+        D->>R: NONE / DEFER / READY intents
+        alt NONE / DEFER
+            D-->>S: 静默完成
+        else READY
+        D->>A: arbitrate each intent before later LLM
         alt Agent exact Skill 与意图绑定
             A->>R: CAS RESOLVED_BY_AGENT
         else 完整证明未发生 Skill 生成
             A->>R: CAS RUN2SKILL_OWNED
-            A->>L: schedule(workItemId)
+            A->>L: summary scan -> full body -> coverage -> generation
         else 事实不完整或可能已生成
             A->>R: CAS NEEDS_CONFIRMATION
         end
-        O-->>S: observer 隔离；主 Turn 不等待 Learning
+        end
     end
 ```
 
-`agent/pre-step(step=1)` 的 prefilter 必须与最终 capture 使用同一版本 Cheap Trigger 规则，只读取 direct-user message；它的目的只是避免每个 Turn 都扫描昂贵的 root manifest/catalog，不能自行裁决所有权。明确 miss 不建基线；hit/UNKNOWN 才在调用 `next()` 前持久化 baseline。基线写入失败不得阻断 Agent，但该回合必须按证据不完整处理，不能进入 run2skill Learning。
+BatchManifest baseline 在一个新批次的首次 Agent 执行前只建立一次，不做 LLM，也不为每个 Turn 重复扫描。缺 baseline、策略 mismatch 或 identity conflict 不影响 TurnObservation/Detector，但 READY Intent 只能进入 `NEEDS_CONFIRMATION`，不得授予 Run2Skill ownership。
 
-`baselinePolicyVersion` 取建立基线时实际执行的 prefilter policy，不能从恢复时的进程默认值补写。同一 session lifecycle/turn 已有 baseline 时，同版本 pre-step 或 Session 重放必须按 exact `TurnBaselineId` 复用原 manifest/catalog facts，不刷新也不覆盖；策略热变更不能为正在进行的旧 turn 另建并行 baseline。最终 ownership 对账必须比较 persisted `baselinePolicyVersion` 与 `SignalKey.triggerPolicyVersion`：不一致、exact baseline 缺失或 identity 冲突一律 `NEEDS_CONFIRMATION`，不得静默重建、补判 Agent 已解决或授予 run2skill 所有权。热变更后的新 turn 才使用新版本。
-
-DSH 的 Session observer 不等待异步 listener，故实现必须在插件自己的队列中承接错误。Learning Worker 只有在 WorkItem 写入成功且 ownership CAS 为 `RUN2SKILL_OWNED` 后才可启动。Store 失败时：
+DSH 的 Session observer 不等待异步 listener，故实现必须在插件自己的队列中承接错误。后续 worker 只有在 Intent 写入成功且 ownership CAS 为 `RUN2SKILL_OWNED` 后才可启动。Store 失败时：
 
 - 主 Turn 正常结束；
 - 进程内 RuntimeNotice 显示“尚未保存”；
-- 对同一 signalKey 做有界重试；
+- 对同一 observationId/batchId 做有界、幂等重试；
 - 不生成未持久 Proposal；
 - 冷启动补偿扫描尝试从 durable Session Log 找回缺口。
 
 冷启动补偿的精确 Session Persistence API 和扫描水位必须由 CP-SES-001 验证。
 
-Web profile 的 JSON Storage 每次写入会发布整个 domain。扫描水位因此采用 write-behind：命中/blocked WorkItem 立即 durable，无信号水位按计数或低频时间门批量提交；持久水位只能覆盖 Session Persistence 已证实的 durable 连续前缀，不能直接采用 live observed tail。若上游 durable tail 回退，水位必须安全回退并重扫；TurnInstanceDigest 防止复用 turn/seq 时错误合并。进程崩溃只允许造成已扫描尾部重放，不得造成显式 signal 延迟或漏记。
+Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservation 使用有界 write-behind，但显式保存 observation、frozen SessionBatch、StageCallLedger reserve、Intent ownership 和 Proposal 必须立即 durable。持久水位只能覆盖 Session Persistence 已证实的 durable 连续前缀，不能直接采用 live observed tail。若上游 durable tail 回退，水位必须安全回退并重扫；ObservationId 防止复用 turn/seq 时错误合并。
 
 策略首次激活先注册坐标级缓冲，再从 durable snapshot 取得既有 Session 的 activation fence，并把整组 fence 与激活事实一次 durable；Observe 承诺从 fence 提交成功开始。fence snapshot 之后进入缓冲的事件不得被计入旧历史，提交失败则保持 INACTIVE/DEGRADED。已有策略重启复用 durable fence 并执行 listener-before-gap-scan。策略升级不自动重扫旧历史；Slice A 不淘汰生命周期高水位，后续由 Purge/Retention 一致清理。
 
 ### 8.3 单飞、合并与队列
 
-每个 rootSessionId 有一个 single-flight worker，且只有 `ownershipState=RUN2SKILL_OWNED` 的 WorkItem eligible：
+每个 Session lifecycle 有一个 SessionBatch single-flight worker：
 
-- 当前无分析：取最早 CAPTURED WorkItem；
-- 新信号与当前同 Turn/同 objective 且尚未形成 immutable Proposal：合并 Evidence，revision 增加；
-- 其他信号：按 turnEndSeq 排队；
+- 当前无 batch：按 detectedThrough 后的连续观察判断 threshold/idle/explicit；
+- threshold、idle 和 explicit 对相同连续范围派生同一 batchId；
+- 已 claim batch 使用冻结尾部继续，新 Turn 进入下一批；
+- READY Intent 只有 ownership 为 `RUN2SKILL_OWNED` 才进入 recall；
+- BehaviorSignatureIndex 以 scope + signature 串行跨 Session generation；
 - 队列没有无限内存副本，权威队列来自 Store；
 - 进程全局并发另设固定小上限，避免多 Session 形成模型风暴。
 
-显式保存和其他 HIGH 信号在同一 Turn 命中同一 SignalKey，只产生一个用户可见终态。`RESOLVED_BY_AGENT` 复用 Agent 已有回复/工具结果而静默收口；`NEEDS_CONFIRMATION` 只在确需用户处理时进入统一待办入口。
+同一 batch/intent 只产生一个用户可见终态。`NONE`、`DEFER`、`COVERED` 和 `RESOLVED_BY_AGENT` 静默收口；只有确需用户恢复或决策时进入统一 Action Queue。
 
 ### 8.4 启动恢复
 
 启动时按以下顺序恢复：
 
-1. 打开 Store 并校验 schema；
-2. 恢复尚未过期的 TurnBaseline 和 `ARBITRATING` / `NEEDS_CONFIRMATION` ownership 子状态；同版本 exact ID 复用原 baseline，policy mismatch/identity conflict 直接 `NEEDS_CONFIRMATION`；
-3. 恢复 Publication Journal；
-4. 把中断的 ANALYZING 退回 CAPTURED，并增加 attempt，但仅在 ownership 仍为 `RUN2SKILL_OWNED` 时重新 eligible；
-5. 恢复 PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；
-6. 恢复尚未终态的 WorkItem；`RESOLVED_BY_AGENT` / `HANDLED_BY_USER` 不重新排队；
-7. 运行有界 Session gap scan；
+1. 打开 v2 Store 并校验 schema/migration journal；未 COMMITTED 前不启用新 worker；
+2. 恢复 Publication Journal；
+3. 恢复 Session cursor、已冻结 batch 和 idle deadlines；durable 尾部已 idle 30 分钟则走同一 claim 路径；
+4. `DETECTION_CLAIMED` 或其他 stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
+5. 恢复 ownership/recall/coverage/generation 的未终态 Intent；只恢复尚未开始外部调用的确定性步骤；
+6. 恢复 PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；
+7. 运行有界 Session gap scan并幂等补齐 TurnObservation；
 8. 解除启动缓冲并按序处理已接收的实时 `session/event`。
 
 为避免第 6 步扫描期间出现观察空窗，Host 必须在扫描前注册一个只复制事件坐标的轻量 ingress listener；该 listener 不做触发扫描或 Store I/O。恢复水位就绪后再把缓冲事件送入同一幂等 capture 路径。这样“先 gap scan、后实时处理”的恢复语义不变，同时不会漏掉扫描期间新结束的 Turn。
@@ -411,7 +406,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。扫描水位�
 
 ### 8.5 多 Session 同一 Skill
 
-Proposal 生成时可以并存，但 publication-service 以 canonical target path 为串行键。同一 target 的发布：
+Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 串行；相同签名只允许一个 active lineage owner，其他 Intent 只附加 evidence 或进入歧义待办。不同签名仍可能指向同一 target，publication-service 继续以 canonical target path 串行：
 
 - 每次都重新取得完整 Catalog 和文件事实；
 - 先到者成功后，后到者的 Base/expected-absence 必然失效；
@@ -422,7 +417,7 @@ Proposal 生成时可以并存，但 publication-service 以 canonical target pa
 
 ### 9.1 选择
 
-v0.1 复用 `ctx.storage.domain`，物理存储完全服从目标 profile 已装配的 backend。固定 baseline 的 Web profile 实际装配 `storage-json`；run2skill 不直接打开 JSON 文件、SQLite 文件或第二套持久化连接。
+v0.2 继续复用 `ctx.storage.domain`，物理存储完全服从目标 profile 已装配的 backend。固定 baseline 的 Web profile 实际装配 `storage-json`；Run2Skill 不直接打开 JSON 文件、SQLite 文件或第二套持久化连接。
 
 原因：
 
@@ -433,21 +428,24 @@ v0.1 复用 `ctx.storage.domain`，物理存储完全服从目标 profile 已装
 
 ### 9.2 Domain 与表
 
-候选 domain：`run2skill_v1`。DSH Storage 的 unit/table 名必须匹配 `^[a-z][a-z0-9_]*$`，所以不能使用连字符。只使用两个业务表和一个 global：
+新主 domain 为 `run2skill_v2`，Domain version `1`。已发布 `run2skill_v1` 保留只读，不原地 bump。v2 单元：
 
 | 单元 | Key | 内容 |
 |---|---|---|
-| work_items | workItemId | signal、过滤 Evidence、ownership state/evidence、Experience、Proposal、Review、Outcome、usage、Publication Journal |
-| lineages | targetIdentity | 完整 Revision snapshots、manual reconciliation facts |
-| global | 单记录 | schema/policy versions、恢复水位、短期 path-free TurnBaseline map、active Purge journal、completed Purge fences、健康信息索引 |
+| turn_observations | observationId | 最小脱敏 Turn 投影、completeness、route、digest |
+| session_batches | batchId | 连续范围、triggerReasons、manifest、Detector 与阶段账本 |
+| experience_intents | intentId | behavior signature、evidence、ownership、recall、coverage、generation |
+| proposal_lineages | lineageId | 唯一活动 lineage、Proposal/Review/Publication Journal、完整 Revision snapshots |
+| legacy_items | legacy id | v1 pending/Proposal 的兼容处置，不自动重新 Learning |
+| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、migration journal、Purge fences、健康索引 |
 
-global 的无信号扫描水位允许 write-behind；hit/UNKNOWN prefilter 的 TurnBaseline、命中/blocked WorkItem 和 ownership CAS 必须立即 durable，且对应水位不得先于 WorkItem。TurnBaseline 只保留 exact TurnBaselineId 输入字段、root identity/manifest/catalog digest、completeness、policy version、fence 和期限，不保存绝对路径或 Session 原文；转成 WorkItem、明确无信号或过期后幂等清理。同版本重放只能读取原记录，不能 upsert 新观察覆盖基线；baseline/trigger policy mismatch 保留待处理事实。确定性 WorkItem ID 负责重放去重，策略 activation fence 负责阻止规则升级重扫旧历史。
+Session cursor 只能在对应 TurnObservation/SessionBatch 结果 durable 后推进。NONE 提交后可回收观察；DEFER 只保留有界 carry；READY 的必要证据转入 Intent 后可回收旧观察。BatchManifest 不保存绝对路径或 Session 原文；同版本重放只能读取原记录，不能刷新 baseline。ObservationId、BatchId、IntentId 和 BehaviorSignatureIndex 分别负责事件、调度、经验和 Proposal 去重。
 
 Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 
-- Publication readback 成功后，先在 WorkItem Journal 持久化 RESULT_CONFIRMED 和待提交 Revision；
+- Publication readback 成功后，先在 Proposal Lineage Journal 持久化 RESULT_CONFIRMED 和待提交 Revision；
 - 幂等更新 Lineage；
-- 最后把 WorkItem outcome 提交为 PUBLISHED；
+- 最后把 Proposal outcome 提交为 PUBLISHED；
 - 崩溃后从 Journal 重放缺失的 Lineage 或最终 outcome；
 - 永远不能仅凭 APPROVED 或 WRITE_ATTEMPTED 推导 PUBLISHED。
 
@@ -455,9 +453,11 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 
 - Revision 保存 full snapshot；不使用 delta。
 - Store 只保存过滤后的必要文本、坐标、hash 和元数据，不复制 Whole Session。
-- v0.1.0-alpha 发布前冻结 domain schema；已发布 alpha 之后新增 ownership/baseline 事实不能把旧记录字段缺失解释为 `RUN2SKILL_OWNED`。
+- 已发布 `run2skill_v1` schema 不改写；旧记录字段缺失不能解释为 `RUN2SKILL_OWNED`。
 - D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
-- 单一所有者实现开始前必须用独立 Migration ADR 决定新 domain version 或经证明安全的可选字段迁移；旧 WorkItem/旧 global baseline 缺失一律 fail closed 为不 eligible，并提供备份、升级、回退和重启恢复测试。
+- #84 Migration ADR 选择独立 `run2skill_v2` Domain version 1，按 `NOT_STARTED -> COPYING -> VALIDATING -> COMMITTED` journal copy/validate/commit；COMMITTED 前 v2 对 worker/UI 不可见。
+- v1 已有 Proposal 可经完整校验导入 legacy envelope 并继续 review/publication；未形成 Proposal 的 CAPTURED/ANALYZING 进入 `LEGACY_NEEDS_ATTENTION`，不按新策略静默重放。
+- v1 Lineage、completed Purge fences 和 scope identity 先于 observer activation 迁移；v1 不删除、不改写。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
 - 在首个公开 alpha 前的开发数据可以显式导出后重建，但不得把这种做法用于已发布用户数据。
 
@@ -467,7 +467,7 @@ Purge 是持久 saga：
 
 1. global 写入 purgeId、scope binding 和 hideBefore epoch；
 2. UI 立即过滤命中数据；
-3. 扫描并删除匹配 WorkItem 和 Lineage；
+3. 扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，并保持 v1 legacy 视图不可见；
 4. 校验无正常可见残留；
 5. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
 
@@ -481,35 +481,31 @@ Purge 不删除 DSH Session Log，也不删除已发布 SKILL.md。删除失败�
 
 ### 9.5 物理与进程边界
 
-v0.1 只支持一个 DSH Host 进程作为同一 Storage Domain 的写者。共享同一 DSH Home 的多 Host 并发不作为已支持部署；backend 错误或一致性无法证明时安全停用 run2skill，并保持主 Agent fail open。CP-STO-001 以 Web profile 的 JSON backend 为主路径、SQLite backend 为可移植性对照，验证启动、重启、写序列和错误语义。
+v0.2 只支持一个 DSH Host 进程作为同一 Storage Domain 的写者。共享同一 DSH Home 的多 Host 并发不作为已支持部署；backend 错误或一致性无法证明时安全停用 Run2Skill，并保持主 Agent fail open。CP-STO-001 以 Web profile 的 JSON backend 为主路径、SQLite backend 为可移植性对照，验证启动、重启、写序列和错误语义。
 
 ## 10. Learning Pipeline
 
-### 10.1 单阶段语义调用
+### 10.1 分阶段语义调用
 
-v0.1 采用“单一所有者门 + 确定性前处理 + 一次语义调用 + 最多一次格式修复重试”。下列步骤只对 durable `ownershipState=RUN2SKILL_OWNED` 的 WorkItem 执行：
+v0.2 使用四类独立阶段：
 
-1. 复核 ownership revision 与 Cheap Trigger/scope 证据；
-2. 构建有界 Turn window；
-3. Sensitive Filter；
-4. 完整 Catalog snapshot；
-5. summary-level recall，再加载有限完整 candidates；
-6. 一次 LLM 调用同时返回 Experiences、Proposal、Curation Decision 和理由；
-7. schema parse + Core deterministic validation；
-8. 仅当输出不是合法结构且首轮没有安全终态时，允许一次只针对格式的修复调用。
+1. `DETECTION`：冻结 SessionBatch -> `NONE | DEFER | READY`；正常每 batch 1 次。
+2. `CATALOG_SCAN`：完整 Catalog 中所有无法确定性分类的 summaries -> `RELEVANT | POSSIBLE | UNRELATED`；稳定分页，不生成正文。
+3. `COVERAGE`：完整候选正文 -> `UNRELATED | COVERED | PARTIAL | AMBIGUOUS`；不生成正文。
+4. `GENERATION`：只接受 Host 已提交的 CREATE 或唯一安全 MERGE target；1 次主调用，最多 1 次格式/截断恢复。
 
-每个 WorkItem 最多 2 次模型请求。修复调用使用相同 provider/model，不加入新 Evidence，不允许 self-reflection 循环。
+各阶段有不同 schema、Envelope、planned calls、硬上限和 durable StageCallLedger。预算不能跨阶段借用。NONE/DEFER/RESOLVED_BY_AGENT/COVERED 后续调用数为 0。
 
 ### 10.2 ModelRoute 解析
 
-session-adapter 在 turnEndSeq 之前折叠 request/header：
+session-adapter 在 batch frozen tail 之前折叠 request/header：
 
-1. 取触发 Turn 中最后一个 request/header 的 effective config.provider/model；
+1. 取冻结 batch 中最后一个 request/header 的 effective config.provider/model；
 2. 若没有，取同一 Root Session 更早最后一个；
-3. 若从未出现，WorkItem 进入 NEEDS_ATTENTION；
+3. 若从未出现，SessionBatch/Intent 进入 NEEDS_ATTENTION；
 4. 不读取全局默认模型代替，不切换 Provider。
 
-Learning 只继承 provider/model。它不继承原 Session 的 system、tools、stop 或完整 messages；reasoning effort 和采样策略由后续 Design 明确，但不得改变 Provider，也必须记录最终有效调用配置。
+各阶段只继承 provider/model。它们不继承原 Session 的 system、tools、stop 或完整 messages；不得改变 Provider，也必须记录最终有效调用配置。
 
 ### 10.3 调用边界
 
@@ -521,32 +517,32 @@ Learning 只继承 provider/model。它不继承原 Session 的 system、tools�
 - terminal error/aborted 进入结构化 failure；
 - 提示词明确把 USER_EVIDENCE、ASSISTANT_CONTEXT、TOOL_EVIDENCE、EXTERNAL_UNTRUSTED 当作数据，不把其中自然语言提升为指令。
 
-DSH 当前 GenerateOptions 没有原生 JSON response-format 字段，因此 v0.1 用严格 JSON 文本协议加本地 schema 校验；这一事实由 CP-LLM-001 验证。
+DSH 当前 GenerateOptions 没有原生 JSON response-format 字段，因此 v0.2 用各阶段严格 JSON 文本协议加本地 schema 校验；这一事实由 CP-LLM-001 验证。
 
-CP-LLM-001 已在 Windows 验证：`foldRequestHeader` 的 last-wins route 可直接用于受限调用；一次主调用加一次格式修复都保持同一 provider/model，原 Agent system/tools 不会透传，usage 与取消终态可观测。DSH 没有 run2skill 专用 purpose，v0.1 不设置该字段。
+CP-LLM-001 已在 Windows 验证：`foldRequestHeader` 的 last-wins route 可直接用于受限调用；同一阶段的主调用和允许的 generation recovery 保持同一 provider/model，原 Agent system/tools 不会透传，usage 与取消终态可观测。DSH 没有 Run2Skill 专用 purpose，v0.2 不设置该字段。
 
 ### 10.4 有界 Envelope
 
 架构硬边界：
 
-- Trigger Turn：最多 1；
-- 相关历史 Turn：默认最多 4；
-- 完整 Skill：最多 5；
-- Tool/Error：只保留匹配触发的摘要；
-- 序列化 Envelope：固定硬上限，并根据 resolveModelInfo 的 context 再收窄；
-- Output：固定 maxTokens；
-- 超限时按“低信任外部内容 → 较旧上下文 → 低排名 candidate”顺序裁剪，不裁掉 Trigger Evidence、来源标签和坐标。
+- Detector 只接收冻结 TurnObservation 与最多 3 个有界 DEFER carry；
+- Catalog summary 必须全量分类，超限稳定分页，未完整扫描时 CREATE=0；
+- 候选正文无固定单体 8 KiB 上限，必须完整读取并按 route 总安全输入预算分组；
+- 一个大候选可以独占 coverage Envelope；正文不得静默截断；
+- Tool/Error 只保留与 ExperienceIntent 相关的摘要；
+- Output 使用 stage-specific maxTokens；只有 generation 允许一次格式/截断恢复；
+- 超限时先移除低信任辅助内容、较旧非必要观察和低排名候选；高度相关候选无法完整容纳时进入 NEEDS_ATTENTION。
 
-具体字节、token 和 timeout 数值在 Slice B Design 中以固定 baseline 实测确定，属于内部 policy constant，不暴露为 v0.1 Settings。
+具体字节、token、`MAX_CATALOG_SCAN_CALLS`、`MAX_COVERAGE_CALLS` 和 timeout 在实现 PR 中以模型矩阵测试冻结，属于版本化内部 policy constant，不暴露为 v0.2 Settings。
 
 ### 10.5 结构化结果 Guard
 
 Core 必须拒绝：
 
-- 未知 Experience Type、Curation Decision 或 Scope；
+- 未知 Detector/Catalog/Coverage/Generation 枚举或 Scope；
 - 缺少 supporting evidence；
 - USER 没有明确 HIGH 跨项目意图；
-- MERGE target 不在 shortlist、不可写或跨 Scope；
+- MERGE target 未完整读取、不是唯一 PARTIAL、不可写、跨 Scope 或无法完整安全输出；
 - content 为空、格式非法、name 不符合 DSH 规则；
 - 模型返回的路径/root/Base 与 Host 事实不一致；
 - secret-like value；
@@ -556,15 +552,18 @@ Core 必须拒绝：
 
 ## 11. Existing Skill Lookup 与 Curation
 
-### 11.1 两阶段查询
+### 11.1 完整摘要扫描与全文验证
 
-1. ctx.skills.snapshot({ cwd, scope }) 取得 Effective Catalog；
-2. 若 complete=false，做有界重试；仍不完整则 NEEDS_ATTENTION；
-3. 对 summary 做确定性 recall；
-4. 仅对前 K 个调用 ctx.skills.get()；
-5. body 消失或 observation 失效时重新取得完整 snapshot；
-6. 把完整候选交给 Learning；
-7. Core 按 scope、source、provider、path 和新价值验证 Curation。
+1. `ctx.skills.snapshot({ cwd, scope })` 取得 Effective Catalog；
+2. 若 complete=false，做有界重取；仍不完整则 NEEDS_ATTENTION；
+3. exact name/alias 和确定性无关规则先分类；
+4. 其余全部 summary 在安全输入预算内整体或稳定分页语义扫描；
+5. `RELEVANT` 与 `POSSIBLE` 都调用 `ctx.skills.get()` 精确读取完整正文；
+6. body 消失、identity/digest 变化或 Catalog observation stale 时本轮 fail closed；
+7. 按总模型输入预算安排 full-body coverage，不截断正文；
+8. Core 按完整性、scope、source、provider、writability 和 coverage 汇总 CREATE/MERGE/NEEDS_ATTENTION。
+
+候选 capability 分为 `AVAILABLE`、`UNAVAILABLE`、`READABLE_NOT_MERGEABLE`。确定性大小、只读、scope mismatch 和 identity changed 不机械重试；只有明确瞬态 snapshot/read failure 可有界重取。
 
 ### 11.2 Ownership observation root set
 
@@ -583,11 +582,11 @@ root 解析顺序必须复现 fixed baseline 的 stock provider：`project-dsh` 
 
 root set 还必须包含 provider identity、include-default-roots、resolved config digest 和每个 root 的 identity/completeness。前后 manifest 都完整且每个变化都能映射到完整 `ctx.skills.snapshot({cwd, scope})` 与 `ctx.skills.get()` readback，才允许作所有权结论；任一 root 缺失、watcher/provider 报 `complete=false`、config 漂移、winner/get 消失或 filesystem 变化无法归因时，整个裁决为 `UNKNOWN` 并进入 `NEEDS_CONFIRMATION`。
 
-`RESOLVED_BY_AGENT` 不等于“同回合唯一 Skill 有变化”。它还必须证明 successful write 的 exact Skill name/scope/target 或 behavior contract 与当前 trigger evidence 确定性绑定。无法绑定的唯一变化也进入 `NEEDS_CONFIRMATION`。失败 write、assistant/tool 参数已经包含完整 Skill、任意 Shell 同内容重写或其他不可归因写入均表示可能已使用 Agent 生成通道；即使 manifest 没有净变化也不能授予 run2skill 所有权。只有可以证明没有 Skill 生成行为、root set 完整且前后 manifest 无变化时，才允许 `RUN2SKILL_OWNED`。
+`RESOLVED_BY_AGENT` 不等于“batch 内唯一 Skill 有变化”。它还必须证明 successful write 的 exact Skill name/scope/target 或 behavior contract 与当前 ExperienceIntent 确定性绑定。无法绑定的唯一变化也进入 `NEEDS_CONFIRMATION`。失败 write、assistant/tool 参数已经包含完整 Skill、任意 Shell 同内容重写或其他不可归因写入均表示可能已使用 Agent 生成通道；即使 manifest 没有净变化也不能授予 Run2Skill 所有权。只有可以证明没有 Skill 生成行为、root set 完整且前后 manifest 无变化时，才允许 `RUN2SKILL_OWNED`。
 
 ### 11.3 Writable Skill Set
 
-v0.1 MERGE 只接受同时满足：
+v0.2 MERGE 只接受同时满足：
 
 - provider 是经过 baseline 验证的 filesystem provider；
 - source 为 project-dsh 或 user-dsh；
@@ -598,12 +597,13 @@ v0.1 MERGE 只接受同时满足：
 
 project-agents、user-agents、custom、bundled 和未知 provider 只参与查重，默认只读。只读或另一 Scope 部分覆盖时进入 NEEDS_ATTENTION，不自动 override。
 
-### 11.4 CREATE 与 DISCARD
+### 11.4 Coverage 决策与 CREATE
 
-- CREATE 需要 complete=true、同名 effective Skill 不存在、目标文件/目录不存在、root identity 可证明；
-- DISCARD 需要 complete=true 和完整 target Skill 证明覆盖；
-- 显式保存的 DISCARD 必须进入 Web 让用户确认；
-- Similarity 分数本身不能作出 CREATE/MERGE/DISCARD。
+- 任一完整候选 `COVERED`：静默结束，不生成 Proposal；
+- CREATE 需要 complete Catalog、全部 summaries 已分类、所有相关正文完整且 coverage 为 UNRELATED、同名 effective Skill 不存在、目标文件/目录不存在、root identity 可证明；
+- 唯一 PARTIAL 只有同 Scope、可写且能安全输出完整 merge 时才授权 MERGE；
+- 多个 PARTIAL、任一 AMBIGUOUS、高相关 UNAVAILABLE 或 READABLE_NOT_MERGEABLE partial 进入 NEEDS_ATTENTION；
+- Similarity 分数本身不能作出 CREATE/MERGE/COVERED。
 
 ## 12. Scope 与有效 Root
 
@@ -767,7 +767,7 @@ CP-PUB-001 已在 Windows 与 WSL/Linux 验证上述 hard-link no-replace、外�
 
 ### 14.2 更新模型
 
-Connection generic RPC 是 unary，v0.1 不新增自定义 WebSocket：
+Connection generic RPC 是 unary，v0.2 不新增自定义 WebSocket：
 
 - header action 在页面可见时低频请求 summary；
 - focus/reconnect/审批后立即刷新；
@@ -775,7 +775,7 @@ Connection generic RPC 是 unary，v0.1 不新增自定义 WebSocket：
 - 每个组件最多一个 in-flight request，卸载时 abort；
 - 后台页面停止轮询。
 
-这满足状态更新而不扩张 Host transport。若 Alpha 证明延迟不可接受，再单独评审 push，不在 v0.1 预建。
+这满足状态更新而不扩张 Host transport。若 Alpha 证明延迟不可接受，再单独评审 push，不在 v0.2 预建。
 
 ### 14.3 安全渲染与可访问性
 
@@ -792,7 +792,7 @@ Connection generic RPC 是 unary，v0.1 不新增自定义 WebSocket：
 
 ## 15. Settings 与模型策略
 
-run2skill 注册 namespace：run2skill，v0.1 只暴露：
+Run2Skill 注册 namespace：run2skill，v0.2 只暴露：
 
 ```text
 automaticLearning: boolean = true
@@ -805,7 +805,7 @@ automaticLearning: boolean = true
 - Settings 更新使用 expectedRevision；
 - 每个 Analysis 开始时取得 frozen settings snapshot；
 - 已开始 Analysis 不受后续变更影响；
-- v0.1 不提供 Learning Model selector；
+- v0.2 不提供 Learning Model selector；
 - 模型 route 来自 Session request/header，不来自 Settings。
 
 重试、window、candidate、timeout 和并发上限是版本化内部安全常数，不作为普通用户旋钮；改变它们需要测试与评测证据。
@@ -847,7 +847,7 @@ Proposal 最终 bytes 做独立 secret scan。HIGH evidence 也不能绕过。
 | Agent write 失败、完整 Skill 参数或 Shell/不可归因写入 | 不阻断 | 视为可能已生成；`NEEDS_CONFIRMATION`；不启动 Learning |
 | Agent Skill exact readback 且与 SaveIntent 精确绑定 | 不阻断 | durable `RESOLVED_BY_AGENT`；复用既有 Agent 结果，不额外 Toast/Proposal |
 | Store 暂不可用 | 不阻断 | “尚未保存” RuntimeNotice；有界 retry；不启动 Learning |
-| LLM timeout/failure | 不阻断 | durable WorkItem -> NEEDS_ATTENTION |
+| LLM timeout/failure | 不阻断 | durable Batch/Intent stage -> NEEDS_ATTENTION |
 | structured output 非法 | 不阻断 | 最多一次修复；仍失败 -> NEEDS_ATTENTION |
 | Catalog incomplete | 不阻断 | 不作 Curation/发布结论；NEEDS_ATTENTION |
 | Workspace/root 不可证 | 不阻断 | 禁止 PROJECT/USER 发布；NEEDS_ATTENTION |
@@ -855,7 +855,7 @@ Proposal 最终 bytes 做独立 secret scan。HIGH evidence 也不能绕过。
 | secret/path/format Guard | 不阻断 | APPROVED 保留；Outcome=NEEDS_ATTENTION |
 | 文件 I/O 失败 | 不阻断 | Journal 恢复；PUBLISH_FAILED |
 | 写盘后回读失败 | 不阻断 | 保存磁盘事实；不声称成功 |
-| Web 不可用 | 不阻断 | WorkItem 留在 Action Queue，重启后可见 |
+| Web 不可用 | 不阻断 | Intent/legacy item 留在 Action Queue，重启后可见 |
 
 RuntimeNotice 是 Store 不可用时唯一可能非持久的用户提示。它必须有界、去重并在 Web summary 中暴露；Host 日志同步输出不含敏感内容的健康码。若进程在 pending 写入前崩溃，唯一可靠补偿来自 DSH durable Session Log，因此 CP-SES-001 必须证明 gap scan。
 
@@ -898,7 +898,7 @@ RuntimeNotice 是 Store 不可用时唯一可能非持久的用户提示。它�
 
 ## 19. 候选包与源码边界
 
-v0.1 发布为一个 npm/GitHub 项目 dsh-run2skill，而不是多包 monorepo。一个包同时提供 Host root export 和 ./client bundle，在 package.json 声明 `dsh.client`，并声明一个只负责把该 Host 行插入 profile 的薄 `dsh.bundle` patch。CP-INS-001 已证明缺少 `dsh.bundle` 的依赖只会被当作普通 library，不能由 `dsh plugin add` 自动进入 Web profile。
+v0.2 继续发布为一个 npm/GitHub 项目 dsh-run2skill，而不是多包 monorepo。一个包同时提供 Host root export 和 ./client bundle，在 package.json 声明 `dsh.client`，并声明一个只负责把该 Host 行插入 profile 的薄 `dsh.bundle` patch。CP-INS-001 已证明缺少 `dsh.bundle` 的依赖只会被当作普通 library，不能由 `dsh plugin add` 自动进入 Web profile。
 
 ```text
 dsh-run2skill/
@@ -925,7 +925,7 @@ dsh-run2skill/
 └── docs/
 ```
 
-内部目录不是独立发布包。只有出现真实复用或编译边界压力时才通过 ADR 拆包，避免 v0.1 先建立发布/版本复杂度。
+内部目录不是独立发布包。只有出现真实复用或编译边界压力时才通过 ADR 拆包，避免 v0.2 先建立发布/版本复杂度。
 
 Host 候选依赖注入：
 
@@ -940,8 +940,10 @@ storageDomain, workspaceRegistry, connection
 
 | 切片 | 交付的真实纵向能力 | 依赖的已验证契约 |
 |---|---|---|
-| A Observe | 双面插件可加载；Root turn/end -> durable WorkItem/RuntimeNotice；无模型 | CP-SES-001、CP-STO-001、基本安装 |
-| B Learn | WorkItem -> bounded Envelope -> Experience/Proposal/Needs Attention | CP-LLM-001、Skill summary/read、Settings |
+| A Observe | 双面插件可加载；Root turn/end -> durable TurnObservation；无模型 | CP-SES-001、CP-STO-001、基本安装 |
+| B Batch Detect | 5 Turn/idle/explicit -> SessionBatch -> NONE/DEFER/READY Intent | CP-LLM-001、scheduler/restart probes |
+| B2 Recall/Coverage | ownership -> complete summary scan -> exact body -> coverage | CP-SKL-001、dynamic budget、duplicate probes |
+| B3 Generation | authorized CREATE/MERGE -> Proposal；独立 ledger | CP-LLM-001、output/truncation guards |
 | C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-003、CP-PUB-001、CP-WEB-001 |
 | D Productize | Inbox 完善、Purge、迁移策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
 
@@ -953,12 +955,15 @@ storageDomain, workspaceRegistry, connection
 |---|---|
 | 修改或 fork DSH | 破坏插件边界和上游升级策略 |
 | 新建 Agent/Memory/Model Runtime | 复制 DSH，扩大产品范围 |
-| 每个 step/end 都分析 | 成本和噪声过高，不符合 Run boundary |
-| 无 Trigger 时也调用模型 | 违反零额外调用要求 |
+| 每个 turn/end/step-end 都语义分析 | 成本和噪声过高，不符合 SessionBatch boundary |
+| 1～4 Turn 且未 idle 时调用模型 | 违反零额外调用要求 |
 | Agent 与 run2skill 都生成后再去重 | 已经重复消耗模型 token，且无法安全判断应保留哪份，不满足单一所有者 |
 | 直接使用厂商 SDK | 绕过 ctx.llm、凭据和 Provider 路由 |
 | 自建 JSON/SQLite 持久化连接 | 与 DSH Storage 重叠，增加路径、升级和并发风险 |
-| 向量数据库作为 v0.1 recall | 数据量和需求不足，不能解决语义策展权威性 |
+| 向量数据库作为 v0.2 recall | 数据量和需求不足，不能解决 Catalog 完整性和 coverage 权威性 |
+| Top N summary 作为 absence proof | 未扫描 Catalog 可能已有覆盖 Skill，重复风险不可接受 |
+| 固定单候选 8 KiB 上限 | 把正常大 Skill 粗粒度标成不可用，且与 route 实际总预算无关 |
+| 截断候选后 MERGE/DISCARD | 模型没有看到完整目标，不能证明覆盖或安全生成完整结果 |
 | 浏览器提交最终 Skill 内容 | 破坏 immutable server-side Approval |
 | writeFileAtomic 前 re-read 一次 | 存在 TOCTOU，不能满足 unseen-change 保护 |
 | Approval 后立即记 PUBLISHED | 混淆 Review 与运行时事实 |
@@ -980,18 +985,18 @@ storageDomain, workspaceRegistry, connection
 | CP-ROOT-003 | stock DSH 官方默认 root contract、PROJECT/USER 写入与原生 Registry exact readback | PASS 解除 #48 root-contract 门；不替代 C7 |
 | CP-PUB-001 | Windows/Linux CREATE/MERGE CAS、race、crash、symlink/junction、backup recovery | Slice C 不能发布；不得退化为覆盖 |
 | CP-WEB-001 | 外部双面插件、header slot、/run2skill loopback、LAN/cross-origin 拒绝 | Web Review 边界不成立 |
-| CP-INS-001 | plugin add、web profile、disable、upgrade、uninstall；Skill 卸载后仍可用 | v0.1 不能发布 |
+| CP-INS-001 | plugin add、web profile、disable、upgrade、uninstall；Skill 卸载后仍可用 | v0.2 不能发布 |
 
 ### 22.2 尚待 Design 细化但不改变架构的问题
 
-- Learning Envelope 的精确字节/token/timeout 常数；
+- 各 stage Envelope 的精确字节/token/timeout 和调用硬上限；
 - reasoning effort 是继承 Session 还是使用 Adapter default；
-- deterministic recall 的评分公式；
+- summary deterministic classification 的规则；
 - Client polling 的最终间隔与视觉样式；
 - RuntimeNotice 在 Session header 与 Inbox 中的具体文案；
-- flat Skill 的 MERGE 是否在 v0.1 支持，或只允许 bundle Skill；
+- flat Skill 的 MERGE 是否在 v0.2 支持，或只允许 bundle Skill；
 - Publication backup 在成功后保留多久。
-- ownership 的 Cheap Trigger prefilter 必须在任何昂贵 root manifest/catalog 读取前执行，并与最终 capture 共用版本化规则；其性能预算、缓存和测量阈值在实现 Design 中确定，但不得退化为每个 Turn 全量扫描。
+- batch baseline manifest 的性能预算、缓存和测量阈值；不得退化为每个 Turn 全量扫描。
 
 这些问题不得改变冻结的 provider/scope/review/publication 语义。若实测要求改变产品行为，必须回到 PRD。
 
@@ -999,16 +1004,16 @@ storageDomain, workspaceRegistry, connection
 
 | PRD 需求组 | 责任模块 | 主要验证 |
 |---|---|---|
-| REQ-OBS-001..008 | session-adapter、trigger-coordinator、store | Unit + CP-SES-001 + restart integration |
-| REQ-OBS-009..010 | ownership-arbitrator、skill-query-adapter、store | 全 root contract + exact TurnBaselineId replay/policy-mismatch + intent-binding + generation-evidence + restart/CAS integration |
-| REQ-LRN-001..007 | envelope-builder、sensitive-filter、learning-engine | Unit + CP-LLM-001 + frozen evaluation |
+| REQ-OBS-001..008 | session-adapter、batch-coordinator、store | Unit + 5-Turn/idle/explicit + CP-SES-001 + restart integration |
+| REQ-OBS-009..010 | ownership-arbitrator、skill-query-adapter、store | 全 root contract + BatchManifest replay/policy-mismatch + intent-binding + generation-evidence + restart/CAS integration |
+| REQ-LRN-001..007 | stage envelope builders、sensitive-filter、staged-learning-engine | Unit + stage-ledger/call-budget + CP-LLM-001 + frozen evaluation |
 | REQ-SCP-001..004 | scope-and-target-resolver、workspace adapter | Unit + CP-ROOT-003 |
-| REQ-CUR-001..007 | skill-query-adapter、curation Guard | Unit + CP-SKL-001 + adversarial fixtures |
+| REQ-CUR-001..007 | skill-query-adapter、coverage/generation Guards | complete summary pagination + 9/14/20 KiB candidates + CP-SKL-001 + adversarial fixtures |
 | REQ-REV-001..010 | web-rpc-host、web-client、Proposal aggregate | Browser integration + accessibility + CP-WEB-001 |
 | REQ-PUB-001..009 | publication-service、CAS adapter、Registry readback | CP-PUB-001 + CP-SKL-001 + security integration |
 | REQ-LFC-001..005 | Lineage aggregate、reconciliation、installer | State-machine unit + manual edit/delete E2E + CP-INS-001 |
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
-| 状态与恢复 | WorkItem aggregate、Journal recovery | crash matrix + restart E2E |
+| 状态与恢复 | SessionBatch/Intent aggregates、migration/publication journals | migration + crash matrix + restart E2E |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
 | 五个黄金场景 | 全系统 | Web profile E2E；场景 E 证明 Agent `.agents/skills` 写入只产生 `RESOLVED_BY_AGENT` 且 Learning/Proposal 为 0 |
 
@@ -1019,9 +1024,9 @@ storageDomain, workspaceRegistry, connection
 维护者接受了以下架构边界：
 
 - 接受一个双面单插件和薄 Adapter 边界；
-- 接受 DSH Storage Domain + WorkItem/Lineage saga；
-- 接受单阶段语义调用、最多一次格式修复；
-- 接受 loopback unary RPC + v0.1 polling；
+- 接受 DSH Storage Domain + v2 SessionBatch/Intent/Lineage saga，以及 v1 copy/validate/commit migration；
+- 接受 Detector/Catalog/Coverage/Generation 分阶段调用，只有 generation 最多一次格式/截断恢复；
+- 接受 loopback unary RPC + v0.2 polling；
 - 接受 compare-exchange 为发布硬契约，CP-PUB-001 失败不能降级；
 - 接受 ADR-0001 的 stock DSH 版本化 root contract；配置或身份无法证明时禁用相应 Scope publication；
 - 接受 ownership observation 与 publication RootBinding 分离：前者覆盖全部有效 filesystem roots，并以 exact readback + IntentBinding 支持 durable `RESOLVED_BY_AGENT`；
@@ -1033,5 +1038,5 @@ storageDomain, workspaceRegistry, connection
 - 当前：已批准；
 - 接受方：项目维护者；
 - 批准日期：2026-08-19；
-- 批准的文档版本：v0.1；
-- 接受范围：进入阶段 3 Contract Probe；不跳过探针进入生产实现；2026-08-19 Observe 窄修订随 Slice A Design 一并纳入；2026-08-20 纯插件 root contract 窄修订以 ADR-0001 为准；2026-08-21 单一生成所有者窄修订纳入 PRD 与本基线，具体运行时实现仍须后续已评审 Design 和 migration gate。
+- 批准的原基线版本：v0.1；#84 v0.2 修订待对应 Design PR 评审；
+- 接受范围：原发布与安全边界继续有效；2026-08-22 #84 以 `docs/design/issue-84-session-batch-learning.md` 作为批次核心流程和 migration gate，实施按该文档切片推进。

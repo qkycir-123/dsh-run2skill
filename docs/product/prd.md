@@ -1,15 +1,15 @@
-# dsh-run2skill v0.1 产品需求文档
+# dsh-run2skill v0.2 产品需求文档
 
-状态：v0.1 需求已冻结；2026-08-21 单一生成所有者窄修订已接受
-文档版本：v0.1
-更新时间：2026-08-21
-适用版本：`v0.1.0-alpha`
+状态：v0.2 核心流程修订待 #84 Design PR 评审
+文档版本：v0.2
+更新时间：2026-08-22
+适用版本：`v0.2.0` 开发线
 
-冻结记录：维护者于 2026-08-19 接受当前需求设计，可进入 Architecture Baseline。2026-08-21，维护者接受“无感自动沉淀且同一保存意图不能让 Agent 与 run2skill 各生成一次”的窄修订；该修订新增 durable `RESOLVED_BY_AGENT` 结果，不扩大自动发布权限。后续新增能力原则上进入 v0.2/v0.3；只有歧义、安全缺口或无法实现的 v0.1 要求才修订本版本，并记录原因与重新接受。
+修订记录：维护者于 2026-08-19 接受 v0.1 需求设计；2026-08-21 接受“无感自动沉淀且同一保存意图不能让 Agent 与 Run2Skill 各生成一次”的单一所有者原则。2026-08-22，#84 将逐 Turn Cheap Trigger/单阶段 Learning 修订为 SessionBatch 检测、ExperienceIntent 所有权、完整 Catalog 召回、独立 coverage 与 generation；不扩大自动发布权限。
 
 ## 1. 文档目的与效力
 
-本文定义 `dsh-run2skill v0.1` 的用户问题、产品目标、功能范围、行为规则和验收标准，是该版本产品行为的权威来源。
+本文定义 `dsh-run2skill v0.2` 的用户问题、产品目标、功能范围、行为规则和验收标准，是该版本产品行为的权威来源。
 
 本文不规定模块拆分、存储介质、RPC 实现、包结构或代码方案。相关技术决策应在需求冻结后写入：
 
@@ -51,7 +51,7 @@
 4. 明确批准一次精确变更，并确认 DSH 已真正加载。
 5. 在出现冲突、失败或误判时安全恢复，且不影响 DSH 主 Agent。
 
-### 3.3 v0.1 不服务的用户形态
+### 3.3 v0.2 不服务的用户形态
 
 - 需要团队、组织或公共 Skill 市场的用户；
 - 需要无人审核自动发布的用户；
@@ -83,7 +83,7 @@
 - Provider SDK、OpenAI-compatible Proxy 或 Model Router；
 - 云端 Skill 服务、Multi-Agent 编排平台或自动 Git 发布工具。
 
-## 5. v0.1 产品目标与成功标准
+## 5. v0.2 产品目标与成功标准
 
 ### 5.1 产品目标
 
@@ -101,9 +101,9 @@
 | 指标 | 门槛 |
 |---|---:|
 | 显式保存请求召回率 | 100% |
-| Cheap Trigger precision | ≥ 90% |
-| Cheap Trigger recall | ≥ 90% |
-| 普通无信号 Turn 的额外 Learning Analysis 触发率 | ≤ 5% |
+| Batch Detector ExperienceIntent precision | ≥ 90% |
+| Batch Detector ExperienceIntent recall | ≥ 90% |
+| 1～4 Turn 且未 idle 的额外模型调用 | 0 |
 | Experience Type 可接受率 | ≥ 90% |
 | Persistence Scope 可接受率 | ≥ 90% |
 | `CREATE/MERGE/DISCARD` 可接受率 | ≥ 90% |
@@ -114,9 +114,9 @@ Alpha 还必须分别为 `CORRECTION`、`CONSTRAINT`、`WORKFLOW` 完成至少�
 
 ### 5.3 非目标
 
-v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功或失败中自动发现知识。它只先证明用户明确教出的长期行为可以被可信地沉淀和复用。
+v0.2 不以“自动进化一切”为目标，也不承诺从所有执行成功或失败中自动发现知识。它只先证明用户明确教出的长期行为可以被可信地沉淀和复用。
 
-## 6. v0.1 范围
+## 6. v0.2 范围
 
 ### 6.1 包含
 
@@ -124,7 +124,7 @@ v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功
 - `web` profile 的正式支持；
 - 固定兼容性 baseline 的官方 `web` profile 组合与默认 filesystem Skill roots；
 - Root Session `turn/end` 观察；
-- Cheap Trigger 和显式保存请求；
+- SessionBatch Detector 和显式保存立即 flush；
 - `CORRECTION`、`CONSTRAINT`、`WORKFLOW`；
 - 有界 Learning Window 与 Learning Envelope；
 - Sensitive Data Filter；
@@ -141,7 +141,7 @@ v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功
 
 ### 6.2 延后
 
-下列能力不属于 v0.1：
+下列能力不属于 v0.2：
 
 - `FAILURE_RECOVERY` 自动学习和跨 Run 重复模式学习；
 - 智能 Run segmentation、Session 全量总结和 Subagent 独立学习；
@@ -158,7 +158,7 @@ v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功
 
 ## 7. 产品原则
 
-以下原则是 v0.1 的上位约束：
+以下原则是 v0.2 的上位约束：
 
 1. **DSH-native**：优先复用 DSH 的 Session、Skill、LLM、Settings、Web 和插件能力。
 2. **Run-first**：经验来自真实执行，不是脱离执行事实的聊天摘要。
@@ -175,9 +175,11 @@ v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功
 
 ## 8. 核心概念
 
-### 8.1 Run 与观察边界
+### 8.1 TurnObservation、SessionBatch 与 ExperienceIntent
 
-`Run` 是 run2skill 的学习分析单元，不是 DSH 原生类型。v0.1 以 Root/User-facing Session 的 `turn/end` 作为主要学习检查点，不做复杂 Run segmentation。
+`turn/end` 是可靠观察边界，不再是普通自动 Learning LLM 的逐 Turn 决策边界。每个 durable Root/User-facing Turn 只形成脱敏、限长的 `TurnObservation`；每 5 个完整 Turn、空闲 30 分钟或显式保存时冻结 `SessionBatch` 并执行一次批次语义检测；READY 结果形成最多 3 个 `ExperienceIntent`，再分别完成所有权、召回、覆盖判断和内容生成。
+
+5 Turn 是检查点，不是强制经验边界。未完成经验可以通过有界 `DEFER` carry 延续，不能无限复制 Session 原文或扩大窗口。
 
 ### 8.2 Experience Record
 
@@ -191,7 +193,7 @@ v0.1 不以“自动进化一切”为目标，也不承诺从所有执行成功
 - Session、Turn、Event 坐标；
 - 理解该经验所需的最小 Run Context。
 
-v0.1 的 Experience Type 固定为：
+v0.2 的 Experience Type 固定为：
 
 - `CORRECTION`：用户纠正错误行为或禁止某种做法；
 - `CONSTRAINT`：用户说明项目或个人长期约束；
@@ -258,45 +260,47 @@ run2skill 的历史记录不得凌驾于当前磁盘 `SKILL.md`。
 
 ```mermaid
 flowchart TD
-    A0["Agent 首步：direct-user Cheap Trigger prefilter"] -->|hit / UNKNOWN| A1["持久化轻量 root manifest 基线"]
-    A0 -->|明确 miss| Z["结束，不调用学习模型"]
-    A1 --> A["Root Session turn/end"]
-    A --> B["最终 Cheap Trigger 扫描"]
-    B -->|无信号| Z["结束，不调用学习模型"]
-    B -->|有明确证据| C["持久化 pending record"]
-    C --> R{"所有权对账"}
-    R -->|Agent 已保存且 exact readback/意图绑定完整| RA["RESOLVED_BY_AGENT；不调用学习模型"]
-    R -->|确认未发生 Skill 生成| D["run2skill 取得所有权"]
-    R -->|证据不完整或歧义| N["NEEDS_ATTENTION"]
-    D --> DA["构建并过滤 Learning Envelope"]
-    DA --> E["Learning Model 生成结构化语义结果"]
-    E --> F["Experience Record 与 Skill Proposal"]
-    F --> G["完整 Existing Skill Lookup"]
-    G --> H{"Curation Decision"}
-    H -->|DISCARD| I["必要时由用户确认后记为 DISCARDED"]
-    H -->|CREATE / MERGE| J["Web Proposal Inbox"]
-    J --> K{"用户决定"}
-    K -->|Reject| L["REJECTED + DISCARDED，不修改 Skill"]
-    K -->|Approve| M["Core Guards 与不可变授权校验"]
-    M -->|失败| N["NEEDS_REFRESH / NEEDS_ATTENTION / PUBLISH_FAILED"]
-    M -->|通过| O["写入原生 SKILL.md"]
-    O --> P["DSH 热刷新与完整 Registry 回读"]
-    P -->|内容一致| Q["PUBLISHED"]
-    P -->|未确认| N
+    A["Root Session turn/end"] --> B["持久化最小 TurnObservation；LLM=0"]
+    B --> C{"5 Turn / idle 30m / explicit save"}
+    C -->|未到边界| Z["结束"]
+    C -->|到边界| D["冻结 SessionBatch"]
+    D --> E{"Batch Detector"}
+    E -->|NONE| Z
+    E -->|DEFER| F["保留有界 carry，等待下一批"]
+    E -->|READY| G["最多 3 个 ExperienceIntent"]
+    G --> H{"Agent-first 所有权"}
+    H -->|RESOLVED_BY_AGENT| Z
+    H -->|NEEDS_CONFIRMATION| N["Action Queue"]
+    H -->|RUN2SKILL_OWNED| I["complete Catalog 全量摘要筛选"]
+    I --> J["相关候选完整正文读取"]
+    J --> K{"独立 Coverage"}
+    K -->|COVERED| Z
+    K -->|唯一安全 PARTIAL| M["MERGE Generation"]
+    K -->|全部 UNRELATED 且 absence proof 完整| L["CREATE Generation"]
+    K -->|AMBIGUOUS / unavailable / unsafe| N
+    L --> P["Skill Proposal"]
+    M --> P
+    P --> Q["Web Proposal Inbox"]
+    Q --> R{"用户决定"}
+    R -->|Reject| S["REJECTED，不修改 Skill"]
+    R -->|Approve| T["Core Guards + CAS + 原生写入"]
+    T --> U["完整 Registry exact readback"]
+    U -->|一致| V["PUBLISHED"]
+    U -->|失败| N
 ```
 
 ## 10. 功能需求
 
-### 10.1 观察、触发与待处理记录
+### 10.1 观察、批次与待处理记录
 
 **REQ-OBS-001**
-系统必须以 Root/User-facing Session 的 `turn/end` 为主要自动学习检查点；不得以每个 `step/end` 或 Session close 作为主边界。
+系统必须以 Root/User-facing Session 的 durable `turn/end` 形成幂等 `TurnObservation`。普通 Turn 结束只做无模型、低成本、可恢复的观察记录，不得逐 Turn 调用额外 Learning Model。
 
 **REQ-OBS-002**
-系统必须先执行确定性、低成本的 Cheap Trigger。无信号 Turn 不得调用额外 Learning Model。
+系统必须在每 5 个完整 Turn、最后活动空闲 30 分钟或显式保存 Turn 完成后冻结确定性 `SessionBatch`。1～4 Turn 且未 idle 时新增模型调用必须为 0。
 
 **REQ-OBS-003**
-下列信号必须进入 durable 单一所有者流程；只有裁决为 `RUN2SKILL_OWNED` 才进入 Learning Analysis：
+Batch Detector 只能输出 `NONE | DEFER | READY`。`NONE` 和 `DEFER` 后 recall、coverage、generation 调用必须为 0；READY 最多形成 3 个 ExperienceIntent。下列信号必须被批次检测覆盖，显式保存不得等待阈值：
 
 - 用户明确要求“保存为 Skill”“记住这个流程”等；
 - 用户明确纠正 Agent；
@@ -304,10 +308,10 @@ flowchart TD
 - 用户明确描述可复用工作流。
 
 **REQ-OBS-004**
-显式保存请求和 `HIGH` 证据必须在异步分析前先形成 durable pending record。每条请求最终必须且只能得到一个用户可见结果：
+显式保存请求必须在当前 Turn 完成后立即冻结相关窗口并形成 durable batch。每条请求最终必须且只能得到一个用户可见结果：
 
 - `PENDING_REVIEW` Proposal；
-- `RESOLVED_BY_AGENT`：有效 Skill 已由同一回合 Agent 保存，且 exact catalog readback 与当前 SaveIntent 的目标/行为契约一致；用户可见结果由已有 Agent 回复/工具结果满足，run2skill 不额外显示 Toast 或 Proposal；
+- `RESOLVED_BY_AGENT`：有效 Skill 已由当前批次 Agent 保存，且 exact catalog readback 与 ExperienceIntent 的目标/行为契约一致；用户可见结果由已有 Agent 回复/工具结果满足，Run2Skill 不额外显示 Toast 或 Proposal；
 - 用户确认后的 `DISCARDED`；
 - 可恢复失败 `NEEDS_ATTENTION`。
 
@@ -323,21 +327,21 @@ flowchart TD
 Subagent Child Session 不得独立触发学习，但可以作为 Root Session Proposal 的 Evidence Source。
 
 **REQ-OBS-008**
-同一 Root Session 同时最多运行一个 Learning Analysis。新信号必须持久记录并合并或排队，不得无限并发，也不得丢失。
+同一 Session lifecycle 同时最多运行一个 SessionBatch worker。同一 scope + behavior signature 同时最多一个 active lineage owner；新证据只能幂等合并或排队，不得产生第二个活动 Proposal。
 
 **REQ-OBS-009**
-显式保存请求和其他 `HIGH` 证据在进入 run2skill Learning 前必须完成 durable 单一所有者裁决。系统必须观察当前 Agent Effective Catalog 对应的全部有效 stock filesystem roots，至少包含 `project-dsh`、`project-agents`、实际挂载的 `custom` roots、`user-dsh`、`user-agents` 和 bundled root；不能只复用可发布的 `.dsh/skills` RootBinding。任一 root、配置、manifest、catalog 或 exact definition readback 不完整时，不得把“未观察到写入”当成“Agent 未生成”，必须进入 ownership `NEEDS_CONFIRMATION`，产品待办表现为 `NEEDS_ATTENTION`。
+每个 READY ExperienceIntent 在任何 recall、coverage 或 generation LLM 前必须完成 durable 单一所有者裁决。系统必须观察当前 Agent Effective Catalog 对应的全部有效 stock filesystem roots，至少包含 `project-dsh`、`project-agents`、实际挂载的 `custom` roots、`user-dsh`、`user-agents` 和 bundled root；不能只复用可发布的 `.dsh/skills` RootBinding。任一 batch baseline、root、配置、manifest、catalog 或 exact definition readback 不完整时，不得把“未观察到写入”当成“Agent 未生成”，必须进入 ownership `NEEDS_CONFIRMATION`，且后续模型调用为 0。
 
 **REQ-OBS-010**
-`RESOLVED_BY_AGENT` 只能在以下事实全部成立时提交：本回合 Agent 写入成功；完整 Effective Catalog 的 winning filesystem Skill 经 `ctx.skills.get()` exact readback 有效；Skill 的显式名称/scope/目标或行为契约与当前 trigger evidence 确定性绑定。仅有“同回合唯一 Skill 变化”不构成相关性。失败 write、工具参数或 Agent 输出已包含完整 Skill、Shell 同内容重写、不可归因写入或其他可能已消耗生成通道的迹象都必须进入 `NEEDS_ATTENTION`，不得调用 run2skill Learning。
+`RESOLVED_BY_AGENT` 只能在以下事实全部成立时提交：batch 内 Agent 写入成功；完整 Effective Catalog 的 winning filesystem Skill 经 `ctx.skills.get()` exact readback 有效；Skill 的显式名称/scope/目标或行为契约与当前 ExperienceIntent 确定性绑定。仅有“唯一 Skill 变化”不构成相关性。失败 write、工具参数或 Agent 输出已包含完整 Skill、Shell 同内容重写、不可归因写入或其他可能已消耗生成通道的迹象都必须进入 `NEEDS_CONFIRMATION`，不得调用后续模型。
 
-### 10.2 Learning Window、模型与成本
+### 10.2 分阶段模型与成本
 
 **REQ-LRN-001**
-Learning Window 必须有界、近期优先，顺序为 Trigger Turn、最近相关 Turn、相关 Tool/Error evidence，必要时才向前扩展。不得默认发送整个 Session。
+Batch Detector 输入必须有界、近期优先，只使用冻结 TurnObservation 与最多 3 个 DEFER carry。不得默认发送整个 Session。
 
 **REQ-LRN-002**
-Learning Envelope 只包含完成本次分析所需的最小内容，可包含 Trigger Evidence、相关 Assistant Context、Tool 摘要、坐标、Existing Skill summaries 和少量 shortlisted 完整 Skill。不得默认包含 Whole Session、Whole Repo、Whole Tool Output、全部 Subagent 日志或全部 Existing Skills。
+Detector、Catalog summary scan、full-body coverage 和 CREATE/MERGE generation 必须使用不同输入 schema、输出 schema 与 durable call ledger。每个阶段只包含完成本阶段所需的最小内容，不得把 Catalog coverage 和 Skill 正文生成重新合并成一个调用。
 
 **REQ-LRN-003**
 发送给模型和进入 run2skill 长期 Store 的内容必须先经过敏感信息过滤，并保留来源标签。外部自然语言内容只能作为 evidence，不得作为新指令执行。
@@ -346,10 +350,10 @@ Learning Envelope 只包含完成本次分析所需的最小内容，可包含 T
 所有语义分析必须通过 DSH `ctx.llm`，不得直接接入厂商 SDK、保存 API Key 或实现自有 Provider。
 
 **REQ-LRN-005**
-v0.1 的 provider/model 选择固定为：
+provider/model 选择固定为：
 
-1. 触发 Turn 中最后一次实际请求使用的 effective provider/model；
-2. 若该 Turn 没有模型请求，使用同一 Root Session 最近一次实际请求；
+1. 冻结批次中最后一次实际请求使用的 effective provider/model；
+2. 若该批次没有模型请求，使用同一 Root Session 最近一次实际请求；
 3. 若该 Root Session 从未请求模型，保留 pending 并进入 `NEEDS_ATTENTION`。
 
 任何情况下都不得静默切换到另一 Provider。
@@ -358,7 +362,7 @@ v0.1 的 provider/model 选择固定为：
 Learning Model 必须是只接收有界 Envelope、返回结构化语义结果的受限分析器，不得拥有 Browser、Shell、MCP、Tools 或 Subagents。
 
 **REQ-LRN-007**
-每次 Learning Analysis 的调用次数、输入输出和重试必须有界。系统至少记录 provider、model、input/output token usage 和 outcome，但 v0.1 不要求 Token Dashboard。
+每个阶段的调用次数、输入输出和重试必须独立有界。系统至少记录 stage、input digest、provider、model、input/output usage 和 outcome；阶段不能借用其他阶段预算。相同输入、相同策略的确定性失败不得机械重试，崩溃后 outcome unknown 不得自动重复同一调用。
 
 ### 10.3 作用域判定
 
@@ -372,21 +376,27 @@ Learning Model 必须是只接收有界 Envelope、返回结构化语义结果�
 没有可用 workspace identity 时，只有明确且 `HIGH` 的跨项目长期意图可以形成 USER Proposal；其他情况进入 `NEEDS_ATTENTION`。
 
 **REQ-SCP-004**
-USER 的证据门槛必须高于 PROJECT。v0.1 不自动执行 Project → User promotion、跨 Scope MERGE 或 Local Override。
+USER 的证据门槛必须高于 PROJECT。v0.2 不自动执行 Project → User promotion、跨 Scope MERGE 或 Local Override。
 
 ### 10.4 Existing Skill Lookup 与策展
 
 **REQ-CUR-001**
-系统必须先做 summary-level recall，再只加载少量相关 Skill 的完整定义进行语义策展。Similarity 只用于 Recall，不能直接决定 MERGE。
+系统必须以完整 ExperienceIntent 召回，而不是只使用“保存刚才流程”等触发语句。complete Catalog 的每个 summary 必须得到确定性或语义分类；超出单次预算时稳定分页扫描全部摘要，不得用关键词 Top N 或未扫描项证明不存在。
 
 **REQ-CUR-002**
 Existing Skill Lookup 必须区分：
 
 - Effective Skill Catalog：当前 Agent 实际可见的所有来源；
-- Writable Skill Set：v0.1 仅限明确支持的 `.dsh/skills` 来源。
+- Writable Skill Set：v0.2 仅限明确支持的 `.dsh/skills` 来源。
 
 **REQ-CUR-003**
 `ctx.skills.snapshot()` 的 `complete` 是权威性边界。`complete: false` 可以提供候选，但不能证明不存在匹配 Skill 或已经完全覆盖。系统必须有界重试；仍不完整时进入 `NEEDS_ATTENTION`，不得据此 CREATE、MERGE、DISCARD 或发布。
+
+**REQ-CUR-003A**
+取消单候选固定 8 KiB 限制。相关候选必须完整读取、脱敏并计算 exact digest，再依据当前 route 的总安全输入预算决定 coverage 分组；不得静默截断正文。候选必须区分 `AVAILABLE`、`UNAVAILABLE` 和 `READABLE_NOT_MERGEABLE`，高度相关 UNAVAILABLE 时 `CREATE=0`。
+
+**REQ-CUR-003B**
+coverage 必须是独立短输出阶段，只返回 `UNRELATED | COVERED | PARTIAL | AMBIGUOUS`。任一 COVERED 不生成 Proposal；全部相关候选完整验证为 UNRELATED 才允许 CREATE；只有唯一、同 scope、可写、可安全完整输出的 PARTIAL 才允许 MERGE；其他情况进入 `NEEDS_ATTENTION`。
 
 **REQ-CUR-004**
 同一个 Skill 主要由 Objective、Trigger/whenToUse、Persistence Scope 和 Behavioral Contract 判断。可在不同场景独立触发的能力倾向拆分；同一触发下的补充或纠正倾向 MERGE。MERGE 后无法清晰表达 `whenToUse` 时倾向 CREATE。
@@ -395,7 +405,7 @@ Existing Skill Lookup 必须区分：
 MERGE 只允许同一核心能力、同一 Scope、目标可写且具有新的长期价值时发生。MERGE 可以增加、修改、删除、替换、压缩和去重，不是简单追加。
 
 **REQ-CUR-006**
-若只读来源或另一 Scope 的 Skill 仅部分覆盖 Proposal，v0.1 不得自动 MERGE 或创建 override，必须进入 `NEEDS_ATTENTION`。
+若只读来源、另一 Scope 或大型不可安全合并的 Skill 仅部分覆盖 Intent，系统不得自动 MERGE 或创建同义 override，必须进入 `NEEDS_ATTENTION`。
 
 **REQ-CUR-007**
 `DISCARD` 不得删除 supporting Experience/Evidence。显式保存请求若因“已有 Skill 完全覆盖”拟 DISCARD，Web 必须展示目标 Skill 和覆盖理由，用户确认后才可记为 `DISCARDED`；用户不同意则进入有界重新分析或 `NEEDS_ATTENTION`。
@@ -403,7 +413,7 @@ MERGE 只允许同一核心能力、同一 Scope、目标可写且具有新的�
 ### 10.5 Proposal Inbox 与人工审核
 
 **REQ-REV-001**
-v0.1 正式支持的审批面仅为 DSH `web` profile。Proposal Inbox 是 Action Queue，不是完整 History。
+v0.2 正式支持的审批面仅为 DSH `web` profile。Proposal Inbox 是 Action Queue，不是完整 History。
 
 **REQ-REV-002**
 默认 Inbox 只显示当前 PROJECT Proposal 和 USER Proposal，不得用其他项目 Proposal 干扰当前工作区。
@@ -439,17 +449,17 @@ Approval 只能引用服务器端 immutable Proposal snapshot，不得使用浏�
 Reject 前必须确认，并明确说明：不会修改 Skill、Proposal 将离开 Action Queue、Experience/Evidence 仍按数据策略保留。确认后记录 `Review Decision = REJECTED` 和 `Publication Outcome = DISCARDED`。取消确认不得改变状态。同一 evidence 产生的同一 Proposal 不得下一 Turn 反复弹出。
 
 **REQ-REV-010**
-v0.1 不提供 Approve All、完整 Markdown Editor、inline Scope 切换后直接 Approve 或 Auto Publish。
+v0.2 不提供 Approve All、完整 Markdown Editor、inline Scope 切换后直接 Approve 或 Auto Publish。
 
 ### 10.6 发布与回读
 
 **REQ-PUB-001**
-v0.1 只允许写入：
+v0.2 只允许写入：
 
 - PROJECT：`<project-root>/.dsh/skills/`；
 - USER：有效 `<DSH_HOME>/skills/`。
 
-其他 bundled、runtime、custom、Agents 等来源只参与查重，默认只读。`customSkillDirs`、`includeDefaultRoots=false`、重命名 provider 或自定义 preset 产生的 Skill 仍可参与 Effective Skill Catalog 查重，但 v0.1 不承诺向这些配置发布；无法证明标准目标仍由官方 filesystem provider 以预期 source 加载时，Proposal 必须进入 `NEEDS_ATTENTION`。
+其他 bundled、runtime、custom、Agents 等来源只参与查重，默认只读。`customSkillDirs`、`includeDefaultRoots=false`、重命名 provider 或自定义 preset 产生的 Skill 仍可参与 Effective Skill Catalog 查重，但 v0.2 不承诺向这些配置发布；无法证明标准目标仍由官方 filesystem provider 以预期 source 加载时，Proposal 必须进入 `NEEDS_ATTENTION`。
 
 **REQ-PUB-002**
 CREATE 必须绑定 reviewed expected-absence。发布前若出现同名 effective Skill、文件或目录，必须进入 `NEEDS_REFRESH`，不得覆盖或接管。
@@ -469,7 +479,7 @@ MERGE 必须绑定 reviewed Base content/hash/revision。发布前 Base 不一�
 - secret-like value。
 
 **REQ-PUB-005**
-生成 Skill 默认设置 `modelInvocable = true`、`userInvocable = false`。v0.1 不把学习结果自动暴露为用户命令。
+生成 Skill 默认设置 `modelInvocable = true`、`userInvocable = false`。v0.2 不把学习结果自动暴露为用户命令。
 
 **REQ-PUB-006**
 文件写入成功不等于发布成功。只有在相同 cwd/scope 下：
@@ -498,10 +508,10 @@ CREATE 发布为 `r1`；MERGE 形成下一 Revision。首次 MERGE 普通 Existi
 用户手工修改 Managed Skill 时，磁盘内容优先。系统可在后续 reconciliation 中记录 `MANUAL` Revision，但不得自动恢复旧内容。
 
 **REQ-LFC-003**
-用户删除 Skill 时，系统不得自动复活。CREATE 后名称在 v0.1 保持稳定，MERGE 不自动 rename。
+用户删除 Skill 时，系统不得自动复活。CREATE 后名称在 v0.2 保持稳定，MERGE 不自动 rename。
 
 **REQ-LFC-004**
-完整 Rollback UI 不属于 v0.1；未来恢复旧内容时，恢复动作本身必须形成新 Revision。
+完整 Rollback UI 不属于 v0.2；未来恢复旧内容时，恢复动作本身必须形成新 Revision。
 
 **REQ-LFC-005**
 卸载 run2skill 后，已发布 Skill 必须继续作为合法普通 DSH Skill 使用。用户只失去自动学习、Proposal Inbox、Review 和 run2skill 历史能力。
@@ -512,7 +522,7 @@ CREATE 发布为 `r1`；MERGE 形成下一 Revision。首次 MERGE 普通 Existi
 `Automatic Learning` 默认 ON。关闭后普通后台学习停止，但用户显式“保存为 Skill”请求仍可工作；完全禁用通过禁用或卸载插件实现。
 
 **REQ-CFG-002**
-v0.1 的 Learning Model 策略固定为 `inherit-session`，不提供模型选择器。配置变更从下一次 Learning Analysis 生效，已开始的 Analysis 使用启动时配置快照。
+v0.2 的模型策略固定为 `inherit-session`，不提供模型选择器。配置变更从下一个 Stage claim 生效，已开始的 Stage 使用启动时配置快照。
 
 **REQ-CFG-003**
 用户必须能按当前 PROJECT 或整个 USER scope 清除 run2skill 自有数据，包括 Experience、过滤后的 Evidence、pending、Proposal、Revision metadata 及相关审计/使用记录。
@@ -529,7 +539,7 @@ Purge 确认必须明确区分：
 
 ### 11.1 所有权裁决事实
 
-显式保存和其他 `HIGH` evidence 的 WorkItem 必须先记录独立的 Ownership Outcome：
+每个 READY ExperienceIntent 必须先记录独立的 Ownership Outcome：
 
 ```text
 Ownership Outcome
@@ -539,7 +549,7 @@ NEEDS_CONFIRMATION | HANDLED_BY_USER
 
 `NEEDS_CONFIRMATION` 是可恢复等待态，不是终态。用户确认“Agent 未保存”后可以通过 revision CAS 转为 `RUN2SKILL_OWNED`；用户选择“已处理/不再沉淀”后转为 `HANDLED_BY_USER` 终态。该终态不声称 Agent 已保存。`RESOLVED_BY_AGENT` 和 `HANDLED_BY_USER` 都不得生成 Proposal 或进入 Publication。
 
-ownership `NEEDS_CONFIRMATION` 在产品统一待办中映射为 `NEEDS_ATTENTION`；正常 `RESOLVED_BY_AGENT` 不增加顶部计数、Toast 或 Proposal。所有确认/已处理操作都必须携带 `workItemId + expectedRevision + actionId`，以 CAS 拒绝 stale action，并在崩溃恢复后保留终态，不能仅做易失 UI dismiss。
+ownership `NEEDS_CONFIRMATION` 在产品统一待办中映射为 `NEEDS_ATTENTION`；正常 `RESOLVED_BY_AGENT` 不增加顶部计数、Toast 或 Proposal。所有确认/已处理操作都必须携带 `intentId + expectedRevision + actionId`，以 CAS 拒绝 stale action，并在崩溃恢复后保留终态，不能仅做易失 UI dismiss。
 
 ### 11.2 两类 Proposal 事实
 
@@ -573,7 +583,7 @@ NEEDS_REFRESH | PUBLISHED | PUBLISH_FAILED
 
 ### 12.1 本地优先与数据最小化
 
-v0.1 不提供 run2skill server、账号、cloud history 或 telemetry upload。唯一正常外发路径是经过过滤的 Learning Envelope 发送到用户当前实际选择的 DSH LLM Provider。
+v0.2 不提供 Run2Skill server、账号、cloud history 或 telemetry upload。唯一正常外发路径是经过过滤的阶段 Envelope 发送到用户当前实际选择的 DSH LLM Provider。
 
 run2skill 不能回写或追溯清洗 DSH Session Log。它只能控制自己的派生数据：
 
@@ -591,10 +601,10 @@ Redaction 只是 defense-in-depth，不是完整秘密检测保证；第一道�
 
 ### 12.3 故障语义
 
-- Trigger、Learning Model、Store、Proposal、Web 失败不得阻断 DSH Agent Turn。
+- Observation、Detector、Recall、Coverage、Generation、Store、Proposal、Web 失败不得阻断 DSH Agent Turn。
 - 证据、目录完整性、目标身份、授权或安全不确定时，发布必须 fail closed。
 - 所有重试必须有界，不得无限 self-reflection 或后台风暴。
-- 同一 durable signal 的重复事件不得产生重复 Proposal 或重复发布。
+- 同一 observation/batch/intent 的重复事件不得产生重复 Detector 调用、Proposal 或发布。
 
 ## 13. DSH 集成约束
 
@@ -625,9 +635,9 @@ Redaction 只是 defense-in-depth，不是完整秘密检测保证；第一道�
 
 期望：
 
-1. `turn/end` 触发 `CONSTRAINT` Experience；
-2. 形成 durable pending 和 PROJECT Proposal；
-3. 完整 Existing Skill Lookup 得出 CREATE；
+1. `turn/end` 先持久化 TurnObservation；显式保存则立即 flush，否则在第 5 Turn/idle 30 分钟形成 SessionBatch；
+2. Detector 形成 `CONSTRAINT` ExperienceIntent，所有权裁决为 `RUN2SKILL_OWNED`；
+3. complete Catalog 摘要全量扫描与相关候选全文 coverage 完整证明 CREATE；
 4. Web 展示证据、作用域、exact target 和完整 Skill；
 5. 用户 Approve；
 6. Core Guards 通过并写入 `<project-root>/.dsh/skills/<name>/SKILL.md`；
@@ -682,26 +692,30 @@ MERGE Proposal 基于 `r2`，用户在 Review 完成前手工修改目标 Skill�
 
 期望：
 
-1. run2skill 先形成 durable pending，但不立即调用 Learning Model；
-2. 回合前后的全部有效 filesystem root manifest 完整，`project-agents` 变化可定位；
+1. Run2Skill 先持久化 TurnObservation/SessionBatch，但不在所有权前调用 recall、coverage 或 generation；
+2. 批次前后的全部有效 filesystem root manifest 完整，`project-agents` 变化可定位；
 3. 工具结果成功，完整 `ctx.skills.snapshot()` 和 `ctx.skills.get()` exact readback 证明该文件是当前有效 winning Skill；
 4. Skill 的显式目标或行为契约与 trigger evidence 确定性相关；
-5. WorkItem 提交唯一结果 `RESOLVED_BY_AGENT`，run2skill Learning Job 和 Proposal 数都为 `0`；
-6. 用户只看到本回合既有 Agent 回复/工具结果，run2skill 不额外显示 Toast 或 Proposal；
-7. 若写入失败、只有完整 Skill 参数、同内容 Shell 重写、catalog/root 不完整或意图绑定不明确，则改为 `NEEDS_CONFIRMATION`，仍不调用 run2skill Learning。
+5. ExperienceIntent 提交唯一结果 `RESOLVED_BY_AGENT`，后续 recall/coverage/generation 和 Proposal 数都为 `0`；
+6. 用户只看到本批次既有 Agent 回复/工具结果，Run2Skill 不额外显示 Toast 或 Proposal；
+7. 若写入失败、只有完整 Skill 参数、同内容 Shell 重写、catalog/root 不完整或意图绑定不明确，则改为 `NEEDS_CONFIRMATION`，后续模型调用仍为 0。
 
-## 15. v0.1 完成定义
+## 15. v0.2 完成定义
 
-只有下列条件全部有可复核证据时，才能发布 `v0.1.0-alpha`：
+只有下列条件全部有可复核证据时，才能发布包含 #84 新主链的稳定候选：
 
 - 插件可在 `web` profile 安装、禁用、卸载；
 - 不修改 DSH 源码，卸载后已发布 Skill 继续使用；
 - 正常 Turn 不被 run2skill 阻断；
-- 显式保存、`CORRECTION`、`CONSTRAINT`、`WORKFLOW` 都能形成可追溯 Experience；
-- 显式保存和 `HIGH` evidence 先形成 durable pending，并得到唯一可见终态；
+- 1～4 Turn 未 idle 为 0 调用，第 5 Turn、idle 30 分钟和显式保存都形成唯一 SessionBatch；
+- `NONE/DEFER/READY`、跨批次 carry 和最多 3 个 ExperienceIntent 有可追溯证据；
+- 显式保存和 READY Intent 先形成 durable facts，并得到唯一可见终态；
 - 单一所有者场景覆盖 `.dsh/skills` 与 `.agents/skills` 有效来源；`RESOLVED_BY_AGENT` 有 exact catalog readback 与 IntentBinding 证据，Learning/Proposal 数为 `0`；
-- Proposal 跨 DSH 重启仍存在；
-- PROJECT/USER 判定、Existing Skill Lookup 和 `CREATE/MERGE/DISCARD` 可用；
+- Proposal 跨 DSH 重启仍存在；Detector outcome unknown 不自动重复调用；
+- PROJECT/USER 判定、complete Catalog 全量摘要扫描、full-body coverage 和 `CREATE/MERGE` generation 可用；
+- 8940-byte 与代表性 14/20 KiB Skill 在 route 总预算允许时可完整参与 coverage；
+- coverage 与 generation 使用独立 schema 和调用账本，COVERED 不生成 Proposal；
+- 同一 behavior signature 最多一个 owner、一个 active lineage 和一个 Proposal；
 - `complete: false` 不被当作不存在或完整覆盖的证明；
 - Web 能安全、可访问地展示 Proposal、Evidence、Diff 和精确待写内容；
 - Approval 绑定 immutable Proposal、工作区/DSH Home、版本化 root contract、path、文件身份与 Base/expected-absence；
@@ -712,7 +726,8 @@ MERGE Proposal 基于 `r2`，用户在 Review 完成前手工修改目标 Skill�
 - 生成 Skill 默认 `modelInvocable = true`、`userInvocable = false`；
 - run2skill 错误、模型失败、Web 失败或 Store 暂时失败不影响 DSH 主 Agent；
 - 不静默切换 LLM Provider，不上传 telemetry/cloud 数据；
-- 用户能按 PROJECT/USER 清除 run2skill 自有数据，并看清不会删除的 DSH Session Log 与已发布 Skill；
+- `run2skill_v1 -> run2skill_v2` migration、崩溃恢复和回退边界有测试，旧 pending 不被静默重放；
+- 用户能清除 Run2Skill 自有缓存，并看清不会删除的 DSH Session Log 与已发布 Skill；
 - 冻结评测集和第 5.2 节全部质量门槛通过；
 - 五个黄金场景通过；
 - 公开仓库包含 MIT `LICENSE`。
@@ -738,7 +753,7 @@ Registry readback 只证明发布成功，不证明行为有效；行为验收�
 
 ## 17. v0.2 以后再评估
 
-只有 v0.1 的可信闭环被证明后，才评估：
+只有 v0.2 的可信闭环被证明后，才评估：
 
 - execution-derived `FAILURE_RECOVERY`；
 - repeated evidence、真正的 Run segmentation；
@@ -750,7 +765,7 @@ Registry readback 只证明发布成功，不证明行为有效；行为验收�
 
 ## 18. Alpha 阶段待验证的产品假设
 
-当前没有阻塞 Architecture Baseline 的已知产品问题。下列事项属于 Alpha 产品验证，不影响 v0.1 需求冻结：
+当前没有 #84 Design 之外的已知产品阻塞。下列事项属于 Alpha 产品验证，不影响本次核心流程边界：
 
 1. 用户愿意处理有限、解释充分的 Proposal，而不是认为审核负担过高；
 2. 生成并发布的 Skill 能减少后续重复纠正，而不会显著增加误触发或维护成本。
