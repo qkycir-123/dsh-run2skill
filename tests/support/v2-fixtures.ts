@@ -200,8 +200,10 @@ export function createMinimalV2Fixtures() {
     action: 'CREATE' as const,
     body: nativeBody,
     targetDigest: '6'.repeat(64),
+    inputDigest: 'c'.repeat(64),
     runtimeCatalogDigest: '7'.repeat(64),
     pendingCatalogDigest: '8'.repeat(64),
+    externalPendingDigest: 'd'.repeat(64),
     catalogEpoch: 1,
     sealedAt: now,
     mutationReceiptDigest: '4'.repeat(64),
@@ -234,6 +236,7 @@ export function createMinimalV2Fixtures() {
       leaseId: nativeLeaseId,
       generationRevision: 1,
       catalogEpoch: sealedResult.catalogEpoch,
+      externalPendingDigest: sealedResult.externalPendingDigest,
       sealedResult,
       proposalId: nativeProposalId,
       revalidationAuthorization: {
@@ -241,6 +244,7 @@ export function createMinimalV2Fixtures() {
         pendingCatalogDigest: sealedResult.pendingCatalogDigest,
         externalPendingDigest: 'd'.repeat(64),
         catalogEpoch: sealedResult.catalogEpoch,
+        catalogMutationReceiptDigest: 'c'.repeat(64),
         sealedResultReceiptDigest: sealedResult.receiptDigest,
         authorizedAt: now,
       },
@@ -255,7 +259,7 @@ export function createMinimalV2Fixtures() {
         leaseId: nativeLeaseId,
         intentId: experienceIntent.intentId,
         generationRevision: 1,
-        ...(kind.includes('CALL') ? { callId: sealedResult.callId } : {}),
+        ...(['CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'].includes(kind) ? { callId: sealedResult.callId } : {}),
         catalogEpoch: sealedResult.catalogEpoch,
         recordedAt: now,
       })),
@@ -290,7 +294,7 @@ export function createMinimalV2Fixtures() {
         intentRevision: 1,
         callId: sealedResult.callId,
         ordinal: 1,
-        inputDigest: '5'.repeat(64),
+        inputDigest: sealedResult.inputDigest,
         outputDigest: '6'.repeat(64),
         provider: 'deepseek-official',
         model: 'deepseek-chat',
@@ -334,11 +338,6 @@ export function createMinimalV2Fixtures() {
     receiptDigest: 'f'.repeat(64),
   }
   const {
-    revalidationAuthorization: _staleAuthorization,
-    proposalId: _staleProposalId,
-    ...staleGenerationBase
-  } = proposalReadyIntent.generation
-  const {
     lineageId: _staleLineageId,
     ...staleIntentBase
   } = proposalReadyIntent
@@ -363,22 +362,12 @@ export function createMinimalV2Fixtures() {
     },
     coverage: { state: 'NOT_STARTED' as const },
     generation: {
-      ...staleGenerationBase,
-      state: 'NEEDS_ATTENTION' as const,
-      barrier: staleBarrier,
-      reasonCode: 'STALE_RESULT' as const,
+      state: 'NOT_STARTED' as const,
+      userRetryUsed: false,
       staleRefreshUsed: true,
-      receipts: [...proposalReadyIntent.generation.receipts.slice(0, 4), {
-        kind: 'BARRIER_COMMITTED' as const,
-        digest: staleBarrier.mutationReceiptDigest,
-        leaseId: nativeLeaseId,
-        intentId: experienceIntent.intentId,
-        generationRevision: 1,
-        callId: sealedResult.callId,
-        catalogEpoch: sealedResult.catalogEpoch,
-        recordedAt: now,
-      }],
+      receipts: [],
     },
+    duplicateBarrier: staleBarrier,
   }
   return {
     global: createInitialGlobalV2(),

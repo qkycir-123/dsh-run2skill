@@ -347,8 +347,10 @@ const SealedGenerationResultV2Schema = z.object({
   action: z.enum(['CREATE', 'MERGE']),
   body: SealedSkillBodyV2Schema,
   targetDigest: sha256Hex,
+  inputDigest: sha256Hex,
   runtimeCatalogDigest: sha256Hex,
   pendingCatalogDigest: sha256Hex,
+  externalPendingDigest: sha256Hex,
   catalogEpoch: safeNonNegativeInteger,
   sealedAt: isoDateTime,
   mutationReceiptDigest: sha256Hex,
@@ -452,8 +454,9 @@ export const ExperienceIntentV2Schema = z.object({
     leaseId: z.string().regex(/^lease_[a-f0-9]{64}$/).optional(),
     generationRevision: positiveSafeInteger.optional(),
     catalogEpoch: safeNonNegativeInteger.optional(),
+    externalPendingDigest: sha256Hex.optional(),
+    selfExclusionDigest: sha256Hex.optional(),
     sealedResult: SealedGenerationResultV2Schema.optional(),
-    barrier: GenerationBarrierV2Schema.optional(),
     proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
     reasonCode: z.enum(['GENERATION_KNOWN_FAILED', 'GENERATION_RESULT_LOST', 'GENERATION_OUTCOME_UNKNOWN', 'STALE_RESULT']).optional(),
     revalidationAuthorization: z.object({
@@ -461,6 +464,7 @@ export const ExperienceIntentV2Schema = z.object({
       pendingCatalogDigest: sha256Hex,
       externalPendingDigest: sha256Hex,
       catalogEpoch: safeNonNegativeInteger,
+      catalogMutationReceiptDigest: sha256Hex,
       sealedResultReceiptDigest: sha256Hex,
       selfExclusionDigest: sha256Hex.optional(),
       authorizedAt: isoDateTime,
@@ -478,6 +482,7 @@ export const ExperienceIntentV2Schema = z.object({
       recordedAt: isoDateTime,
     }).strict()).max(32),
   }).strict(),
+  duplicateBarrier: GenerationBarrierV2Schema.optional(),
   stageCalls: z.array(z.object({
     stage: z.enum(['CATALOG_SCAN', 'COVERAGE', 'GENERATION']),
     intentRevision: positiveSafeInteger,
@@ -540,11 +545,7 @@ export const ExperienceIntentV2Schema = z.object({
       expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
       expectStage(value.recall.state, 'SCANNING', ['recall', 'state'])
       expectStage(value.coverage.state, 'NOT_STARTED', ['coverage', 'state'])
-      expectStage(
-        value.generation.state,
-        value.recall.selfExclusion === undefined ? 'NOT_STARTED' : 'NEEDS_ATTENTION',
-        ['generation', 'state'],
-      )
+      expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
       break
     case 'COVERAGE_READY':
       expectStage(value.ownership.state, 'RUN2SKILL_OWNED', ['ownership', 'state'])
@@ -641,9 +642,6 @@ export const ExperienceIntentV2Schema = z.object({
     value.recall.selfExclusion.intentId !== value.intentId
     || value.recall.selfExclusion.priorGenerationRevision >= value.revision
     || !value.generation.staleRefreshUsed
-    || value.generation.barrier?.kind !== 'STALE_RESULT'
-    || value.recall.selfExclusion.priorGenerationRevision !== value.generation.barrier.generationRevision
-    || value.recall.selfExclusion.barrierReceiptDigest !== value.generation.barrier.receiptDigest
     || value.recall.selfExclusion.selfExclusionDigest !== deriveRecallSelfExclusionDigestV2(value.recall.selfExclusion)
   )) context.addIssue({ code: 'custom', path: ['recall', 'selfExclusion'], message: 'Self-exclusion is only valid for an exact stale refresh revision' })
   if (value.coverage.state === 'CREATE' && value.recall.candidates.some(candidate => (
@@ -651,115 +649,212 @@ export const ExperienceIntentV2Schema = z.object({
   ))) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Create authorization cannot use absence proof with unavailable relevant candidates' })
   const generation = value.generation
   const generationCalls = value.stageCalls.filter(call => call.stage === 'GENERATION')
-  const hasReceipt = (kind: typeof generation.receipts[number]['kind']) => generation.receipts.some(receipt => receipt.kind === kind)
+  const currentGenerationCalls = generation.generationRevision === undefined
+    ? []
+    : generationCalls.filter(call => call.intentRevision === generation.generationRevision)
   const receiptFor = (kind: typeof generation.receipts[number]['kind']) => generation.receipts.find(receipt => receipt.kind === kind)
   if (generation.state === 'NOT_STARTED') {
     if (
       generation.action !== undefined
       || generation.inputDigest !== undefined
+      || generation.resultDigest !== undefined
       || generation.leaseId !== undefined
       || generation.generationRevision !== undefined
       || generation.catalogEpoch !== undefined
+      || generation.externalPendingDigest !== undefined
+      || generation.selfExclusionDigest !== undefined
       || generation.sealedResult !== undefined
-      || generation.barrier !== undefined
       || generation.proposalId !== undefined
+      || generation.reasonCode !== undefined
       || generation.revalidationAuthorization !== undefined
       || generation.receipts.length > 0
-      || generationCalls.length > 0
+      || generationCalls.some(call => call.intentRevision === value.revision)
     ) context.addIssue({ code: 'custom', path: ['generation'], message: 'Unstarted generation cannot contain future recovery facts' })
   } else if (
     generation.action === undefined
     || generation.inputDigest === undefined
     || generation.generationRevision === undefined
+    || generation.catalogEpoch === undefined
+    || generation.externalPendingDigest === undefined
     || generation.generationRevision > value.revision
   ) context.addIssue({ code: 'custom', path: ['generation'], message: 'Active generation requires action, input, and bounded revision facts' })
+  if (generation.state !== 'NOT_STARTED' && (
+    generation.catalogEpoch !== value.recall.catalogEpoch
+    || (['CREATE', 'MERGE'].includes(value.coverage.state) && generation.action !== value.coverage.state)
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Generation authorization must bind the current recall epoch and coverage action' })
+  if (generation.state !== 'NEEDS_ATTENTION' && generation.reasonCode !== undefined) {
+    context.addIssue({ code: 'custom', path: ['generation', 'reasonCode'], message: 'Only an attention generation may retain a failure reason' })
+  }
   const leaseStates = new Set([
     'GENERATION_LEASED', 'GENERATION_CALL_RESERVED', 'GENERATION_CALL_TERMINAL', 'RESULT_COMMITTED',
     'PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY', 'NEEDS_ATTENTION',
   ])
-  if (leaseStates.has(generation.state) && generation.leaseId === undefined) {
+  if (leaseStates.has(generation.state) !== (generation.leaseId !== undefined)) {
     context.addIssue({ code: 'custom', path: ['generation', 'leaseId'], message: 'Leased generation state requires the durable lease identity' })
+  }
+  const receiptKinds = generation.receipts.map(receipt => receipt.kind)
+  if (new Set(receiptKinds).size !== receiptKinds.length) {
+    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Generation receipt kinds must be unique' })
   }
   for (const [index, receipt] of generation.receipts.entries()) {
     if (
       receipt.intentId !== value.intentId
       || receipt.generationRevision !== generation.generationRevision
       || receipt.leaseId !== generation.leaseId
+      || receipt.catalogEpoch !== generation.catalogEpoch
     ) context.addIssue({ code: 'custom', path: ['generation', 'receipts', index], message: 'Generation receipt is outside its exact owner revision and lease' })
+    const expectedCallId = receipt.kind === 'BARRIER_COMMITTED'
+      ? value.duplicateBarrier?.callId
+      : ['CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'].includes(receipt.kind)
+        ? currentGenerationCalls[0]?.callId
+        : undefined
+    if (receipt.callId !== expectedCallId) {
+      context.addIssue({ code: 'custom', path: ['generation', 'receipts', index, 'callId'], message: 'Generation receipt call identity does not match its ledger stage' })
+    }
   }
-  if (generation.state === 'GENERATION_LEASED' && !hasReceipt('LEASE_ACQUIRED')) {
-    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Leased generation requires an acquisition receipt' })
+  const fixedReceiptPrefix: Partial<Record<typeof generation.state, readonly string[]>> = {
+    NOT_STARTED: [],
+    GENERATION_AUTHORIZED: [],
+    GENERATION_LEASED: ['LEASE_ACQUIRED'],
+    GENERATION_CALL_RESERVED: ['LEASE_ACQUIRED', 'CALL_RESERVED'],
+    GENERATION_CALL_TERMINAL: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL'],
+    RESULT_COMMITTED: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'],
+    PROPOSAL_COMMIT_AUTHORIZED: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED', 'PROPOSAL_AUTHORIZED'],
+    PROPOSAL_BODY_COMMITTED: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED'],
+    PROPOSAL_READY: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED'],
+  }
+  const expectedReceiptKinds = generation.state === 'NEEDS_ATTENTION'
+    ? [
+        'LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL',
+        ...(generation.sealedResult === undefined ? [] : ['RESULT_SEALED']),
+        'BARRIER_COMMITTED',
+      ]
+    : fixedReceiptPrefix[generation.state]
+  if (canonicalJson(receiptKinds) !== canonicalJson(expectedReceiptKinds)) {
+    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Generation receipts must equal the exact durable prefix for its state' })
+  }
+  if (['GENERATION_AUTHORIZED', 'GENERATION_LEASED'].includes(generation.state) && currentGenerationCalls.length !== 0) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Pre-call generation cannot contain a current call' })
   }
   if (generation.state === 'GENERATION_CALL_RESERVED' && (
-    generationCalls.length !== 1
-    || generationCalls[0]?.outcome !== 'RESERVED'
-    || !hasReceipt('CALL_RESERVED')
-  )) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Reserved generation call requires one ledger slot and receipt' })
-  if (generation.state === 'GENERATION_CALL_TERMINAL' && (
-    generationCalls.length === 0
-    || generationCalls.some(call => call.outcome === 'RESERVED')
-    || !hasReceipt('CALL_TERMINAL')
-  )) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal generation call requires terminal ledger and receipt facts' })
+    currentGenerationCalls.length !== 1 || currentGenerationCalls[0]?.outcome !== 'RESERVED'
+  )) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Reserved generation requires one matching reserved call' })
+  const terminalCallStates = new Set([
+    'GENERATION_CALL_TERMINAL', 'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED',
+    'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY', 'NEEDS_ATTENTION',
+  ])
+  if (terminalCallStates.has(generation.state) && (
+    currentGenerationCalls.length !== 1
+    || currentGenerationCalls[0]?.outcome === 'RESERVED'
+    || currentGenerationCalls[0]?.inputDigest !== generation.inputDigest
+  )) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal generation state requires one exact terminal call' })
+  const committedResultStates = new Set([
+    'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY',
+  ])
+  if (committedResultStates.has(generation.state) && (
+    currentGenerationCalls[0]?.outcome !== 'SUCCEEDED'
+    || generation.sealedResult === undefined
+    || generation.resultDigest === undefined
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Committed result state requires one successful call and sealed result' })
+  if (!committedResultStates.has(generation.state) && generation.state !== 'NEEDS_ATTENTION' && (
+    generation.sealedResult !== undefined || generation.resultDigest !== undefined
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Pre-result generation cannot contain sealed result facts' })
   if (generation.sealedResult !== undefined && (
     generation.sealedResult.intentId !== value.intentId
     || generation.sealedResult.leaseId !== generation.leaseId
     || generation.sealedResult.generationRevision !== generation.generationRevision
     || generation.sealedResult.catalogEpoch !== generation.catalogEpoch
+    || generation.sealedResult.callId !== currentGenerationCalls[0]?.callId
+    || generation.sealedResult.action !== generation.action
+    || generation.sealedResult.inputDigest !== generation.inputDigest
+    || generation.sealedResult.externalPendingDigest !== generation.externalPendingDigest
+    || generation.sealedResult.targetDigest !== value.coverage.targetDigest
+    || generation.sealedResult.runtimeCatalogDigest !== value.recall.runtimeCatalogDigest
+    || generation.sealedResult.pendingCatalogDigest !== value.recall.pendingCatalogDigest
     || generation.sealedResult.mutationReceiptDigest !== receiptFor('RESULT_SEALED')?.digest
+    || generation.resultDigest !== generation.sealedResult.receiptDigest
   )) context.addIssue({ code: 'custom', path: ['generation', 'sealedResult'], message: 'Sealed result is outside its exact lease/Intent revision' })
-  if (generation.barrier !== undefined && (
-    generation.barrier.intentId !== value.intentId
-    || generation.barrier.leaseId !== generation.leaseId
-    || generation.barrier.generationRevision !== generation.generationRevision
-    || generation.barrier.catalogEpoch !== generation.catalogEpoch
-    || generation.barrier.mutationReceiptDigest !== receiptFor('BARRIER_COMMITTED')?.digest
-  )) context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation barrier is outside its exact lease/Intent revision' })
-  if (generation.barrier?.kind === 'STALE_RESULT' && generation.barrier.priorGenerationRevision === undefined) {
-    context.addIssue({ code: 'custom', path: ['generation', 'barrier', 'priorGenerationRevision'], message: 'Stale-result barrier requires the prior generation revision' })
-  }
-  if (generation.state === 'RESULT_COMMITTED' && (
-    generation.sealedResult === undefined
-    || !hasReceipt('RESULT_SEALED')
-    || generationCalls.length === 0
-    || generationCalls.some(call => call.outcome !== 'SUCCEEDED')
-  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Committed result requires successful call, sealed body, and mutation receipt' })
-  if (['PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY'].includes(generation.state) && (
-    generation.revalidationAuthorization === undefined || !hasReceipt('PROPOSAL_AUTHORIZED')
-  )) context.addIssue({ code: 'custom', path: ['generation', 'revalidationAuthorization'], message: 'Proposal commit requires Catalog-bound revalidation authorization' })
+  const proposalCommitStates = new Set(['PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY'])
+  if (
+    (proposalCommitStates.has(generation.state) && (
+      generation.revalidationAuthorization === undefined || generation.proposalId === undefined
+    ))
+    || (!proposalCommitStates.has(generation.state) && (
+      generation.revalidationAuthorization !== undefined || generation.proposalId !== undefined
+    ))
+  ) context.addIssue({ code: 'custom', path: ['generation', 'revalidationAuthorization'], message: 'Proposal commit fields must exist only after exact authorization' })
   if (generation.revalidationAuthorization !== undefined && (
     generation.revalidationAuthorization.catalogEpoch !== generation.catalogEpoch
+    || generation.revalidationAuthorization.catalogEpoch !== value.recall.catalogEpoch
+    || generation.revalidationAuthorization.catalogMutationReceiptDigest !== value.recall.catalogMutationReceiptDigest
     || generation.revalidationAuthorization.sealedResultReceiptDigest !== generation.sealedResult?.receiptDigest
-    || generation.revalidationAuthorization.selfExclusionDigest !== value.recall.selfExclusion?.selfExclusionDigest
+    || generation.revalidationAuthorization.runtimeCatalogDigest !== generation.sealedResult?.runtimeCatalogDigest
+    || generation.revalidationAuthorization.runtimeCatalogDigest !== value.recall.runtimeCatalogDigest
+    || generation.revalidationAuthorization.pendingCatalogDigest !== generation.sealedResult?.pendingCatalogDigest
+    || generation.revalidationAuthorization.pendingCatalogDigest !== value.recall.pendingCatalogDigest
+    || generation.revalidationAuthorization.externalPendingDigest !== generation.sealedResult?.externalPendingDigest
+    || generation.revalidationAuthorization.externalPendingDigest !== generation.externalPendingDigest
+    || generation.revalidationAuthorization.selfExclusionDigest !== generation.selfExclusionDigest
   )) context.addIssue({ code: 'custom', path: ['generation', 'revalidationAuthorization'], message: 'Revalidation authorization must bind the sealed result and Catalog epoch' })
-  if (['PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY'].includes(generation.state) && !hasReceipt('BODY_COMMITTED')) {
-    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Committed Proposal body requires a body receipt' })
+  const selfExclusion = value.recall.selfExclusion
+  if (generation.staleRefreshUsed !== (selfExclusion !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['generation', 'staleRefreshUsed'], message: 'Stale refresh marker must match its durable self-exclusion proof' })
   }
-  if (generation.state === 'PROPOSAL_READY' && !hasReceipt('INDEX_COMMITTED')) {
-    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Proposal-ready generation requires index completion receipt' })
+  const resultReplacedBarrier = committedResultStates.has(generation.state)
+  const coveredClosedBarrier = value.status === 'COVERED'
+  if (selfExclusion !== undefined && !resultReplacedBarrier && !coveredClosedBarrier && value.duplicateBarrier === undefined) {
+    context.addIssue({ code: 'custom', path: ['duplicateBarrier'], message: 'Stale refresh must keep its duplicate barrier until a terminal replacement' })
+  }
+  if (selfExclusion !== undefined && generation.state !== 'NOT_STARTED' && generation.selfExclusionDigest !== selfExclusion.selfExclusionDigest) {
+    context.addIssue({ code: 'custom', path: ['generation', 'selfExclusionDigest'], message: 'Refreshed generation must bind the exact self-exclusion proof' })
+  }
+  if (selfExclusion === undefined && generation.selfExclusionDigest !== undefined) {
+    context.addIssue({ code: 'custom', path: ['generation', 'selfExclusionDigest'], message: 'Generation cannot claim self-exclusion without recall proof' })
+  }
+  if ((resultReplacedBarrier || coveredClosedBarrier) && value.duplicateBarrier !== undefined) {
+    context.addIssue({ code: 'custom', path: ['duplicateBarrier'], message: 'Terminal replacement must atomically clear the prior duplicate barrier' })
+  }
+  if (value.duplicateBarrier !== undefined) {
+    const barrier = value.duplicateBarrier
+    if (
+      (barrier.kind === 'STALE_RESULT' && barrier.priorGenerationRevision !== barrier.generationRevision)
+      || (barrier.kind !== 'STALE_RESULT' && barrier.priorGenerationRevision !== undefined)
+    ) context.addIssue({ code: 'custom', path: ['duplicateBarrier', 'priorGenerationRevision'], message: 'Barrier prior revision is valid only for the exact stale generation' })
+    const boundToAttention = generation.state === 'NEEDS_ATTENTION' && (
+      barrier.leaseId === generation.leaseId
+      && barrier.generationRevision === generation.generationRevision
+      && barrier.catalogEpoch === generation.catalogEpoch
+      && barrier.inputDigest === generation.inputDigest
+      && barrier.callId === currentGenerationCalls[0]?.callId
+      && barrier.mutationReceiptDigest === receiptFor('BARRIER_COMMITTED')?.digest
+      && ({
+        GENERATION_KNOWN_FAILED: 'KNOWN_FAILED',
+        GENERATION_RESULT_LOST: 'RESULT_LOST',
+        GENERATION_OUTCOME_UNKNOWN: 'OUTCOME_UNKNOWN',
+        STALE_RESULT: 'STALE_RESULT',
+      } as const)[generation.reasonCode ?? 'STALE_RESULT'] === barrier.kind
+    )
+    const boundToRefresh = selfExclusion !== undefined && (
+      barrier.kind === 'STALE_RESULT'
+      && barrier.generationRevision === selfExclusion.priorGenerationRevision
+      && barrier.priorGenerationRevision === selfExclusion.priorGenerationRevision
+      && barrier.receiptDigest === selfExclusion.barrierReceiptDigest
+    )
+    if (
+      barrier.intentId !== value.intentId
+      || barrier.behaviorSignature !== value.behaviorSignature
+      || (!boundToAttention && !boundToRefresh)
+    ) context.addIssue({ code: 'custom', path: ['duplicateBarrier'], message: 'Duplicate barrier is outside its exact failed generation or stale refresh' })
   }
   if (generation.state === 'NEEDS_ATTENTION' && (
-    generation.barrier === undefined || generation.reasonCode === undefined || !hasReceipt('BARRIER_COMMITTED')
-  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Generation attention requires reason and a durable barrier mutation receipt' })
+    generation.reasonCode === undefined || value.duplicateBarrier === undefined
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Generation attention requires reason and an independent durable duplicate barrier' })
   if (value.status === 'PROPOSAL_READY' && (
     value.generation.state !== 'PROPOSAL_READY'
     || value.generation.sealedResult === undefined
     || value.generation.proposalId === undefined
     || value.lineageId === undefined
   )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Proposal-ready Intent requires sealed result, Proposal, and Lineage facts' })
-  if (value.generation.state === 'RESULT_COMMITTED' && value.generation.sealedResult === undefined) {
-    context.addIssue({ code: 'custom', path: ['generation', 'sealedResult'], message: 'Committed generation result requires immutable body facts' })
-  }
-  if (value.generation.state === 'NEEDS_ATTENTION' && value.generation.barrier === undefined) {
-    context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation attention requires a durable duplicate barrier' })
-  }
-  if (
-    value.generation.sealedResult !== undefined
-    && value.generation.resultDigest !== value.generation.sealedResult.receiptDigest
-  ) context.addIssue({ code: 'custom', path: ['generation', 'resultDigest'], message: 'Generation result digest must bind the sealed result receipt' })
-  if (
-    value.generation.barrier !== undefined
-    && value.generation.barrier.behaviorSignature !== value.behaviorSignature
-  ) context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation barrier must bind the Intent behavior signature' })
   if (value.stageCalls.some(call => call.outcome === 'SUCCEEDED' && call.outputDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Successful stage call requires an output digest' })
   }
@@ -774,11 +869,10 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal coverage requires a durable coverage call ledger' })
   }
   if (value.generation.state === 'PROPOSAL_READY') {
-    const generationCalls = callsFor('GENERATION')
     if (
-      generationCalls.length !== 1
-      || generationCalls[0]?.outcome !== 'SUCCEEDED'
-      || generationCalls[0]?.callId !== value.generation.sealedResult?.callId
+      currentGenerationCalls.length !== 1
+      || currentGenerationCalls[0]?.outcome !== 'SUCCEEDED'
+      || currentGenerationCalls[0]?.callId !== value.generation.sealedResult?.callId
     ) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Proposal-ready generation requires one matching successful call' })
   }
 })

@@ -55,6 +55,25 @@ describe('run2skill_v2 storage contract', () => {
     expect(ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)).toEqual(fixture.nativeActiveProposalLineage)
     expect(ExperienceIntentV2Schema.parse(fixture.proposalReadyIntent)).toEqual(fixture.proposalReadyIntent)
     expect(ExperienceIntentV2Schema.parse(fixture.staleRefreshIntent)).toEqual(fixture.staleRefreshIntent)
+    const refreshedRecall = {
+      ...fixture.proposalReadyIntent.recall,
+      selfExclusion: fixture.staleRefreshIntent.recall.selfExclusion,
+    }
+    const coverageReadyAfterRefresh = {
+      ...fixture.staleRefreshIntent,
+      status: 'COVERAGE_READY' as const,
+      recall: refreshedRecall,
+    }
+    expect(ExperienceIntentV2Schema.parse(coverageReadyAfterRefresh)).toEqual(coverageReadyAfterRefresh)
+    expect(ExperienceIntentV2Schema.parse({
+      ...coverageReadyAfterRefresh,
+      status: 'COVERAGE_ANALYZING',
+      coverage: { state: 'ANALYZING' },
+    })).toEqual({
+      ...coverageReadyAfterRefresh,
+      status: 'COVERAGE_ANALYZING',
+      coverage: { state: 'ANALYZING' },
+    })
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
   })
 
@@ -110,6 +129,54 @@ describe('run2skill_v2 storage contract', () => {
         receipts: [],
       },
       stageCalls: fixture.proposalReadyIntent.stageCalls.filter(call => call.stage !== 'GENERATION'),
+    }).success).toBe(false)
+    const {
+      proposalId: _resultProposalId,
+      revalidationAuthorization: _resultAuthorization,
+      ...resultCommittedGeneration
+    } = fixture.proposalReadyIntent.generation
+    const {
+      lineageId: _resultLineageId,
+      ...resultCommittedIntentBase
+    } = fixture.proposalReadyIntent
+    const resultCommittedIntent = {
+      ...resultCommittedIntentBase,
+      status: 'GENERATING' as const,
+      generation: {
+        ...resultCommittedGeneration,
+        state: 'RESULT_COMMITTED' as const,
+        receipts: fixture.proposalReadyIntent.generation.receipts.slice(0, 4),
+      },
+    }
+    expect(ExperienceIntentV2Schema.safeParse(resultCommittedIntent).success).toBe(true)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...resultCommittedIntent,
+      generation: {
+        ...fixture.proposalReadyIntent.generation,
+        state: 'RESULT_COMMITTED',
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...resultCommittedIntent,
+      generation: {
+        ...resultCommittedIntent.generation,
+        sealedResult: {
+          ...resultCommittedIntent.generation.sealedResult,
+          callId: `call_${'f'.repeat(64)}`,
+        },
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.proposalReadyIntent,
+      generation: {
+        ...fixture.proposalReadyIntent.generation,
+        revalidationAuthorization: {
+          ...fixture.proposalReadyIntent.generation.revalidationAuthorization,
+          runtimeCatalogDigest: '1'.repeat(64),
+          pendingCatalogDigest: '2'.repeat(64),
+          externalPendingDigest: '3'.repeat(64),
+        },
+      },
     }).success).toBe(false)
     expect(ExperienceIntentV2Schema.safeParse({
       ...fixture.staleRefreshIntent,
