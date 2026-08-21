@@ -4,14 +4,14 @@
 
 run2skill 会留意你明确说出的纠正、长期约束和可复用流程，生成一份 Skill 提案。你可以先查看内容，再决定批准或丢弃；只有批准后的提案才会写入 DSH 的原生 Skill 目录。
 
-> `0.1.0-alpha` 是首个公开测试版。目前支持 DSH `web` profile 的 `0.1.0-rc.7` 和 `0.1.0-rc.8`。Alpha 版本适合试用和反馈，不建议把它当作无人值守的关键生产组件。
+> `0.1.1-alpha` 是公开 Alpha 更新。目前支持 DSH `web` profile 的 `0.1.0-rc.7` 和 `0.1.0-rc.8`。Alpha 版本适合试用和反馈，不建议把它当作无人值守的关键生产组件。
 
 ## 安装
 
 先确认你已经安装 DSH、Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。然后执行：
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.1.0-alpha
+dsh plugin --profile web add dsh-run2skill@0.1.1-alpha
 ```
 
 重启 DSH Web。打开 **Settings → Plugins**，看到 **run2skill** 卡片就说明插件已加载。
@@ -28,10 +28,10 @@ run2skill 不需要单独填写模型密钥。需要分析提案时，它沿用�
 
 你也可以在正常工作中明确纠正做法、说明长期约束，或给出有顺序的可复用流程。run2skill 会在一轮对话完成后做轻量检查；不是每轮都会调用模型，只有命中明确学习信号后才会进入后续分析。
 
-当提案准备好后：
+当有需要你处理的事项时，DSH 会显示原生 Toast；平时 Header 不显示 run2skill 状态框。处理提案时：
 
-1. 在 Session 顶部点击显示待处理数量的 **Skill 提案** 按钮。
-2. 在 **Skill Proposal Inbox** 查看提案、适用范围和内容差异。
+1. 打开 **Settings → Plugins → run2skill**。
+2. 在待处理列表中查看提案、适用范围和内容差异。
 3. 选择批准、拒绝，或在失败后重试。
 4. 批准成功后，结果就是普通的 DSH 原生 Skill；即使以后卸载 run2skill，它仍然可以被 DSH 使用。
 
@@ -52,7 +52,7 @@ Settings 中也提供 `PROJECT` 和 `USER` 两种 Purge。Purge 会删除对应�
 - 已发布的原生 Skill；
 - 无法证明属于所选范围的数据。
 
-更详细的保留与升级规则见 [数据存储与升级](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/docs/storage-and-upgrades.md)。
+更详细的保留与升级规则见 [数据存储与升级](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.1-alpha/docs/storage-and-upgrades.md)。
 
 ## 更新与卸载
 
@@ -82,13 +82,13 @@ dsh plugin --profile web remove dsh-run2skill
 
 ## 进一步了解
 
-- [版本变化](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/CHANGELOG.md)
-- [DSH 兼容性](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/docs/compatibility.md)
-- [数据存储与升级](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/docs/storage-and-upgrades.md)
+- [版本变化](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.1-alpha/CHANGELOG.md)
+- [DSH 兼容性](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.1-alpha/docs/compatibility.md)
+- [数据存储与升级](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.1-alpha/docs/storage-and-upgrades.md)
 - [产品需求](docs/product/prd.md)
 - [架构基线](docs/architecture/baseline.md)
 - [同一 Skill 保存意图的单一生成所有者设计](docs/design/single-owner-skill-save.md)
-- [贡献指南](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/CONTRIBUTING.md)
-- [维护者兼容性探针](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.0-alpha/probes/README.md)
+- [贡献指南](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.1-alpha/CONTRIBUTING.md)
+- [维护者兼容性探针](https://github.com/qkycir-123/dsh-run2skill/blob/v0.1.1-alpha/probes/README.md)
 
 本项目采用 [MIT License](LICENSE)。Client bundle 内嵌依赖的许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

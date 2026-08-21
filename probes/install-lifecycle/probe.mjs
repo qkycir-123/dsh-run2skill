@@ -11,7 +11,7 @@ import {
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { dshWebArgs } from './web-args.mjs'
+import { dshWebArgs, dshWebHelp, supportsNoOpen } from './web-args.mjs'
 
 const [cloneArg, fixtureRootArg, workRootArg] = process.argv.slice(2)
 if (!cloneArg || !fixtureRootArg || !workRootArg) {
@@ -47,6 +47,7 @@ process.on('unhandledRejection', (reason) => {
 
 const packageName = '@dsh-run2skill/install-probe'
 const bin = join(clone, 'apps', 'cli', 'lib', 'bin.js')
+const webHelp = dshWebHelp(bin)
 const profileDir = join(home, 'profiles', 'web')
 const profileManifestPath = join(profileDir, 'package.json')
 const profilePatchPath = join(profileDir, 'cordis.patch.yml')
@@ -215,7 +216,7 @@ const browserExecutable = await findBrowserExecutable()
 async function observeWeb({ expectedVersion, present }) {
   const port = await reservePort()
   const url = `http://127.0.0.1:${String(port)}/`
-  const child = spawn(process.execPath, [bin, ...dshWebArgs(port)], {
+  const child = spawn(process.execPath, [bin, ...dshWebArgs(port, supportsNoOpen(webHelp))], {
     cwd: workspace,
     env,
     windowsHide: true,

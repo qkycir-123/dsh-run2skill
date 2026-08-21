@@ -1,6 +1,6 @@
 {
   "name": "dsh-run2skill",
-  "version": "0.1.0-alpha",
+  "version": "0.1.1-alpha",
   "description": "A DSH-native, local-first Run to Skill plugin",
   "license": "MIT",
   "repository": {

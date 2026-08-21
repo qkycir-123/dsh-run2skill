@@ -10,7 +10,7 @@ import {
   isSafeDiagnosticOutput,
   safeFailure,
 } from '../support/safe-diagnostics.mjs'
-import { dshWebArgs } from './web-args.mjs'
+import { dshWebArgs, dshWebHelp, supportsNoOpen } from './web-args.mjs'
 
 const [cloneArg, candidateArg, workArg, uiFixtureArg, mode] = process.argv.slice(2)
 if (!cloneArg || !candidateArg || !workArg || !uiFixtureArg) {
@@ -25,6 +25,7 @@ const workspace = join(work, 'workspace')
 const stages = join(work, 'stages')
 const archives = join(work, 'archives')
 const bin = join(clone, 'apps', 'cli', 'lib', 'bin.js')
+const webHelp = dshWebHelp(bin)
 const profile = join(home, 'profiles', 'web')
 const manifestPath = join(profile, 'package.json')
 const patchPath = join(profile, 'cordis.patch.yml')
@@ -199,7 +200,7 @@ async function observe(present, expectedAutomaticLearning) {
         [['DEEPSEEK', 'API', 'KEY'].join('_')]: ['run2skill', 'controlled', 'probe'].join('-'),
         [['DEEPSEEK', 'BASE', 'URL'].join('_')]: provider.baseUrl,
       }
-  const child = spawn(process.execPath, [bin, ...dshWebArgs(port)], {
+  const child = spawn(process.execPath, [bin, ...dshWebArgs(port, supportsNoOpen(webHelp))], {
     cwd: workspace, env: childEnv, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let logs = ''
@@ -259,7 +260,7 @@ async function observe(present, expectedAutomaticLearning) {
       const sessionBody = await sessionResponse.json()
       assert.equal(sessionBody.result?.ok, true, 'controlled UI probe could not create a DSH session')
       browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
-      console.log('CP_INS_A6_BROWSER_MODE=headless+dsh-no-open')
+      console.log('CP_INS_A6_BROWSER_MODE=headless+no-system-browser')
       const page = await browser.newPage()
       const errors = []
       page.on('pageerror', error => errors.push(String(error)))

@@ -30,10 +30,10 @@ const workspace = readPortableText('../pnpm-workspace.yaml')
 const thirdPartyNotices = readPortableText('../THIRD_PARTY_NOTICES.md')
 
 describe('published package contract', () => {
-  it('pins the first public alpha identity and portable repository metadata', () => {
+  it('pins the public alpha identity and portable repository metadata', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
-      version: '0.1.0-alpha',
+      version: '0.1.1-alpha',
       description: 'A DSH-native, local-first Run to Skill plugin',
       license: 'MIT',
       repository: {
