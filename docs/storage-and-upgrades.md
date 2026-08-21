@@ -34,7 +34,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 | v2 单元 | 内容 |
 |---|---|
-| global | schema/policy、Session cursor、行为签名 single-flight、migration journal、Purge fences |
+| global | schema/policy、Session cursor、行为签名 single-flight、path-free pending Proposal 索引、migration journal、Purge fences |
 | turn_observations | 脱敏、限长的最小 Turn 观察 |
 | session_batches | 冻结范围、检测结果和阶段调用账本 |
 | experience_intents | 行为签名、证据 digests、所有权、召回、coverage 和 generation 状态 |
@@ -56,11 +56,11 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 如果新版本的发布说明没有给出对应迁移与回退办法，请不要用删除 Storage 的方式强行升级。恢复到原插件版本，并在 GitHub Issue 中报告情况。
 
-v2 迁移采用 copy/validate/commit journal：迁移提交前只读 v1，v2 部分数据不可见；提交后新观察只写 v2，v1 保留为只读 legacy source。v1 的 Lineage、Purge fences 和待审 Proposal 必须经 digest/identity 校验后导入；尚未形成 Proposal 的旧 CAPTURED/ANALYZING WorkItem 进入可见的 legacy 待处理状态，不按新策略静默重放。
+v2 迁移采用 copy/validate/commit journal：迁移提交前只读 v1，v2 部分数据不可见；提交后新观察只写 v2，v1 保留为只读 legacy source。v1 的 Lineage、Purge fences 和所有 active Proposal 必须经 digest/identity 校验后导入；active legacy Proposal 在提交前进入 `PendingProposalCatalog`，作为不可写候选参与每个新 Intent 的查重。v1 每个 schema-valid processingState 都有穷尽映射；尚未形成 Proposal 的旧项进入可见的 legacy 待处理状态，不按新策略静默重放。
 
 降级同样可能遇到新数据无法被旧版本理解的情况。`0.1.0-alpha` 会忽略 `0.1.1-alpha` 新增的独立诊断 sidecar，不会改写它；但旧版本的数据清理也不会清理该 sidecar。需要完全清除派生数据时，请先在当前版本中完成数据清理，再降级或卸载。
 
-v2 migration journal 提交前可直接回到旧版本，因为 v1 未被改写。提交后，旧版本无法理解 v2 新观察，不能安全恢复自动学习；此时回退只能关闭旧版本自动学习并保留两个 Domain，随后升级回支持 v2 的版本，或恢复升级前的完整 DSH Home 备份。
+v2 migration journal 提交前可直接回到旧版本，因为 v1 未被改写。提交后禁止在同一 DSH Home 上启动不支持 v2 的旧插件：旧版不理解 v2 Purge fences，也可能重新处理 v1，“启动后再关闭自动学习”仍不安全。COMMITTED 后只能前向修复继续使用支持 v2 的版本，或先停止 DSH、恢复迁移前的完整 DSH Home 备份，再安装旧版本；后者明确回到备份时点，不保留迁移后的清理或新学习事实。
 
 ## 数据清理与卸载
 

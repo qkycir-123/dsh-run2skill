@@ -159,7 +159,7 @@ processingState 是内部执行状态，不得替代产品状态：
 ```text
 SessionBatch: FROZEN -> DETECTION_CLAIMED -> COMMITTED_NONE | COMMITTED_DEFER | COMMITTED_READY | NEEDS_ATTENTION
 ExperienceIntent: READY -> OWNERSHIP_ARBITRATING -> RUN2SKILL_OWNED | RESOLVED_BY_AGENT | NEEDS_CONFIRMATION
-RUN2SKILL_OWNED -> RECALLING -> COVERAGE_ANALYZING -> COVERED | CREATE_AUTHORIZED | MERGE_AUTHORIZED | NEEDS_ATTENTION
+RUN2SKILL_OWNED -> RECALLING -> COVERAGE_ANALYZING -> COVERED | COVERED_NEEDS_CONFIRMATION | CREATE_AUTHORIZED | MERGE_AUTHORIZED | NEEDS_ATTENTION
 CREATE_AUTHORIZED | MERGE_AUTHORIZED -> GENERATING -> READY_FOR_REVIEW | NEEDS_ATTENTION
 READY_FOR_REVIEW -> PUBLISHING -> TERMINAL
 ```
@@ -385,7 +385,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 - 队列没有无限内存副本，权威队列来自 Store；
 - 进程全局并发另设固定小上限，避免多 Session 形成模型风暴。
 
-同一 batch/intent 只产生一个用户可见终态。`NONE`、`DEFER`、`COVERED` 和 `RESOLVED_BY_AGENT` 静默收口；只有确需用户恢复或决策时进入统一 Action Queue。
+同一 batch/intent 只产生一个用户可见终态。`NONE`、`DEFER`、普通自动 Intent 的 `COVERED` 和 `RESOLVED_BY_AGENT` 静默收口；显式保存 Intent 的 COVERED 必须进入确认项并展示目标/理由，其他确需用户恢复或决策的状态进入统一 Action Queue。
 
 ### 8.4 启动恢复
 
@@ -437,7 +437,7 @@ v0.2 继续复用 `ctx.storage.domain`，物理存储完全服从目标 profile 
 | experience_intents | intentId | behavior signature、evidence、ownership、recall、coverage、generation |
 | proposal_lineages | lineageId | 唯一活动 lineage、Proposal/Review/Publication Journal、完整 Revision snapshots |
 | legacy_items | legacy id | v1 pending/Proposal 的兼容处置，不自动重新 Learning |
-| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、migration journal、Purge fences、健康索引 |
+| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、path-free PendingProposalCatalog、migration journal、Purge fences、健康索引 |
 
 Session cursor 只能在对应 TurnObservation/SessionBatch 结果 durable 后推进。NONE 提交后可回收观察；DEFER 只保留有界 carry；READY 的必要证据转入 Intent 后可回收旧观察。BatchManifest 不保存绝对路径或 Session 原文；同版本重放只能读取原记录，不能刷新 baseline。ObservationId、BatchId、IntentId 和 BehaviorSignatureIndex 分别负责事件、调度、经验和 Proposal 去重。
 
@@ -456,8 +456,10 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - 已发布 `run2skill_v1` schema 不改写；旧记录字段缺失不能解释为 `RUN2SKILL_OWNED`。
 - D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
 - #84 Migration ADR 选择独立 `run2skill_v2` Domain version 1，按 `NOT_STARTED -> COPYING -> VALIDATING -> COMMITTED` journal copy/validate/commit；COMMITTED 前 v2 对 worker/UI 不可见。
-- v1 已有 Proposal 可经完整校验导入 legacy envelope 并继续 review/publication；未形成 Proposal 的 CAPTURED/ANALYZING 进入 `LEGACY_NEEDS_ATTENTION`，不按新策略静默重放。
+- v1 的 `RESOLVED_NO_SIGNAL`、`CAPTURED`、`ANALYZING`、`LEARNED`、`READY_FOR_REVIEW`、`PUBLISHING`、两类 `NEEDS_ATTENTION` 与两类 `TERMINAL` 必须按 Migration ADR 穷尽映射；遗漏或非法组合使迁移 fail closed。
+- v1 active Proposal 经完整校验导入 legacy envelope，并在 COMMITTED 前写入 `PendingProposalCatalog`；能规范化 behavior signature 时同时预占 BehaviorSignatureIndex，不能精确规范化时仍作为不可写 summary/full-body candidate 参与每个新 Intent 的 coverage。未形成 Proposal 的旧项进入 legacy Action Queue，不按新策略静默重放。
 - v1 Lineage、completed Purge fences 和 scope identity 先于 observer activation 迁移；v1 不删除、不改写。
+- migration COMMITTED 后禁止在同一 DSH Home 上启动不支持 v2 的旧插件；只允许前向修复，或停止 DSH 后恢复完整迁移前备份再安装旧版。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
 - 在首个公开 alpha 前的开发数据可以显式导出后重建，但不得把这种做法用于已发布用户数据。
 
@@ -531,7 +533,7 @@ CP-LLM-001 已在 Windows 验证：`foldRequestHeader` 的 last-wins route 可�
 - 一个大候选可以独占 coverage Envelope；正文不得静默截断；
 - Tool/Error 只保留与 ExperienceIntent 相关的摘要；
 - Output 使用 stage-specific maxTokens；只有 generation 允许一次格式/截断恢复；
-- 超限时先移除低信任辅助内容、较旧非必要观察和低排名候选；高度相关候选无法完整容纳时进入 NEEDS_ATTENTION。
+- 超限时先移除低信任辅助内容、较旧非必要观察和低排名候选；任一 summary 分类为 RELEVANT/POSSIBLE 的候选无法完整容纳时进入 NEEDS_ATTENTION，CREATE=0。
 
 具体字节、token、`MAX_CATALOG_SCAN_CALLS`、`MAX_COVERAGE_CALLS` 和 timeout 在实现 PR 中以模型矩阵测试冻结，属于版本化内部 policy constant，不暴露为 v0.2 Settings。
 
@@ -563,7 +565,7 @@ Core 必须拒绝：
 7. 按总模型输入预算安排 full-body coverage，不截断正文；
 8. Core 按完整性、scope、source、provider、writability 和 coverage 汇总 CREATE/MERGE/NEEDS_ATTENTION。
 
-候选 capability 分为 `AVAILABLE`、`UNAVAILABLE`、`READABLE_NOT_MERGEABLE`。确定性大小、只读、scope mismatch 和 identity changed 不机械重试；只有明确瞬态 snapshot/read failure 可有界重取。
+候选 capability 分为 `AVAILABLE`、`UNAVAILABLE`、`READABLE_NOT_MERGEABLE`。确定性大小、只读、scope mismatch 和 identity changed 不机械重试；只有明确瞬态 snapshot/read failure 可有界重取。任一 RELEVANT/POSSIBLE 候选在 coverage 前 UNAVAILABLE 都阻止 CREATE。
 
 ### 11.2 Ownership observation root set
 
@@ -599,10 +601,10 @@ project-agents、user-agents、custom、bundled 和未知 provider 只参与查�
 
 ### 11.4 Coverage 决策与 CREATE
 
-- 任一完整候选 `COVERED`：静默结束，不生成 Proposal；
+- 任一完整候选 `COVERED`：不生成 Proposal；普通自动 Intent 静默结束，显式保存 Intent 展示覆盖目标/理由并等待确认 DISCARDED；
 - CREATE 需要 complete Catalog、全部 summaries 已分类、所有相关正文完整且 coverage 为 UNRELATED、同名 effective Skill 不存在、目标文件/目录不存在、root identity 可证明；
 - 唯一 PARTIAL 只有同 Scope、可写且能安全输出完整 merge 时才授权 MERGE；
-- 多个 PARTIAL、任一 AMBIGUOUS、高相关 UNAVAILABLE 或 READABLE_NOT_MERGEABLE partial 进入 NEEDS_ATTENTION；
+- 多个 PARTIAL、任一 AMBIGUOUS、任一 RELEVANT/POSSIBLE 候选在 coverage 前 UNAVAILABLE，或 READABLE_NOT_MERGEABLE partial 进入 NEEDS_ATTENTION；
 - Similarity 分数本身不能作出 CREATE/MERGE/COVERED。
 
 ## 12. Scope 与有效 Root
@@ -843,12 +845,13 @@ Proposal 最终 bytes 做独立 secret scan。HIGH evidence 也不能绕过。
 | 故障 | DSH Agent | run2skill 结果 |
 |---|---|---|
 | Trigger 代码异常 | 不阻断 | 记录健康错误；该 signal 由 gap scan 尝试恢复 |
-| TurnBaseline / root manifest 写入或读取不完整 | 不阻断 | ownership=`NEEDS_CONFIRMATION`；不启动 Learning |
+| BatchManifest baseline / root manifest 写入或读取不完整 | 不阻断 | READY Intent ownership=`NEEDS_CONFIRMATION`；不启动后续模型阶段 |
 | Agent write 失败、完整 Skill 参数或 Shell/不可归因写入 | 不阻断 | 视为可能已生成；`NEEDS_CONFIRMATION`；不启动 Learning |
-| Agent Skill exact readback 且与 SaveIntent 精确绑定 | 不阻断 | durable `RESOLVED_BY_AGENT`；复用既有 Agent 结果，不额外 Toast/Proposal |
+| Agent Skill exact readback 且与 ExperienceIntent 精确绑定 | 不阻断 | durable `RESOLVED_BY_AGENT`；复用既有 Agent 结果，不额外 Toast/Proposal |
 | Store 暂不可用 | 不阻断 | “尚未保存” RuntimeNotice；有界 retry；不启动 Learning |
 | LLM timeout/failure | 不阻断 | durable Batch/Intent stage -> NEEDS_ATTENTION |
-| structured output 非法 | 不阻断 | 最多一次修复；仍失败 -> NEEDS_ATTENTION |
+| Detector/Catalog/Coverage structured output 非法 | 不阻断 | 不做格式修复；直接 NEEDS_ATTENTION |
+| Generation structured output 非法或截断 | 不阻断 | 输入/target 未变化时最多一次针对性恢复；仍失败 -> NEEDS_ATTENTION |
 | Catalog incomplete | 不阻断 | 不作 Curation/发布结论；NEEDS_ATTENTION |
 | Workspace/root 不可证 | 不阻断 | 禁止 PROJECT/USER 发布；NEEDS_ATTENTION |
 | Base/absence 变化 | 不阻断 | APPROVED 保留；Outcome=NEEDS_REFRESH |

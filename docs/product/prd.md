@@ -274,7 +274,8 @@ flowchart TD
     H -->|RUN2SKILL_OWNED| I["complete Catalog 全量摘要筛选"]
     I --> J["相关候选完整正文读取"]
     J --> K{"独立 Coverage"}
-    K -->|COVERED| Z
+    K -->|COVERED；普通自动 Intent| Z
+    K -->|COVERED；显式保存| N
     K -->|唯一安全 PARTIAL| M["MERGE Generation"]
     K -->|全部 UNRELATED 且 absence proof 完整| L["CREATE Generation"]
     K -->|AMBIGUOUS / unavailable / unsafe| N
@@ -393,10 +394,10 @@ Existing Skill Lookup 必须区分：
 `ctx.skills.snapshot()` 的 `complete` 是权威性边界。`complete: false` 可以提供候选，但不能证明不存在匹配 Skill 或已经完全覆盖。系统必须有界重试；仍不完整时进入 `NEEDS_ATTENTION`，不得据此 CREATE、MERGE、DISCARD 或发布。
 
 **REQ-CUR-003A**
-取消单候选固定 8 KiB 限制。相关候选必须完整读取、脱敏并计算 exact digest，再依据当前 route 的总安全输入预算决定 coverage 分组；不得静默截断正文。候选必须区分 `AVAILABLE`、`UNAVAILABLE` 和 `READABLE_NOT_MERGEABLE`，高度相关 UNAVAILABLE 时 `CREATE=0`。
+取消单候选固定 8 KiB 限制。相关候选必须完整读取、脱敏并计算 exact digest，再依据当前 route 的总安全输入预算决定 coverage 分组；不得静默截断正文。候选必须区分 `AVAILABLE`、`UNAVAILABLE` 和 `READABLE_NOT_MERGEABLE`；任一 summary 分类为 `RELEVANT` 或 `POSSIBLE` 的候选在 coverage 前 UNAVAILABLE 时，`CREATE=0` 并进入 `NEEDS_ATTENTION`。
 
 **REQ-CUR-003B**
-coverage 必须是独立短输出阶段，只返回 `UNRELATED | COVERED | PARTIAL | AMBIGUOUS`。任一 COVERED 不生成 Proposal；全部相关候选完整验证为 UNRELATED 才允许 CREATE；只有唯一、同 scope、可写、可安全完整输出的 PARTIAL 才允许 MERGE；其他情况进入 `NEEDS_ATTENTION`。
+coverage 必须是独立短输出阶段，只返回 `UNRELATED | COVERED | PARTIAL | AMBIGUOUS`。任一 COVERED 不生成 Proposal：普通自动 Intent 静默完成，显式保存 Intent 必须展示覆盖目标与理由并等待用户确认 `DISCARDED`；全部相关候选完整验证为 UNRELATED 才允许 CREATE；只有唯一、同 scope、可写、可安全完整输出的 PARTIAL 才允许 MERGE；其他情况进入 `NEEDS_ATTENTION`。
 
 **REQ-CUR-004**
 同一个 Skill 主要由 Objective、Trigger/whenToUse、Persistence Scope 和 Behavioral Contract 判断。可在不同场景独立触发的能力倾向拆分；同一触发下的补充或纠正倾向 MERGE。MERGE 后无法清晰表达 `whenToUse` 时倾向 CREATE。
