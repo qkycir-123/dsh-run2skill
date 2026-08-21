@@ -51,6 +51,8 @@ describe('run2skill_v2 storage contract', () => {
     expect(ExperienceIntentV2Schema.parse(fixture.experienceIntent)).toEqual(fixture.experienceIntent)
     expect(ProposalLineageV2Schema.parse(fixture.proposalLineage)).toEqual(fixture.proposalLineage)
     expect(ProposalLineageV2Schema.parse(fixture.nativeProposalLineage)).toEqual(fixture.nativeProposalLineage)
+    expect(ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)).toEqual(fixture.nativeActiveProposalLineage)
+    expect(ExperienceIntentV2Schema.parse(fixture.proposalReadyIntent)).toEqual(fixture.proposalReadyIntent)
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
   })
 
@@ -62,6 +64,26 @@ describe('run2skill_v2 storage contract', () => {
       ordinal: 3,
     }
     expect(ExperienceIntentV2Schema.parse(replay).intentId).toBe(fixture.experienceIntent.intentId)
+  })
+
+  it('rejects contradictory authoritative states instead of deferring validation to workers', () => {
+    const fixture = createMinimalV2Fixtures()
+    expect(ProposalLineageV2Schema.safeParse({
+      ...fixture.nativeProposalLineage,
+      state: 'ACTIVE_PROPOSAL',
+    }).success).toBe(false)
+    expect(SessionBatchV2Schema.safeParse({
+      ...fixture.sessionBatch,
+      state: 'DETECTION_CLAIMED',
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.experienceIntent,
+      status: 'PROPOSAL_READY',
+    }).success).toBe(false)
+    expect(TurnObservationV2Schema.safeParse({
+      ...fixture.turnObservation,
+      assistantOutcomeSummary: 'forged summary without a new content digest',
+    }).success).toBe(false)
   })
 
   it('rejects only changing schemaVersion on otherwise valid fixtures', () => {

@@ -7,6 +7,7 @@ import {
   deriveNativeProposalLineageIdV2,
   deriveSessionBatchIdV2,
   deriveTurnObservationIdV2,
+  deriveTurnObservationContentDigestV2,
 } from '../../src/domain/v2/index.js'
 import { createInitialGlobalV2 } from '../../src/adapters/dsh-storage/v2-domain.js'
 import {
@@ -29,6 +30,19 @@ export function createMinimalV2Fixtures() {
     turnEndSeq: 8,
     turnInstanceDigest: 'b'.repeat(64),
   }
+  const observationContent = {
+    outcomeKind: 'completed',
+    assistantOutcomeSummary: 'Completed the requested workflow.',
+    toolOutcomeSummary: [],
+    routeObservation: { provider: 'deepseek-official', model: 'deepseek-chat', complete: true },
+    completeness: 'COMPLETE' as const,
+    scopeBinding: {
+      status: 'PROJECT' as const,
+      workspaceId: 'workspace-v2',
+      scopeIdentityDigest: 'c'.repeat(64),
+    },
+    evidenceDigest: sha256Utf8(canonicalJson(evidence)),
+  }
   const turnObservation = {
     schemaVersion: 1 as const,
     revision: 1,
@@ -36,15 +50,9 @@ export function createMinimalV2Fixtures() {
     ...observationFacts,
     turn: 2,
     observedAt: now,
-    outcomeKind: 'completed',
-    completeness: 'COMPLETE' as const,
-    scopeBinding: {
-      status: 'PROJECT' as const,
-      workspaceId: 'workspace-v2',
-      scopeIdentityDigest: 'c'.repeat(64),
-    },
+    ...observationContent,
     directUserEvidence: evidence,
-    evidenceDigest: sha256Utf8(canonicalJson(evidence)),
+    contentDigest: deriveTurnObservationContentDigestV2(observationContent),
   }
   const batchFacts = {
     sessionLifecycleKey,
@@ -66,6 +74,13 @@ export function createMinimalV2Fixtures() {
     triggerReasons: ['EXPLICIT'] as const,
     observationManifest,
     observationManifestDigest: sha256Utf8(canonicalJson(observationManifest)),
+    batchManifestBaseline: {
+      observedAt: now,
+      rootManifestDigest: '1'.repeat(64),
+      runtimeCatalogDigest: '2'.repeat(64),
+      complete: true,
+    },
+    manifestEndObservation: { state: 'PENDING' as const },
     routeSnapshot: {
       provider: 'deepseek-official',
       model: 'deepseek-chat',
@@ -106,7 +121,12 @@ export function createMinimalV2Fixtures() {
     ownership: { state: 'NOT_STARTED' as const },
     recall: { state: 'NOT_STARTED' as const, complete: false, candidateCapabilities: [] },
     coverage: { state: 'NOT_STARTED' as const },
-    generation: { state: 'NOT_STARTED' as const, userRetryUsed: false, staleRefreshUsed: false },
+    generation: {
+      state: 'NOT_STARTED' as const,
+      userRetryUsed: false,
+      staleRefreshUsed: false,
+      receipts: [],
+    },
     stageCalls: [],
     reasonReceipts: [],
     status: 'READY' as const,
@@ -150,8 +170,108 @@ export function createMinimalV2Fixtures() {
     behaviorSignature: experienceIntent.behaviorSignature,
     ownerIntentId: experienceIntent.intentId,
     ownerIntentRevision: experienceIntent.revision,
+    currentProposalRevision: 0,
+    proposalRevisions: [],
     createdAt: now,
     updatedAt: now,
+  }
+  const nativeBody = {
+    name: 'fixture-v2',
+    description: 'A native v2 fixture.',
+    whenToUse: 'Use for v2 schema tests.',
+    exactSkillBytes: '---\nname: fixture-v2\ndescription: A native v2 fixture.\n---\n\n# Fixture v2\n',
+    skillBytesDigest: '',
+  }
+  nativeBody.skillBytesDigest = sha256Utf8(nativeBody.exactSkillBytes)
+  const nativeProposalId = `prop_${'3'.repeat(64)}`
+  const sealedResult = {
+    resultId: `result_${'4'.repeat(64)}`,
+    callId: `call_${'5'.repeat(64)}`,
+    action: 'CREATE' as const,
+    body: nativeBody,
+    targetDigest: '6'.repeat(64),
+    runtimeCatalogDigest: '7'.repeat(64),
+    pendingCatalogDigest: '8'.repeat(64),
+    sealedAt: now,
+    receiptDigest: '9'.repeat(64),
+  }
+  const proposalReadyIntent = {
+    ...experienceIntent,
+    status: 'PROPOSAL_READY' as const,
+    ownership: { state: 'RUN2SKILL_OWNED' as const, evidenceDigest: 'a'.repeat(64) },
+    recall: {
+      state: 'COMPLETE' as const,
+      runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
+      pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+      complete: true,
+      candidateCapabilities: [],
+    },
+    coverage: { state: 'CREATE' as const, inputDigest: 'b'.repeat(64), targetDigest: sealedResult.targetDigest },
+    generation: {
+      state: 'PROPOSAL_READY' as const,
+      action: 'CREATE' as const,
+      inputDigest: 'c'.repeat(64),
+      resultDigest: sealedResult.receiptDigest,
+      sealedResult,
+      proposalId: nativeProposalId,
+      userRetryUsed: false,
+      staleRefreshUsed: false,
+      receipts: [{ kind: 'BODY_COMMITTED' as const, digest: 'd'.repeat(64), recordedAt: now }],
+    },
+    stageCalls: [
+      {
+        stage: 'CATALOG_SCAN' as const,
+        callId: `call_${'1'.repeat(64)}`,
+        ordinal: 1,
+        inputDigest: '1'.repeat(64),
+        outputDigest: '2'.repeat(64),
+        provider: 'deepseek-official',
+        model: 'deepseek-chat',
+        policyVersion: 'catalog-scan-v1',
+        outcome: 'SUCCEEDED' as const,
+      },
+      {
+        stage: 'COVERAGE' as const,
+        callId: `call_${'2'.repeat(64)}`,
+        ordinal: 1,
+        inputDigest: '3'.repeat(64),
+        outputDigest: '4'.repeat(64),
+        provider: 'deepseek-official',
+        model: 'deepseek-chat',
+        policyVersion: 'coverage-v1',
+        outcome: 'SUCCEEDED' as const,
+      },
+      {
+        stage: 'GENERATION' as const,
+        callId: sealedResult.callId,
+        ordinal: 1,
+        inputDigest: '5'.repeat(64),
+        outputDigest: '6'.repeat(64),
+        provider: 'deepseek-official',
+        model: 'deepseek-chat',
+        policyVersion: 'generation-v1',
+        outcome: 'SUCCEEDED' as const,
+      },
+    ],
+    lineageId: nativeProposalLineage.lineageId,
+  }
+  const nativeActiveProposalLineage = {
+    ...nativeProposalLineage,
+    state: 'ACTIVE_PROPOSAL' as const,
+    currentProposalRevision: 1,
+    proposalRevisions: [{
+      revision: 1,
+      proposalId: nativeProposalId,
+      ownerIntentId: experienceIntent.intentId,
+      ownerIntentRevision: experienceIntent.revision,
+      action: 'CREATE' as const,
+      body: nativeBody,
+      runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
+      pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+      targetIdentityDigest: sealedResult.targetDigest,
+      state: 'ACTIVE_PROPOSAL' as const,
+      createdAt: now,
+    }],
   }
   return {
     global: createInitialGlobalV2(),
@@ -160,6 +280,8 @@ export function createMinimalV2Fixtures() {
     experienceIntent,
     proposalLineage,
     nativeProposalLineage,
+    nativeActiveProposalLineage,
+    proposalReadyIntent,
     legacyItem,
   }
 }

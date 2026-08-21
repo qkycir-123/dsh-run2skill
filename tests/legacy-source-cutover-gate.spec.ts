@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LegacySourceCutoverGate } from '../src/application/migration/legacy-source-cutover-gate.js'
+import { HostMutationGate } from '../src/application/host-mutation-gate.js'
 
 describe('LegacySourceCutoverGate', () => {
   it('drains already accepted mutations, rejects new writes during cutover, and seals permanently', async () => {
@@ -29,5 +30,13 @@ describe('LegacySourceCutoverGate', () => {
     const gate = new LegacySourceCutoverGate()
     await expect(gate.sealAndRun(() => { throw new Error('migration failed') })).rejects.toThrow('migration failed')
     await expect(gate.runLegacyMutation(() => 'ok')).resolves.toBe('ok')
+  })
+
+  it('is the same authority used by every current Host v1 mutation path', async () => {
+    const gate = new HostMutationGate()
+    expect(gate).toBeInstanceOf(LegacySourceCutoverGate)
+    await expect(gate.run(async () => 'legacy-write')).resolves.toBe('legacy-write')
+    await gate.sealAndRun(() => 'committed')
+    await expect(gate.run(async () => 'late-write')).rejects.toThrow(/LEGACY_SOURCE_SEALED/)
   })
 })

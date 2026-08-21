@@ -104,16 +104,17 @@ function readLegacySnapshot(domain: Run2skillDomain, importedAt: string): Legacy
     const targetIdentityDigest = item.publication?.targetIdentityDigest
     if (targetIdentityDigest === undefined) throw new Run2skillV2MigrationError('LEGACY_SOURCE_INVALID')
     const lineage = lineagesById.get(deriveLineageId(proposal.persistenceScope, targetIdentityDigest))
-    const latest = lineage?.revisions.at(-1)
+    const matchingRevisions = lineage?.revisions.filter(revision => (
+      revision.origin === 'RUN2SKILL'
+      && revision.proposalId === proposal.proposalId
+      && revision.skillBytesDigest === proposal.skillBytesDigest
+      && revision.exactSkillBytes === proposal.exactSkillBytes
+    )) ?? []
     if (
       lineage === undefined
       || lineage.scope !== proposal.persistenceScope
       || lineage.targetIdentityDigest !== targetIdentityDigest
-      || latest === undefined
-      || latest.origin !== 'RUN2SKILL'
-      || latest.proposalId !== proposal.proposalId
-      || latest.skillBytesDigest !== proposal.skillBytesDigest
-      || latest.exactSkillBytes !== proposal.exactSkillBytes
+      || matchingRevisions.length !== 1
     ) throw new Run2skillV2MigrationError('LEGACY_SOURCE_INVALID')
   }
   let activeLegacyProposals = 0
@@ -214,7 +215,10 @@ export async function migrateRun2skillV1ToV2(
   v2: Run2skillV2Domain,
   options: Run2skillV2MigrationOptions,
 ): Promise<Run2skillV2MigrationResult> {
-  const result = await options.cutoverGate.sealAndRun(() => migrateUnderCutover(v1, v2, options))
+  const result = await options.cutoverGate.sealAndRun(
+    () => migrateUnderCutover(v1, v2, options),
+    () => GlobalV2Schema.safeParse(v2.global.get()).data?.migration.phase === 'COMMITTED',
+  )
   if (result.status === 'COMMITTED') await options.afterPhase?.('COMMITTED')
   return result
 }

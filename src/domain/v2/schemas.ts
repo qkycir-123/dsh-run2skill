@@ -8,6 +8,10 @@ import { LineageV1Schema } from '../publication/schemas.js'
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/)
 const isoDateTime = z.string().datetime({ offset: true })
 const identity = z.string().min(1).max(256)
+const utf8Limited = (maxBytes: number) => z.string().refine(
+  value => Buffer.byteLength(value, 'utf8') <= maxBytes,
+  `Expected at most ${maxBytes} UTF-8 bytes`,
+)
 const safeNonNegativeInteger = z.number().refine(
   value => Number.isSafeInteger(value) && value >= 0,
   'Expected a non-negative safe integer',
@@ -48,6 +52,36 @@ export interface TurnObservationIdentityFactsV2 {
   readonly turnInstanceDigest: string
 }
 
+export interface TurnObservationContentFactsV2 {
+  readonly outcomeKind: string
+  readonly assistantOutcomeSummary: string
+  readonly toolOutcomeSummary: readonly {
+    readonly toolName: string
+    readonly outcome: string
+    readonly contentDigest: string
+  }[]
+  readonly routeObservation: {
+    readonly provider?: string | undefined
+    readonly model?: string | undefined
+    readonly complete: boolean
+  }
+  readonly completeness: 'COMPLETE' | 'INCOMPLETE'
+  readonly scopeBinding: unknown
+  readonly evidenceDigest: string
+}
+
+export function deriveTurnObservationContentDigestV2(facts: TurnObservationContentFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    outcomeKind: facts.outcomeKind,
+    assistantOutcomeSummary: facts.assistantOutcomeSummary,
+    toolOutcomeSummary: facts.toolOutcomeSummary,
+    routeObservation: facts.routeObservation,
+    completeness: facts.completeness,
+    scopeBinding: facts.scopeBinding,
+    evidenceDigest: facts.evidenceDigest,
+  }))
+}
+
 export function deriveTurnObservationIdV2(facts: TurnObservationIdentityFactsV2): `obs_${string}` {
   return `obs_${sha256Utf8(canonicalJson({
     sessionLifecycleKey: facts.sessionLifecycleKey,
@@ -66,10 +100,22 @@ export const TurnObservationV2Schema = z.object({
   turnInstanceDigest: sha256Hex,
   observedAt: isoDateTime,
   outcomeKind: z.string().min(1).max(120),
+  assistantOutcomeSummary: utf8Limited(4 * 1024),
+  toolOutcomeSummary: z.array(z.object({
+    toolName: identity,
+    outcome: z.string().min(1).max(120),
+    contentDigest: sha256Hex,
+  }).strict()).max(32),
+  routeObservation: z.object({
+    provider: identity.optional(),
+    model: identity.optional(),
+    complete: z.boolean(),
+  }).strict(),
   completeness: z.enum(['COMPLETE', 'INCOMPLETE']),
   scopeBinding: ScopeBindingV2Schema,
   directUserEvidence: z.array(EvidenceRefSchema).max(RUN2SKILL_V2_LIMITS.maxObservationEvidence),
   evidenceDigest: sha256Hex,
+  contentDigest: sha256Hex,
 }).strict().superRefine((value, context) => {
   if (value.observationId !== deriveTurnObservationIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['observationId'], message: 'Observation id does not match facts' })
@@ -79,6 +125,9 @@ export const TurnObservationV2Schema = z.object({
   }
   if (value.evidenceDigest !== sha256Utf8(canonicalJson(value.directUserEvidence))) {
     context.addIssue({ code: 'custom', path: ['evidenceDigest'], message: 'Observation evidence digest does not match evidence' })
+  }
+  if (value.contentDigest !== deriveTurnObservationContentDigestV2(value)) {
+    context.addIssue({ code: 'custom', path: ['contentDigest'], message: 'Observation content digest does not match normalized facts' })
   }
 })
 
@@ -101,6 +150,24 @@ export function deriveSessionBatchIdV2(facts: SessionBatchIdentityFactsV2): `bat
   }))}`
 }
 
+const BatchManifestBaselineV2Schema = z.object({
+  observedAt: isoDateTime,
+  rootManifestDigest: sha256Hex,
+  runtimeCatalogDigest: sha256Hex,
+  complete: z.boolean(),
+}).strict()
+
+const BatchManifestEndObservationV2Schema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('PENDING') }).strict(),
+  z.object({
+    state: z.literal('OBSERVED'),
+    observedAt: isoDateTime,
+    rootManifestDigest: sha256Hex,
+    runtimeCatalogDigest: sha256Hex,
+    complete: z.boolean(),
+  }).strict(),
+])
+
 export const SessionBatchV2Schema = z.object({
   schemaVersion: z.literal(1),
   revision: positiveSafeInteger,
@@ -121,6 +188,8 @@ export const SessionBatchV2Schema = z.object({
     .min(1)
     .max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
   observationManifestDigest: sha256Hex,
+  batchManifestBaseline: BatchManifestBaselineV2Schema,
+  manifestEndObservation: BatchManifestEndObservationV2Schema,
   routeSnapshot: z.object({
     provider: identity,
     model: identity,
@@ -139,6 +208,7 @@ export const SessionBatchV2Schema = z.object({
       model: identity,
       policyVersion: identity,
       outcome: z.enum(['RESERVED', 'SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED_OUT', 'OUTCOME_UNKNOWN']),
+      outputDigest: sha256Hex.optional(),
       failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
     }).strict()).max(1),
     carryDigest: sha256Hex.optional(),
@@ -189,6 +259,18 @@ export const SessionBatchV2Schema = z.object({
   if (value.detector.result !== 'READY' && value.detector.intentIds.length > 0) {
     context.addIssue({ code: 'custom', path: ['detector', 'intentIds'], message: 'Only READY detector result may reference Intents' })
   }
+  if (value.state === 'DETECTION_CLAIMED' && (
+    value.detector.calls.length !== 1 || value.detector.calls[0]?.outcome !== 'RESERVED'
+  )) context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Claimed detection requires one reserved call' })
+  if (value.state.startsWith('COMMITTED_') && (
+    value.detector.calls.length !== 1 || value.detector.calls[0]?.outcome !== 'SUCCEEDED'
+  )) context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Committed detection requires one successful call' })
+  if (value.state === 'FROZEN' && value.detector.calls.length !== 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Frozen batch cannot have a detector call' })
+  }
+  if (value.detector.calls.some(call => call.outcome === 'SUCCEEDED' && call.outputDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Successful detector call requires an output digest' })
+  }
 })
 
 export interface ExperienceIntentIdentityFactsV2 {
@@ -225,6 +307,40 @@ export const ExperienceIntentStatusV2Schema = z.enum([
   'NEEDS_ATTENTION',
   'DISCARDED',
 ])
+
+const SealedSkillBodyV2Schema = z.object({
+  name: z.string().min(1).max(128).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  description: utf8Limited(2 * 1024),
+  whenToUse: utf8Limited(4 * 1024),
+  exactSkillBytes: utf8Limited(64 * 1024),
+  skillBytesDigest: sha256Hex,
+}).strict().superRefine((value, context) => {
+  if (value.skillBytesDigest !== sha256Utf8(value.exactSkillBytes)) {
+    context.addIssue({ code: 'custom', path: ['skillBytesDigest'], message: 'Skill bytes digest does not match immutable body' })
+  }
+})
+
+const SealedGenerationResultV2Schema = z.object({
+  resultId: z.string().regex(/^result_[a-f0-9]{64}$/),
+  callId: z.string().regex(/^call_[a-f0-9]{64}$/),
+  action: z.enum(['CREATE', 'MERGE']),
+  body: SealedSkillBodyV2Schema,
+  targetDigest: sha256Hex,
+  runtimeCatalogDigest: sha256Hex,
+  pendingCatalogDigest: sha256Hex,
+  sealedAt: isoDateTime,
+  receiptDigest: sha256Hex,
+}).strict()
+
+const GenerationBarrierV2Schema = z.object({
+  barrierId: z.string().regex(/^barrier_[a-f0-9]{64}$/),
+  kind: z.enum(['KNOWN_FAILED', 'RESULT_LOST', 'OUTCOME_UNKNOWN', 'STALE_RESULT']),
+  behaviorSignature: sha256Hex,
+  inputDigest: sha256Hex,
+  callId: z.string().regex(/^call_[a-f0-9]{64}$/).optional(),
+  recordedAt: isoDateTime,
+  receiptDigest: sha256Hex,
+}).strict()
 
 export const ExperienceIntentV2Schema = z.object({
   schemaVersion: z.literal(1),
@@ -279,10 +395,17 @@ export const ExperienceIntentV2Schema = z.object({
     action: z.enum(['CREATE', 'MERGE']).optional(),
     inputDigest: sha256Hex.optional(),
     resultDigest: sha256Hex.optional(),
+    sealedResult: SealedGenerationResultV2Schema.optional(),
+    barrier: GenerationBarrierV2Schema.optional(),
     proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
     reasonCode: z.enum(['GENERATION_KNOWN_FAILED', 'GENERATION_RESULT_LOST', 'GENERATION_OUTCOME_UNKNOWN', 'STALE_RESULT']).optional(),
     userRetryUsed: z.boolean(),
     staleRefreshUsed: z.boolean(),
+    receipts: z.array(z.object({
+      kind: z.enum(['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED', 'BARRIER_COMMITTED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED']),
+      digest: sha256Hex,
+      recordedAt: isoDateTime,
+    }).strict()).max(32),
   }).strict(),
   stageCalls: z.array(z.object({
     stage: z.enum(['CATALOG_SCAN', 'COVERAGE', 'GENERATION']),
@@ -293,6 +416,7 @@ export const ExperienceIntentV2Schema = z.object({
     model: identity,
     policyVersion: identity,
     outcome: z.enum(['RESERVED', 'SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED_OUT', 'OUTCOME_UNKNOWN']),
+    outputDigest: sha256Hex.optional(),
     failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
   }).strict()).max(32),
   reasonReceipts: z.array(z.object({
@@ -315,6 +439,55 @@ export const ExperienceIntentV2Schema = z.object({
   ) context.addIssue({ code: 'custom', path: ['evidenceDigests'], message: 'Intent evidence digests must be unique and sorted' })
   if (value.evidenceRefs.some(ref => ref.sessionLifecycleKey !== value.sessionLifecycleKey)) {
     context.addIssue({ code: 'custom', path: ['evidenceRefs'], message: 'Intent evidence must stay within one lifecycle' })
+  }
+  const ownershipByStatus: Partial<Record<typeof value.status, typeof value.ownership.state>> = {
+    READY: 'NOT_STARTED',
+    OWNERSHIP_ARBITRATING: 'ARBITRATING',
+    RESOLVED_BY_AGENT: 'RESOLVED_BY_AGENT',
+    NEEDS_CONFIRMATION: 'NEEDS_CONFIRMATION',
+    RUN2SKILL_OWNED: 'RUN2SKILL_OWNED',
+  }
+  const expectedOwnership = ownershipByStatus[value.status]
+  if (expectedOwnership !== undefined && value.ownership.state !== expectedOwnership) {
+    context.addIssue({ code: 'custom', path: ['ownership', 'state'], message: 'Ownership state does not match Intent status' })
+  }
+  if (value.status === 'PROPOSAL_READY' && (
+    value.generation.state !== 'PROPOSAL_READY'
+    || value.generation.sealedResult === undefined
+    || value.generation.proposalId === undefined
+    || value.lineageId === undefined
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Proposal-ready Intent requires sealed result, Proposal, and Lineage facts' })
+  if (value.generation.state === 'RESULT_COMMITTED' && value.generation.sealedResult === undefined) {
+    context.addIssue({ code: 'custom', path: ['generation', 'sealedResult'], message: 'Committed generation result requires immutable body facts' })
+  }
+  if (value.generation.state === 'NEEDS_ATTENTION' && value.generation.barrier === undefined) {
+    context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation attention requires a durable duplicate barrier' })
+  }
+  if (
+    value.generation.sealedResult !== undefined
+    && value.generation.resultDigest !== value.generation.sealedResult.receiptDigest
+  ) context.addIssue({ code: 'custom', path: ['generation', 'resultDigest'], message: 'Generation result digest must bind the sealed result receipt' })
+  if (
+    value.generation.barrier !== undefined
+    && value.generation.barrier.behaviorSignature !== value.behaviorSignature
+  ) context.addIssue({ code: 'custom', path: ['generation', 'barrier'], message: 'Generation barrier must bind the Intent behavior signature' })
+  if (value.stageCalls.some(call => call.outcome === 'SUCCEEDED' && call.outputDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Successful stage call requires an output digest' })
+  }
+  const callsFor = (stage: 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION') => value.stageCalls.filter(call => call.stage === stage)
+  if (value.recall.state === 'COMPLETE' && callsFor('CATALOG_SCAN').length === 0) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Complete recall requires a durable Catalog scan ledger' })
+  }
+  if (['COVERED', 'CREATE', 'MERGE'].includes(value.coverage.state) && callsFor('COVERAGE').length === 0) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal coverage requires a durable coverage call ledger' })
+  }
+  if (value.generation.state === 'PROPOSAL_READY') {
+    const generationCalls = callsFor('GENERATION')
+    if (
+      generationCalls.length !== 1
+      || generationCalls[0]?.outcome !== 'SUCCEEDED'
+      || generationCalls[0]?.callId !== value.generation.sealedResult?.callId
+    ) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Proposal-ready generation requires one matching successful call' })
   }
 })
 
@@ -410,6 +583,22 @@ export function deriveNativeProposalLineageIdV2(
   return `lin_${sha256Utf8(canonicalJson({ persistenceScope, behaviorSignature }))}`
 }
 
+const NativeProposalRevisionV2Schema = z.object({
+  revision: positiveSafeInteger,
+  proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/),
+  ownerIntentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
+  ownerIntentRevision: positiveSafeInteger,
+  action: z.enum(['CREATE', 'MERGE']),
+  body: SealedSkillBodyV2Schema,
+  runtimeCatalogDigest: sha256Hex,
+  pendingCatalogDigest: sha256Hex,
+  targetIdentityDigest: sha256Hex.optional(),
+  state: z.enum(['ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
+  reviewReceiptDigest: sha256Hex.optional(),
+  publicationReceiptDigest: sha256Hex.optional(),
+  createdAt: isoDateTime,
+}).strict()
+
 const NativeProposalLineageV2Schema = z.object({
   schemaVersion: z.literal(1),
   revision: positiveSafeInteger,
@@ -420,17 +609,37 @@ const NativeProposalLineageV2Schema = z.object({
   behaviorSignature: sha256Hex,
   ownerIntentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
   ownerIntentRevision: positiveSafeInteger,
-  proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
-  proposalBodyDigest: sha256Hex.optional(),
-  targetIdentityDigest: sha256Hex.optional(),
+  currentProposalRevision: safeNonNegativeInteger,
+  proposalRevisions: z.array(NativeProposalRevisionV2Schema).max(64),
   createdAt: isoDateTime,
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
   if (value.lineageId !== deriveNativeProposalLineageIdV2(value.persistenceScope, value.behaviorSignature)) {
     context.addIssue({ code: 'custom', path: ['lineageId'], message: 'Native lineage id does not match behavior facts' })
   }
-  if (value.state === 'ACTIVE_PROPOSAL' && (value.proposalId === undefined || value.proposalBodyDigest === undefined)) {
-    context.addIssue({ code: 'custom', path: ['proposalId'], message: 'Active native lineage requires an immutable proposal body' })
+  if (value.currentProposalRevision !== value.proposalRevisions.length) {
+    context.addIssue({ code: 'custom', path: ['currentProposalRevision'], message: 'Native lineage must retain complete consecutive Proposal revisions' })
+  }
+  value.proposalRevisions.forEach((revision, index) => {
+    if (
+      revision.revision !== index + 1
+    ) context.addIssue({ code: 'custom', path: ['proposalRevisions', index], message: 'Native Proposal revision is outside Lineage ownership' })
+  })
+  if (value.state === 'RESERVED' && value.proposalRevisions.length !== 0) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Reserved lineage cannot contain a Proposal body' })
+  }
+  if (value.state !== 'RESERVED' && (
+    value.proposalRevisions.length === 0 || value.proposalRevisions.at(-1)?.state !== value.state
+  )) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Active native lineage requires a matching immutable Proposal revision' })
+  }
+  const latestRevision = value.proposalRevisions.at(-1)
+  if (
+    latestRevision !== undefined
+    && (latestRevision.ownerIntentId !== value.ownerIntentId || latestRevision.ownerIntentRevision !== value.ownerIntentRevision)
+  ) context.addIssue({ code: 'custom', path: ['ownerIntentId'], message: 'Native Lineage owner must match its latest Proposal revision' })
+  if (value.state === 'PUBLISHED' && latestRevision?.publicationReceiptDigest === undefined) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Published native Proposal requires a publication receipt' })
   }
 })
 
@@ -491,12 +700,6 @@ const SessionCursorV2Schema = z.object({
     evidenceDigests: z.array(sha256Hex).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
     remainingBatches: z.union([z.literal(0), z.literal(1), z.literal(2)]),
   }).strict()).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
-  batchManifestBaseline: z.object({
-    observedAt: isoDateTime,
-    rootManifestDigest: sha256Hex,
-    runtimeCatalogDigest: sha256Hex,
-    complete: z.boolean(),
-  }).strict().optional(),
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
   if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
@@ -541,6 +744,12 @@ const ProposalGenerationLeaseV2Schema = z.object({
   inputDigest: sha256Hex,
   externalPendingDigest: sha256Hex,
   acquiredAt: isoDateTime,
+  callId: z.string().regex(/^call_[a-f0-9]{64}$/).optional(),
+  callOutcomeReceiptDigest: sha256Hex.optional(),
+  sealedResultReceiptDigest: sha256Hex.optional(),
+  barrierReceiptDigest: sha256Hex.optional(),
+  proposalAuthorizationReceiptDigest: sha256Hex.optional(),
+  completionReceiptDigest: sha256Hex.optional(),
   state: z.enum([
     'NOT_CALLED',
     'KNOWN_FAILED',
@@ -551,7 +760,29 @@ const ProposalGenerationLeaseV2Schema = z.object({
     'BODY_COMMITTED_INDEX_PENDING',
     'ACTIVE_COMPLETE',
   ]),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.state === 'NOT_CALLED' && value.callId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['callId'], message: 'Uncalled lease cannot retain a call identity' })
+  }
+  if (value.state !== 'NOT_CALLED' && (value.callId === undefined || value.callOutcomeReceiptDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['callId'], message: 'Called lease requires durable call identity and outcome receipt' })
+  }
+  if (
+    ['KNOWN_FAILED', 'SUCCEEDED_RESULT_MISSING', 'OUTCOME_UNKNOWN'].includes(value.state)
+    && value.barrierReceiptDigest === undefined
+  ) context.addIssue({ code: 'custom', path: ['barrierReceiptDigest'], message: 'Unresolved generation lease requires a duplicate barrier receipt' })
+  if (
+    ['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE'].includes(value.state)
+    && value.sealedResultReceiptDigest === undefined
+  ) context.addIssue({ code: 'custom', path: ['sealedResultReceiptDigest'], message: 'Result-bearing lease requires a sealed result receipt' })
+  if (
+    ['PROPOSAL_COMMIT_AUTHORIZED', 'BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE'].includes(value.state)
+    && value.proposalAuthorizationReceiptDigest === undefined
+  ) context.addIssue({ code: 'custom', path: ['proposalAuthorizationReceiptDigest'], message: 'Proposal commit requires an authorization receipt' })
+  if (value.state === 'ACTIVE_COMPLETE' && value.completionReceiptDigest === undefined) {
+    context.addIssue({ code: 'custom', path: ['completionReceiptDigest'], message: 'Completed lease requires an index completion receipt' })
+  }
+})
 
 const ProposalCatalogMutationJournalV2Schema = z.object({
   schemaVersion: z.literal(1),

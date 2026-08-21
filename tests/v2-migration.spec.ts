@@ -13,11 +13,54 @@ import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-sa
 import { materializeLineage } from '../src/domain/publication/index.js'
 import { proposalRefOf } from '../src/domain/review/index.js'
 import { makeCreateProposalSnapshot } from './support/review-fixture.js'
+import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 
 const NOW = '2026-08-22T00:00:00.000Z'
 
 function migrationOptions(overrides: Omit<Run2skillV2MigrationOptions, 'cutoverGate'> = {}): Run2skillV2MigrationOptions {
   return { cutoverGate: new LegacySourceCutoverGate(), now: () => NOW, ...overrides }
+}
+
+async function publishedLegacyFixture() {
+  const v1 = createMemoryRun2skillDomain()
+  const learned = makeLearnedWorkItem()
+  v1.workItems.set(learned.workItemId, learned)
+  const reviews = new ProposalReviewStore(v1, () => NOW)
+  const staged = (await reviews.stage(learned.workItemId, learned.revision, makeCreateProposalSnapshot(learned))).item
+  const approved = (await reviews.approve(
+    staged.workItemId,
+    staged.revision,
+    proposalRefOf(staged.review!.proposal),
+  )).item
+  const proposal = approved.review!.proposal
+  const publication = approved.publication!
+  if (proposal.actionBinding.kind !== 'CREATE') throw new Error('expected CREATE fixture')
+  const lineage = materializeLineage({
+    scope: proposal.persistenceScope,
+    provider: proposal.actionBinding.rootBinding.expectedProvider,
+    source: 'project-dsh',
+    skillName: proposal.name,
+    canonicalTargetPath: proposal.actionBinding.targetBinding.skillFilePath,
+    targetIdentityDigest: publication.targetIdentityDigest,
+    revisions: [{
+      revision: 1,
+      origin: 'RUN2SKILL',
+      proposalId: proposal.proposalId,
+      exactSkillBytes: proposal.exactSkillBytes,
+      skillBytesDigest: proposal.skillBytesDigest,
+      committedAt: NOW,
+    }],
+  })
+  const saga = new PublicationSagaStore(v1, () => NOW)
+  await saga.appendEvent(approved.workItemId, 'FACTS_REVALIDATED', { expectedHash: proposal.skillBytesDigest })
+  await saga.appendEvent(approved.workItemId, 'READBACK_CONFIRMED', {
+    expectedHash: proposal.skillBytesDigest,
+    observedHash: proposal.skillBytesDigest,
+  })
+  await saga.stageLineage(approved.workItemId, lineage)
+  await saga.commitLineage(approved.workItemId)
+  await saga.complete(approved.workItemId)
+  return { v1, lineage, proposal }
 }
 
 describe('run2skill_v1 -> run2skill_v2 migration', () => {
@@ -225,50 +268,42 @@ describe('run2skill_v1 -> run2skill_v2 migration', () => {
   })
 
   it('fails closed when a PUBLISHED v1 item has no matching committed Lineage', async () => {
-    const v1 = createMemoryRun2skillDomain()
-    const learned = makeLearnedWorkItem()
-    v1.workItems.set(learned.workItemId, learned)
-    const reviews = new ProposalReviewStore(v1, () => NOW)
-    const staged = (await reviews.stage(learned.workItemId, learned.revision, makeCreateProposalSnapshot(learned))).item
-    const approved = (await reviews.approve(
-      staged.workItemId,
-      staged.revision,
-      proposalRefOf(staged.review!.proposal),
-    )).item
-    const proposal = approved.review!.proposal
-    const publication = approved.publication!
-    if (proposal.actionBinding.kind !== 'CREATE') throw new Error('expected CREATE fixture')
-    const lineage = materializeLineage({
-      scope: proposal.persistenceScope,
-      provider: proposal.actionBinding.rootBinding.expectedProvider,
-      source: 'project-dsh',
-      skillName: proposal.name,
-      canonicalTargetPath: proposal.actionBinding.targetBinding.skillFilePath,
-      targetIdentityDigest: publication.targetIdentityDigest,
-      revisions: [{
-        revision: 1,
-        origin: 'RUN2SKILL',
-        proposalId: proposal.proposalId,
-        exactSkillBytes: proposal.exactSkillBytes,
-        skillBytesDigest: proposal.skillBytesDigest,
-        committedAt: NOW,
-      }],
-    })
-    const saga = new PublicationSagaStore(v1, () => NOW)
-    await saga.appendEvent(approved.workItemId, 'FACTS_REVALIDATED', { expectedHash: proposal.skillBytesDigest })
-    await saga.appendEvent(approved.workItemId, 'READBACK_CONFIRMED', {
-      expectedHash: proposal.skillBytesDigest,
-      observedHash: proposal.skillBytesDigest,
-    })
-    await saga.stageLineage(approved.workItemId, lineage)
-    await saga.commitLineage(approved.workItemId)
-    await saga.complete(approved.workItemId)
+    const { v1, lineage } = await publishedLegacyFixture()
     v1.lineages.delete(lineage.lineageId)
     const v2 = createMemoryRun2skillV2Domain()
 
     await expect(migrateRun2skillV1ToV2(v1, v2, migrationOptions()))
       .rejects.toThrow(/LEGACY_SOURCE_INVALID/)
     expect(v2.global.get().migration.phase).toBe('NOT_STARTED')
+  })
+
+  it('accepts a historical PUBLISHED item when its Proposal matches an older Lineage revision', async () => {
+    const { v1, lineage } = await publishedLegacyFixture()
+    const secondBytes = `${lineage.revisions[0]!.exactSkillBytes}\n## Revision 2\n`
+    const expanded = materializeLineage({
+      scope: lineage.scope,
+      provider: lineage.provider,
+      source: lineage.source,
+      skillName: lineage.skillName,
+      canonicalTargetPath: lineage.canonicalTargetPath,
+      targetIdentityDigest: lineage.targetIdentityDigest,
+      revisions: [
+        lineage.revisions[0]!,
+        {
+          revision: 2,
+          origin: 'RUN2SKILL',
+          proposalId: `prop_${'f'.repeat(64)}`,
+          exactSkillBytes: secondBytes,
+          skillBytesDigest: sha256Utf8(secondBytes),
+          committedAt: NOW,
+        },
+      ],
+    })
+    v1.lineages.set(expanded.lineageId, expanded)
+    const v2 = createMemoryRun2skillV2Domain()
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, migrationOptions()))
+      .resolves.toMatchObject({ status: 'COMMITTED' })
   })
 
   it('keeps v1 sealed when a post-commit notification fails', async () => {
@@ -283,6 +318,24 @@ describe('run2skill_v1 -> run2skill_v2 migration', () => {
         if (phase === 'COMMITTED') throw new Error('notification failed')
       },
     })).rejects.toThrow('notification failed')
+
+    expect(v2.global.get().migration.phase).toBe('COMMITTED')
+    expect(cutoverGate.state).toBe('SEALED')
+    await expect(cutoverGate.runLegacyMutation(() => {})).rejects.toThrow(/LEGACY_SOURCE_SEALED/)
+  })
+
+  it('keeps v1 sealed when COMMITTED is durable but its write acknowledgement is lost', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const v2 = createMemoryRun2skillV2Domain()
+    const cutoverGate = new LegacySourceCutoverGate()
+    const durableSet = v2.global.set.bind(v2.global)
+    v2.global.set = async (value) => {
+      await durableSet(value)
+      if (value.migration.phase === 'COMMITTED') throw new Error('ack-lost-after-durable-commit')
+    }
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, { cutoverGate, now: () => NOW }))
+      .rejects.toThrow('ack-lost-after-durable-commit')
 
     expect(v2.global.get().migration.phase).toBe('COMMITTED')
     expect(cutoverGate.state).toBe('SEALED')

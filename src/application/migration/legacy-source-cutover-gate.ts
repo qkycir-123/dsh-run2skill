@@ -28,7 +28,10 @@ export class LegacySourceCutoverGate {
     }
   }
 
-  async sealAndRun<T>(operation: () => T | Promise<T>): Promise<T> {
+  async sealAndRun<T>(
+    operation: () => T | Promise<T>,
+    durableCommitObserved: () => boolean = () => false,
+  ): Promise<T> {
     if (this.#state === 'SEALED') return operation()
     if (this.#state !== 'ACCEPTING') throw new LegacySourceCutoverError('LEGACY_SOURCE_SEALED')
     this.#state = 'CUTTING_OVER'
@@ -39,7 +42,7 @@ export class LegacySourceCutoverGate {
       this.#state = 'SEALED'
       return result
     } catch (error) {
-      this.#state = 'ACCEPTING'
+      this.#state = durableCommitObserved() ? 'SEALED' : 'ACCEPTING'
       throw error
     }
   }
