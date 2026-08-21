@@ -28,9 +28,9 @@ const detectorOutputSchema = z.discriminatedUnion('result', [
     intents: z.array(z.object({
       persistenceScope: z.enum(['PROJECT', 'USER']),
       experienceType: z.enum(['WORKFLOW', 'CONSTRAINT', 'CORRECTION']),
-      applicabilitySummary: z.string().min(1).max(2048),
-      keySteps: z.array(z.string().min(1).max(1024)).min(1).max(16),
-      prohibitions: z.array(z.string().min(1).max(1024)).max(16),
+      applicabilitySummary: z.string().max(2048).refine(value => value.trim().length > 0),
+      keySteps: z.array(z.string().max(1024).refine(value => value.trim().length > 0)).min(1).max(16),
+      prohibitions: z.array(z.string().max(1024).refine(value => value.trim().length > 0)).max(16),
       evidenceDigests: z.array(sha256Hex).min(1).max(64),
       completeness: z.object({
         status: z.enum(['COMPLETE', 'INCOMPLETE']),
@@ -46,6 +46,7 @@ export interface BatchDetectorInput {
   readonly batchId: string
   readonly sessionLifecycleKey: string
   readonly triggerReasons: SessionBatchV2['triggerReasons']
+  readonly route: SessionBatchV2['routeSnapshot']
   readonly observations: readonly {
     readonly observationId: string
     readonly turnEndSeq: number
@@ -129,7 +130,11 @@ export class BatchDetectorWorker {
   async recover(): Promise<void> {
     const batches = [...this.#batches.entries()]
       .map(([, value]) => SessionBatchV2Schema.parse(value))
-      .sort((left, right) => left.batchId.localeCompare(right.batchId))
+      .sort((left, right) => (
+        left.sessionLifecycleKey.localeCompare(right.sessionLifecycleKey)
+        || left.lastTurnEndSeq - right.lastTurnEndSeq
+        || left.batchId.localeCompare(right.batchId)
+      ))
     for (const batch of batches) {
       if (batch.state === 'DETECTION_CLAIMED') {
         const call = batch.detector.calls[0]!
@@ -146,8 +151,11 @@ export class BatchDetectorWorker {
           state: 'NEEDS_ATTENTION',
           updatedAt: this.#isoNow(),
         }))
+        await this.#discardStagedIntents(batch.batchId)
         await this.#advanceCursor(this.#batches.get(batch.batchId)!)
       } else if (['COMMITTED_NONE', 'COMMITTED_DEFER', 'COMMITTED_READY', 'NEEDS_ATTENTION'].includes(batch.state)) {
+        if (batch.state === 'COMMITTED_READY') await this.#repairReadyIntents(batch)
+        else await this.#discardStagedIntents(batch.batchId)
         await this.#advanceCursor(batch)
       }
     }
@@ -193,6 +201,7 @@ export class BatchDetectorWorker {
         batchId: batch.batchId,
         sessionLifecycleKey: batch.sessionLifecycleKey,
         triggerReasons: batch.triggerReasons,
+        route: batch.routeSnapshot,
         observations: observations.map(item => ({
           observationId: item.observationId,
           turnEndSeq: item.turnEndSeq,
@@ -290,6 +299,7 @@ export class BatchDetectorWorker {
         updatedAt: now,
       })
     })
+    if (terminal.state === 'COMMITTED_READY') await this.#repairReadyIntents(terminal)
     await this.#advanceCursor(terminal)
   }
 
@@ -322,6 +332,7 @@ export class BatchDetectorWorker {
         updatedAt: this.#isoNow(),
       })
     })
+    await this.#discardStagedIntents(terminal.batchId)
     await this.#advanceCursor(terminal)
   }
 
@@ -371,7 +382,7 @@ export class BatchDetectorWorker {
       generation: { state: 'NOT_STARTED', userRetryUsed: false, staleRefreshUsed: false, receipts: [] },
       stageCalls: [],
       reasonReceipts: [],
-      status: 'READY',
+      status: 'DETECTOR_STAGED',
       createdAt: now,
       updatedAt: now,
     })
@@ -395,6 +406,14 @@ export class BatchDetectorWorker {
         throw new Error('Terminal batch conflicts with another active batch')
       }
       const { activeBatchId: _activeBatchId, ...rest } = cursor
+      const advances = batch.lastTurnEndSeq >= cursor.detectedThroughTurnEndSeq
+      const nextCarry = !advances
+        ? cursor.openExperienceCarry
+        : batch.detector.result === 'DEFER'
+          ? batch.detector.carry
+          : ['NONE', 'READY'].includes(batch.detector.result)
+            ? []
+            : cursor.openExperienceCarry
       return {
         value: undefined,
         global: {
@@ -404,7 +423,7 @@ export class BatchDetectorWorker {
             [batch.sessionLifecycleKey]: {
               ...rest,
               detectedThroughTurnEndSeq: Math.max(cursor.detectedThroughTurnEndSeq, batch.lastTurnEndSeq),
-              openExperienceCarry: batch.detector.result === 'DEFER' ? batch.detector.carry : [],
+              openExperienceCarry: nextCarry,
               updatedAt: this.#isoNow(),
             },
           },
@@ -419,6 +438,28 @@ export class BatchDetectorWorker {
       || batch.detector.calls[0]?.callId !== claimed.callId
       || batch.detector.calls[0]?.inputDigest !== claimed.inputDigest
     ) throw new Error('Detector claim changed before commit')
+  }
+
+  async #repairReadyIntents(batch: SessionBatchV2): Promise<void> {
+    for (const intentId of batch.detector.intentIds) {
+      await this.#intents.update(intentId, current => {
+        if (current.batchId !== batch.batchId) throw new Error('Ready Intent belongs to another batch')
+        if (current.status === 'READY') return current
+        if (current.status !== 'DETECTOR_STAGED') throw new Error('Ready Intent has contradictory status')
+        return ExperienceIntentV2Schema.parse({
+          ...current,
+          revision: current.revision + 1,
+          status: 'READY',
+          updatedAt: this.#isoNow(),
+        })
+      })
+    }
+  }
+
+  async #discardStagedIntents(batchId: string): Promise<void> {
+    for (const [intentId, intent] of this.#intents.entries()) {
+      if (intent.batchId === batchId && intent.status === 'DETECTOR_STAGED') await this.#intents.delete(intentId)
+    }
   }
 
   #isoNow(): string {

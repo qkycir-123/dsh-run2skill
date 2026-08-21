@@ -93,7 +93,7 @@ describe('v2 Batch Detector worker', () => {
     expect(model.calls).toBe(1)
     expect(domain.experienceIntents.size).toBe(1)
     const intent = [...domain.experienceIntents.values()][0]!
-    expect(intent).toMatchObject({ batchId: fixtures.sessionBatch.batchId, status: 'READY', revision: 1 })
+    expect(intent).toMatchObject({ batchId: fixtures.sessionBatch.batchId, status: 'READY', revision: 2 })
     expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
       state: 'COMMITTED_READY',
       detector: { result: 'READY', intentIds: [intent.intentId] },
@@ -153,5 +153,55 @@ describe('v2 Batch Detector worker', () => {
       state: 'NEEDS_ATTENTION',
       detector: { result: 'NEEDS_ATTENTION', failureCode: 'DETECTOR_INPUT_UNAVAILABLE', calls: [] },
     })
+  })
+
+  it('passes the exact frozen route to the detector client', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    let route: unknown
+    const worker = new BatchDetectorWorker(domain, {
+      client: { detect: async input => { route = input.route; return { result: 'NONE' } } },
+    })
+    await worker.runOnce()
+    expect(route).toEqual(fixtures.sessionBatch.routeSnapshot)
+  })
+
+  it('rejects whitespace-only READY semantics', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const worker = new BatchDetectorWorker(domain, { client: client({
+      result: 'READY',
+      intents: [{
+        persistenceScope: 'PROJECT', experienceType: 'WORKFLOW', applicabilitySummary: '   ',
+        keySteps: ['\t'], prohibitions: [],
+        evidenceDigests: [fixtures.turnObservation.evidenceDigest],
+        completeness: { status: 'COMPLETE', blockers: [] },
+      }],
+    }) })
+    await worker.runOnce()
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
+      state: 'NEEDS_ATTENTION', detector: { failureCode: 'INVALID_DETECTOR_OUTPUT' },
+    })
+  })
+
+  it('preserves prior carry when the detector call fails', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const carry = [{
+      summary: '尚未完成的既有经验', behaviorSignatureDraft: 'e'.repeat(64),
+      evidenceDigests: [fixtures.turnObservation.evidenceDigest], remainingBatches: 1 as const,
+    }]
+    const global = domain.global.get()
+    await domain.global.set({
+      ...global,
+      sessions: {
+        ...global.sessions,
+        [fixtures.sessionBatch.sessionLifecycleKey]: {
+          ...global.sessions[fixtures.sessionBatch.sessionLifecycleKey]!, openExperienceCarry: carry,
+        },
+      },
+    })
+    const worker = new BatchDetectorWorker(domain, {
+      client: { detect: async () => { throw new Error('offline') } },
+    })
+    await worker.runOnce()
+    expect(domain.global.get().sessions[fixtures.sessionBatch.sessionLifecycleKey]?.openExperienceCarry).toEqual(carry)
   })
 })

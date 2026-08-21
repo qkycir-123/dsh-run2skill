@@ -352,6 +352,7 @@ export function deriveExperienceIntentIdV2(facts: ExperienceIntentIdentityFactsV
 }
 
 export const ExperienceIntentStatusV2Schema = z.enum([
+  'DETECTOR_STAGED',
   'READY',
   'OWNERSHIP_ARBITRATING',
   'RESOLVED_BY_AGENT',
@@ -431,9 +432,9 @@ export const ExperienceIntentV2Schema = z.object({
   persistenceScope: PersistenceScopeV2Schema,
   explicitSave: z.boolean(),
   experienceType: z.enum(['WORKFLOW', 'CONSTRAINT', 'CORRECTION']),
-  applicabilitySummary: utf8Limited(2 * 1024),
-  keySteps: z.array(utf8Limited(1024)).min(1).max(16),
-  prohibitions: z.array(utf8Limited(1024)).max(16),
+  applicabilitySummary: utf8Limited(2 * 1024).refine(value => value.trim().length > 0),
+  keySteps: z.array(utf8Limited(1024).refine(value => value.trim().length > 0)).min(1).max(16),
+  prohibitions: z.array(utf8Limited(1024).refine(value => value.trim().length > 0)).max(16),
   behaviorSignature: sha256Hex,
   evidenceRefs: z.array(z.object({
     observationId: z.string().regex(/^obs_[a-f0-9]{64}$/),
@@ -585,6 +586,7 @@ export const ExperienceIntentV2Schema = z.object({
     expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
   }
   switch (value.status) {
+    case 'DETECTOR_STAGED':
     case 'READY':
       expectStage(value.ownership.state, 'NOT_STARTED', ['ownership', 'state']); noDownstreamWork(); break
     case 'OWNERSHIP_ARBITRATING':
