@@ -146,6 +146,25 @@ READY
 
 每个阶段只允许单向提交。输入 observation digest、policy version 或 target digest 变化时，旧结果不能续用，必须新建明确 revision，不得就地偷换输入。
 
+`GENERATING` 的权威子状态不是一组并列的失败状态，而是以下单向提交链：
+
+```text
+GENERATION_AUTHORIZED
+  -> GENERATION_LEASED
+  -> GENERATION_CALL_RESERVED
+  -> GENERATION_CALL_TERMINAL
+     -> RESULT_COMMITTED
+     -> PROPOSAL_BODY_COMMITTED
+     -> PROPOSAL_READY
+  -> NEEDS_ATTENTION(reasonCode)
+
+NEEDS_ATTENTION(retryable generation reason)
+  -> GENERATION_AUTHORIZED(new revision, userRetryUsed=true)
+  -> DISCARDED(user confirmed)
+```
+
+`GENERATION_KNOWN_FAILED`、`GENERATION_RESULT_LOST`、`GENERATION_OUTCOME_UNKNOWN` 和 `STALE_RESULT` 只是 `NEEDS_ATTENTION` 的 generation reason code，不是 Intent 平级状态。`AUTHORIZE_GENERATION_RETRY` 只能新建 revision 回到 `GENERATION_AUTHORIZED`；`DISMISS_GENERATION` 只能在用户确认后提交 `DISCARDED`。`HANDLED_BY_USER` 仅属于 ownership 裁决，不能用于掩盖已经授权但失败的 generation。
+
 ## 4. 调度与恢复
 
 ### 4.1 5-Turn threshold
@@ -317,7 +336,7 @@ generation 只接受 Host 已提交的 `CREATE_AUTHORIZED` 或 `MERGE_AUTHORIZED
 2. 连续 Turn 范围的 `batchId` 去重 threshold/idle/explicit 竞争；
 3. `intentId` 去重 batch replay 和 DEFER carry；
 4. `(persistenceScope, behaviorSignature)` 的 `BehaviorSignatureIndex` 只允许一个 active lineage owner；
-5. `PendingProposalCatalog` 每次从 `proposal_lineages` 与 `legacy_items` 的权威 active Proposal records 派生 complete snapshot，并在新 Intent 的 summary scan/coverage 中作为不可写候选参与去重；它不是可独立漂移的缓存表；
+5. `PendingProposalCatalog` 每次从 `proposal_lineages` 与 `legacy_items` 的权威 active Proposal records、Intent 中已密封但尚未复制为 Proposal 的 `GenerationResult`，以及 unresolved generation barriers 派生 complete snapshot，并在新 Intent 的 summary scan/coverage 中作为不可写候选参与去重；它不是可独立漂移的缓存表；
 6. 相同签名的后续 Intent 附加 evidence digest 到已有 lineage，而不是生成第二个 Proposal；签名未精确对齐但 legacy Proposal 语义为 COVERED/PARTIAL/AMBIGUOUS 时同样不得 CREATE；
 7. Proposal ID 由 lineage id、coverage observation digest、action 和 target/base digest 派生；
 8. publication 继续按 canonical target path 串行和 CAS。
@@ -333,11 +352,11 @@ generation 只接受 Host 已提交的 `CREATE_AUTHORIZED` 或 `MERGE_AUTHORIZED
 BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或跨 scope 的 Proposal 由进程全局唯一的 durable `ProposalGenerationLease` 解决：
 
 1. CREATE/MERGE generation 前，通过 global CAS 取得唯一 lease；全部 scope 的其他 generation 排队，Detector/recall/coverage 仍可并行；
-2. lease 记录 owner intent/revision、action、input digest、acquiredAt 和 call slot，不靠内存锁；它与 ProposalCatalogCoordinator 共同阻止第二个 generation，Purge/Review 可以排队或使 catalog epoch 变化并令当前结果 stale；
-3. 持有 lease 后重新取得 Runtime Skill Catalog 与 PendingProposalCatalog 的 complete snapshot；其 digest 必须与 coverage 授权绑定值一致，否则释放 lease并重新 recall/coverage；
+2. lease 记录 owner intent/revision、action、input digest、acquiredAt 和 call slot，不靠内存锁；它与 ProposalCatalogCoordinator 共同阻止第二个 generation。lease 存续期间，Coordinator 排队其他 owner 的 membership mutation；Purge 可以中止当前 generation，但必须等 call ledger/barrier 收敛后再隐藏或删除当前 owner；
+3. 持有 lease 后重新取得 Runtime Skill Catalog 与 PendingProposalCatalog 的 complete snapshot；其 digest 必须与 coverage 授权绑定值一致，否则释放 lease并重新 recall/coverage。lease 同时记录排除当前 owner Intent/GenerationResult/barrier 后的 `externalPendingDigest`；
 4. 只有复核仍允许 CREATE/MERGE 才预留 generation call 并调用模型；call terminal、usage 和非敏感 failure 必须先进入 durable ledger；
-5. 模型成功且本地 Guard 通过后，先把完整输出密封为 Intent 内 immutable `GenerationResult`（正文、digest、target/base binding、callId）；只有该写入成功，call 才可进入 `RESULT_COMMITTED`；
-6. 模型返回后、写 Proposal body 前再次取得两个 complete catalogs；任一 digest 变化都不提交 Proposal，密封结果标为 `STALE_RESULT` 并进入 NEEDS_ATTENTION；
+5. 模型成功且本地 Guard 通过后，先把完整输出密封为 Intent 内 immutable `GenerationResult`（正文、digest、target/base binding、callId）；只有该写入成功，call 才可进入 `RESULT_COMMITTED`。该写入是 lease owner 唯一允许立即执行的 membership mutation，并产生绑定 `leaseId + intentId + generationRevision` 的 mutation receipt；
+6. 模型返回后、写 Proposal body 前再次取得两个 complete catalogs。Runtime digest 必须不变，`externalPendingDigest` 必须不变，Pending epoch 的变化必须且只能由第 5 步当前 owner 的单个 receipt 解释；任何其他 mutation、缺失/多余 receipt 或 catalog 不完整都不提交 Proposal，并以 reason `STALE_RESULT` 进入 `NEEDS_ATTENTION`；
 7. 两次 revalidation 均通过后，把 GenerationResult 幂等复制为 `proposal_lineages` 的 immutable Proposal body，再把 BehaviorSignatureIndex reservation 从 `RESERVED` 提交为 `ACTIVE`，最后写入 lease completion receipt并释放；
 8. GenerationResult 或 Proposal body 一旦 authoritative write 成功，后续 PendingProposalCatalog 立即能看见它，即使 global exact-signature index 尚未提交；全局 lease 阻止第二个 generation 在更早窗口运行；
 9. 启动恢复先扫描 active Proposal bodies、sealed GenerationResults 和 unresolved generation barriers，补齐 body 已存在但 index 非 ACTIVE 的记录并分类处理 lease；
@@ -351,22 +370,22 @@ BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或�
 
 | 恢复事实 | 自动动作 | Intent / 去重结果 |
 |---|---|---|
-| `NOT_CALLED`：只有 lease/reservation，没有 call slot | 释放 lease 与未消费 call reservation，重新排队首次 generation | 不新增调用；原 Intent 仍是唯一 owner |
-| `KNOWN_FAILED`：call 为 FAILED/ABORTED/TIMED_OUT，无 GenerationResult/body | 释放全局 lease，不自动重调 | `GENERATION_NEEDS_ATTENTION`；保留 behavior reservation 和 UNAVAILABLE 去重屏障 |
-| `SUCCEEDED_RESULT_MISSING`：ledger SUCCEEDED，但 Guard 或 GenerationResult durable 写未完成 | 释放全局 lease，不自动重调 | `GENERATION_RESULT_LOST`；保留去重屏障 |
+| `NOT_CALLED`：只有 lease/behavior reservation，没有 call slot | 释放 lease，保留 behavior reservation，重新排队首次 generation | 不消费调用预算；原 Intent 仍是唯一 owner |
+| `KNOWN_FAILED`：call 为 FAILED/ABORTED/TIMED_OUT，无 GenerationResult/body | 释放全局 lease，不自动重调 | `NEEDS_ATTENTION(GENERATION_KNOWN_FAILED)`；保留 behavior reservation 和 UNAVAILABLE 去重屏障 |
+| `SUCCEEDED_RESULT_MISSING`：ledger SUCCEEDED，但 Guard 或 GenerationResult durable 写未完成 | 释放全局 lease，不自动重调 | `NEEDS_ATTENTION(GENERATION_RESULT_LOST)`；保留去重屏障 |
 | `RESULT_COMMITTED`：sealed GenerationResult 存在，Proposal body 缺失 | GenerationResult 已进入派生 Catalog后释放全局 lease；幂等恢复 body copy，不调用模型 | 恢复成功转 Proposal；反复 Store failure 留 NEEDS_ATTENTION，但不阻塞其他 scope |
-| `OUTCOME_UNKNOWN`：call reserved/in-flight，无 terminal ledger | 释放全局 lease，不自动重调 | `GENERATION_OUTCOME_UNKNOWN`；保留去重屏障 |
+| `OUTCOME_UNKNOWN`：call reserved/in-flight，无 terminal ledger | 释放全局 lease，不自动重调 | `NEEDS_ATTENTION(GENERATION_OUTCOME_UNKNOWN)`；保留去重屏障 |
 | `BODY_COMMITTED_INDEX_PENDING` | 从 body 修复 BehaviorSignatureIndex、完成 mutation journal并释放 lease | body 已进入派生 Catalog；不调用模型 |
 | `ACTIVE_COMPLETE` | 确认 completion receipt，释放残留 lease | active Proposal 正常参与查重 |
 
 `KNOWN_FAILED`、`SUCCEEDED_RESULT_MISSING` 和 `OUTCOME_UNKNOWN` 都提供两个 revision-CAS 动作：
 
-- `DISMISS_GENERATION`：提交 `HANDLED_BY_USER`，移除 unresolved barrier；
-- `AUTHORIZE_GENERATION_RETRY`：仅当 failure policy 标记可恢复且该 Intent 从未使用过用户授权 retry revision 时，新建一次 generation revision。它最多允许 1 个主调用和 generation 自身的 1 次格式/截断恢复；确定性 Guard/size/scope/identity failure 不允许该动作。对 OUTCOME_UNKNOWN 必须明确提示此前调用可能已消耗 token。
+- `DISMISS_GENERATION`：用户确认后提交 `DISCARDED`，再移除 unresolved barrier；
+- `AUTHORIZE_GENERATION_RETRY`：仅当 failure policy 标记可恢复且该 Intent 从未使用过用户授权 retry revision 时，新建一次 generation revision并回到 `GENERATION_AUTHORIZED`。它最多允许 1 个主调用和 generation 自身的 1 次格式/截断恢复；确定性 Guard/size/scope/identity failure 不允许该动作。对 OUTCOME_UNKNOWN 必须明确提示此前调用可能已消耗 token。
 
 自动恢复永不重新调用模型。无论用户是否操作，全局 lease 都在 unresolved barrier durable 后释放，因此单个 Intent 不能永久阻塞其他 Session/Scope；barrier 继续阻止相关重复 Proposal。
 
-启动时 generation/publication worker 之前的严格顺序是：恢复 proposalCatalogMutationJournal -> 扫描 Proposal/GenerationResult/barrier -> 修复 BehaviorSignatureIndex -> 按上表收敛 ProposalGenerationLease -> 重建 complete PendingProposalCatalog -> 恢复 Publication Journal并刷新两个 Catalog -> 最后恢复 SessionBatch/Intent worker。
+启动时 generation/publication worker 之前的严格顺序是：打开 v2/migration -> 恢复 active Purge journal/visibility fence 并移除已隐藏 owner -> 恢复 proposalCatalogMutationJournal -> 扫描 Proposal/GenerationResult/barrier -> 修复 BehaviorSignatureIndex -> 按上表收敛 ProposalGenerationLease -> 重建 complete PendingProposalCatalog -> 恢复 Publication Journal并刷新两个 Catalog -> 最后恢复 SessionBatch/Intent worker。
 
 ## 12. Storage Migration ADR
 

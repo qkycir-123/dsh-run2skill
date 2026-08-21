@@ -56,7 +56,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 如果新版本的发布说明没有给出对应迁移与回退办法，请不要用删除 Storage 的方式强行升级。恢复到原插件版本，并在 GitHub Issue 中报告情况。
 
-v2 迁移采用 copy/validate/commit journal：迁移提交前只读 v1，v2 部分数据不可见；提交后新观察只写 v2，v1 保留为只读 legacy source。v1 的 Lineage、Purge fences 和所有 active Proposal 必须经 digest/identity 校验后导入；`PendingProposalCatalog` 每次从 v2/legacy authoritative active Proposal rows 派生 complete snapshot，不另存可漂移缓存，active legacy Proposal 作为不可写候选参与每个新 Intent 的查重。v1 每个 schema-valid processingState 都有穷尽映射；尚未形成 Proposal 的旧项进入可见的 legacy 待处理状态，不按新策略静默重放。
+v2 迁移采用 copy/validate/commit journal：迁移提交前只读 v1，v2 部分数据不可见；提交后新观察只写 v2，v1 保留为只读 legacy source。v1 的 Lineage、Purge fences 和所有 active Proposal 必须经 digest/identity 校验后导入；`PendingProposalCatalog` 每次从 v2/legacy authoritative active Proposal rows、已密封但尚未复制为 Proposal 的 GenerationResult 和 unresolved generation barriers 派生 complete snapshot，不另存可漂移缓存，active legacy Proposal 作为不可写候选参与每个新 Intent 的查重。v1 每个 schema-valid processingState 都有穷尽映射；尚未形成 Proposal 的旧项进入可见的 legacy 待处理状态，不按新策略静默重放。
 
 降级同样可能遇到新数据无法被旧版本理解的情况。`0.1.0-alpha` 会忽略 `0.1.1-alpha` 新增的独立诊断 sidecar，不会改写它；但旧版本的数据清理也不会清理该 sidecar。需要完全清除派生数据时，请先在当前版本中完成数据清理，再降级或卸载。
 

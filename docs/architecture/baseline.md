@@ -392,17 +392,18 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 启动时按以下顺序恢复：
 
 1. 打开 v2 Store 并校验 schema/migration journal；未 COMMITTED 前不启用新 worker；
-2. 恢复 `proposalCatalogMutationJournal`，扫描 Proposal body、sealed GenerationResult 和 unresolved barriers，修复 BehaviorSignatureIndex；
-3. 按 Design 11.2 的七类恢复事实收敛 ProposalGenerationLease；任何自动路径都不重复模型调用，且 unresolved barrier durable 后释放全局 lease；
-4. 重建 complete PendingProposalCatalog；不完整时保持 generation disabled；
-5. 恢复 Publication Journal/PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；完成后刷新 Runtime/Pending Catalog；
-6. 恢复 Session cursor、已冻结 batch 和 idle deadlines；durable 尾部已 idle 30 分钟则走同一 claim 路径；
-7. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
-8. 恢复 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；
-9. 运行有界 Session gap scan并幂等补齐 TurnObservation；
-10. 解除启动缓冲并按序处理已接收的实时 `session/event`。
+2. 先恢复 active Purge journal/visibility fence，并从可见集合移除已隐藏 owner；Purge 未收敛前不得恢复 generation；
+3. 恢复 `proposalCatalogMutationJournal`，扫描 Proposal body、sealed GenerationResult 和 unresolved barriers；
+4. 从这些 authoritative rows 修复 BehaviorSignatureIndex；
+5. 按 Design 11.2 的七类恢复事实收敛 ProposalGenerationLease；任何自动路径都不重复模型调用，且 unresolved barrier durable 后释放全局 lease；
+6. 重建 complete PendingProposalCatalog；不完整时保持 generation disabled；
+7. 恢复 Publication Journal/PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；完成后刷新 Runtime/Pending Catalog；
+8. 恢复 Session cursor、已冻结 batch、idle deadlines 和 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；durable 尾部已 idle 30 分钟则走同一 claim 路径；
+9. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
+10. 运行有界 Session gap scan并幂等补齐 TurnObservation；
+11. 解除启动缓冲并按序处理已接收的实时 `session/event`。
 
-为避免第 6 步扫描期间出现观察空窗，Host 必须在扫描前注册一个只复制事件坐标的轻量 ingress listener；该 listener 不做触发扫描或 Store I/O。恢复水位就绪后再把缓冲事件送入同一幂等 capture 路径。这样“先 gap scan、后实时处理”的恢复语义不变，同时不会漏掉扫描期间新结束的 Turn。
+为避免第 10 步 gap scan 期间出现观察空窗，Host 必须在扫描前注册一个只复制事件坐标的轻量 ingress listener；该 listener 不做触发扫描或 Store I/O。恢复水位就绪后再把缓冲事件送入同一幂等 capture 路径。这样“先 gap scan、后实时处理”的恢复语义不变，同时不会漏掉扫描期间新结束的 Turn。
 
 所有 retry 使用持久 attempt 和 nextEligibleAt；超过上限进入 NEEDS_ATTENTION 或 PUBLISH_FAILED，不做无限自反。
 
