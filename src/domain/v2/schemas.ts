@@ -174,6 +174,13 @@ const BatchManifestEndObservationV2Schema = z.discriminatedUnion('state', [
   }).strict(),
 ])
 
+const OpenExperienceCarryV2Schema = z.object({
+  summary: z.string().max(2048).refine(value => value.trim().length > 0),
+  behaviorSignatureDraft: sha256Hex,
+  evidenceDigests: z.array(sha256Hex).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
+  remainingBatches: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+}).strict()
+
 export const SessionBatchV2Schema = z.object({
   schemaVersion: z.literal(1),
   revision: positiveSafeInteger,
@@ -205,6 +212,7 @@ export const SessionBatchV2Schema = z.object({
   }).strict(),
   detector: z.object({
     result: z.enum(['NOT_RUN', 'NONE', 'DEFER', 'READY', 'NEEDS_ATTENTION']),
+    failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
     calls: z.array(z.object({
       stage: z.literal('DETECTION'),
       callId: z.string().regex(/^call_[a-f0-9]{64}$/),
@@ -218,6 +226,7 @@ export const SessionBatchV2Schema = z.object({
       failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
     }).strict()).max(1),
     carryDigest: sha256Hex.optional(),
+    carry: z.array(OpenExperienceCarryV2Schema).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
     intentIds: z.array(z.string().regex(/^intent_[a-f0-9]{64}$/)).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
   }).strict(),
   state: z.enum(['FROZEN', 'DETECTION_CLAIMED', 'COMMITTED_NONE', 'COMMITTED_DEFER', 'COMMITTED_READY', 'NEEDS_ATTENTION']),
@@ -265,6 +274,22 @@ export const SessionBatchV2Schema = z.object({
   if (value.detector.result !== 'READY' && value.detector.intentIds.length > 0) {
     context.addIssue({ code: 'custom', path: ['detector', 'intentIds'], message: 'Only READY detector result may reference Intents' })
   }
+  if ((value.detector.result === 'NEEDS_ATTENTION') !== (value.detector.failureCode !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['detector', 'failureCode'], message: 'Detector attention requires exactly one failure code' })
+  }
+  if (value.detector.result === 'DEFER' && value.detector.carry.length === 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'carry'], message: 'DEFER requires bounded carry' })
+  }
+  const claimedInputCarry = value.state === 'DETECTION_CLAIMED' && value.detector.result === 'NOT_RUN'
+  if (!['DEFER', 'NEEDS_ATTENTION'].includes(value.detector.result) && !claimedInputCarry && value.detector.carry.length > 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'carry'], message: 'Only a claimed input, DEFER, or attention may preserve carry' })
+  }
+  if (value.detector.carry.length > 0 && (
+    value.detector.carryDigest !== sha256Utf8(canonicalJson(value.detector.carry))
+  )) context.addIssue({ code: 'custom', path: ['detector', 'carryDigest'], message: 'Detector carry digest must bind the exact carry' })
+  if (value.detector.carry.length === 0 && value.detector.carryDigest !== undefined) {
+    context.addIssue({ code: 'custom', path: ['detector', 'carryDigest'], message: 'Empty detector carry cannot retain a digest' })
+  }
   if (value.state === 'DETECTION_CLAIMED' && (
     value.detector.calls.length !== 1 || value.detector.calls[0]?.outcome !== 'RESERVED'
   )) context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Claimed detection requires one reserved call' })
@@ -273,6 +298,9 @@ export const SessionBatchV2Schema = z.object({
   )) context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Committed detection requires one successful call' })
   if (value.state === 'FROZEN' && value.detector.calls.length !== 0) {
     context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Frozen batch cannot have a detector call' })
+  }
+  if (value.state === 'NEEDS_ATTENTION' && value.detector.calls.some(call => call.outcome === 'RESERVED')) {
+    context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Attention batch cannot retain a reserved call' })
   }
   if (value.detector.calls.some(call => call.outcome === 'SUCCEEDED' && call.outputDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['detector', 'calls'], message: 'Successful detector call requires an output digest' })
@@ -284,6 +312,24 @@ export interface ExperienceIntentIdentityFactsV2 {
   readonly behaviorSignature: string
   readonly evidenceDigests: readonly string[]
   readonly detectorPolicyVersion: string
+}
+
+export interface BehaviorSignatureFactsV2 {
+  readonly experienceType: 'WORKFLOW' | 'CONSTRAINT' | 'CORRECTION'
+  readonly persistenceScope: 'PROJECT' | 'USER'
+  readonly applicabilitySummary: string
+  readonly keySteps: readonly string[]
+  readonly prohibitions: readonly string[]
+}
+
+export function deriveBehaviorSignatureV2(facts: BehaviorSignatureFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    experienceType: facts.experienceType,
+    persistenceScope: facts.persistenceScope,
+    applicabilitySummary: facts.applicabilitySummary.trim(),
+    keySteps: facts.keySteps.map(step => step.trim()),
+    prohibitions: facts.prohibitions.map(item => item.trim()),
+  }))
 }
 
 export interface RecallSelfExclusionFactsV2 {
@@ -310,6 +356,7 @@ export function deriveExperienceIntentIdV2(facts: ExperienceIntentIdentityFactsV
 }
 
 export const ExperienceIntentStatusV2Schema = z.enum([
+  'DETECTOR_STAGED',
   'READY',
   'OWNERSHIP_ARBITRATING',
   'RESOLVED_BY_AGENT',
@@ -388,6 +435,10 @@ export const ExperienceIntentV2Schema = z.object({
   detectorPolicyVersion: identity,
   persistenceScope: PersistenceScopeV2Schema,
   explicitSave: z.boolean(),
+  experienceType: z.enum(['WORKFLOW', 'CONSTRAINT', 'CORRECTION']),
+  applicabilitySummary: utf8Limited(2 * 1024).refine(value => value.trim().length > 0),
+  keySteps: z.array(utf8Limited(1024).refine(value => value.trim().length > 0)).min(1).max(16),
+  prohibitions: z.array(utf8Limited(1024).refine(value => value.trim().length > 0)).max(16),
   behaviorSignature: sha256Hex,
   evidenceRefs: z.array(z.object({
     observationId: z.string().regex(/^obs_[a-f0-9]{64}$/),
@@ -514,6 +565,9 @@ export const ExperienceIntentV2Schema = z.object({
   if (value.intentId !== deriveExperienceIntentIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['intentId'], message: 'Intent id does not match facts' })
   }
+  if (value.behaviorSignature !== deriveBehaviorSignatureV2(value)) {
+    context.addIssue({ code: 'custom', path: ['behaviorSignature'], message: 'Behavior signature does not match normalized experience facts' })
+  }
   const canonicalEvidenceDigests = [...value.evidenceDigests].sort()
   if (
     new Set(value.evidenceDigests).size !== value.evidenceDigests.length
@@ -536,6 +590,7 @@ export const ExperienceIntentV2Schema = z.object({
     expectStage(value.generation.state, 'NOT_STARTED', ['generation', 'state'])
   }
   switch (value.status) {
+    case 'DETECTOR_STAGED':
     case 'READY':
       expectStage(value.ownership.state, 'NOT_STARTED', ['ownership', 'state']); noDownstreamWork(); break
     case 'OWNERSHIP_ARBITRATING':
@@ -1120,12 +1175,7 @@ const SessionCursorV2Schema = z.object({
   batchManifestBaseline: BatchManifestBaselineV2Schema.extend({
     afterTurnEndSeq: safeNonNegativeInteger,
   }).strict().optional(),
-  openExperienceCarry: z.array(z.object({
-    summary: z.string().min(1).max(2048),
-    behaviorSignatureDraft: sha256Hex,
-    evidenceDigests: z.array(sha256Hex).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
-    remainingBatches: z.union([z.literal(0), z.literal(1), z.literal(2)]),
-  }).strict()).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
+  openExperienceCarry: z.array(OpenExperienceCarryV2Schema).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
   if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
