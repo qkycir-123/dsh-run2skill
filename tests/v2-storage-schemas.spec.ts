@@ -76,7 +76,7 @@ describe('run2skill_v2 storage contract', () => {
     }).success).toBe(false)
 
     const behaviorSignature = 'e'.repeat(64)
-    const correctKey = deriveBehaviorSignatureIndexKeyV2('PROJECT', behaviorSignature)
+    const expectedIndexId = deriveBehaviorSignatureIndexKeyV2('PROJECT', behaviorSignature)
     const entry = {
       schemaVersion: 1 as const,
       persistenceScope: 'PROJECT' as const,
@@ -88,7 +88,7 @@ describe('run2skill_v2 storage contract', () => {
     }
     expect(GlobalV2Schema.safeParse({
       ...fixture.global,
-      behaviorSignatureIndex: { [correctKey]: entry },
+      behaviorSignatureIndex: { [expectedIndexId]: entry },
     }).success).toBe(true)
     expect(GlobalV2Schema.safeParse({
       ...fixture.global,
