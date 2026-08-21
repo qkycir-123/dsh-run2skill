@@ -114,7 +114,7 @@ export function AutomaticLearningSettingsCard(props: {
       type: 'button',
       'aria-expanded': open,
       onClick: () => { setOpen(value => !value) },
-    }, 'run2skill', createElement('span', null, '将真实执行中的明确经验整理为待确认的技能草稿')),
+    }, 'Run2Skill', createElement('span', null, '将真实执行中的明确经验整理为待确认的技能草稿')),
     open
       ? createElement('div', null,
           createElement('label', null,

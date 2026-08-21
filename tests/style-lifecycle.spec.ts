@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   RUN2SKILL_STYLE_ID,
   acquireRun2skillStyle,
@@ -12,6 +14,21 @@ afterEach(() => {
 })
 
 describe('run2skill CSS lifecycle', () => {
+  it('uses only DSH public theme token families in the native settings stylesheet', () => {
+    const css = readFileSync(resolve('src/client/run2skill-settings-page.module.css'), 'utf8')
+    expect(css).not.toMatch(/--dsw-alias-(?:content|surface|overlay|shadow|border-subtle)/)
+    for (const token of [
+      '--dsw-alias-label-primary',
+      '--dsw-alias-label-secondary',
+      '--dsw-alias-border-l1',
+      '--dsw-alias-border-l2',
+      '--dsw-alias-bg-layer-1',
+      '--dsw-alias-bg-layer-2',
+      '--dsw-alias-bg-mask-1',
+      '--dsw-alias-state-error-primary',
+    ]) expect(css).toContain(token)
+  })
+
   it('updates one owner/style id across HMR and removes it after the last disposer', () => {
     const first = upsertRun2skillStyle('.old-hash{color:red}')
     const disposeA = acquireRun2skillStyle()

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createElement, useRef, useState, useSyncExternalStore } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   Run2skillAttentionToast,
@@ -16,7 +16,10 @@ import {
 import { AutomaticLearningSettingsController } from '../src/client/automatic-learning-settings.js'
 import { PurgeSettingsController } from '../src/client/purge-settings.js'
 
-afterEach(() => { cleanup() })
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('run2skill native settings surface', () => {
   function deferred<T>() {
@@ -91,7 +94,16 @@ describe('run2skill native settings surface', () => {
             apiVersion: 1,
             userCompleteness: 'KNOWN',
             projectCompleteness: 'KNOWN',
-            actions: [],
+            actions: [{
+              actionKey: `act_${'a'.repeat(64)}`,
+              subjectId: `wi_${'b'.repeat(64)}`,
+              kind: 'REVIEW_PROPOSAL',
+              proposalRef: {
+                proposalId: `prop_${'c'.repeat(64)}`,
+                revision: 1,
+                digest: 'd'.repeat(64),
+              },
+            }],
             runtimeCompleteness: 'KNOWN',
             runtimeWarnings: [],
           },
@@ -111,7 +123,7 @@ describe('run2skill native settings surface', () => {
   })
 
   it('registers one independent settings.plugins.tab and a header lifecycle mount with no persistent DOM', () => {
-    const registrations: Array<{ name: string; id?: string }> = []
+    const registrations: Array<{ name: string; id?: string; label?: string }> = []
     const context = {
       connection: { rpc: { call: vi.fn() } },
       settingsScope: { bind: vi.fn(() => ({
@@ -134,7 +146,7 @@ describe('run2skill native settings surface', () => {
     applyRun2skillClient(context as never)
 
     expect(registrations).toContainEqual(expect.objectContaining({
-      name: 'settings.plugins.tab', id: 'run2skill',
+      name: 'settings.plugins.tab', id: 'run2skill', label: 'Run2Skill',
     }))
     expect(registrations).toContainEqual(expect.objectContaining({
       name: 'conversation.session.header.actions', id: 'run2skill-attention',
@@ -184,8 +196,155 @@ describe('run2skill native settings surface', () => {
     render(createElement(Run2skillAttentionToast, {
       sessionId: 'session-a', workspaceId: 'workspace-a', callAttention: call,
     }))
-    expect((await screen.findByRole('alert')).textContent).toContain('设置 → 插件 → run2skill')
+    expect((await screen.findByRole('alert')).textContent).toContain('设置 → 插件 → Run2Skill')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('renders a stable quiet attention body for a healthy empty queue and never loads Proposal data', async () => {
+    const review = vi.fn(async () => ({ ok: true, value: { apiVersion: 1 as const, items: [] } }))
+    const projection = vi.fn()
+    const summary = render(createElement(AttentionSettingsSummary, {
+      workspaceId: 'workspace-a',
+      callAttention: vi.fn(async () => ({
+        ok: true,
+        value: {
+          apiVersion: 1,
+          userCompleteness: 'KNOWN',
+          projectCompleteness: 'KNOWN',
+          actions: [],
+          runtimeCompleteness: 'KNOWN',
+          runtimeWarnings: [],
+        },
+      })),
+      refreshGeneration: 0,
+      onProjection: projection,
+    }))
+
+    await waitFor(() => expect(projection).toHaveBeenLastCalledWith(expect.objectContaining({ actions: [] })))
+    expect(summary.container.childElementCount).toBe(0)
+    expect(screen.queryByText('0 项可操作事项')).toBeNull()
+    expect(screen.queryByRole('button', { name: '刷新状态' })).toBeNull()
+
+    const automatic = new AutomaticLearningSettingsController({
+      getSnapshot: () => ({
+        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+      }),
+      subscribe: () => () => undefined,
+      set: vi.fn(),
+    })
+    const purge = new PurgeSettingsController(
+      vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })),
+      () => 'workspace-a',
+    )
+    const page = render(createElement(Run2skillSettingsPage, {
+      controller: automatic,
+      purgeController: purge,
+      workspaceId: 'workspace-a',
+      callAttention: vi.fn(async () => ({
+        ok: true,
+        value: {
+          apiVersion: 1,
+          userCompleteness: 'KNOWN',
+          projectCompleteness: 'KNOWN',
+          actions: [],
+          runtimeCompleteness: 'KNOWN',
+          runtimeWarnings: [],
+        },
+      })),
+      callReview: review,
+    }))
+    await waitFor(() => expect(page.container.textContent).toContain('Run2Skill'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(review).not.toHaveBeenCalled()
+    expect(page.container.textContent).not.toContain('当前 PROJECT 与 USER 没有待处理事项')
+    expect(page.container.textContent).not.toContain('选择一项查看审核事实')
+    expect(page.container.textContent).not.toContain('筛选 Proposal')
+    expect(page.container.textContent).toContain('暂无')
+    const attentionToggle = screen.getByRole('button', { name: '需要处理' })
+    expect(attentionToggle.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(attentionToggle)
+    expect(attentionToggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(attentionToggle)
+    expect(attentionToggle.getAttribute('aria-expanded')).toBe('true')
+    purge.dispose()
+    automatic.dispose()
+  })
+
+  it('polls a visible empty Attention projection at low frequency and reveals new work without manual refresh', async () => {
+    vi.useFakeTimers()
+    const empty = {
+      apiVersion: 1 as const,
+      userCompleteness: 'KNOWN' as const,
+      projectCompleteness: 'KNOWN' as const,
+      actions: [],
+      runtimeCompleteness: 'KNOWN' as const,
+      runtimeWarnings: [],
+    }
+    const call = vi.fn()
+      .mockResolvedValueOnce({ ok: true, value: empty })
+      .mockResolvedValue({
+        ok: true,
+        value: {
+          ...empty,
+          actions: [{ actionKey: `act_${'a'.repeat(64)}`, kind: 'REVIEW_PROPOSAL' }],
+        },
+      })
+    const projection = vi.fn()
+    render(createElement(AttentionSettingsSummary, {
+      active: true,
+      workspaceId: 'workspace-a',
+      callAttention: call,
+      refreshGeneration: 0,
+      onProjection: projection,
+    }))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(projection).toHaveBeenLastCalledWith(expect.objectContaining({ actions: [] }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('1 项可操作事项')).toBeTruthy()
+  })
+
+  it('does not poll Attention while the settings tab is inactive', async () => {
+    vi.useFakeTimers()
+    const response = {
+      ok: true,
+      value: {
+        apiVersion: 1 as const,
+        userCompleteness: 'KNOWN' as const,
+        projectCompleteness: 'KNOWN' as const,
+        actions: [],
+        runtimeCompleteness: 'KNOWN' as const,
+        runtimeWarnings: [],
+      },
+    }
+    const call = vi.fn(async () => response)
+    const props = {
+      workspaceId: 'workspace-a',
+      callAttention: call,
+      refreshGeneration: 0,
+      onProjection: vi.fn(),
+    }
+    const rendered = render(createElement(AttentionSettingsSummary, { ...props, active: false }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(call).not.toHaveBeenCalled()
+
+    rendered.rerender(createElement(AttentionSettingsSummary, { ...props, active: true }))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+
+    rendered.rerender(createElement(AttentionSettingsSummary, { ...props, active: false }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('rebinds the Header Attention subscription from the renderer live workspace snapshot', async () => {
@@ -259,7 +418,7 @@ describe('run2skill native settings surface', () => {
     expect(projection.mock.calls.at(-1)?.[0]).toMatchObject({ actions: [{ actionKey: `act_${'b'.repeat(64)}` }] })
   })
 
-  it('aborts a manual Attention refresh when the scope changes and restores no stale value', async () => {
+  it('aborts a mutation-driven Attention refresh when the scope changes and restores no stale value', async () => {
     const initial = { ok: true, value: {
       apiVersion: 1 as const, userCompleteness: 'KNOWN' as const, projectCompleteness: 'KNOWN' as const,
       actions: [{ actionKey: `act_${'a'.repeat(64)}` }], runtimeCompleteness: 'KNOWN' as const, runtimeWarnings: [],
@@ -278,9 +437,11 @@ describe('run2skill native settings surface', () => {
       workspaceId: 'workspace-a', callAttention: call, refreshGeneration: 0, onProjection: vi.fn(),
     }))
     await screen.findByText('1 项可操作事项')
-    fireEvent.click(screen.getByRole('button', { name: '刷新状态' }))
     rendered.rerender(createElement(AttentionSettingsSummary, {
-      workspaceId: 'workspace-b', callAttention: call, refreshGeneration: 0, onProjection: vi.fn(),
+      workspaceId: 'workspace-a', callAttention: call, refreshGeneration: 1, onProjection: vi.fn(),
+    }))
+    rendered.rerender(createElement(AttentionSettingsSummary, {
+      workspaceId: 'workspace-b', callAttention: call, refreshGeneration: 1, onProjection: vi.fn(),
     }))
     current.resolve({ ok: true, value: { ...initial.value, actions: [{ actionKey: `act_${'b'.repeat(64)}` }] } })
     await screen.findByText('1 项可操作事项')

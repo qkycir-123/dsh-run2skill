@@ -61,7 +61,7 @@ describe('Automatic Learning native settings card', () => {
     const cardProps = (options.inject as () => Record<string, unknown>)()
     render(createElement(component as ComponentType<Record<string, unknown>>, cardProps))
     expect(screen.getByText('将真实执行中的明确经验整理为待确认的技能草稿')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /run2skill/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Run2Skill/ }))
     expect(screen.getByRole('checkbox', { name: '自动学习' })).toBeTruthy()
     expect(screen.getByText('分析时沿用发起会话已经选择的模型。')).toBeTruthy()
     expect(document.body.textContent).not.toMatch(/Skill Proposal|Automatic Learning|inherit-session/)

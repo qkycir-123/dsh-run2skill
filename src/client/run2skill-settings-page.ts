@@ -126,6 +126,7 @@ function attentionValue(value: unknown): AttentionProjection | undefined {
 }
 
 const seenAttentionKeys = new Set<string>()
+const ATTENTION_SETTINGS_POLL_INTERVAL_MS = 10_000
 
 function currentScope(workspaceId: string | undefined, generation: number) {
   return workspaceId === undefined
@@ -179,7 +180,7 @@ export function Run2skillAttentionToast(props: {
   return createElement(Toast, {
     key: toast.sequence,
     icon: createElement(IconWarningOutline16),
-    text: `run2skill 有 ${String(toast.count)} 项需要处理，请前往设置 → 插件 → run2skill`,
+    text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往设置 → 插件 → Run2Skill`,
     onDone: () => { setToast(undefined) },
   })
 }
@@ -217,7 +218,6 @@ function ProposalSettingsSection(props: {
   readonly callReview: ProposalReviewCall
   readonly active: boolean
   readonly actions: readonly AttentionAction[]
-  readonly attentionAvailable: boolean
   readonly onMutationSettled: () => void
   readonly scopeGeneration: number
 }): ReactElement {
@@ -275,6 +275,7 @@ function ProposalSettingsSection(props: {
     .filter(item => `${item.name} ${item.description} ${item.kind}`
     .toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()))
   const selectedActionable = items.some(item => item.proposalRef.proposalId === state.selectedProposalId)
+  if (props.actions.length === 0) return createElement(Fragment)
   return createElement('div', { className: css.sectionBody },
     createElement('div', { className: css.toolbar },
       createElement(Input, {
@@ -292,11 +293,6 @@ function ProposalSettingsSection(props: {
     ),
     state.listPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在加载待处理事项…') : null,
     state.listPhase === 'ERROR' ? createElement('p', { role: 'alert' }, '待处理事项暂不可用。') : null,
-    props.attentionAvailable && props.actions.length === 0
-      ? createElement('p', null, props.workspaceId === undefined
-          ? '当前没有 USER 待处理事项；未选择当前项目。'
-          : '当前 PROJECT 与 USER 没有待处理事项。')
-      : null,
     createElement('div', { className: css.proposalLayout },
       createElement('ul', { className: css.proposalList },
         ...items.map(item => createElement('li', { key: item.proposalRef.proposalId },
@@ -622,6 +618,7 @@ function useHostTabVisibility(): {
 }
 
 export function AttentionSettingsSummary(props: {
+  readonly active?: boolean
   readonly sessionId?: string
   readonly workspaceId?: string
   readonly callAttention: AttentionCall
@@ -633,13 +630,21 @@ export function AttentionSettingsSummary(props: {
   >({ phase: 'LOADING' })
   const requestGeneration = useRef(0)
   const activeAbort = useRef<AbortController>()
+  const currentValue = useRef<AttentionProjection>()
+  const currentScopeIdentity = useRef<string>()
+  const scopeIdentity = `${props.sessionId ?? ''}:${props.workspaceId ?? ''}`
   const refresh = useCallback(() => {
     activeAbort.current?.abort()
     const abort = new AbortController()
     activeAbort.current = abort
     const generation = ++requestGeneration.current
-    setState({ phase: 'LOADING' })
-    props.onProjection(undefined)
+    const scopeChanged = currentScopeIdentity.current !== scopeIdentity
+    currentScopeIdentity.current = scopeIdentity
+    if (scopeChanged) currentValue.current = undefined
+    if (currentValue.current === undefined) {
+      setState({ phase: 'LOADING' })
+      props.onProjection(undefined)
+    }
     void props.callAttention({
       apiVersion: 1,
       currentScope: currentScope(props.workspaceId, generation),
@@ -647,24 +652,54 @@ export function AttentionSettingsSummary(props: {
     }, abort.signal).then(result => {
       if (abort.signal.aborted || requestGeneration.current !== generation) return
       const value = attentionValue(result)
-      setState(value === undefined ? { phase: 'UNAVAILABLE' } : { phase: 'READY', value })
+      if (value === undefined) {
+        if (currentValue.current === undefined) {
+          setState({ phase: 'UNAVAILABLE' })
+          props.onProjection(undefined)
+        }
+        return
+      }
+      currentValue.current = value
+      setState({ phase: 'READY', value })
       props.onProjection(value)
     }, () => {
       if (abort.signal.aborted || requestGeneration.current !== generation) return
-      setState({ phase: 'UNAVAILABLE' })
-      props.onProjection(undefined)
+      if (currentValue.current === undefined) {
+        setState({ phase: 'UNAVAILABLE' })
+        props.onProjection(undefined)
+      }
     })
     return () => {
       abort.abort()
       if (activeAbort.current === abort) activeAbort.current = undefined
     }
-  }, [props.callAttention, props.onProjection, props.refreshGeneration, props.sessionId, props.workspaceId])
-  useEffect(() => refresh(), [refresh])
+  }, [props.callAttention, props.onProjection, props.refreshGeneration, props.sessionId, props.workspaceId, scopeIdentity])
+  useEffect(() => {
+    if (props.active === false) {
+      activeAbort.current?.abort()
+      activeAbort.current = undefined
+      return
+    }
+    refresh()
+    const timer = setInterval(() => { refresh() }, ATTENTION_SETTINGS_POLL_INTERVAL_MS)
+    return () => {
+      clearInterval(timer)
+      activeAbort.current?.abort()
+      activeAbort.current = undefined
+    }
+  }, [props.active, refresh])
   const value = state.value
+  if (
+    value === undefined
+    || (
+      value.actions.length === 0
+      && value.runtimeWarnings.length === 0
+      && value.projectCompleteness !== 'UNKNOWN'
+      && value.runtimeCompleteness !== 'UNKNOWN'
+    )
+  ) return createElement(Fragment)
   return createElement('div', { className: css.toolbar },
-    state.phase === 'LOADING' ? createElement('span', { role: 'status' }, '正在读取当前事项…') : null,
-    state.phase === 'UNAVAILABLE' ? createElement('span', { role: 'alert' }, '当前事项暂不可用，未按空队列处理。') : null,
-    value === undefined ? null : createElement(Fragment, null,
+    createElement(Fragment, null,
       createElement(Pill, null, `${String(value.actions.length)} 项可操作事项`),
       value.projectCompleteness === 'UNAVAILABLE'
         ? createElement(Pill, null, '未选择当前项目')
@@ -677,12 +712,6 @@ export function AttentionSettingsSummary(props: {
         role: 'alert',
       }, warning.message ?? '存在尚未持久化的学习信号。')),
     ),
-    createElement(Button, {
-      variant: 'outline',
-      size: 'sm',
-      icon: createElement(IconRefreshOutline16),
-      onClick: () => { refresh() },
-    }, '刷新状态'),
   )
 }
 
@@ -712,6 +741,11 @@ export function Run2skillSettingsPage(props: {
     setAttention(undefined)
     setScopeGeneration(value => value + 1)
   }, [sessionId, workspaceId])
+  const attentionEmpty = attention !== undefined
+    && attention.actions.length === 0
+    && attention.runtimeWarnings.length === 0
+    && attention.projectCompleteness !== 'UNKNOWN'
+    && attention.runtimeCompleteness !== 'UNKNOWN'
   const disclosure = (
     id: string,
     title: string,
@@ -722,6 +756,8 @@ export function Run2skillSettingsPage(props: {
     createElement(DisclosureRow, {
       icon,
       title,
+      rowClassName: css.sectionHeader,
+      titleClassName: css.sectionTitle,
       open: open.has(id),
       expandable: true,
       expandOnRowClick: true,
@@ -737,25 +773,27 @@ export function Run2skillSettingsPage(props: {
     }, content),
   )
   return createElement('div', { ref: hostTab.ref, className: css.page, 'data-run2skill-settings-page': true },
-    createElement('p', { className: css.intro }, 'run2skill 在后台自动沉淀经验；这里只展示需要处理的事项和持久设置。'),
+    createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里只展示需要处理的事项和持久设置。'),
     disclosure('attention', '需要处理', createElement(IconWarningOutline16),
       createElement('div', { className: css.sectionBody },
         createElement(AttentionSettingsSummary, {
+          active: hostTab.visible && open.has('attention'),
           ...(sessionId === undefined ? {} : { sessionId }),
           ...(workspaceId === undefined ? {} : { workspaceId }),
           callAttention: props.callAttention,
           refreshGeneration: attentionRefresh,
           onProjection: setAttention,
         }),
-        createElement(ProposalSettingsSection, {
+        attention?.actions.some(action => ['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')) === true
+          ? createElement(ProposalSettingsSection, {
           ...(workspaceId === undefined ? {} : { workspaceId }),
           callReview: props.callReview,
           active: hostTab.visible && open.has('attention'),
           actions: attention?.actions ?? [],
-          attentionAvailable: attention !== undefined,
           onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
           scopeGeneration,
-        }),
+          })
+          : null,
         createElement(LearningFailureSection, {
           ...(workspaceId === undefined ? {} : { workspaceId }),
           call: props.callReview,
@@ -764,6 +802,7 @@ export function Run2skillSettingsPage(props: {
           onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
           scopeGeneration,
         }),
+        attentionEmpty ? createElement('p', { className: css.empty }, '暂无') : null,
       )),
     disclosure('activity', '最近活动', createElement(IconSparkle16),
       createElement('div', { className: css.sectionBody },
@@ -840,7 +879,7 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
     name: 'settings.plugins.tab',
     id: 'run2skill',
     order: 20,
-    label: 'run2skill',
+    label: 'Run2Skill',
     inject: () => ({
       controller,
       purgeController,

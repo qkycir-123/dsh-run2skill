@@ -87,11 +87,11 @@ function summaryFacts(state: Extract<ObserveSummaryClientState, { summary: unkno
 }
 
 export function describeObserveState(state: ObserveSummaryClientState): string {
-  if (state.phase === 'LOADING') return 'run2skill 状态加载中'
-  if (state.phase === 'UNAVAILABLE') return 'run2skill 状态暂不可用'
+  if (state.phase === 'LOADING') return 'Run2Skill 状态加载中'
+  if (state.phase === 'UNAVAILABLE') return 'Run2Skill 状态暂不可用'
   const description = summaryFacts(state).join('；')
   return state.phase === 'STALE'
-    ? `run2skill 状态可能已过期：${description}`
+    ? `Run2Skill 状态可能已过期：${description}`
     : description
 }
 

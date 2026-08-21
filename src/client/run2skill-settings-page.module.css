@@ -1,30 +1,51 @@
 .page {
   display: grid;
-  gap: 20px;
-  max-width: 960px;
-  padding: 8px 0 32px;
-  color: var(--dsw-alias-content-primary, inherit);
+  gap: 24px;
+  width: min(100%, 1040px);
+  padding: 16px 0 48px;
+  color: var(--dsw-alias-label-primary);
 }
 
 .intro,
 .muted {
   margin: 0;
-  color: var(--dsw-alias-content-secondary, currentColor);
+  color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 1.5;
 }
 
 .section {
   overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-subtle, color-mix(in srgb, currentColor 16%, transparent));
+  border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 16px;
-  background: var(--dsw-alias-surface-primary, transparent);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 1px 2px var(--dsw-alias-border-l1);
+}
+
+.sectionHeader {
+  box-sizing: border-box;
+  height: auto;
+  min-height: 56px;
+  padding: 14px 20px;
+}
+
+.sectionTitle {
+  font-size: 15px;
 }
 
 .sectionBody {
   display: grid;
-  gap: 14px;
-  padding: 0 18px 18px 48px;
+  gap: 18px;
+  padding: 12px 24px 24px 56px;
+}
+
+.empty {
+  display: grid;
+  min-height: 56px;
+  margin: 0;
+  place-items: center;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
 }
 
 .toolbar,
@@ -48,7 +69,7 @@
 .proposalLayout {
   display: grid;
   grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.6fr);
-  gap: 16px;
+  gap: 20px;
 }
 
 .proposalListButton {
@@ -62,10 +83,10 @@
   min-width: 0;
   max-height: 640px;
   overflow: auto;
-  padding: 14px;
-  border: 1px solid var(--dsw-alias-border-subtle, color-mix(in srgb, currentColor 16%, transparent));
+  padding: 18px;
+  border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
-  background: var(--dsw-alias-surface-secondary, transparent);
+  background: var(--dsw-alias-bg-layer-2);
 }
 
 .detail pre {
@@ -81,14 +102,14 @@
 }
 
 .danger {
-  color: var(--dsw-alias-content-negative, var(--dsw-alias-content-primary, currentColor));
+  color: var(--dsw-alias-state-error-primary);
 }
 
 .backdrop,
 .rejectOverlay {
   position: fixed;
   inset: 0;
-  background: var(--dsw-alias-overlay, color-mix(in srgb, currentColor 35%, transparent));
+  background: var(--dsw-alias-bg-mask-1);
 }
 
 .backdrop { z-index: 999; }
@@ -103,18 +124,18 @@
   gap: 16px;
   overflow: hidden;
   padding: 16px;
-  border: 1px solid var(--dsw-alias-border-subtle, currentColor);
+  border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 16px;
-  background: var(--dsw-alias-surface-primary, inherit);
-  color: var(--dsw-alias-content-primary, inherit);
-  box-shadow: var(--dsw-alias-shadow-modal, 0 16px 48px color-mix(in srgb, currentColor 35%, transparent));
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 16px 48px var(--dsw-alias-bg-mask-1);
 }
 
 .blocked { display: contents; pointer-events: none; }
 .queue, .legacyDetail { min-width: 0; overflow: auto; }
 .legacyHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .legacyList { margin: 0; padding: 0; list-style: none; }
-.rejectCard { max-width: 32rem; padding: 16px; border-radius: 16px; background: var(--dsw-alias-surface-primary, inherit); }
+.rejectCard { max-width: 32rem; padding: 16px; border-radius: 16px; background: var(--dsw-alias-bg-layer-1); }
 .textBlock { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
 
 .previewFacts {
@@ -134,6 +155,6 @@
   }
 
   .sectionBody {
-    padding-left: 18px;
+    padding: 8px 18px 20px;
   }
 }
