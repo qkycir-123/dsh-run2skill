@@ -44,7 +44,7 @@ Host Attention Projection
 - 不修复学习模型连续失败；失败分类、重试和关闭能力属于 #70；
 - 不改变 Agent 与 run2skill 的单一生成所有者；该状态机属于 #71；
 - 不实现 DSH 公共组件、CSS、主题和视觉重构；实现属于 #73；
-- 不改变 Cheap Trigger、Learning prompt、Review、Publication 或 Purge；本设计不新增 Action Queue 表或通知表，但 #70 若无法用现有 durable 学习事务身份表达新的显式恢复轮次，可以按 4.2 节扩展 `LearningStateV1`；
+- 不改变 Cheap Trigger、Learning prompt、Review、Publication、Purge 或 Storage schema；本设计不新增字段、Action Queue 表或通知表；
 - 不增加完整 History、搜索、批量批准、通知中心或遥测；
 - 不修改或 fork DSH。
 
@@ -94,17 +94,18 @@ Action Queue 响应还必须分别携带 `userCompleteness` 与 `projectComplete
 | Action | durableGeneration |
 |---|---|
 | `REVIEW_PROPOSAL` | immutable `ProposalRef(proposalId, revision, digest)` |
-| DISCARD coverage 恢复/刷新 | `ProposalRef + coverageRetryCount + failure.code` |
-| `RETRY_PUBLICATION` | `PublicationStateV1.activeAttemptId + journal tail digest + failure.code` |
-| `REFRESH_PROPOSAL` | 当前 `ProposalRef + review.publicationOutcome + failure.code`；生成新 Proposal 后自然换成新 `ProposalRef` |
-| `RETRY_LEARNING` / `DISMISS_LEARNING` | `learning.recoveryGeneration + learning.attempt + 最后一条 LearningCallV1.requestOrdinal/status + failure.code` |
+| DISCARD coverage 恢复/刷新 | `ProposalRef + coverageRetryCount + review.failure.occurredAt + review.failure.code` |
+| `RETRY_PUBLICATION` | `PublicationStateV1.activeAttemptId + journal tail digest + review.failure.occurredAt + review.failure.code` |
+| `REFRESH_PROPOSAL` | 当前 `ProposalRef + review.publicationOutcome + review.failure.occurredAt + review.failure.code`；生成新 Proposal 后自然换成新 `ProposalRef` |
+| `RETRY_LEARNING` / `DISMISS_LEARNING` | `learning.failure.occurredAt + learning.failure.code + learning.attempt + learning.requestBudgetUsed + callsSummary` |
 
 推进规则：
 
-1. 负责状态转换的 Store 必须先在同一 durable update 中分配新的 attempt、`ProposalRef`、publication `activeAttemptId` 或 call ordinal，再调度外部 LLM/文件 I/O；崩溃重放复用同一 identity，不产生新 Toast。
-2. 轮询、claim lease、`updatedAt`、进度、同一事务重放和无关 WorkItem revision 不推进 generation。
-3. 用户显式触发新的学习恢复后，即使再次以相同 failure code 失败，也必须得到新的 durable generation，不能被旧 `seenAttentionKeys` 永久压住。
-4. 现有 `LearningCallV1.requestOrdinal` 固定为每个学习请求周期内的 `1 | 2`，不能独自标识用户发起的新恢复周期。因此 #70 必须在 `work_items` 的 `LearningStateV1` 增加向后兼容的可选 `recoveryGeneration`：旧记录按 `0` 读取；接受一次新的用户恢复请求时，Store 在使其可调度的同一 update 中递增，再开始外部调用；同一恢复周期的两次自动请求不递增；失败回写、重复 RPC 和重启重放不递增。该字段属于 WorkItem learning 聚合，不属于 Client 或新的通知存储。
+1. `callsSummary` 是现有 `LearningCallV1[]` 按 `requestOrdinal` 排序后的 canonical 数组；每项只能使用 schema 中真实存在的 `{ requestOrdinal, kind, inputTokens ?? null, outputTokens ?? null, outcome }`，其中 `outcome` 为 `SUCCEEDED | FAILED | ABORTED | TIMED_OUT`。不存在也不得推导 `status` 字段。
+2. 负责状态转换的 Store 提交新的 `ProposalRef`、publication attempt/journal 或 structured failure event 后，Action projector 才能据此产生 key；崩溃重放复用同一 durable event identity，不产生新 Toast。
+3. 轮询、claim lease、`updatedAt`、进度、同一事务重放和无关 WorkItem revision 不推进 generation。
+4. 用户触发学习恢复后，旧 failure action 在恢复开始时离开 Queue；如果恢复再次失败，现有 Store 写入新的 `LearningFailureV1.occurredAt`，并绑定该轮已有的 `attempt`、`requestBudgetUsed` 与 `LearningCallV1.outcome` 快照，因此即使 failure code 相同也得到新 key，不会被旧 `seenAttentionKeys` 压住。
+5. 如果后续发现某种 action 无法从现有 durable `ProposalRef`、failure `occurredAt`、attempt/call outcome 或 publication journal 身份唯一表达，本设计对该 action 保持阻塞，必须单独创建 Migration ADR/domain version bump Issue 并完成升级/回退证据；#72 和 #70 都不得用同版本 optional 字段偷渡身份。
 
 Host 对上述输入做 canonical hash 得到 `actionKey`。同一 durable 事实跨重启得到同一个 key；新的真实恢复事务一定得到新 key。
 
@@ -248,13 +249,13 @@ request scope = currentWorkspace?.workspaceId + USER
 - PROJECT 必须来自当前 Session 对应的可验证 Workspace identity；无 Workspace 时不猜路径、不猜最近项目，只保留 USER view。
 - Store 不可用不阻断 DSH 主 Agent：产生有界 RuntimeNotice、执行同 SignalKey retry、不启动 Learning；进程崩溃后由 durable Session Log gap scan 补偿。
 - Web 入口使用 stock `conversation.session.header.actions` 与 `/run2skill` loopback RPC；远程页面仍无权读取或 mutation。
-- `LearningStateV1.recoveryGeneration` 是 #70 为有界人工恢复新增的 WorkItem 可选字段，属于同一 `run2skill_v1` domain 的向后兼容扩展；必须覆盖旧记录默认值、重启、重复 retry RPC 与升级读取，不新增表或第二套存储。
+- Action key 只投影现有 durable `ProposalRef`、structured failure event、attempt/call outcome 与 publication journal；本设计不改变 `run2skill_v1` schema。若现有事件身份不足，必须另立 Migration ADR/domain version bump Issue，不能由 #72/#70 添加同版本 optional 字段。
 
 这些条款取代旧 Header 具体文案和常驻控件形式，但不改变 PROJECT/USER scope、durable-before-learning、fail-open/fail-closed、Review 与 Publication 权威边界。
 
 ## 10. 与 #70、#71、#73 的边界
 
-- **#70** 提供准确学习失败原因、有限重试/关闭动作及安全 DTO；#72 规定这些动作何时进入 Action Queue、在哪里呈现和何时提醒。若现有学习事务身份不足，#70 同时拥有 4.2 节所述 `LearningStateV1.recoveryGeneration` 可选 schema 扩展及迁移测试。
+- **#70** 提供准确学习失败原因、有限重试/关闭动作及安全 DTO；#72 只使用 #70 持久化的现有 `LearningFailureV1.occurredAt/code`、attempt/request budget 与 `LearningCallV1` facts 决定这些动作何时进入 Action Queue、在哪里呈现和何时提醒。
 - **#71** 决定保存意图的唯一生成所有者；其 `NEEDS_CONFIRMATION` 只有在定义了真实用户选择动作后才进入同一 Action Queue。
 - **#73** 实现本设计：删除常驻 Header UI，复用 DSH `Toast`，注册设置标签页，提供 Attention Projection/RPC adapter，并迁移现有 Inbox/Settings/Purge UI；RuntimeNotice 的 `requiresAttention` 和 `signalClass` 只是有界进程内投影，不改变 durable WorkItem 状态机。
 
@@ -267,7 +268,7 @@ request scope = currentWorkspace?.workspaceId + USER
 1. 正常捕获、分析、成功、自动恢复、空闲和 `PUBLISHING` 时 Header 无 run2skill DOM、无 Toast；
 2. Proposal、可恢复学习失败、`NEEDS_REFRESH`、可重试发布失败各产生正确 Action；
 3. 同一 actionKey 连续轮询、重连和标签切换不重复；批量新事项只显示一个合并 Toast；
-4. ProposalRef、学习恢复 attempt/call identity 和 publication activeAttemptId 各自稳定派生 generation；同类重试再次失败会产生新 key，崩溃重放和无关 revision 不产生新 key；
+4. ProposalRef、learning failure occurredAt + attempt/call outcome 摘要和 publication activeAttemptId/journal 各自稳定派生 generation；同类重试再次失败会产生新 key，崩溃重放和无关 revision 不产生新 key；
 5. 完整重启后未处理事项最多再提醒一次，旧 fiber 不留下 timer/订阅；
 6. 当前 Workspace A 只显示 A PROJECT + USER；切到 B 时立即清除 A 并只显示 B + USER；无当前 Session/Workspace 时只显示 USER 且 PROJECT 为 `UNAVAILABLE`；
 7. Store 写入失败时 bounded retry 期间不提示，耗尽后同一 UNSAVED occurrence 只提醒一次；成功后清除；notice 淘汰或重启 gap scan 未完成时不显示假空态；
