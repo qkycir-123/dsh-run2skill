@@ -1,5 +1,6 @@
 import {
   LearningDiagnosticRecordV1Schema,
+  LearningDiagnosticHealthV1Schema,
   isIgnoredLearningFailure,
   type LearningDiagnosticRecordV1,
   type LearningTerminalDetailV1,
@@ -54,6 +55,7 @@ function recordVisibleFor(item: CaptureWorkItemV1, record: LearningDiagnosticRec
 
 export class LearningDiagnosticStore {
   readonly #table
+  readonly #health
   readonly #runMutation
 
   constructor(
@@ -62,6 +64,7 @@ export class LearningDiagnosticStore {
     runMutation: <T>(operation: () => Promise<T>) => Promise<T> = async operation => await operation(),
   ) {
     this.#table = sidecar.table('terminal_details')
+    this.#health = sidecar.table('health_checks')
     this.#runMutation = runMutation
   }
 
@@ -137,5 +140,22 @@ export class LearningDiagnosticStore {
       }
       return { deleted }
     })
+  }
+
+  async verifyReady(): Promise<void> {
+    const key = 'purge-readiness'
+    const current = this.#health.get(key)
+    const generation = current === undefined || current.generation === Number.MAX_SAFE_INTEGER
+      ? 0
+      : current.generation + 1
+    const expected = LearningDiagnosticHealthV1Schema.parse({ schemaVersion: 1, generation })
+    await this.#health.put(key, expected)
+    const observed = this.#health.get(key)
+    if (observed?.schemaVersion !== expected.schemaVersion || observed.generation !== expected.generation) {
+      throw new Error('Learning diagnostic readiness readback mismatch')
+    }
+    if (!await this.#health.delete(key)) {
+      throw new Error('Learning diagnostic readiness cleanup failed')
+    }
   }
 }

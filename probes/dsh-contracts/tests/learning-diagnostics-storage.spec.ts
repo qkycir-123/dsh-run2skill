@@ -63,12 +63,16 @@ describe('independent learning diagnostic Storage Domain', () => {
     const first = await mount(storagePath, backend)
     await first.main.global.set({ ...first.main.global.get(), lastSuccessfulStoreWriteAt: record.failureOccurredAt })
     await first.sidecar.table('terminal_details').put(key, record)
+    await first.sidecar.table('health_checks').put('purge-readiness', { schemaVersion: 1, generation: 1 })
+    expect(first.sidecar.table('health_checks').get('purge-readiness')).toEqual({ schemaVersion: 1, generation: 1 })
+    expect(await first.sidecar.table('health_checks').delete('purge-readiness')).toBe(true)
     await dispose(first)
 
     const second = await mount(storagePath, backend)
     try {
       expect(second.main.global.get().lastSuccessfulStoreWriteAt).toBe(record.failureOccurredAt)
       expect(second.sidecar.table('terminal_details').get(key)).toEqual(record)
+      expect(second.sidecar.table('health_checks').size).toBe(0)
     } finally {
       await dispose(second)
     }

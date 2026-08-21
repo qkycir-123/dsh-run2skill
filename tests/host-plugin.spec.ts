@@ -340,6 +340,11 @@ describe('Host plugin assembly', () => {
       learning: { proposal: { persistenceScope: 'USER' as const } } as never,
     }
     domain.workItems.set(item.workItemId, item)
+    const lineageId = `lin_${'f'.repeat(64)}`
+    domain.lineages.set(lineageId, {
+      scope: 'USER',
+      revisions: [{ committedAt: '2026-08-20T00:00:00.000Z' }],
+    } as never)
     sidecar.records.set(`${item.workItemId}:1:1`, {
       schemaVersion: 1,
       workItemId: item.workItemId,
@@ -392,6 +397,7 @@ describe('Host plugin assembly', () => {
         .resolves.toMatchObject({ ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' } })
     }
     expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
     expect(sidecar.records.size).toBe(1)
     await dispose()
 
@@ -403,11 +409,48 @@ describe('Host plugin assembly', () => {
     expect(preview).toMatchObject({ ok: true })
     if (preview === undefined || !preview.ok) throw new Error('expected recovered purge preview')
     const value = preview.value as { previewId: string; digest: string }
+    sidecar.setUnavailable(true)
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+
+    sidecar.setUnavailable(false)
+    sidecar.failNextHealthPuts(1)
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+
+    sidecar.failNextHealthDeletes(1)
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+    expect(sidecar.healthChecks.size).toBe(1)
+
     await expect(rpcHandler?.('purge/confirm', {
       apiVersion: 1, previewId: value.previewId, digest: value.digest,
     }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { state: 'COMPLETED' } })
     expect(domain.workItems.has(item.workItemId)).toBe(false)
+    expect(domain.lineages.has(lineageId)).toBe(false)
     expect(sidecar.records.size).toBe(0)
+    expect(sidecar.healthChecks.size).toBe(0)
     await recoveredDispose()
   })
 })

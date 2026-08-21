@@ -1,5 +1,5 @@
-import { LearningDiagnosticRecordV1Schema } from '../../domain/learn/index.js'
-import type { LearningDiagnosticRecordV1 } from '../../domain/learn/index.js'
+import { LearningDiagnosticHealthV1Schema, LearningDiagnosticRecordV1Schema } from '../../domain/learn/index.js'
+import type { LearningDiagnosticHealthV1, LearningDiagnosticRecordV1 } from '../../domain/learn/index.js'
 import type { Run2skillTable } from './types.js'
 
 export const learningDiagnosticDomainSpec = {
@@ -7,12 +7,14 @@ export const learningDiagnosticDomainSpec = {
   version: 1,
   tables: {
     terminal_details: { valueSchema: LearningDiagnosticRecordV1Schema },
+    health_checks: { valueSchema: LearningDiagnosticHealthV1Schema },
   },
 } as const
 
 export interface LearningDiagnosticDomain {
   readonly name: 'run2skill_learning_diagnostics_v1'
   table(name: 'terminal_details'): Run2skillTable<string, LearningDiagnosticRecordV1>
+  table(name: 'health_checks'): Run2skillTable<string, LearningDiagnosticHealthV1>
   close(): Promise<void>
 }
 

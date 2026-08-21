@@ -135,4 +135,46 @@ describe('LearningDiagnosticStore', () => {
     expect(sidecar.records.size).toBe(1)
     expect(store.detailFor(kept)).toBe('MODEL_FINISH_MISSING')
   })
+
+  it('verifies live sidecar writes, exact readback, and cleanup on every readiness check', async () => {
+    const main = createMemoryRun2skillDomain()
+    const sidecar = createMemoryLearningDiagnosticDomain()
+    const store = new LearningDiagnosticStore(main, sidecar)
+
+    await expect(store.verifyReady()).resolves.toBeUndefined()
+    expect(sidecar.healthChecks.size).toBe(0)
+    sidecar.setUnavailable(true)
+    await expect(store.verifyReady()).rejects.toThrow('synthetic diagnostic backend unavailable')
+    expect(sidecar.healthChecks.size).toBe(0)
+    sidecar.setUnavailable(false)
+    await expect(store.verifyReady()).resolves.toBeUndefined()
+
+    sidecar.failNextHealthDeletes(1)
+    await expect(store.verifyReady()).rejects.toThrow('synthetic diagnostic health delete failure')
+    expect(sidecar.healthChecks.size).toBe(1)
+    await expect(store.verifyReady()).resolves.toBeUndefined()
+    expect(sidecar.healthChecks.size).toBe(0)
+  })
+
+  it('fails readiness with terminal-table backend loss and can reverify before retrying deletion', async () => {
+    const main = createMemoryRun2skillDomain()
+    const sidecar = createMemoryLearningDiagnosticDomain()
+    const item = terminalItem()
+    main.workItems.set(item.workItemId, item)
+    const store = new LearningDiagnosticStore(main, sidecar)
+
+    sidecar.setUnavailable(true)
+    await expect(store.attach(item, 1, 'MODEL_USAGE_INVALID')).rejects.toThrow()
+    await expect(store.verifyReady()).rejects.toThrow('synthetic diagnostic backend unavailable')
+    sidecar.setUnavailable(false)
+    await expect(store.verifyReady()).resolves.toBeUndefined()
+
+    await store.attach(item, 1, 'MODEL_USAGE_INVALID')
+    sidecar.failNextDeletes(1)
+    await expect(store.deleteWorkItem(item.workItemId)).rejects.toThrow('synthetic diagnostic delete failure')
+    expect(sidecar.records.size).toBe(1)
+    await expect(store.verifyReady()).resolves.toBeUndefined()
+    await expect(store.deleteWorkItem(item.workItemId)).resolves.toBeUndefined()
+    expect(sidecar.records.size).toBe(0)
+  })
 })

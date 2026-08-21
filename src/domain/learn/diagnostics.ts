@@ -25,3 +25,10 @@ export const LearningDiagnosticRecordV1Schema = z.object({
 }).strict()
 
 export type LearningDiagnosticRecordV1 = z.infer<typeof LearningDiagnosticRecordV1Schema>
+
+export const LearningDiagnosticHealthV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict()
+
+export type LearningDiagnosticHealthV1 = z.infer<typeof LearningDiagnosticHealthV1Schema>
