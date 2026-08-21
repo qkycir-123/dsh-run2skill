@@ -409,7 +409,7 @@ MERGE 只允许同一核心能力、同一 Scope、目标可写且具有新的�
 若只读来源、另一 Scope 或大型不可安全合并的 Skill 仅部分覆盖 Intent，系统不得自动 MERGE 或创建同义 override，必须进入 `NEEDS_ATTENTION`。
 
 **REQ-CUR-007**
-`DISCARD` 不得删除 supporting Experience/Evidence。显式保存请求若因“已有 Skill 完全覆盖”拟 DISCARD，Web 必须展示目标 Skill 和覆盖理由，用户确认后才可记为 `DISCARDED`；用户不同意则进入有界重新分析或 `NEEDS_ATTENTION`。
+`DISCARD` 不得删除 supporting Experience/Evidence。显式保存请求若因“已有 Skill 完全覆盖”拟 DISCARD，Web 必须展示目标 Skill 和覆盖理由：用户确认后通过 revision-CAS 记为 `DISCARDED`；用户不同意时只允许一个新的 coverage revision，重新取得完整 Runtime/Pending Proposal Catalog 与 exact bodies。再次 COVERED、事实不完整、非法输出或预算耗尽进入 `NEEDS_ATTENTION`，不得循环重分析。
 
 ### 10.5 Proposal Inbox 与人工审核
 

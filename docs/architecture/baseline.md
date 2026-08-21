@@ -381,7 +381,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 - threshold、idle 和 explicit 对相同连续范围派生同一 batchId；
 - 已 claim batch 使用冻结尾部继续，新 Turn 进入下一批；
 - READY Intent 只有 ownership 为 `RUN2SKILL_OWNED` 才进入 recall；
-- BehaviorSignatureIndex 以 scope + signature 串行跨 Session generation；
+- BehaviorSignatureIndex 处理 exact signature；进程全局 ProposalGenerationLease 串行全部 scope 的 Proposal generation；
 - 队列没有无限内存副本，权威队列来自 Store；
 - 进程全局并发另设固定小上限，避免多 Session 形成模型风暴。
 
@@ -406,7 +406,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 
 ### 8.5 多 Session 同一 Skill
 
-Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 串行；相同签名只允许一个 active lineage owner，其他 Intent 只附加 evidence 或进入歧义待办。不同签名仍可能指向同一 target，publication-service 继续以 canonical target path 串行：
+Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，再以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 active Proposal membership mutation 经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。持有 lease 后及模型返回、写 body 前都必须重新取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale 或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；不同 target 的 publication 仍按 canonical target path 串行：
 
 - 每次都重新取得完整 Catalog 和文件事实；
 - 先到者成功后，后到者的 Base/expected-absence 必然失效；
@@ -437,7 +437,7 @@ v0.2 继续复用 `ctx.storage.domain`，物理存储完全服从目标 profile 
 | experience_intents | intentId | behavior signature、evidence、ownership、recall、coverage、generation |
 | proposal_lineages | lineageId | 唯一活动 lineage、Proposal/Review/Publication Journal、完整 Revision snapshots |
 | legacy_items | legacy id | v1 pending/Proposal 的兼容处置，不自动重新 Learning |
-| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、path-free PendingProposalCatalog、migration journal、Purge fences、健康索引 |
+| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、migration journal、Purge fences、健康索引 |
 
 Session cursor 只能在对应 TurnObservation/SessionBatch 结果 durable 后推进。NONE 提交后可回收观察；DEFER 只保留有界 carry；READY 的必要证据转入 Intent 后可回收旧观察。BatchManifest 不保存绝对路径或 Session 原文；同版本重放只能读取原记录，不能刷新 baseline。ObservationId、BatchId、IntentId 和 BehaviorSignatureIndex 分别负责事件、调度、经验和 Proposal 去重。
 
@@ -457,7 +457,7 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
 - #84 Migration ADR 选择独立 `run2skill_v2` Domain version 1，按 `NOT_STARTED -> COPYING -> VALIDATING -> COMMITTED` journal copy/validate/commit；COMMITTED 前 v2 对 worker/UI 不可见。
 - v1 的 `RESOLVED_NO_SIGNAL`、`CAPTURED`、`ANALYZING`、`LEARNED`、`READY_FOR_REVIEW`、`PUBLISHING`、两类 `NEEDS_ATTENTION` 与两类 `TERMINAL` 必须按 Migration ADR 穷尽映射；遗漏或非法组合使迁移 fail closed。
-- v1 active Proposal 经完整校验导入 legacy envelope，并在 COMMITTED 前写入 `PendingProposalCatalog`；能规范化 behavior signature 时同时预占 BehaviorSignatureIndex，不能精确规范化时仍作为不可写 summary/full-body candidate 参与每个新 Intent 的 coverage。未形成 Proposal 的旧项进入 legacy Action Queue，不按新策略静默重放。
+- v1 active Proposal 经完整校验导入 legacy envelope；COMMITTED 前必须证明从 active v2/legacy authoritative rows 派生的 PendingProposalCatalog 完整覆盖它们。能规范化 behavior signature 时同时预占 BehaviorSignatureIndex，不能精确规范化时仍作为不可写 summary/full-body candidate 参与每个新 Intent 的 coverage。未形成 Proposal 的旧项进入 legacy Action Queue，不按新策略静默重放。
 - v1 Lineage、completed Purge fences 和 scope identity 先于 observer activation 迁移；v1 不删除、不改写。
 - migration COMMITTED 后禁止在同一 DSH Home 上启动不支持 v2 的旧插件；只允许前向修复，或停止 DSH 后恢复完整迁移前备份再安装旧版。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
@@ -469,8 +469,8 @@ Purge 是持久 saga：
 
 1. global 写入 purgeId、scope binding 和 hideBefore epoch；
 2. UI 立即过滤命中数据；
-3. 扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，并保持 v1 legacy 视图不可见；
-4. 校验无正常可见残留；
+3. 扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，清理对应 BehaviorSignatureIndex/ProposalGenerationLease，并保持 v1 legacy 视图不可见；
+4. 从 purge-visible authoritative rows 重建 PendingProposalCatalog，校验无正常可见 Proposal、dangling index/lease 或其他残留；
 5. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
 
 RPC scope contract 与作用域身份一致：PROJECT preview 必须携带当前有效 `workspaceId`，由 Host 重新解析 canonical workspace/root facts；USER preview 只绑定 effective DSH Home，请求不依赖也不接受 `workspaceId`。`status`、`confirm` 与 `retry` 只使用各自的 journal/immutable preview 标识，不携带 workspace identity。
@@ -606,6 +606,8 @@ project-agents、user-agents、custom、bundled 和未知 provider 只参与查�
 - 唯一 PARTIAL 只有同 Scope、可写且能安全输出完整 merge 时才授权 MERGE；
 - 多个 PARTIAL、任一 AMBIGUOUS、任一 RELEVANT/POSSIBLE 候选在 coverage 前 UNAVAILABLE，或 READABLE_NOT_MERGEABLE partial 进入 NEEDS_ATTENTION；
 - Similarity 分数本身不能作出 CREATE/MERGE/COVERED。
+
+显式保存的 COVERED 进入 `COVERED_NEEDS_CONFIRMATION`，并以 `intentId + expectedRevision + actionId` 接受两种 CAS：`CONFIRM_DISCARD -> DISCARDED`；`DISPUTE_COVERAGE -> COVERAGE_RETRY_AUTHORIZED`。异议最多授权一个新的 coverage revision/调用，必须重取两个 complete catalogs 和 exact bodies；再次 COVERED、非法输出、不完整或预算耗尽进入 NEEDS_ATTENTION，不自动循环。
 
 ## 12. Scope 与有效 Root
 
@@ -983,7 +985,7 @@ storageDomain, workspaceRegistry, connection
 |---|---|---|
 | CP-SES-001 | 实时 turn/end、observer 隔离、event seq、Root identity、持久日志 gap scan 和释放 | Slice A 不能开始；需修改观察/恢复设计 |
 | CP-STO-001 | Web profile Storage Domain 可用、重启恢复、写序列、backend 错误 | durable pending 不成立 |
-| CP-LLM-001 | inherited provider/model one-shot stream、usage、cancel、invalid JSON 修复、无 tools | Slice B 不能开始 |
+| CP-LLM-001 | inherited provider/model one-shot stream、usage、cancel、无 tools；Detector/Catalog/Coverage invalid JSON 直接失败，只有 Generation 可做一次格式/截断恢复 | Slice B/B2/B3 不能开始 |
 | CP-SKL-001 | snapshot complete、scope/cwd、rank、get、skills/change 和精确热回读 | Curation/Published 判定不成立 |
 | CP-ROOT-003 | stock DSH 官方默认 root contract、PROJECT/USER 写入与原生 Registry exact readback | PASS 解除 #48 root-contract 门；不替代 C7 |
 | CP-PUB-001 | Windows/Linux CREATE/MERGE CAS、race、crash、symlink/junction、backup recovery | Slice C 不能发布；不得退化为覆盖 |
