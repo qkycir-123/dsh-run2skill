@@ -114,7 +114,7 @@ export function AutomaticLearningSettingsCard(props: {
       type: 'button',
       'aria-expanded': open,
       onClick: () => { setOpen(value => !value) },
-    }, 'run2skill', createElement('span', null, '将真实执行中的明确经验转为待审核 Skill Proposal')),
+    }, 'run2skill', createElement('span', null, '将真实执行中的明确经验整理为待确认的技能草稿')),
     open
       ? createElement('div', null,
           createElement('label', null,
@@ -126,12 +126,12 @@ export function AutomaticLearningSettingsCard(props: {
                 void props.controller.setAutomaticLearning(event.currentTarget.checked)
               },
             }),
-            'Automatic Learning',
+            '自动学习',
           ),
           createElement('p', null,
             '关闭后暂停普通自动学习；显式“保存为 Skill”仍会持久保存。已开始的分析继续使用启动时快照。',
           ),
-          createElement('p', null, 'Learning 模型沿用发起 Session 的 provider/model（inherit-session）。'),
+          createElement('p', null, '分析时沿用发起会话已经选择的模型。'),
           state.error === undefined
             ? null
             : createElement('p', { role: 'status' }, '设置已变化，请刷新后重试。'),

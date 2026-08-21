@@ -1,6 +1,6 @@
 # DSH 兼容性
 
-`dsh-run2skill@0.1.1-alpha` 当前支持以下官方、未修改的 DeepSeek Harness 版本：
+`dsh-run2skill@0.2.0` 开发线当前支持以下官方、未修改的 DeepSeek Harness 版本：
 
 | DSH 版本 | 官方 commit | 结果 |
 |---|---|---|
@@ -15,10 +15,10 @@
 - 内置 `standard` 和 `code` agent preset；
 - DSH 默认 filesystem Skill provider 和默认 `PROJECT` / `USER` roots；
 - Web profile 的 JSON Storage 主路径，以及 SQLite Storage 的兼容对照路径；
-- Windows 上的插件 Host、Web Client、Settings、Proposal Inbox、Purge 和 Skill 发布；
+- Windows 上的插件 Host、Web Client、Settings、技能草稿审核、数据清理和 Skill 发布；
 - Windows 与 Linux/WSL 上的原子 Skill 发布协议。
 
-以下情况尚未作为 `0.1.1-alpha` 的兼容承诺：
+以下情况尚未作为 `0.2.0` 的兼容承诺：
 
 - DSH 的其他 profile；
 - 自定义 Skill provider、自定义 Skill roots 或 `includeDefaultRoots=false`；

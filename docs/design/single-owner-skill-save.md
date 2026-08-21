@@ -248,7 +248,7 @@ WorkItem.processingState = CAPTURED
 - `agent/pre-step` 对 prefilter hit/UNKNOWN 的 turn 只在 `step=1` 建一次基线，后续 step 不重复扫描。
 - 观察有明确的文件数、字节数和墙钟时间预算；超预算放行 Agent 并标为不完整。
 - manifest 使用流式摘要，不把所有 Skill 正文同时留在内存。
-- 用户正常工作时不显示所有权状态；`RESOLVED_BY_AGENT` 复用已有 Agent 回复/工具结果并静默结束，`RUN2SKILL_OWNED` 沿用自动提案流程。
+- 用户正常工作时不显示所有权状态；`RESOLVED_BY_AGENT` 复用已有 Agent 回复/工具结果并静默结束，`RUN2SKILL_OWNED` 沿用自动技能草稿流程。
 - 只有 `NEEDS_CONFIRMATION` 才进入 #72 定义的按需提醒与插件设置恢复入口。
 - 性能预算数值必须在实现 Issue 中通过受支持 rc.7/rc.8 的冷/热 catalog probe 后确定，不能在设计阶段拍常量。
 

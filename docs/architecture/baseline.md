@@ -763,7 +763,7 @@ CP-PUB-001 已在 Windows 与 WSL/Linux 验证上述 hard-link no-replace、外�
 
 每个 payload 由 Host 端严格 schema 解析；未知字段、超长字符串、非法 enum、stale revision 都拒绝。RPC 版本放在 envelope 中，破坏性变更新开 v2，不静默改变 v1。
 
-正常路径不展示 ownership 状态：`RESOLVED_BY_AGENT` 由既有 Agent 回复/工具结果满足用户可见结果，插件不额外显示 Toast、header 计数或 Proposal；`RUN2SKILL_OWNED` 继续既有自动提案流程。只有 `NEEDS_CONFIRMATION` 才在统一待办入口显示一个可操作提示，详细持久记录进入 run2skill 设置/插件详情；“已处理/不再沉淀”必须提交 `HANDLED_BY_USER`，不能只做易失 UI dismiss。
+正常路径不展示 ownership 状态：`RESOLVED_BY_AGENT` 由既有 Agent 回复/工具结果满足用户可见结果，插件不额外显示 Toast、header 计数或 Proposal；`RUN2SKILL_OWNED` 继续既有自动技能草稿流程。只有 `NEEDS_CONFIRMATION` 才在统一待办入口显示一个可操作提示，详细持久记录进入 run2skill 设置/插件详情；“已处理/不再沉淀”必须提交 `HANDLED_BY_USER`，不能只做易失 UI dismiss。
 
 ### 14.2 更新模型
 

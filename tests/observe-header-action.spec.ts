@@ -49,7 +49,7 @@ describe('Observe Header action', () => {
 
   it('uses the same health wording expected by the Inbox', () => {
     expect(describeObserveState(readyState({ status: 'INCOMPATIBLE' }))).toContain('run2skill 当前版本不兼容')
-    expect(describeObserveState(readyState({ status: 'DEGRADED' }))).toContain('run2skill 暂时降级')
+    expect(describeObserveState(readyState({ status: 'DEGRADED' }))).toContain('run2skill 当前功能受限')
     expect(describeObserveState(readyState({ status: 'RECOVERING' }))).toContain('run2skill 正在恢复')
   })
 

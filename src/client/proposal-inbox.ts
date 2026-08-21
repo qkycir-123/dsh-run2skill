@@ -77,12 +77,12 @@ export interface ProposalDetail {
 export type ProposalMutation = 'APPROVE' | 'REJECT' | 'RETRY' | 'CONFIRM_DISCARD'
 
 export function describeProposalOutcome(detail: Pick<ProposalDetail, 'processingState' | 'publicationOutcome'>): string {
-  if (detail.publicationOutcome === 'PUBLISHED') return 'Skill 已发布并完成 Registry 回读'
-  if (detail.publicationOutcome === 'DISCARDED') return 'Proposal 已离开待处理队列，Skill 未更改'
-  if (detail.publicationOutcome === 'NEEDS_REFRESH') return '发布绑定已变化，需要生成新的 Proposal'
-  if (detail.publicationOutcome === 'PUBLISH_FAILED') return '发布失败，可重试'
+  if (detail.publicationOutcome === 'PUBLISHED') return 'Skill 已保存，DSH 已确认可以使用'
+  if (detail.publicationOutcome === 'DISCARDED') return '技能草稿已放弃，Skill 未更改'
+  if (detail.publicationOutcome === 'NEEDS_REFRESH') return '保存目标已变化，需要生成新的技能草稿'
+  if (detail.publicationOutcome === 'PUBLISH_FAILED') return '保存失败，可重试'
   if (detail.processingState === 'NEEDS_ATTENTION') return '需要处理后才能继续'
-  if (detail.processingState === 'PUBLISHING') return '已批准，正在发布'
+  if (detail.processingState === 'PUBLISHING') return '已确认，正在保存'
   return '待审核'
 }
 
@@ -94,25 +94,25 @@ export function describeProposalListItem(item: Pick<
 }
 
 export function describeReviewDecision(decision: ProposalDetail['reviewDecision']): string {
-  if (decision === 'APPROVED') return '已批准'
-  if (decision === 'REJECTED') return '已拒绝'
+  if (decision === 'APPROVED') return '已确认'
+  if (decision === 'REJECTED') return '已放弃'
   return '待决定'
 }
 
 export function describeProcessingState(state: ProposalDetail['processingState']): string {
-  if (state === 'PUBLISHING') return '正在发布'
+  if (state === 'PUBLISHING') return '正在保存'
   if (state === 'NEEDS_ATTENTION') return '需要处理'
   if (state === 'TERMINAL') return '已结束'
   return '待审核'
 }
 
 export function describePublicationOutcome(outcome: ProposalDetail['publicationOutcome']): string {
-  if (outcome === 'PUBLISHED') return '已发布并完成 Registry 回读'
-  if (outcome === 'DISCARDED') return '未修改 Skill，Proposal 已离开队列'
-  if (outcome === 'NEEDS_REFRESH') return '发布绑定已变化，需要新 Proposal'
-  if (outcome === 'PUBLISH_FAILED') return '发布失败，可重试'
-  if (outcome === 'NEEDS_ATTENTION') return '发布前事实需要处理'
-  return '尚未产生发布结果'
+  if (outcome === 'PUBLISHED') return '已保存，DSH 已确认可以使用'
+  if (outcome === 'DISCARDED') return '未修改 Skill，技能草稿已放弃'
+  if (outcome === 'NEEDS_REFRESH') return '保存目标已变化，需要新的技能草稿'
+  if (outcome === 'PUBLISH_FAILED') return '保存失败，可重试'
+  if (outcome === 'NEEDS_ATTENTION') return '保存前需要先处理当前问题'
+  return '尚未产生保存结果'
 }
 
 export interface ProposalInboxState {
@@ -394,7 +394,7 @@ export class ProposalInboxController {
       this.#publish({ ...this.#state, mutationPending: true, announcement: '' })
       const receipt = parseMutationReceipt(await this.call(targetEndpoint, request, signal))
       if (receipt === undefined) throw new Error('invalid mutation receipt')
-      const announcement = describeProposalOutcome(receipt) || 'Proposal 状态已更新'
+      const announcement = describeProposalOutcome(receipt) || '技能草稿状态已更新'
       this.#publish({
         ...this.#state,
         mutationPending: false,

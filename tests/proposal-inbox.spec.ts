@@ -148,18 +148,18 @@ describe('Proposal Inbox client', () => {
 
   it('announces publishing and truthful terminal outcomes', () => {
     expect(describeProposalOutcome({ processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' }))
-      .toContain('正在发布')
+      .toContain('正在保存')
     expect(describeProposalOutcome({ processingState: 'TERMINAL', publicationOutcome: 'PUBLISHED' }))
-      .toContain('完成 Registry 回读')
+      .toContain('DSH 已确认可以使用')
     expect(describeProposalOutcome({ processingState: 'NEEDS_ATTENTION', publicationOutcome: 'NEEDS_REFRESH' }))
-      .toContain('新的 Proposal')
+      .toContain('新的技能草稿')
   })
 
   it('uses one factual vocabulary for publishing and retryable failure', () => {
     expect(describeProposalOutcome({ processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW' }))
-      .toBe('已批准，正在发布')
+      .toBe('已确认，正在保存')
     expect(describeProposalOutcome({ processingState: 'NEEDS_ATTENTION', publicationOutcome: 'PUBLISH_FAILED' }))
-      .toBe('发布失败，可重试')
+      .toBe('保存失败，可重试')
     expect(proposalDetailAction({
       reviewDecision: 'APPROVED',
       processingState: 'NEEDS_ATTENTION',
@@ -187,7 +187,7 @@ describe('Proposal Inbox client', () => {
     }
     for (const [status, copy] of [
       ['RECOVERING', 'run2skill 正在恢复历史观察'],
-      ['DEGRADED', 'run2skill 暂时降级'],
+      ['DEGRADED', 'run2skill 当前功能受限'],
       ['INCOMPATIBLE', 'run2skill 当前版本不兼容'],
     ] as const) {
       expect(describeProposalSummaryState({
@@ -198,7 +198,7 @@ describe('Proposal Inbox client', () => {
           recoveryLag: status === 'RECOVERING',
           queue: { completeness: 'UNKNOWN' },
         },
-      })).toBe(`${copy}；待处理数量未知`)
+      })).toBe(`${copy}；技能草稿待处理数量未知`)
     }
   })
 
@@ -241,7 +241,7 @@ describe('Proposal Inbox client', () => {
     const buttons = children.filter(child => child.type === 'button')
     expect(buttons).toHaveLength(2)
     expect(copy).toContain('现有 Skill 不会改变')
-    expect(copy).toContain('Evidence 仍按项目策略保留')
+    expect(copy).toContain('经过筛选的学习材料仍按项目规则保留')
     ;(buttons[0]!.props.onClick as () => void)()
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onConfirm).not.toHaveBeenCalled()
@@ -287,7 +287,7 @@ describe('Proposal Inbox client', () => {
     expect(factsFromAction(controller.snapshot().detail!)).toContain('Expected provider/source: filesystem / project-dsh')
 
     await controller.mutate('APPROVE')
-    expect(controller.snapshot().announcement).toContain('正在发布')
+    expect(controller.snapshot().announcement).toContain('正在保存')
     expect(controller.snapshot().detail).toMatchObject({
       reviewDecision: 'APPROVED', processingState: 'PUBLISHING', publicationOutcome: 'PENDING_REVIEW',
     })
@@ -392,7 +392,7 @@ describe('Proposal Inbox client', () => {
     expect(controller.snapshot()).toMatchObject({
       mutationPending: false,
       summaryPhase: 'STALE',
-      announcement: '已批准，正在发布',
+      announcement: '已确认，正在保存',
       detail: { reviewDecision: 'APPROVED', processingState: 'PUBLISHING' },
     })
     controller.dispose()

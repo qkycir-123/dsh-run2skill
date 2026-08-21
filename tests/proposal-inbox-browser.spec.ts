@@ -40,9 +40,9 @@ describe('Proposal Inbox browser accessibility', () => {
       scopeAccess: () => ({ currentScope, actions }),
     }))
 
-    const trigger = await screen.findByRole('button', { name: '1 条 Skill 提案待处理：1 条待审核' })
+    const trigger = await screen.findByRole('button', { name: '1 份技能草稿待处理：1 份待审核' })
     fireEvent.click(trigger)
-    const dialog = await screen.findByRole('dialog', { name: 'Skill Proposal Inbox' })
+    const dialog = await screen.findByRole('dialog', { name: '技能草稿' })
     expect(dialog.getAttribute('aria-modal')).toBe('true')
     const close = screen.getByRole('button', { name: '关闭' })
     await waitFor(() => { expect(document.activeElement).toBe(close) })
@@ -52,10 +52,10 @@ describe('Proposal Inbox browser accessibility', () => {
     })
     fireEvent.click(proposalButton)
     await screen.findByText(staged.item.review!.proposal.digest)
-    const reject = screen.getByRole('button', { name: '拒绝 Proposal' })
+    const reject = screen.getByRole('button', { name: '放弃草稿' })
     reject.focus()
     fireEvent.click(reject)
-    const confirmation = screen.getByRole('alertdialog', { name: '确认拒绝 Proposal？' })
+    const confirmation = screen.getByRole('alertdialog', { name: '确认放弃这份技能草稿？' })
     expect(confirmation.getAttribute('aria-describedby')).toBe('run2skill-reject-description')
     const cancel = screen.getByRole('button', { name: '取消' })
     expect(document.activeElement).toBe(cancel)
@@ -63,10 +63,10 @@ describe('Proposal Inbox browser accessibility', () => {
     await waitFor(() => { expect(screen.queryByRole('alertdialog')).toBeNull() })
     expect(document.activeElement).toBe(reject)
 
-    fireEvent.click(screen.getByRole('button', { name: '批准并发布' }))
-    await waitFor(() => { expect(screen.getAllByText('已批准，正在发布')).toHaveLength(1) })
+    fireEvent.click(screen.getByRole('button', { name: '确认并保存' }))
+    await waitFor(() => { expect(screen.getAllByText('已确认，正在保存')).toHaveLength(1) })
     const live = dialog.querySelector('[aria-live="polite"][aria-atomic="true"]')
-    expect(live?.textContent).toContain('已批准，正在发布')
+    expect(live?.textContent).toContain('已确认，正在保存')
 
     close.focus()
     fireEvent.keyDown(close, { key: 'Escape' })

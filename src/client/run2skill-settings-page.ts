@@ -195,7 +195,7 @@ function AutomaticLearningSection(props: {
   const disabled = state.status !== 'ready' || !state.writable || state.saving
   return createElement('div', { className: css.sectionBody },
     createElement('p', { className: css.muted },
-      '在后台识别可复用经验并生成待审核 Proposal；关闭后仍保留明确“保存为 Skill”的持久化信号。',
+      '在后台识别可复用经验并生成待确认的技能草稿；关闭后，明确说“保存为 Skill”仍然有效。',
     ),
     createElement('div', { className: css.actions },
       createElement(Button, {
@@ -204,7 +204,7 @@ function AutomaticLearningSection(props: {
         disabled,
         onClick: () => { void props.controller.setAutomaticLearning(state.automaticLearning !== true) },
       }, state.saving ? '正在保存…' : state.automaticLearning ? '自动学习已开启' : '自动学习已关闭'),
-      createElement(Pill, null, 'inherit-session'),
+      createElement(Pill, null, '沿用当前会话模型'),
     ),
     state.error === undefined
       ? null
@@ -279,8 +279,8 @@ function ProposalSettingsSection(props: {
     createElement('div', { className: css.toolbar },
       createElement(Input, {
         value: filter,
-        placeholder: '筛选 Proposal',
-        'aria-label': '筛选 Proposal',
+        placeholder: '筛选技能草稿',
+        'aria-label': '筛选技能草稿',
         onChange: event => { setFilter(event.currentTarget.value) },
       }),
       createElement(Button, {
@@ -489,7 +489,7 @@ export function LearningFailureSection(props: {
     createElement(ManagedConfirmationModal, {
       open: dismiss !== undefined,
       title: '确认关闭此学习失败？',
-      description: '该失败会从待处理列表隐藏；已有 Skill 和 DSH Session Log 不会改变。',
+      description: '该失败会从待处理列表隐藏；已有 Skill 和 DSH 的原始会话记录不会改变。',
       disabled: pending !== undefined,
       triggerRef: dismissTriggerRef,
       onClose: () => { setDismiss(undefined) },
@@ -512,9 +512,9 @@ export function RejectProposalModal(props: {
 }): ReactElement {
   return createElement(ManagedConfirmationModal, {
     ...props,
-    title: '确认拒绝 Proposal？',
-    description: '现有 Skill 不会改变；该 Proposal 将离开待处理队列。',
-    confirmLabel: '确认拒绝',
+    title: '确认放弃这份技能草稿？',
+    description: '现有 Skill 不会改变；这份技能草稿将离开待处理队列。',
+    confirmLabel: '确认放弃',
   })
 }
 

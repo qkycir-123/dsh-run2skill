@@ -152,7 +152,7 @@ describe('Purge native settings UI', () => {
     )
     expect(controller.snapshot()).toMatchObject({
       mutationPending: false,
-      announcement: 'PROJECT run2skill 数据清理完成：3 条待处理数据，2 条发布沿袭记录。',
+      announcement: 'PROJECT run2skill 数据清理完成：3 条待处理数据，2 条 Skill 关联记录。',
     })
     expect(controller.snapshot().preview).toBeUndefined()
     controller.dispose()
@@ -210,7 +210,7 @@ describe('Purge native settings UI', () => {
     await controller.whenIdle()
     await controller.preview('PROJECT')
     await controller.confirm()
-    expect(controller.snapshot().announcement).toContain('2 条正在发布')
+    expect(controller.snapshot().announcement).toContain('2 份技能草稿正在保存')
 
     active = true
     poll.tick()
@@ -474,10 +474,11 @@ describe('Purge native settings UI', () => {
     fireEvent.click(projectButton)
     const dialog = await screen.findByRole('dialog', { name: '确认清理 PROJECT run2skill 数据？' })
     expect(dialog.textContent).toContain('3 条待处理数据')
-    expect(dialog.textContent).toContain('2 条发布沿袭记录')
+    expect(dialog.textContent).toContain('2 条 Skill 关联记录')
     expect(dialog.textContent).toContain('1 条无法证明作用域的数据将保留')
-    expect(dialog.textContent).toContain('删除 run2skill 的过滤 Evidence、Experience、pending、Proposal、Revision metadata、usage 和相关审计事实')
-    expect(dialog.textContent).toContain('保留 DSH Session Log')
+    expect(dialog.textContent).toContain('删除 run2skill 保存的技能草稿、经过筛选的学习材料、待处理记录、版本信息和相关运行记录')
+    expect(dialog.textContent).toContain('保留 DSH 的原始会话记录')
+    expect(dialog.textContent).not.toContain('Lineage')
     expect(dialog.textContent).toContain('保留所有已发布的原生 Skill')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '取消清理' }))
     screen.getByRole('button', { name: '关闭清理确认框' }).focus()
@@ -491,7 +492,7 @@ describe('Purge native settings UI', () => {
     fireEvent.click(projectButton)
     fireEvent.click(await screen.findByRole('button', { name: '确认清理' }))
     await waitFor(() => {
-      expect(screen.getByRole('status', { name: 'Purge 状态播报' }).textContent).toContain('清理完成')
+      expect(screen.getByRole('status', { name: '数据清理状态播报' }).textContent).toContain('清理完成')
     })
     expect(screen.queryByRole('dialog', { name: '确认清理 PROJECT run2skill 数据？' })).toBeNull()
     purge.dispose()
