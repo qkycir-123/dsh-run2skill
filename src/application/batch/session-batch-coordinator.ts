@@ -255,7 +255,7 @@ export class SessionBatchCoordinator {
         if (previousCarry === undefined || batch.lastTurnEndSeq > previousCarry.through) {
           carryBySession.set(batch.sessionLifecycleKey, {
             through: batch.lastTurnEndSeq,
-            carry: batch.detector.result === 'DEFER' ? batch.detector.carry : [],
+            carry: ['DEFER', 'NEEDS_ATTENTION'].includes(batch.detector.result) ? batch.detector.carry : [],
           })
         }
         continue

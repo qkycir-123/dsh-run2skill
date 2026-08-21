@@ -16,7 +16,7 @@ import {
 
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/)
 const carryOutputSchema = z.object({
-  summary: z.string().min(1).max(2048),
+  summary: z.string().max(2048).refine(value => value.trim().length > 0),
   behaviorSignatureDraft: sha256Hex,
   evidenceDigests: z.array(sha256Hex).min(1).max(64),
 }).strict()
@@ -98,6 +98,7 @@ export class BatchDetectorWorker {
   }
 
   async runOnce(): Promise<'IDLE' | 'PROCESSED'> {
+    await this.#repairCommittedReady()
     const claimed = await this.#claimNext()
     if (claimed === undefined) return 'IDLE'
     if ('rejectedBatch' in claimed) {
@@ -146,7 +147,8 @@ export class BatchDetectorWorker {
             failureCode: 'CALL_OUTCOME_UNKNOWN',
             calls: [{ ...call, outcome: 'OUTCOME_UNKNOWN', failureCode: 'CALL_OUTCOME_UNKNOWN' }],
             intentIds: [],
-            carry: [],
+            ...(batch.detector.carry.length === 0 ? {} : { carryDigest: sha256Utf8(canonicalJson(batch.detector.carry)) }),
+            carry: batch.detector.carry,
           },
           state: 'NEEDS_ATTENTION',
           updatedAt: this.#isoNow(),
@@ -238,7 +240,10 @@ export class BatchDetectorWorker {
               outcome: 'RESERVED',
             }],
             intentIds: [],
-            carry: [],
+            ...(cursor.openExperienceCarry.length === 0
+              ? {}
+              : { carryDigest: sha256Utf8(canonicalJson(cursor.openExperienceCarry)) }),
+            carry: cursor.openExperienceCarry,
           },
           state: 'DETECTION_CLAIMED',
           updatedAt: this.#isoNow(),
@@ -326,7 +331,10 @@ export class BatchDetectorWorker {
             failureCode,
           }],
           intentIds: [],
-          carry: [],
+          ...(claimed.input.carry.length === 0
+            ? {}
+            : { carryDigest: sha256Utf8(canonicalJson(claimed.input.carry)) }),
+          carry: claimed.input.carry,
         },
         state: 'NEEDS_ATTENTION',
         updatedAt: this.#isoNow(),
@@ -402,6 +410,7 @@ export class BatchDetectorWorker {
     await this.#global.runExclusive(async global => {
       const cursor = global.sessions[batch.sessionLifecycleKey]
       if (cursor === undefined) throw new Error('Terminal batch has no Session cursor')
+      if (batch.lastTurnEndSeq <= cursor.detectedThroughTurnEndSeq) return { value: undefined }
       if (cursor.activeBatchId !== undefined && cursor.activeBatchId !== batch.batchId) {
         throw new Error('Terminal batch conflicts with another active batch')
       }
@@ -454,6 +463,14 @@ export class BatchDetectorWorker {
         })
       })
     }
+  }
+
+  async #repairCommittedReady(): Promise<void> {
+    const batches = [...this.#batches.entries()]
+      .map(([, value]) => SessionBatchV2Schema.parse(value))
+      .filter(batch => batch.state === 'COMMITTED_READY')
+      .sort((left, right) => left.lastTurnEndSeq - right.lastTurnEndSeq)
+    for (const batch of batches) await this.#repairReadyIntents(batch)
   }
 
   async #discardStagedIntents(batchId: string): Promise<void> {

@@ -175,7 +175,7 @@ const BatchManifestEndObservationV2Schema = z.discriminatedUnion('state', [
 ])
 
 const OpenExperienceCarryV2Schema = z.object({
-  summary: z.string().min(1).max(2048),
+  summary: z.string().max(2048).refine(value => value.trim().length > 0),
   behaviorSignatureDraft: sha256Hex,
   evidenceDigests: z.array(sha256Hex).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
   remainingBatches: z.union([z.literal(0), z.literal(1), z.literal(2)]),
@@ -277,8 +277,12 @@ export const SessionBatchV2Schema = z.object({
   if ((value.detector.result === 'NEEDS_ATTENTION') !== (value.detector.failureCode !== undefined)) {
     context.addIssue({ code: 'custom', path: ['detector', 'failureCode'], message: 'Detector attention requires exactly one failure code' })
   }
-  if ((value.detector.result === 'DEFER') !== (value.detector.carry.length > 0)) {
-    context.addIssue({ code: 'custom', path: ['detector', 'carry'], message: 'Only DEFER requires bounded carry' })
+  if (value.detector.result === 'DEFER' && value.detector.carry.length === 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'carry'], message: 'DEFER requires bounded carry' })
+  }
+  const claimedInputCarry = value.state === 'DETECTION_CLAIMED' && value.detector.result === 'NOT_RUN'
+  if (!['DEFER', 'NEEDS_ATTENTION'].includes(value.detector.result) && !claimedInputCarry && value.detector.carry.length > 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'carry'], message: 'Only a claimed input, DEFER, or attention may preserve carry' })
   }
   if (value.detector.carry.length > 0 && (
     value.detector.carryDigest !== sha256Utf8(canonicalJson(value.detector.carry))
