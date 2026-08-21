@@ -418,6 +418,8 @@ Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex
 - 后到者进入 NEEDS_REFRESH；
 - 不自动重放旧 Approval。
 
+任何没有 active Proposal 的终态都必须经 Coordinator 原子移除自身 GenerationResult/barrier 与 BehaviorSignatureIndex reservation；显式保存的 COVERED 在用户确认 `DISCARDED` 前继续保留屏障，确认 mutation 才清理。启动对账不得把指向无 active Proposal、无未终态 owner 的 dangling reservation 当作 coverage 事实。
+
 ## 9. 持久化策略
 
 ### 9.1 选择

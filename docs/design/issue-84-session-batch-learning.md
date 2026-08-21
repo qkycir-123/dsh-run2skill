@@ -388,7 +388,7 @@ BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或�
 
 `KNOWN_FAILED`、`SUCCEEDED_RESULT_MISSING` 和 `OUTCOME_UNKNOWN` 都提供两个 revision-CAS 动作：
 
-- `DISMISS_GENERATION`：用户确认后提交 `DISCARDED`，再移除 unresolved barrier；
+- `DISMISS_GENERATION`：用户确认后由 Coordinator 在同一 membership mutation 中提交 `DISCARDED`，并原子移除 unresolved barrier 与该 Intent 的 behavior reservation；不得留下指向无 active Proposal 终态的 index owner；
 - `AUTHORIZE_GENERATION_RETRY`：仅当 failure policy 标记可恢复且该 Intent 从未使用过用户授权 retry revision 时，新建一次 generation revision并回到 `GENERATION_AUTHORIZED`。它最多允许 1 个主调用和 generation 自身的 1 次格式/截断恢复；确定性 Guard/size/scope/identity failure 不允许该动作。对 OUTCOME_UNKNOWN 必须明确提示此前调用可能已消耗 token。
 
 `STALE_RESULT` 只提供：
@@ -396,7 +396,9 @@ BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或�
 - `REFRESH_STALE_RESULT`：以 revision-CAS 将旧 sealed result 原子替换为同一 behavior owner 的 unresolved refresh barrier，新建一次 recall revision，重新取得 complete Runtime/Pending catalogs、summary、exact bodies 和 coverage；该 revision 按上述 self-exclusion contract 排除自己的 refresh barrier，其他 Intent 在替换完成前始终看见旧 result 或新 barrier，因此没有重复窗口；
 - `DISMISS_GENERATION`：用户确认后提交 `DISCARDED`，再由 Coordinator 原子移除 stale result/barrier 和 behavior reservation。
 
-refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结束并清理自身 barrier；若仍授权 CREATE/MERGE，新的 generation outcome 原子替换 refresh barrier。每个 Intent 最多一次 `staleRefreshUsed=true`，再次 stale 只允许用户丢弃或保留待处理，不能自动循环。
+refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结束：普通自动 Intent 的 COVERED 由 Coordinator 原子提交终态并清理自身 barrier/result 与 behavior reservation；显式保存先进入 `COVERED_NEEDS_CONFIRMATION` 并继续保留 barrier/reservation，用户最终确认 `DISCARDED` 时再在同一 mutation 中清理，异议则遵守既有单次 coverage retry。若仍授权 CREATE/MERGE，新的 generation outcome 原子替换 refresh barrier。每个 Intent 最多一次 `staleRefreshUsed=true`，再次 stale 只允许用户丢弃或保留待处理，不能自动循环。
+
+通用不变量：任何没有 active Proposal 的终态（自动 COVERED、用户确认 DISCARDED、generation dismiss）都必须通过 ProposalCatalogCoordinator 原子清理该 Intent 的 GenerationResult/barrier 和 BehaviorSignatureIndex reservation；Proposal active 时 reservation 才能提交为 ACTIVE。启动对账发现指向无 active Proposal、无未终态 owner 的 reservation 时 fail closed 并按 authoritative Intent 终态修复，不能把 dangling index 当作已覆盖。
 
 自动恢复永不重新调用模型。无论用户是否操作，全局 lease 都在 unresolved barrier durable 后释放，因此单个 Intent 不能永久阻塞其他 Session/Scope；barrier 继续阻止相关重复 Proposal。
 
