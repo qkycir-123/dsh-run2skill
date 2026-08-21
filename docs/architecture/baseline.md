@@ -392,13 +392,15 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 启动时按以下顺序恢复：
 
 1. 打开 v2 Store 并校验 schema/migration journal；未 COMMITTED 前不启用新 worker；
-2. 恢复 Publication Journal；
-3. 恢复 Session cursor、已冻结 batch 和 idle deadlines；durable 尾部已 idle 30 分钟则走同一 claim 路径；
-4. `DETECTION_CLAIMED` 或其他 stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
-5. 恢复 ownership/recall/coverage/generation 的未终态 Intent；只恢复尚未开始外部调用的确定性步骤；
-6. 恢复 PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；
-7. 运行有界 Session gap scan并幂等补齐 TurnObservation；
-8. 解除启动缓冲并按序处理已接收的实时 `session/event`。
+2. 恢复 `proposalCatalogMutationJournal`，扫描 Proposal body、sealed GenerationResult 和 unresolved barriers，修复 BehaviorSignatureIndex；
+3. 按 Design 11.2 的七类恢复事实收敛 ProposalGenerationLease；任何自动路径都不重复模型调用，且 unresolved barrier durable 后释放全局 lease；
+4. 重建 complete PendingProposalCatalog；不完整时保持 generation disabled；
+5. 恢复 Publication Journal/PUBLISHING：先检查磁盘与 Registry 事实，不能盲目重写；完成后刷新 Runtime/Pending Catalog；
+6. 恢复 Session cursor、已冻结 batch 和 idle deadlines；durable 尾部已 idle 30 分钟则走同一 claim 路径；
+7. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
+8. 恢复 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；
+9. 运行有界 Session gap scan并幂等补齐 TurnObservation；
+10. 解除启动缓冲并按序处理已接收的实时 `session/event`。
 
 为避免第 6 步扫描期间出现观察空窗，Host 必须在扫描前注册一个只复制事件坐标的轻量 ingress listener；该 listener 不做触发扫描或 Store I/O。恢复水位就绪后再把缓冲事件送入同一幂等 capture 路径。这样“先 gap scan、后实时处理”的恢复语义不变，同时不会漏掉扫描期间新结束的 Turn。
 
@@ -406,7 +408,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 
 ### 8.5 多 Session 同一 Skill
 
-Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，再以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 active Proposal membership mutation 经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。持有 lease 后及模型返回、写 body 前都必须重新取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale 或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；不同 target 的 publication 仍按 canonical target path 串行：
+Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，再以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 PendingProposalCatalog membership mutation（Proposal、sealed result、unresolved barrier、legacy、Purge/终态）经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。持有 lease 后及模型返回、写 body 前都必须重新取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale 或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；不同 target 的 publication 仍按 canonical target path 串行：
 
 - 每次都重新取得完整 Catalog 和文件事实；
 - 先到者成功后，后到者的 Base/expected-absence 必然失效；
@@ -1019,6 +1021,7 @@ storageDomain, workspaceRegistry, connection
 | REQ-LFC-001..005 | Lineage aggregate、reconciliation、installer | State-machine unit + manual edit/delete E2E + CP-INS-001 |
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
 | 状态与恢复 | SessionBatch/Intent aggregates、migration/publication journals | migration + crash matrix + restart E2E |
+| Generation lease 恢复 | call ledger、sealed result、body/index、unresolved barrier 七类组合 | crash matrix：不重复调用、不丢去重屏障、全局 lease 不永久阻塞 |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
 | 五个黄金场景 | 全系统 | Web profile E2E；场景 E 证明 Agent `.agents/skills` 写入只产生 `RESOLVED_BY_AGENT` 且 Learning/Proposal 为 0 |
 
