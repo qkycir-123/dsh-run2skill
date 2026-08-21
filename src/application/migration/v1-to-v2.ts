@@ -8,7 +8,9 @@ import { canonicalJson } from '../../domain/learn/identity.js'
 import { CaptureWorkItemV1Schema, GlobalV1Schema } from '../../domain/observe/schemas.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { LineageV1Schema } from '../../domain/publication/schemas.js'
+import { deriveLineageId } from '../../domain/publication/schemas.js'
 import {
+  deriveLegacyPendingProposalCatalogV2,
   GlobalV2Schema,
   LegacyItemV2Schema,
   ProposalLineageV2Schema,
@@ -17,6 +19,7 @@ import {
   type MigrationJournalV2,
   type ProposalLineageV2,
 } from '../../domain/v2/index.js'
+import type { LegacySourceCutoverGate } from './legacy-source-cutover-gate.js'
 
 export type MigrationPhaseV2 = MigrationJournalV2['phase']
 
@@ -24,6 +27,7 @@ export class Run2skillV2MigrationError extends Error {
   constructor(readonly code:
     | 'LEGACY_PURGE_ACTIVE'
     | 'LEGACY_SOURCE_INVALID'
+    | 'LEGACY_SOURCE_NOT_QUIESCENT'
     | 'SOURCE_CHANGED_DURING_MIGRATION'
     | 'SOURCE_CHANGED_AFTER_COMMIT'
     | 'MIGRATION_ALREADY_FAILED'
@@ -48,6 +52,7 @@ interface LegacySnapshot {
 }
 
 export interface Run2skillV2MigrationOptions {
+  readonly cutoverGate: LegacySourceCutoverGate
   readonly now?: () => string
   readonly afterPhase?: (phase: Exclude<MigrationPhaseV2, 'NOT_STARTED' | 'FAILED'>) => void | Promise<void>
 }
@@ -69,6 +74,11 @@ function readLegacySnapshot(domain: Run2skillDomain, importedAt: string): Legacy
   if (parsedGlobal.data.purgeJournal !== undefined) {
     throw new Run2skillV2MigrationError('LEGACY_PURGE_ACTIVE')
   }
+  if (
+    parsedGlobal.data.recovery.recoveryLag
+    || parsedGlobal.data.checkpoint.dirty
+    || Object.values(parsedGlobal.data.sessions).some(session => session.durableNextSeq !== session.observedTailSeq + 1)
+  ) throw new Run2skillV2MigrationError('LEGACY_SOURCE_NOT_QUIESCENT')
   const workItems = [...domain.table('work_items').entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, raw]) => {
@@ -87,6 +97,25 @@ function readLegacySnapshot(domain: Run2skillDomain, importedAt: string): Legacy
       }
       return parsed.data
     })
+  const lineagesById = new Map(lineages.map(lineage => [lineage.lineageId, lineage]))
+  for (const item of workItems) {
+    if (item.processingState !== 'TERMINAL' || item.review?.publicationOutcome !== 'PUBLISHED') continue
+    const proposal = item.review.proposal
+    const targetIdentityDigest = item.publication?.targetIdentityDigest
+    if (targetIdentityDigest === undefined) throw new Run2skillV2MigrationError('LEGACY_SOURCE_INVALID')
+    const lineage = lineagesById.get(deriveLineageId(proposal.persistenceScope, targetIdentityDigest))
+    const latest = lineage?.revisions.at(-1)
+    if (
+      lineage === undefined
+      || lineage.scope !== proposal.persistenceScope
+      || lineage.targetIdentityDigest !== targetIdentityDigest
+      || latest === undefined
+      || latest.origin !== 'RUN2SKILL'
+      || latest.proposalId !== proposal.proposalId
+      || latest.skillBytesDigest !== proposal.skillBytesDigest
+      || latest.exactSkillBytes !== proposal.exactSkillBytes
+    ) throw new Run2skillV2MigrationError('LEGACY_SOURCE_INVALID')
+  }
   let activeLegacyProposals = 0
   for (const item of workItems) {
     if (isActiveLegacyProposal(materializeLegacyItemV2(item, importedAt))) activeLegacyProposals += 1
@@ -161,7 +190,7 @@ async function putExact<V>(
   await table.put(key, value)
 }
 
-function verifyExactTable<V extends { readonly sourceDigest: string }>(
+function verifyExactTable<V>(
   actual: IterableIterator<[string, V]>,
   expected: readonly [string, V][],
 ): void {
@@ -175,7 +204,6 @@ function verifyExactTable<V extends { readonly sourceDigest: string }>(
     const [actualKey, actualValue] = actualEntries[index]!
     if (
       actualKey !== expectedKey
-      || actualValue.sourceDigest !== expectedValue.sourceDigest
       || canonicalJson(actualValue) !== canonicalJson(expectedValue)
     ) throw new Run2skillV2MigrationError('V2_VALIDATION_FAILED')
   }
@@ -184,7 +212,17 @@ function verifyExactTable<V extends { readonly sourceDigest: string }>(
 export async function migrateRun2skillV1ToV2(
   v1: Run2skillDomain,
   v2: Run2skillV2Domain,
-  options: Run2skillV2MigrationOptions = {},
+  options: Run2skillV2MigrationOptions,
+): Promise<Run2skillV2MigrationResult> {
+  const result = await options.cutoverGate.sealAndRun(() => migrateUnderCutover(v1, v2, options))
+  if (result.status === 'COMMITTED') await options.afterPhase?.('COMMITTED')
+  return result
+}
+
+async function migrateUnderCutover(
+  v1: Run2skillDomain,
+  v2: Run2skillV2Domain,
+  options: Run2skillV2MigrationOptions,
 ): Promise<Run2skillV2MigrationResult> {
   const now = options.now ?? (() => new Date().toISOString())
   const importedAt = now()
@@ -260,6 +298,13 @@ export async function migrateRun2skillV1ToV2(
       [...legacyTable.entries()].filter(([, item]) => isActiveLegacyProposal(item)).length
       !== source.counts.activeLegacyProposals
     ) throw new Run2skillV2MigrationError('V2_VALIDATION_FAILED')
+    const legacyPendingCatalog = deriveLegacyPendingProposalCatalogV2(
+      [...legacyTable.entries()].map(([, item]) => item),
+    )
+    if (
+      !legacyPendingCatalog.complete
+      || legacyPendingCatalog.entries.length !== source.counts.activeLegacyProposals
+    ) throw new Run2skillV2MigrationError('V2_VALIDATION_FAILED')
     if (
       v2.table('turn_observations').size !== 0
       || v2.table('session_batches').size !== 0
@@ -279,15 +324,31 @@ export async function migrateRun2skillV1ToV2(
     throw error
   }
   const committedAt = now()
+  const observerStartWatermarks = Object.fromEntries(
+    Object.entries(source.global.sessions).map(([lifecycleKey, session]) => [lifecycleKey, {
+      nextSeq: session.observedTailSeq + 1,
+      observedTailSeq: session.observedTailSeq,
+      ...(session.headerRevision === undefined ? {} : { headerRevision: session.headerRevision }),
+      ...(session.headerDigest === undefined ? {} : { headerDigest: session.headerDigest }),
+    }]),
+  )
+  const sessions = Object.fromEntries(
+    Object.entries(source.global.sessions).map(([lifecycleKey, session]) => [lifecycleKey, {
+      observedThroughTurnEndSeq: session.observedTailSeq,
+      detectedThroughTurnEndSeq: session.observedTailSeq,
+      openExperienceCarry: [],
+      updatedAt: committedAt,
+    }]),
+  )
+  const legacyPendingCatalog = deriveLegacyPendingProposalCatalogV2(
+    [...v2.table('legacy_items').entries()].map(([, item]) => item),
+  )
   const activationFenceDigest = sha256Utf8(canonicalJson({
     sourceFingerprint: source.fingerprint,
     counts: source.counts,
     committedAt,
   }))
-  const observerStartWatermarkDigest = sha256Utf8(canonicalJson({
-    sourceFingerprint: source.fingerprint,
-    sessions: source.global.sessions,
-  }))
+  const observerStartWatermarkDigest = sha256Utf8(canonicalJson(observerStartWatermarks))
   const validatingGlobal = GlobalV2Schema.parse(v2.global.get())
   await setGlobal(v2, {
     ...validatingGlobal,
@@ -303,8 +364,15 @@ export async function migrateRun2skillV1ToV2(
       activationFenceDigest,
     },
     proposalCatalogEpoch: source.counts.activeLegacyProposals > 0 ? 1 : 0,
-    activation: { committedAt, sourceFingerprint: source.fingerprint, observerStartWatermarkDigest },
+    sessions,
+    activation: {
+      committedAt,
+      sourceFingerprint: source.fingerprint,
+      observerStartWatermarks,
+      observerStartWatermarkDigest,
+      legacyPendingCatalogDigest: legacyPendingCatalog.digest,
+      legacyPendingCandidateCount: legacyPendingCatalog.entries.length,
+    },
   })
-  await options.afterPhase?.('COMMITTED')
   return { status: 'COMMITTED', sourceFingerprint: source.fingerprint, counts: source.counts }
 }

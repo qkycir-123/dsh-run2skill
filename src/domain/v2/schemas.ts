@@ -112,11 +112,39 @@ export const SessionBatchV2Schema = z.object({
   triggerReasons: z.array(SessionBatchTriggerReasonV2Schema)
     .min(1)
     .max(RUN2SKILL_V2_LIMITS.maxBatchTriggerReasons),
-  observationIds: z.array(z.string().regex(/^obs_[a-f0-9]{64}$/))
+  observationManifest: z.array(z.object({
+    observationId: z.string().regex(/^obs_[a-f0-9]{64}$/),
+    turnEndSeq: safeNonNegativeInteger,
+    evidenceDigest: sha256Hex,
+    completeness: z.enum(['COMPLETE', 'INCOMPLETE']),
+  }).strict())
     .min(1)
     .max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
   observationManifestDigest: sha256Hex,
-  state: z.enum(['FROZEN', 'DETECTION_CLAIMED', 'NONE', 'DEFER', 'READY', 'NEEDS_ATTENTION']),
+  routeSnapshot: z.object({
+    provider: identity,
+    model: identity,
+    policyVersion: identity,
+    maxInputBytes: positiveSafeInteger,
+    maxOutputBytes: positiveSafeInteger,
+  }).strict(),
+  detector: z.object({
+    result: z.enum(['NOT_RUN', 'NONE', 'DEFER', 'READY', 'NEEDS_ATTENTION']),
+    calls: z.array(z.object({
+      stage: z.literal('DETECTION'),
+      callId: z.string().regex(/^call_[a-f0-9]{64}$/),
+      ordinal: positiveSafeInteger,
+      inputDigest: sha256Hex,
+      provider: identity,
+      model: identity,
+      policyVersion: identity,
+      outcome: z.enum(['RESERVED', 'SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED_OUT', 'OUTCOME_UNKNOWN']),
+      failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
+    }).strict()).max(1),
+    carryDigest: sha256Hex.optional(),
+    intentIds: z.array(z.string().regex(/^intent_[a-f0-9]{64}$/)).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
+  }).strict(),
+  state: z.enum(['FROZEN', 'DETECTION_CLAIMED', 'COMMITTED_NONE', 'COMMITTED_DEFER', 'COMMITTED_READY', 'NEEDS_ATTENTION']),
   createdAt: isoDateTime,
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
@@ -134,24 +162,47 @@ export const SessionBatchV2Schema = z.object({
   ))) {
     context.addIssue({ code: 'custom', path: ['triggerReasons'], message: 'Batch trigger reasons must use canonical order' })
   }
-  if (new Set(value.observationIds).size !== value.observationIds.length) {
-    context.addIssue({ code: 'custom', path: ['observationIds'], message: 'Batch observations must be unique' })
+  const observationIds = value.observationManifest.map(entry => entry.observationId)
+  if (new Set(observationIds).size !== observationIds.length) {
+    context.addIssue({ code: 'custom', path: ['observationManifest'], message: 'Batch observations must be unique' })
   }
-  if (value.observationManifestDigest !== sha256Utf8(canonicalJson(value.observationIds))) {
+  const turnEndSeqs = value.observationManifest.map(entry => entry.turnEndSeq)
+  if (
+    turnEndSeqs[0] !== value.firstTurnEndSeq
+    || turnEndSeqs.at(-1) !== value.lastTurnEndSeq
+    || turnEndSeqs.some((seq, index) => index > 0 && seq <= turnEndSeqs[index - 1]!)
+  ) context.addIssue({ code: 'custom', path: ['observationManifest'], message: 'Batch manifest must be ordered and bind the frozen range' })
+  if (value.observationManifestDigest !== sha256Utf8(canonicalJson(value.observationManifest))) {
     context.addIssue({ code: 'custom', path: ['observationManifestDigest'], message: 'Batch observation digest does not match ids' })
+  }
+  const expectedResult = value.state === 'COMMITTED_NONE' ? 'NONE'
+    : value.state === 'COMMITTED_DEFER' ? 'DEFER'
+      : value.state === 'COMMITTED_READY' ? 'READY'
+        : value.state === 'NEEDS_ATTENTION' ? 'NEEDS_ATTENTION'
+          : 'NOT_RUN'
+  if (value.detector.result !== expectedResult) {
+    context.addIssue({ code: 'custom', path: ['detector', 'result'], message: 'Detector result does not match batch state' })
+  }
+  if (value.detector.result === 'READY' && value.detector.intentIds.length === 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'intentIds'], message: 'READY detector result requires at least one Intent' })
+  }
+  if (value.detector.result !== 'READY' && value.detector.intentIds.length > 0) {
+    context.addIssue({ code: 'custom', path: ['detector', 'intentIds'], message: 'Only READY detector result may reference Intents' })
   }
 })
 
 export interface ExperienceIntentIdentityFactsV2 {
-  readonly batchId: string
-  readonly ordinal: number
+  readonly sessionLifecycleKey: string
+  readonly behaviorSignature: string
+  readonly evidenceDigests: readonly string[]
   readonly detectorPolicyVersion: string
 }
 
 export function deriveExperienceIntentIdV2(facts: ExperienceIntentIdentityFactsV2): `intent_${string}` {
   return `intent_${sha256Utf8(canonicalJson({
-    batchId: facts.batchId,
-    ordinal: facts.ordinal,
+    sessionLifecycleKey: facts.sessionLifecycleKey,
+    behaviorSignature: facts.behaviorSignature,
+    evidenceDigests: [...facts.evidenceDigests].sort(),
     detectorPolicyVersion: facts.detectorPolicyVersion,
   }))}`
 }
@@ -181,17 +232,89 @@ export const ExperienceIntentV2Schema = z.object({
   intentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
   batchId: z.string().regex(/^batch_[a-f0-9]{64}$/),
   ordinal: positiveSafeInteger.refine(value => value <= RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
+  sessionLifecycleKey: z.string().regex(/^sl_[a-f0-9]{64}$/),
   detectorPolicyVersion: identity,
   persistenceScope: PersistenceScopeV2Schema,
   explicitSave: z.boolean(),
   behaviorSignature: sha256Hex,
-  evidenceDigest: sha256Hex,
+  evidenceRefs: z.array(z.object({
+    observationId: z.string().regex(/^obs_[a-f0-9]{64}$/),
+    sessionLifecycleKey: z.string().regex(/^sl_[a-f0-9]{64}$/),
+    turnEndSeq: safeNonNegativeInteger,
+    evidenceDigest: sha256Hex,
+  }).strict()).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
+  evidenceDigests: z.array(sha256Hex).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
+  completeness: z.object({
+    status: z.enum(['COMPLETE', 'INCOMPLETE']),
+    blockers: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(8),
+  }).strict(),
+  ownership: z.object({
+    state: z.enum(['NOT_STARTED', 'ARBITRATING', 'RESOLVED_BY_AGENT', 'NEEDS_CONFIRMATION', 'RUN2SKILL_OWNED']),
+    evidenceDigest: sha256Hex.optional(),
+    reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
+  }).strict(),
+  recall: z.object({
+    state: z.enum(['NOT_STARTED', 'SCANNING', 'COMPLETE', 'INCOMPLETE']),
+    runtimeCatalogDigest: sha256Hex.optional(),
+    pendingCatalogDigest: sha256Hex.optional(),
+    complete: z.boolean(),
+    candidateCapabilities: z.array(z.object({
+      candidateKey: identity,
+      classification: z.enum(['COVERING', 'MERGEABLE', 'UNRELATED', 'UNAVAILABLE']),
+      capability: z.enum(['SUMMARY', 'FULL_BODY', 'UNAVAILABLE']),
+    }).strict()).max(1024),
+  }).strict(),
+  coverage: z.object({
+    state: z.enum(['NOT_STARTED', 'ANALYZING', 'COVERED', 'CREATE', 'MERGE', 'NEEDS_ATTENTION']),
+    inputDigest: sha256Hex.optional(),
+    targetDigest: sha256Hex.optional(),
+    reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
+  }).strict(),
+  generation: z.object({
+    state: z.enum([
+      'NOT_STARTED', 'GENERATION_AUTHORIZED', 'GENERATION_LEASED', 'GENERATION_CALL_RESERVED',
+      'GENERATION_CALL_TERMINAL', 'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED',
+      'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY', 'NEEDS_ATTENTION',
+    ]),
+    action: z.enum(['CREATE', 'MERGE']).optional(),
+    inputDigest: sha256Hex.optional(),
+    resultDigest: sha256Hex.optional(),
+    proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
+    reasonCode: z.enum(['GENERATION_KNOWN_FAILED', 'GENERATION_RESULT_LOST', 'GENERATION_OUTCOME_UNKNOWN', 'STALE_RESULT']).optional(),
+    userRetryUsed: z.boolean(),
+    staleRefreshUsed: z.boolean(),
+  }).strict(),
+  stageCalls: z.array(z.object({
+    stage: z.enum(['CATALOG_SCAN', 'COVERAGE', 'GENERATION']),
+    callId: z.string().regex(/^call_[a-f0-9]{64}$/),
+    ordinal: positiveSafeInteger,
+    inputDigest: sha256Hex,
+    provider: identity,
+    model: identity,
+    policyVersion: identity,
+    outcome: z.enum(['RESERVED', 'SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED_OUT', 'OUTCOME_UNKNOWN']),
+    failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
+  }).strict()).max(32),
+  reasonReceipts: z.array(z.object({
+    revision: positiveSafeInteger,
+    reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/),
+    recordedAt: isoDateTime,
+  }).strict()).max(32),
+  lineageId: z.string().regex(/^lin_[a-f0-9]{64}$/).optional(),
   status: ExperienceIntentStatusV2Schema,
   createdAt: isoDateTime,
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
   if (value.intentId !== deriveExperienceIntentIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['intentId'], message: 'Intent id does not match facts' })
+  }
+  const canonicalEvidenceDigests = [...value.evidenceDigests].sort()
+  if (
+    new Set(value.evidenceDigests).size !== value.evidenceDigests.length
+    || canonicalJson(value.evidenceDigests) !== canonicalJson(canonicalEvidenceDigests)
+  ) context.addIssue({ code: 'custom', path: ['evidenceDigests'], message: 'Intent evidence digests must be unique and sorted' })
+  if (value.evidenceRefs.some(ref => ref.sessionLifecycleKey !== value.sessionLifecycleKey)) {
+    context.addIssue({ code: 'custom', path: ['evidenceRefs'], message: 'Intent evidence must stay within one lifecycle' })
   }
 })
 
@@ -257,7 +380,7 @@ export const LegacyItemV2Schema = z.object({
   }
 })
 
-export const ProposalLineageV2Schema = z.object({
+const LegacyProposalLineageV2Schema = z.object({
   schemaVersion: z.literal(1),
   revision: positiveSafeInteger,
   lineageId: z.string().regex(/^lin_[a-f0-9]{64}$/),
@@ -279,6 +402,42 @@ export const ProposalLineageV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['sourceDigest'], message: 'Proposal lineage digest does not match legacy snapshot' })
   }
 })
+
+export function deriveNativeProposalLineageIdV2(
+  persistenceScope: z.infer<typeof PersistenceScopeV2Schema>,
+  behaviorSignature: string,
+): `lin_${string}` {
+  return `lin_${sha256Utf8(canonicalJson({ persistenceScope, behaviorSignature }))}`
+}
+
+const NativeProposalLineageV2Schema = z.object({
+  schemaVersion: z.literal(1),
+  revision: positiveSafeInteger,
+  lineageId: z.string().regex(/^lin_[a-f0-9]{64}$/),
+  persistenceScope: PersistenceScopeV2Schema,
+  origin: z.literal('RUN2SKILL_V2'),
+  state: z.enum(['RESERVED', 'ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
+  behaviorSignature: sha256Hex,
+  ownerIntentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
+  ownerIntentRevision: positiveSafeInteger,
+  proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
+  proposalBodyDigest: sha256Hex.optional(),
+  targetIdentityDigest: sha256Hex.optional(),
+  createdAt: isoDateTime,
+  updatedAt: isoDateTime,
+}).strict().superRefine((value, context) => {
+  if (value.lineageId !== deriveNativeProposalLineageIdV2(value.persistenceScope, value.behaviorSignature)) {
+    context.addIssue({ code: 'custom', path: ['lineageId'], message: 'Native lineage id does not match behavior facts' })
+  }
+  if (value.state === 'ACTIVE_PROPOSAL' && (value.proposalId === undefined || value.proposalBodyDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['proposalId'], message: 'Active native lineage requires an immutable proposal body' })
+  }
+})
+
+export const ProposalLineageV2Schema = z.union([
+  LegacyProposalLineageV2Schema,
+  NativeProposalLineageV2Schema,
+])
 
 const MigrationSourceContractV2Schema = z.object({
   domainName: z.literal('run2skill_v1'),
@@ -322,12 +481,37 @@ export const MigrationJournalV2Schema = z.discriminatedUnion('phase', [
 ])
 
 const SessionCursorV2Schema = z.object({
-  detectedThrough: safeNonNegativeInteger,
-  capturedThrough: safeNonNegativeInteger,
+  observedThroughTurnEndSeq: safeNonNegativeInteger,
+  detectedThroughTurnEndSeq: safeNonNegativeInteger,
+  activeBatchId: z.string().regex(/^batch_[a-f0-9]{64}$/).optional(),
+  lastActivityAt: isoDateTime.optional(),
+  openExperienceCarry: z.array(z.object({
+    summary: z.string().min(1).max(2048),
+    behaviorSignatureDraft: sha256Hex,
+    evidenceDigests: z.array(sha256Hex).min(1).max(RUN2SKILL_V2_LIMITS.maxBatchObservations),
+    remainingBatches: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+  }).strict()).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
+  batchManifestBaseline: z.object({
+    observedAt: isoDateTime,
+    rootManifestDigest: sha256Hex,
+    runtimeCatalogDigest: sha256Hex,
+    complete: z.boolean(),
+  }).strict().optional(),
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
-  if (value.detectedThrough > value.capturedThrough) {
-    context.addIssue({ code: 'custom', path: ['detectedThrough'], message: 'Detected cursor cannot exceed captured cursor' })
+  if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
+    context.addIssue({ code: 'custom', path: ['detectedThroughTurnEndSeq'], message: 'Detected cursor cannot exceed observed cursor' })
+  }
+})
+
+const ObserverStartWatermarkV2Schema = z.object({
+  nextSeq: safeNonNegativeInteger,
+  observedTailSeq: safeNonNegativeInteger,
+  headerRevision: identity.optional(),
+  headerDigest: sha256Hex.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.nextSeq !== value.observedTailSeq + 1) {
+    context.addIssue({ code: 'custom', path: ['nextSeq'], message: 'Observer start must follow the quiescent v1 tail' })
   }
 })
 
@@ -409,7 +593,10 @@ export const GlobalV2Schema = z.object({
   activation: z.object({
     committedAt: isoDateTime,
     sourceFingerprint: sha256Hex,
+    observerStartWatermarks: z.record(z.string().regex(/^sl_[a-f0-9]{64}$/), ObserverStartWatermarkV2Schema),
     observerStartWatermarkDigest: sha256Hex,
+    legacyPendingCatalogDigest: sha256Hex,
+    legacyPendingCandidateCount: safeNonNegativeInteger,
   }).strict().optional(),
 }).strict().superRefine((value, context) => {
   if ((value.migration.phase === 'COMMITTED') !== (value.activation !== undefined)) {
@@ -420,6 +607,19 @@ export const GlobalV2Schema = z.object({
     && value.activation?.sourceFingerprint !== value.migration.sourceFingerprint
   ) {
     context.addIssue({ code: 'custom', path: ['activation', 'sourceFingerprint'], message: 'Activation must bind migration source' })
+  }
+  if (value.activation !== undefined) {
+    if (value.activation.observerStartWatermarkDigest !== sha256Utf8(canonicalJson(value.activation.observerStartWatermarks))) {
+      context.addIssue({ code: 'custom', path: ['activation', 'observerStartWatermarkDigest'], message: 'Observer watermark digest does not match watermarks' })
+    }
+    for (const [lifecycleKey, watermark] of Object.entries(value.activation.observerStartWatermarks)) {
+      const cursor = value.sessions[lifecycleKey]
+      if (
+        cursor === undefined
+        || cursor.observedThroughTurnEndSeq !== watermark.observedTailSeq
+        || cursor.detectedThroughTurnEndSeq !== watermark.observedTailSeq
+      ) context.addIssue({ code: 'custom', path: ['sessions', lifecycleKey], message: 'Session cursor must bind activation watermark' })
+    }
   }
   for (const [key, entry] of Object.entries(value.behaviorSignatureIndex)) {
     if (key !== deriveBehaviorSignatureIndexKeyV2(entry.persistenceScope, entry.behaviorSignature)) {

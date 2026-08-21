@@ -10,6 +10,7 @@ import {
   makeLearnedWorkItem,
 } from './support/review-fixture.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
+import { deriveLegacyPendingProposalCatalogV2 } from '../src/domain/v2/index.js'
 
 describe('v1 legacy adapter', () => {
   it('maps the proposal-free states without replaying them', () => {
@@ -48,6 +49,15 @@ describe('v1 legacy adapter', () => {
     expect(envelope.sourceWorkItem).toEqual(learned)
     expect(envelope.sourceDigest).toMatch(/^[a-f0-9]{64}$/)
     expect(envelope.legacyItemId).toMatch(/^legacy_[a-f0-9]{64}$/)
+    const catalog = deriveLegacyPendingProposalCatalogV2([envelope])
+    expect(catalog.complete).toBe(true)
+    expect(catalog.entries).toHaveLength(1)
+    expect(catalog.entries[0]).toMatchObject({
+      candidateKey: envelope.legacyItemId,
+      sourceWorkItemId: learned.workItemId,
+      capability: 'FULL_BODY',
+      exactSkillBytes: learned.learning!.proposal!.content,
+    })
   })
 
   it('exhaustively maps review, publication, attention, and terminal sub-shapes', async () => {

@@ -50,7 +50,18 @@ describe('run2skill_v2 storage contract', () => {
     expect(SessionBatchV2Schema.parse(fixture.sessionBatch)).toEqual(fixture.sessionBatch)
     expect(ExperienceIntentV2Schema.parse(fixture.experienceIntent)).toEqual(fixture.experienceIntent)
     expect(ProposalLineageV2Schema.parse(fixture.proposalLineage)).toEqual(fixture.proposalLineage)
+    expect(ProposalLineageV2Schema.parse(fixture.nativeProposalLineage)).toEqual(fixture.nativeProposalLineage)
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
+  })
+
+  it('deduplicates an intent across batch replay and DEFER carry', () => {
+    const fixture = createMinimalV2Fixtures()
+    const replay = {
+      ...fixture.experienceIntent,
+      batchId: `batch_${'f'.repeat(64)}`,
+      ordinal: 3,
+    }
+    expect(ExperienceIntentV2Schema.parse(replay).intentId).toBe(fixture.experienceIntent.intentId)
   })
 
   it('rejects only changing schemaVersion on otherwise valid fixtures', () => {
