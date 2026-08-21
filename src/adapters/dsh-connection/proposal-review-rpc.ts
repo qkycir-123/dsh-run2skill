@@ -13,9 +13,12 @@ import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summa
 import { PurgeVisibility } from '../../application/purge/index.js'
 import {
   AttentionActionIdentityV1Schema,
+  AuthoritativeActionCursorError,
+  AuthoritativeActionCursorV1Schema,
   CurrentScopeAuthorizer,
   CurrentScopeAuthorizationError,
   CurrentScopeV1Schema,
+  pageAuthoritativeActions,
 } from './current-scope-authorizer.js'
 
 export const PROPOSALS_LIST_ENDPOINT = 'proposals/list'
@@ -34,12 +37,11 @@ const proposalId = z.string().regex(/^prop_[a-f0-9]{64}$/)
 const positiveSafeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 1)
 const safeNonNegativeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 0)
 
-const actionIdentities = z.array(AttentionActionIdentityV1Schema).max(64)
 const listRequestSchema = z.object({
   apiVersion: z.literal(1),
   currentScope: CurrentScopeV1Schema,
-  actions: actionIdentities,
-  cursor: z.string().regex(/^c_[0-9]+$/).max(32).optional(),
+  cursor: AuthoritativeActionCursorV1Schema.optional(),
+  limit: z.number().int().positive().max(PAGE_SIZE).optional(),
 }).strict()
 const summaryRequestSchema = z.object({ apiVersion: z.literal(1), workspaceId: identity }).strict()
 
@@ -77,7 +79,7 @@ const listItemSchema = z.object({
 const listResponseSchema = z.object({
   apiVersion: z.literal(1),
   items: z.array(listItemSchema).max(PAGE_SIZE),
-  nextCursor: z.string().regex(/^c_[0-9]+$/).optional(),
+  nextCursor: AuthoritativeActionCursorV1Schema.optional(),
 }).strict()
 const summaryResponseSchema = z.object({
   apiVersion: z.literal(1),
@@ -199,12 +201,6 @@ function requestFits(payload: unknown): boolean {
   } catch {
     return false
   }
-}
-
-function offsetOf(cursor: string | undefined): number | undefined {
-  if (cursor === undefined) return 0
-  const value = Number(cursor.slice(2))
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 function mutationReceipt(result: { readonly item: CaptureWorkItemV1; readonly changed: boolean }) {
@@ -407,30 +403,34 @@ export function createProposalReviewRpcHandler(
     if (endpoint === PROPOSALS_LIST_ENDPOINT) {
       const request = listRequestSchema.parse(payload)
       if (options.authorizer === undefined) return error('internal')
-      const offset = offsetOf(request.cursor)
-      if (offset === undefined) return error('bad-request')
-      const eligible = [] as Array<{ id: string; item: CaptureWorkItemV1; review: NonNullable<CaptureWorkItemV1['review']> }>
+      let page: ReturnType<typeof pageAuthoritativeActions>
       try {
-        for (const requestedAction of request.actions) {
-          if (!['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(requestedAction.kind)) continue
-          const { item } = await options.authorizer.authorize(
-            domain, request.currentScope, requestedAction, visibilityOf(domain),
-          )
-          if (item.review !== undefined && item.processingState !== 'TERMINAL') {
-            eligible.push({ id: item.workItemId, item, review: item.review })
-          }
-        }
+        const queue = (await options.authorizer.project(
+          domain, request.currentScope, visibilityOf(domain),
+        )).filter(action => action.kind === 'REVIEW_PROPOSAL' || action.kind === 'RETRY_PUBLICATION')
+          .sort((left, right) => (
+            right.createdAt.localeCompare(left.createdAt) || left.actionKey.localeCompare(right.actionKey)
+          ))
+        page = pageAuthoritativeActions(
+          'PROPOSAL', request.currentScope, queue, request.cursor, request.limit ?? PAGE_SIZE,
+        )
       } catch (caught) {
-        return caught instanceof CurrentScopeAuthorizationError ? error('conflict') : error('internal')
+        if (caught instanceof CurrentScopeAuthorizationError) return error('conflict')
+        return caught instanceof AuthoritativeActionCursorError ? error('bad-request') : error('internal')
       }
-      eligible.sort((left, right) => (
-        right.review.proposal.createdAt.localeCompare(left.review.proposal.createdAt)
-        || left.review.proposal.proposalId.localeCompare(right.review.proposal.proposalId)
-      ))
-      const page = eligible.slice(offset, offset + PAGE_SIZE)
+      const items = [] as Array<{
+        id: string
+        item: CaptureWorkItemV1
+        review: NonNullable<CaptureWorkItemV1['review']>
+      }>
+      for (const action of page.page) {
+        const item = domain.table('work_items').get(action.subjectId)
+        if (item?.review === undefined || item.processingState === 'TERMINAL') return error('conflict')
+        items.push({ id: item.workItemId, item, review: item.review })
+      }
       return { ok: true, value: listResponseSchema.parse({
         apiVersion: 1,
-        items: page.map(({ id, item, review }) => ({
+        items: items.map(({ id, item, review }) => ({
           workItemId: id,
           workItemRevision: item.revision,
           proposalRef: proposalRefOf(review.proposal),
@@ -442,7 +442,7 @@ export function createProposalReviewRpcHandler(
           processingState: item.processingState,
           publicationOutcome: review.publicationOutcome,
         })),
-        ...(offset + page.length < eligible.length ? { nextCursor: `c_${offset + page.length}` } : {}),
+        ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       }) }
     }
 

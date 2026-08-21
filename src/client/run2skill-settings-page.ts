@@ -108,7 +108,7 @@ const learningIssuePageSchema = z.object({
   value: z.object({
     apiVersion: z.literal(1),
     items: z.array(learningIssueSchema).max(20),
-    nextCursor: z.string().regex(/^c_[1-9][0-9]*$/).optional(),
+    nextCursor: z.string().regex(/^c_[1-9][0-9]*_[1-9][0-9]*_[a-f0-9]{64}$/).optional(),
   }).strict(),
 }).strict()
 
@@ -386,11 +386,7 @@ export function LearningFailureSection(props: {
           {
             apiVersion: 1,
             currentScope: currentScope(props.workspaceId, props.scopeGeneration ?? 1),
-            actions: [...learningActions.values()].map(action => ({
-              actionKey: action.actionKey,
-              subjectId: action.subjectId!,
-              kind: action.kind as 'RETRY_LEARNING' | 'DISMISS_LEARNING',
-            })),
+            limit: 20,
             ...(cursor === undefined ? {} : { cursor }),
           },
           abort.signal,

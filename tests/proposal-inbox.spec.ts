@@ -353,6 +353,9 @@ describe('Proposal Inbox client', () => {
 
     expect(call.mock.calls.some(([endpoint]) => endpoint === 'summary')).toBe(false)
     expect(call.mock.calls.some(([endpoint]) => endpoint === 'proposals/list')).toBe(true)
+    const listPayload = call.mock.calls.find(([endpoint]) => endpoint === 'proposals/list')?.[1]
+    expect(listPayload).toMatchObject({ limit: 20 })
+    expect(listPayload).not.toHaveProperty('actions')
     controller.dispose()
   })
 

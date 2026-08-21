@@ -66,7 +66,6 @@ describe('learning attention RPC', () => {
   const listRequest = async (domain: ReturnType<typeof createMemoryRun2skillDomain>, cursor?: string) => ({
     apiVersion: 1 as const,
     currentScope,
-    actions: await actionsFor(domain),
     ...(cursor === undefined ? {} : { cursor }),
   })
   const handlerFor = (
@@ -183,12 +182,14 @@ describe('learning attention RPC', () => {
     const handler = handlerFor(domain)
     const signal = new AbortController().signal
     const first = await handler(LEARNING_ISSUES_LIST_ENDPOINT, await listRequest(domain), signal)
-    expect(first).toMatchObject({ ok: true, value: { items: { length: 20 }, nextCursor: 'c_20' } })
+    expect(Buffer.byteLength(JSON.stringify(await listRequest(domain)), 'utf8')).toBeLessThan(8 * 1024)
+    expect(first).toMatchObject({ ok: true, value: { items: { length: 20 } } })
     if (!first.ok) throw new Error('expected first page')
     const firstValue = first.value as {
       items: Array<{ workItemId: string }>
       nextCursor: string
     }
+    expect(firstValue.nextCursor).toMatch(/^c_20_1_[a-f0-9]{64}$/)
     const second = await handler(LEARNING_ISSUES_LIST_ENDPOINT,
       await listRequest(domain, firstValue.nextCursor), signal)
     expect(second).toMatchObject({ ok: true, value: { items: { length: 5 } } })
@@ -196,6 +197,21 @@ describe('learning attention RPC', () => {
     const secondValue = second.value as { items: Array<{ workItemId: string }> }
     expect(secondValue).not.toHaveProperty('nextCursor')
     expect(new Set([...firstValue.items, ...secondValue.items].map(entry => entry.workItemId)).size).toBe(25)
+
+    await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT, {
+      ...await listRequest(domain, firstValue.nextCursor),
+      currentScope: { ...currentScope, generation: 2 },
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+    await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT, {
+      ...await listRequest(domain, firstValue.nextCursor),
+      currentScope: { ...currentScope, workspaceId: 'other-workspace' },
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+
+    const changed = failedItem(30)
+    domain.workItems.set(changed.workItemId, changed)
+    await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT,
+      await listRequest(domain, firstValue.nextCursor), signal))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
 
     for (const cursor of ['c_0', 'c_020', 'c_25', 'c_999999999999999999999999999999']) {
       await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT, {
@@ -271,7 +287,7 @@ describe('learning attention RPC', () => {
       .toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(domain.workItems.has(item.workItemId)).toBe(true)
     expect(await handler(LEARNING_ISSUES_LIST_ENDPOINT, {
-      apiVersion: 1, currentScope, actions: [action],
-    }, new AbortController().signal)).toMatchObject({ ok: false, error: { code: 'conflict' } })
+      apiVersion: 1, currentScope,
+    }, new AbortController().signal)).toMatchObject({ ok: true, value: { items: [] } })
   })
 })

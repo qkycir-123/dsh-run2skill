@@ -145,7 +145,7 @@ const listItem = z.object({
 const listPage = z.object({
   apiVersion: z.literal(1),
   items: z.array(listItem).max(20),
-  nextCursor: z.string().regex(/^c_[0-9]+$/).optional(),
+  nextCursor: z.string().regex(/^c_[1-9][0-9]*_[1-9][0-9]*_[a-f0-9]{64}$/).optional(),
 }).strict()
 const detail = z.object({
   apiVersion: z.literal(1),

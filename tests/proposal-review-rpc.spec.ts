@@ -125,7 +125,7 @@ describe('Proposal Review RPC', () => {
     const actions = await actionsFor(domain)
 
     const listed = await handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, currentScope, actions,
+      apiVersion: 1, currentScope,
     }, new AbortController().signal)
     expect(listed).toMatchObject({
       ok: true,
@@ -202,6 +202,52 @@ describe('Proposal Review RPC', () => {
     }, new AbortController().signal)).resolves.toMatchObject({
       ok: false, error: { code: 'conflict' },
     })
+  })
+
+  it('paginates 22 authoritative Proposal actions without returning the Attention queue in the request', async () => {
+    const domain = createMemoryRun2skillDomain()
+    for (let index = 1; index <= 22; index += 1) {
+      const item = nextItem(100 + index, (index % 16).toString(16))
+      domain.workItems.set(item.workItemId, item)
+      await new ProposalReviewStore(domain).stage(
+        item.workItemId, item.revision, makeCreateProposalSnapshot(item),
+      )
+    }
+    const handler = securedHandler(domain)
+    const firstRequest = { apiVersion: 1 as const, currentScope, limit: 20 }
+    expect(Buffer.byteLength(JSON.stringify(firstRequest), 'utf8')).toBeLessThan(8 * 1024)
+    const first = await handler(PROPOSALS_LIST_ENDPOINT, firstRequest, new AbortController().signal)
+    expect(first).toMatchObject({ ok: true, value: { items: { length: 20 } } })
+    if (!first.ok) throw new Error('expected first Proposal page')
+    const firstValue = first.value as { items: Array<{ workItemId: string }>; nextCursor: string }
+    expect(firstValue.nextCursor).toMatch(/^c_20_1_[a-f0-9]{64}$/)
+    const second = await handler(PROPOSALS_LIST_ENDPOINT, {
+      ...firstRequest, cursor: firstValue.nextCursor,
+    }, new AbortController().signal)
+    expect(second).toMatchObject({ ok: true, value: { items: { length: 2 } } })
+    if (!second.ok) throw new Error('expected second Proposal page')
+    const secondValue = second.value as { items: Array<{ workItemId: string }> }
+    expect(new Set([...firstValue.items, ...secondValue.items].map(item => item.workItemId)).size).toBe(22)
+
+    await expect(handler(PROPOSALS_LIST_ENDPOINT, {
+      ...firstRequest,
+      currentScope: { ...currentScope, generation: 2 },
+      cursor: firstValue.nextCursor,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+    await expect(handler(PROPOSALS_LIST_ENDPOINT, {
+      ...firstRequest,
+      currentScope: { ...currentScope, workspaceId: 'other-workspace' },
+      cursor: firstValue.nextCursor,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+
+    const added = nextItem(200, 'f')
+    domain.workItems.set(added.workItemId, added)
+    await new ProposalReviewStore(domain).stage(
+      added.workItemId, added.revision, makeCreateProposalSnapshot(added),
+    )
+    await expect(handler(PROPOSALS_LIST_ENDPOINT, {
+      ...firstRequest, cursor: firstValue.nextCursor,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
   })
 
   it('returns Host health with explicitly unknown queue counts while durable state is unavailable', async () => {
@@ -378,15 +424,15 @@ describe('Proposal Review RPC', () => {
     const getDomain = vi.fn(() => createMemoryRun2skillDomain())
     const handler = createProposalReviewRpcHandler(getDomain, undefined, { authorizer })
     await expect(handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, currentScope, actions: [], cursor: 'invalid',
+      apiVersion: 1, currentScope, cursor: 'invalid',
     }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
     await expect(handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'x'.repeat(9_000) }, actions: [],
+      apiVersion: 1, currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'x'.repeat(9_000) },
     }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
     const aborted = new AbortController()
     aborted.abort()
     await expect(handler(PROPOSALS_LIST_ENDPOINT, {
-      apiVersion: 1, currentScope, actions: [],
+      apiVersion: 1, currentScope,
     }, aborted.signal)).resolves.toMatchObject({ ok: false, error: { code: 'cancelled' } })
     expect(getDomain).not.toHaveBeenCalled()
   })

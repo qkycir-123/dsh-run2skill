@@ -77,7 +77,7 @@ describe('unified Purge visibility predicate', () => {
 
     await expect(handler('summary', { apiVersion: 1, workspaceId: binding.workspaceId }, signal))
       .resolves.toMatchObject({ ok: true, value: { queue: { pendingReview: 0 } } })
-    await expect(handler('proposals/list', { apiVersion: 1, currentScope, actions: [] }, signal))
+    await expect(handler('proposals/list', { apiVersion: 1, currentScope }, signal))
       .resolves.toMatchObject({ ok: true, value: { items: [] } })
     await expect(handler('proposals/get', {
       apiVersion: 1, currentScope, action, proposalId: staged.item.review!.proposal.proposalId,
@@ -158,7 +158,7 @@ describe('unified Purge visibility predicate', () => {
     const signal = new AbortController().signal
 
     await expect(handler('proposals/list', {
-      apiVersion: 1, currentScope, actions: [],
+      apiVersion: 1, currentScope,
     }, signal)).resolves.toMatchObject({ ok: true, value: { items: [] } })
     await expect(handler('proposals/approve', {
       apiVersion: 1,

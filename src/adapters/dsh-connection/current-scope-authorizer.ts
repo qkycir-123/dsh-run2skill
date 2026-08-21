@@ -34,8 +34,13 @@ export const AttentionActionIdentityV1Schema = z.object({
   proposalRef: proposalRefSchema.optional(),
 }).strict()
 
+export const AuthoritativeActionCursorV1Schema = z.string()
+  .regex(/^c_[1-9][0-9]*_[1-9][0-9]*_[a-f0-9]{64}$/)
+  .max(96)
+
 export type CurrentScopeV1 = z.infer<typeof CurrentScopeV1Schema>
 export type AttentionActionIdentityV1 = z.infer<typeof AttentionActionIdentityV1Schema>
+export type AuthoritativeActionLane = 'PROPOSAL' | 'LEARNING'
 
 export interface ProjectedAttentionAction extends AttentionActionIdentityV1 {
   readonly reasonCode: string
@@ -54,6 +59,13 @@ export class CurrentScopeAuthorizationError extends Error {
   constructor(readonly code: 'SCOPE_UNAVAILABLE' | 'ACTION_STALE') {
     super(code)
     this.name = 'CurrentScopeAuthorizationError'
+  }
+}
+
+export class AuthoritativeActionCursorError extends Error {
+  constructor(readonly code: 'OUT_OF_RANGE') {
+    super(code)
+    this.name = 'AuthoritativeActionCursorError'
   }
 }
 
@@ -84,6 +96,62 @@ function sameIdentity(left: AttentionActionIdentityV1, right: AttentionActionIde
     && left.subjectId === right.subjectId
     && left.kind === right.kind
     && sameProposalRef(left.proposalRef, right.proposalRef)
+}
+
+function actionQueueDigest(
+  lane: AuthoritativeActionLane,
+  currentScope: CurrentScopeV1,
+  actions: readonly ProjectedAttentionAction[],
+): string {
+  const hash = createHash('sha256')
+  hash.update('run2skill-authoritative-action-page-v1\u0000', 'utf8')
+  hash.update(`${lane}\u0000${currentScope.kind}\u0000${currentScope.generation}\u0000`, 'utf8')
+  hash.update(currentScope.kind === 'WORKSPACE' ? currentScope.workspaceId : 'USER_ONLY', 'utf8')
+  for (const action of actions) {
+    const ref = action.proposalRef
+    hash.update('\u0000', 'utf8')
+    hash.update([
+      action.actionKey,
+      action.subjectId,
+      action.kind,
+      ref?.proposalId ?? '',
+      ref === undefined ? '' : String(ref.revision),
+      ref?.digest ?? '',
+    ].join('\u0000'), 'utf8')
+  }
+  return hash.digest('hex')
+}
+
+export function pageAuthoritativeActions(
+  lane: AuthoritativeActionLane,
+  currentScope: CurrentScopeV1,
+  actions: readonly ProjectedAttentionAction[],
+  cursor: string | undefined,
+  pageSize: number,
+): { readonly page: readonly ProjectedAttentionAction[]; readonly nextCursor?: string } {
+  const digest = actionQueueDigest(lane, currentScope, actions)
+  let offset = 0
+  if (cursor !== undefined) {
+    const parsed = AuthoritativeActionCursorV1Schema.safeParse(cursor)
+    if (!parsed.success) throw new AuthoritativeActionCursorError('OUT_OF_RANGE')
+    const match = /^c_([1-9][0-9]*)_([1-9][0-9]*)_([a-f0-9]{64})$/.exec(cursor)!
+    offset = Number(match[1])
+    const generation = Number(match[2])
+    if (generation !== currentScope.generation || match[3] !== digest) {
+      throw new CurrentScopeAuthorizationError('ACTION_STALE')
+    }
+    if (!Number.isSafeInteger(offset) || offset >= actions.length) {
+      throw new AuthoritativeActionCursorError('OUT_OF_RANGE')
+    }
+  }
+  const page = actions.slice(offset, offset + pageSize)
+  const nextOffset = offset + page.length
+  return {
+    page,
+    ...(nextOffset < actions.length
+      ? { nextCursor: `c_${nextOffset}_${currentScope.generation}_${digest}` }
+      : {}),
+  }
 }
 
 export class CurrentScopeAuthorizer {

@@ -500,7 +500,7 @@ export class ProposalInboxController {
       const page = parseProposalList(await this.call(endpoint.list, {
         apiVersion: 1,
         currentScope: this.#scopeAccess().currentScope,
-        actions: this.#scopeAccess().actions,
+        limit: 20,
         ...(cursor === undefined ? {} : { cursor }),
       }, signal))
       if (page === undefined) throw new Error('invalid list response')

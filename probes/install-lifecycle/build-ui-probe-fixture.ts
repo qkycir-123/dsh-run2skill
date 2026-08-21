@@ -46,7 +46,7 @@ async function pendingFixture() {
       new RuntimeNotices(),
       workspace,
     )('attention', base, signal()),
-    list: await review('proposals/list', { ...base, actions }, signal()),
+    list: await review('proposals/list', base, signal()),
     detail: await review('proposals/get', { ...base, action, proposalId: ref.proposalId }, signal()),
     approve: await review('proposals/approve', {
       apiVersion: 1,
@@ -88,7 +88,7 @@ async function failedFixture() {
     new RuntimeNotices(),
     workspace,
   )('attention', base, signal())
-  const list = await review('proposals/list', { ...base, actions }, signal())
+  const list = await review('proposals/list', base, signal())
   const detail = await review('proposals/get', { ...base, action, proposalId: ref.proposalId }, signal())
   const retry = await review('proposals/retry', {
     apiVersion: 1,
@@ -98,7 +98,7 @@ async function failedFixture() {
     workItemRevision: failed.revision,
     proposalRef: ref,
   }, signal())
-  const afterRetry = await review('proposals/list', { ...base, actions: [] }, signal())
+  const afterRetry = await review('proposals/list', base, signal())
   await domain.close()
   return {
     attention,

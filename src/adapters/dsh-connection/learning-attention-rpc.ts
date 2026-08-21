@@ -13,9 +13,12 @@ import type { Run2skillDomain } from '../dsh-storage/types.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
 import {
   AttentionActionIdentityV1Schema,
+  AuthoritativeActionCursorError,
+  AuthoritativeActionCursorV1Schema,
   CurrentScopeAuthorizer,
   CurrentScopeAuthorizationError,
   CurrentScopeV1Schema,
+  pageAuthoritativeActions,
 } from './current-scope-authorizer.js'
 
 export const LEARNING_ISSUES_LIST_ENDPOINT = 'learning/issues/list'
@@ -27,13 +30,11 @@ const PAGE_SIZE = 20
 const identity = z.string().min(1).max(256)
 const workItemId = z.string().regex(/^wi_[a-f0-9]{64}$/)
 const positiveSafeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 1)
-const cursor = z.string().regex(/^c_[1-9][0-9]*$/).max(32)
-
 const listRequestSchema = z.object({
   apiVersion: z.literal(1),
   currentScope: CurrentScopeV1Schema,
-  actions: z.array(AttentionActionIdentityV1Schema).max(64),
-  cursor: cursor.optional(),
+  cursor: AuthoritativeActionCursorV1Schema.optional(),
+  limit: z.number().int().positive().max(PAGE_SIZE).optional(),
 }).strict()
 const mutationRequestShape = {
   apiVersion: z.literal(1),
@@ -61,7 +62,7 @@ const listItemSchema = z.object({
 const listResponseSchema = z.object({
   apiVersion: z.literal(1),
   items: z.array(listItemSchema).max(PAGE_SIZE),
-  nextCursor: cursor.optional(),
+  nextCursor: AuthoritativeActionCursorV1Schema.optional(),
 }).strict()
 const receiptSchema = z.object({
   apiVersion: z.literal(1),
@@ -91,12 +92,6 @@ function requestFits(payload: unknown): boolean {
   } catch {
     return false
   }
-}
-
-function offsetOf(value: string | undefined): number | undefined {
-  if (value === undefined) return 0
-  const offset = Number(value.slice(2))
-  return Number.isSafeInteger(offset) && offset > 0 ? offset : undefined
 }
 
 function canRetry(item: CaptureWorkItemV1): boolean {
@@ -169,20 +164,24 @@ export function createLearningAttentionRpcHandler(
     if (endpoint === LEARNING_ISSUES_LIST_ENDPOINT) {
       const request = listRequestSchema.parse(payload)
       if (options.authorizer === undefined) return error('internal')
-      const offset = offsetOf(request.cursor)
-      if (offset === undefined) return error('bad-request')
-      const authorizedItems: CaptureWorkItemV1[] = []
+      let page: ReturnType<typeof pageAuthoritativeActions>
       try {
-        for (const action of request.actions) {
-          if (!['RETRY_LEARNING', 'DISMISS_LEARNING'].includes(action.kind)) continue
-          authorizedItems.push((await options.authorizer.authorize(
-            domain, request.currentScope, action, visibilityOf(domain),
-          )).item)
-        }
+        const queue = (await options.authorizer.project(
+          domain, request.currentScope, visibilityOf(domain),
+        )).filter(action => action.kind === 'RETRY_LEARNING' || action.kind === 'DISMISS_LEARNING')
+          .sort((left, right) => (
+            right.updatedAt.localeCompare(left.updatedAt) || left.actionKey.localeCompare(right.actionKey)
+          ))
+        page = pageAuthoritativeActions(
+          'LEARNING', request.currentScope, queue, request.cursor, request.limit ?? PAGE_SIZE,
+        )
       } catch (caught) {
-        return caught instanceof CurrentScopeAuthorizationError ? error('conflict') : error('internal')
+        if (caught instanceof CurrentScopeAuthorizationError) return error('conflict')
+        return caught instanceof AuthoritativeActionCursorError ? error('bad-request') : error('internal')
       }
-      const eligible = authorizedItems.flatMap(item => {
+      const eligible = page.page.flatMap(action => {
+        const item = domain.table('work_items').get(action.subjectId)
+        if (item === undefined) return []
         const learning = item.learning
         if (
           !visibilityOf(domain).workItemVisible(item)
@@ -205,16 +204,12 @@ export function createLearningAttentionRpcHandler(
           ...(learning.modelRoute === undefined ? {} : { modelRoute: learning.modelRoute }),
           calls: learning.calls,
         }]
-      }).sort((left, right) => (
-        right.updatedAt.localeCompare(left.updatedAt)
-        || left.workItemId.localeCompare(right.workItemId)
-      ))
-      if (request.cursor !== undefined && offset >= eligible.length) return error('bad-request')
-      const page = eligible.slice(offset, offset + PAGE_SIZE)
+      })
+      if (eligible.length !== page.page.length) return error('conflict')
       return { ok: true, value: listResponseSchema.parse({
         apiVersion: 1,
-        items: page,
-        ...(offset + page.length < eligible.length ? { nextCursor: `c_${offset + page.length}` } : {}),
+        items: eligible,
+        ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       }) }
     }
 

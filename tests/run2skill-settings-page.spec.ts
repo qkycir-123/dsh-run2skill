@@ -343,7 +343,9 @@ describe('run2skill native settings surface', () => {
     expect((await screen.findByRole('button', { name: '重试学习' })).closest('article')?.textContent)
       .toContain('MODEL_USAGE_INVALID')
     expect(call.mock.calls.find(([endpoint]) => endpoint === 'learning/issues/list')?.[1])
-      .toMatchObject({ currentScope: { kind: 'USER_ONLY', generation: 1 } })
+      .toMatchObject({ currentScope: { kind: 'USER_ONLY', generation: 1 }, limit: 20 })
+    expect(call.mock.calls.find(([endpoint]) => endpoint === 'learning/issues/list')?.[1])
+      .not.toHaveProperty('actions')
     fireEvent.click(screen.getByRole('button', { name: '重试学习' }))
     await waitFor(() => {
       expect(call.mock.calls.some(([endpoint]) => endpoint === 'learning/issues/retry')).toBe(true)
