@@ -6,8 +6,10 @@ import {
   createLearningAttentionRpcHandler,
 } from '../src/adapters/dsh-connection/learning-attention-rpc.js'
 import { LearningWorkItemStore } from '../src/adapters/dsh-storage/learning-work-item-store.js'
+import { LearningDiagnosticStore } from '../src/adapters/dsh-storage/learning-diagnostic-store.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import { createMemoryLearningDiagnosticDomain } from './support/memory-learning-diagnostic-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 
 function failedItem(index = 1, overrides: Parameters<typeof makeWorkItem>[0] = {}) {
@@ -77,6 +79,32 @@ describe('learning attention RPC', () => {
     } })
     expect(JSON.stringify(result)).not.toContain('canonicalPath')
     expect(JSON.stringify(result)).not.toContain(item.evidenceRefs[0]?.excerpt)
+  })
+
+  it('joins a safe durable terminal detail and omits it when the sidecar is unavailable', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = failedItem(2, {
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1,
+        calls: [{ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' }],
+        failure: { code: 'MODEL_TERMINAL_FAILURE', retryable: true, occurredAt: '2026-08-20T00:00:10.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const diagnostics = new LearningDiagnosticStore(domain, createMemoryLearningDiagnosticDomain())
+    await diagnostics.attach(item, 1, 'MODEL_USAGE_INVALID')
+    const request = { apiVersion: 1 as const, workspaceId: 'workspace-1' }
+
+    const joined = await createLearningAttentionRpcHandler(() => domain, undefined, {
+      diagnostics: () => diagnostics,
+    })(LEARNING_ISSUES_LIST_ENDPOINT, request, new AbortController().signal)
+    expect(joined).toMatchObject({ ok: true, value: { items: [{ failureDetail: 'MODEL_USAGE_INVALID' }] } })
+
+    const generic = await createLearningAttentionRpcHandler(() => domain)(
+      LEARNING_ISSUES_LIST_ENDPOINT, request, new AbortController().signal,
+    )
+    expect(JSON.stringify(generic)).not.toContain('failureDetail')
   })
 
   it('makes USER failures globally visible for BOUND, UNREGISTERED, and NO_CWD captures', async () => {
@@ -199,8 +227,17 @@ describe('learning attention RPC', () => {
     }
     expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, request, new AbortController().signal))
       .toMatchObject({ ok: true, value: { changed: true, processingState: 'NEEDS_ATTENTION', disposition: 'IGNORED' } })
+    const ignored = domain.workItems.get(item.workItemId)!
     expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, request, new AbortController().signal))
       .toMatchObject({ ok: true, value: { changed: false, disposition: 'IGNORED' } })
+    expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, {
+      ...request, workItemRevision: ignored.revision,
+    }, new AbortController().signal))
+      .toMatchObject({ ok: true, value: { changed: false, disposition: 'IGNORED' } })
+    expect(await handler(LEARNING_ISSUES_RETRY_ENDPOINT, {
+      apiVersion: 1, workItemId: item.workItemId, workItemRevision: ignored.revision,
+    }, new AbortController().signal))
+      .toMatchObject({ ok: false, error: { code: 'invalid-state' } })
     expect(domain.workItems.has(item.workItemId)).toBe(true)
     expect(await handler(LEARNING_ISSUES_LIST_ENDPOINT, {
       apiVersion: 1, workspaceId: 'workspace-1',

@@ -111,12 +111,15 @@ export class LearningWorkItemStore {
       }
       const previous = current.learning
       const manualSourceRevision = manualLearningAuthorizationSourceRevision(previous)
+      const continuingRecovery = nextLearningRequestKind(previous) === 'TRUNCATION_RECOVERY'
       const claimedAt = this.#now()
       if (
         previous?.nextEligibleAt !== undefined
         && Date.parse(previous.nextEligibleAt) > Date.parse(claimedAt)
       ) throw new LearningStoreError('INVALID_LEARNING_STATE')
-      const attempt = (previous?.attempt ?? 0) + 1
+      const attempt = continuingRecovery
+        ? previous!.attempt
+        : (previous?.attempt ?? 0) + 1
       if (attempt > 3) throw new LearningStoreError('INVALID_LEARNING_STATE')
       return {
         ...current,
@@ -248,7 +251,10 @@ export class LearningWorkItemStore {
   ): Promise<CaptureWorkItemV1> {
     return this.#update(workItemId, expectedRevision, (current) => {
       const learning = this.#analyzing(current)
-      const failedLearning = { ...learning, failure }
+      const durableFailure = learning.failure?.code === failure.code
+        ? { ...failure, occurredAt: learning.failure.occurredAt }
+        : failure
+      const failedLearning = { ...learning, failure: durableFailure }
       const manualSourceRevision = manualLearningAuthorizationSourceRevision(learning)
       const retry = failure.retryable
         && nextEligibleAt !== undefined
@@ -286,18 +292,21 @@ export class LearningWorkItemStore {
       if (item.processingState !== 'ANALYZING') continue
       const nextKind = nextLearningRequestKind(item.learning)
       if (nextKind === 'TRUNCATION_RECOVERY') {
+        const manualSourceRevision = manualLearningAuthorizationSourceRevision(item.learning)
         recovered.push(await this.#update(workItemId, item.revision, (current) => ({
           ...current,
           processingState: 'CAPTURED',
           learning: withoutUndefined({
             ...current.learning!,
             claimedAt: undefined,
-            nextEligibleAt: this.#now(),
+            nextEligibleAt: manualSourceRevision === undefined
+              ? this.#now()
+              : current.learning!.nextEligibleAt,
           }),
         })))
         continue
       }
-      const failure: LearningFailureV1 = {
+      const failure: LearningFailureV1 = item.learning?.failure ?? {
         code: 'MODEL_ABORTED',
         retryable: nextKind === 'PRIMARY',
         occurredAt: this.#now(),
@@ -323,6 +332,7 @@ export class LearningWorkItemStore {
         || snapshot.learning?.failure?.code !== 'AGENT_SCOPE_UNAVAILABLE'
         || snapshot.learning.attempt >= 3
         || snapshot.learning.requestBudgetUsed >= 2
+        || isIgnoredLearningFailure(snapshot)
         || !available(snapshot)
       ) continue
       reopened.push(await this.#updateLatest(workItemId, (current) => {
@@ -330,6 +340,7 @@ export class LearningWorkItemStore {
         if (
           current.processingState !== 'NEEDS_ATTENTION'
           || learning?.failure?.code !== 'AGENT_SCOPE_UNAVAILABLE'
+          || isIgnoredLearningFailure(current)
         ) throw new LearningStoreError('INVALID_LEARNING_STATE')
         return {
           ...current,
@@ -415,13 +426,19 @@ export class LearningWorkItemStore {
           && manualLearningAuthorizationSourceRevision(snapshot.learning) === expectedRevision)
         || (
           kind === 'DISMISS'
-          && snapshot.revision - expectedRevision === 1
+          && (
+            snapshot.revision === expectedRevision
+            || snapshot.revision - expectedRevision === 1
+          )
           && isIgnoredLearningFailure(snapshot)
         )
       )
       if (duplicate) return { item: snapshot, changed: false }
       if (snapshot.revision !== expectedRevision) {
         throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
+      }
+      if (isIgnoredLearningFailure(snapshot)) {
+        throw new LearningStoreError('INVALID_LEARNING_STATE')
       }
       if (
         snapshot.processingState !== 'NEEDS_ATTENTION'

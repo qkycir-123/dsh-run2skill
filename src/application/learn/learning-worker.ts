@@ -23,6 +23,7 @@ import {
   recallExistingSkills,
   resolveLearningScope,
   type LearningFailureCode,
+  type LearningTerminalDetailV1,
   type LearningWindowBlock,
   type LearningWindowProjection,
   type SkillCatalogPort,
@@ -61,6 +62,13 @@ export interface LearningWorkerOptions<TAgent extends LearningAgent> {
   readonly skills: SkillCatalogPort<LearningSkillView<TAgent>>
   readonly client: RestrictedLearningClientPort
   readonly notices: RuntimeNotices
+  readonly diagnostics?: {
+    attach(
+      item: CaptureWorkItemV1,
+      requestOrdinal: 1 | 2,
+      detail: LearningTerminalDetailV1,
+    ): Promise<unknown>
+  }
   readonly now?: () => number
   readonly sleep?: (milliseconds: number) => Promise<void>
   readonly onCompleted?: (item: CaptureWorkItemV1) => Promise<void>
@@ -142,6 +150,7 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
   readonly #skills
   readonly #client
   readonly #notices
+  readonly #diagnostics
   readonly #now
   readonly #sleep
   readonly #onCompleted
@@ -153,6 +162,7 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
     this.#skills = options.skills
     this.#client = options.client
     this.#notices = options.notices
+    this.#diagnostics = options.diagnostics
     this.#now = options.now ?? Date.now
     this.#sleep = options.sleep ?? delay
     this.#onCompleted = options.onCompleted
@@ -280,17 +290,19 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
           if (ordinal !== 1 && ordinal !== 2) throw new Error('Invalid durable request ordinal')
           return { requestOrdinal: ordinal }
         },
-        record: async (call, failure) => {
+        record: async (call, failure, detail) => {
           try {
             current = await this.#store.recordCall(current.workItemId, current.revision, call, failure)
           } catch (error) {
             if (error instanceof LearningStoreError && error.code === 'LEARNING_REVISION_CONFLICT') {
               current = await this.#store.recordCallLatest(current.workItemId, attempt, call, failure)
+              await this.#attachDiagnostic(current, call.requestOrdinal, detail)
               stale = true
               throw new LearningInputStale()
             }
             throw error
           }
+          await this.#attachDiagnostic(current, call.requestOrdinal, detail)
         },
       }
       let learned: RestrictedLearningResult
@@ -360,6 +372,23 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
       if (signal.aborted) return await fail(deadlineExpired() ? 'MODEL_TIMEOUT' : 'MODEL_ABORTED', true)
       this.#notice('LEARNING_WORKER_FAILED', current)
       await fail('STORE_WRITE_FAILED')
+    }
+  }
+
+  async #attachDiagnostic(
+    item: CaptureWorkItemV1,
+    requestOrdinal: 1 | 2,
+    detail: LearningTerminalDetailV1 | undefined,
+  ): Promise<void> {
+    if (detail === undefined || this.#diagnostics === undefined) return
+    try {
+      await this.#diagnostics.attach(item, requestOrdinal, detail)
+    } catch {
+      this.#notices.record({
+        healthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE',
+        sessionId: item.signalKey.rootSessionId,
+        turnEndSeq: item.signalKey.turnEndSeq,
+      })
     }
   }
 

@@ -80,6 +80,7 @@ export interface PurgeServiceOptions {
   readonly previewTtlMs?: number
   readonly onHidden?: (journal: PurgeJournalV1) => void | Promise<void>
   readonly onPhasePersisted?: (phase: PurgePhaseV1) => void | Promise<void>
+  readonly beforeDeleteWorkItem?: (workItemId: string) => void | Promise<void>
 }
 
 interface StoredPreview {
@@ -141,6 +142,7 @@ export class PurgeService {
   readonly #ttl
   readonly #onHidden
   readonly #onPhasePersisted
+  readonly #beforeDeleteWorkItem
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
@@ -157,6 +159,7 @@ export class PurgeService {
     this.#ttl = Math.min(requestedTtl, DEFAULT_PREVIEW_TTL_MS)
     this.#onHidden = options.onHidden ?? (() => {})
     this.#onPhasePersisted = options.onPhasePersisted ?? (() => {})
+    this.#beforeDeleteWorkItem = options.beforeDeleteWorkItem ?? (() => {})
   }
 
   async preview(scope: 'PROJECT' | 'USER', workspaceId?: string): Promise<PurgePreviewV1> {
@@ -338,6 +341,7 @@ export class PurgeService {
       const batch = candidates.workItemIds.slice(0, DELETE_BATCH_SIZE)
       let deleted = 0
       for (const id of batch) {
+        await this.#beforeDeleteWorkItem(id)
         if (await this.domain.table('work_items').delete(id)) deleted += 1
         else if (this.domain.table('work_items').get(id) !== undefined) throw new Error('PURGE_DELETE_FAILED')
       }

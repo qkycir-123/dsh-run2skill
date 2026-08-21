@@ -7,7 +7,7 @@ import {
   type LearningCallLedger,
   type LearningRequestKind,
 } from '../src/adapters/dsh-llm/restricted-learning-client.js'
-import type { LearningCallV1, LearningFailureV1 } from '../src/domain/learn/index.js'
+import type { LearningCallV1, LearningFailureV1, LearningTerminalDetailV1 } from '../src/domain/learn/index.js'
 
 const digest = (character: string) => character.repeat(64)
 
@@ -65,15 +65,17 @@ class RecordingLedger implements LearningCallLedger {
   readonly reservations: LearningRequestKind[] = []
   readonly calls: LearningCallV1[] = []
   readonly failures: Array<LearningFailureV1 | undefined> = []
+  readonly details: Array<LearningTerminalDetailV1 | undefined> = []
 
   async reserve(kind: Parameters<LearningCallLedger['reserve']>[0]) {
     this.reservations.push(kind)
     return { requestOrdinal: this.reservations.length as 1 | 2 }
   }
 
-  async record(call: LearningCallV1, failure?: LearningFailureV1) {
+  async record(call: LearningCallV1, failure?: LearningFailureV1, detail?: LearningTerminalDetailV1) {
     this.calls.push(call)
     this.failures.push(failure)
+    this.details.push(detail)
   }
 }
 
@@ -348,11 +350,34 @@ describe('RestrictedLearningClient', () => {
       ],
       label: 'block assembly', code: 'MODEL_ASSEMBLY_FAILED',
     },
+    {
+      chunks: responseChunks('{}').map(chunk => chunk.type === 'finish'
+        ? { type: 'finish' as const, reason: { kind: 'content-filtered' as const } }
+        : chunk),
+      label: 'finish reason', code: 'MODEL_UNEXPECTED_FINISH',
+    },
   ])('fails closed with a precise diagnostic when terminal $label is invalid', async ({ chunks, code }) => {
     const ledger = new RecordingLedger()
     const result = await request(new RecordingLlm([chunks]), ledger)
     expect(result).toEqual({ status: 'FAILED', failureCode: code })
     expect(ledger.calls[0]?.outcome).toBe('FAILED')
+    expect(ledger.details).toEqual([code])
+  })
+
+  it('durably distinguishes a stream failure from caller abort without changing failure enums', async () => {
+    const ledger = new RecordingLedger()
+    const llm: DshLlmPort = {
+      async resolveModelInfo() { return { context: { contextWindow: 32_000 } } },
+      async * stream() {
+        yield* [] as DshStreamChunk[]
+        throw new Error('synthetic stream failure')
+      },
+    }
+
+    expect(await request(llm, ledger)).toEqual({ status: 'FAILED', failureCode: 'MODEL_STREAM_FAILURE' })
+    expect(ledger.failures[0]?.code).toBe('MODEL_ABORTED')
+    expect(ledger.details).toEqual(['MODEL_STREAM_FAILURE'])
+    expect(Date.parse(ledger.failures[0]!.occurredAt)).toBeGreaterThan(0)
   })
 
   it('does not reserve or call when model context metadata is unavailable', async () => {
@@ -409,6 +434,7 @@ describe('RestrictedLearningClient', () => {
 
     expect(await pending).toEqual({ status: 'FAILED', failureCode: 'MODEL_ABORTED' })
     expect(ledger.calls[0]?.outcome).toBe('ABORTED')
+    expect(ledger.details).toEqual([undefined])
   })
 
   it('maps the fixed 60 second call timeout to MODEL_TIMEOUT', async () => {

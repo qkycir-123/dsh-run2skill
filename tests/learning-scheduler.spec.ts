@@ -286,4 +286,32 @@ describe('LearningScheduler', () => {
     expect(run.mock.calls[0]?.[0].workItemId).toBe(authorized.workItemId)
     await scheduler.dispose()
   })
+
+  it('continues a manually authorized truncation recovery while automatic learning is OFF', async () => {
+    const ordinary = queuedItem('session-manual-recovery', 11, '8', 'CONSTRAINT')
+    const authorized = makeWorkItem({
+      ...ordinary,
+      revision: 7,
+      processingState: 'CAPTURED',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 3, requestBudgetUsed: 1,
+        modelRoute: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+        calls: [{ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096 }],
+        failure: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', retryable: true, occurredAt: '2026-08-20T00:00:00.000Z' },
+        nextEligibleAt: '1970-01-01T00:00:00.001Z',
+      },
+    })
+    const store = storePort([authorized])
+    const run = vi.fn(async () => { store.remaining = [] })
+    const scheduler = new LearningScheduler({
+      store,
+      policy: policy(false),
+      worker: { canResolveScope: () => true, run },
+      notices: new RuntimeNotices(),
+    })
+
+    await scheduler.start()
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce())
+    await scheduler.dispose()
+  })
 })

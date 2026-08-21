@@ -6,6 +6,7 @@ import {
   type LearningCallV1,
   type LearningFailureV1,
   type LearningFailureCode,
+  type LearningTerminalDetailV1,
   type LearningProposalV1,
 } from '../../domain/learn/index.js'
 import { preprocessPersistentText } from '../../domain/observe/redaction.js'
@@ -121,7 +122,11 @@ export interface DshLlmPort {
 
 export interface LearningCallLedger {
   reserve(kind: LearningRequestKind): Promise<{ readonly requestOrdinal: 1 | 2 }>
-  record(call: LearningCallV1, failure?: LearningFailureV1): Promise<void>
+  record(
+    call: LearningCallV1,
+    failure?: LearningFailureV1,
+    detail?: LearningTerminalDetailV1,
+  ): Promise<void>
 }
 
 export type LearningRequestKind = 'PRIMARY' | 'STRUCTURE_REPAIR' | 'TRUNCATION_RECOVERY'
@@ -260,10 +265,22 @@ export function persistentLearningFailureCode(
 
 function persistentFailure(code: RestrictedLearningFailureCode): LearningFailureV1 {
   const mapped = persistentLearningFailureCode(code)
-  return {
+  const failure: LearningFailureV1 = {
     code: mapped,
     retryable: ['MODEL_TIMEOUT', 'MODEL_ABORTED', 'MODEL_OUTPUT_LIMIT_EXCEEDED'].includes(mapped),
     occurredAt: new Date().toISOString(),
+  }
+  return failure
+}
+
+function terminalDetail(code: RestrictedLearningFailureCode): LearningTerminalDetailV1 | undefined {
+  switch (code) {
+    case 'MODEL_STREAM_FAILURE':
+    case 'MODEL_FINISH_MISSING':
+    case 'MODEL_USAGE_INVALID':
+    case 'MODEL_ASSEMBLY_FAILED':
+    case 'MODEL_UNEXPECTED_FINISH': return code
+    default: return undefined
   }
 }
 
@@ -542,7 +559,8 @@ export class RestrictedLearningClient {
         ? { inputTokens: assembler.usage.inputTokens, outputTokens: assembler.usage.outputTokens }
         : {}),
       outcome,
-    }, failureCode === undefined ? undefined : persistentFailure(failureCode))
+    }, failureCode === undefined ? undefined : persistentFailure(failureCode),
+    failureCode === undefined ? undefined : terminalDetail(failureCode))
     if (failureCode !== undefined) return { status: 'FAILED', failureCode }
     if (assembledText === undefined) throw new Error('Restricted learning call invariant violated')
     return { status: 'SUCCEEDED', text: assembledText }

@@ -5,9 +5,11 @@ import {
   isIgnoredLearningFailure,
   LearningCallV1Schema,
   LearningFailureCodeSchema,
+  LearningTerminalDetailV1Schema,
 } from '../../domain/learn/index.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 import { LearningStoreError, LearningWorkItemStore } from '../dsh-storage/learning-work-item-store.js'
+import type { LearningDiagnosticStore } from '../dsh-storage/learning-diagnostic-store.js'
 import type { Run2skillDomain } from '../dsh-storage/types.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
 
@@ -41,6 +43,7 @@ const listItemSchema = z.object({
   createdAt: z.string().datetime({ offset: true }),
   updatedAt: z.string().datetime({ offset: true }),
   failureCode: LearningFailureCodeSchema,
+  failureDetail: LearningTerminalDetailV1Schema.optional(),
   retryable: z.boolean(),
   attempt: z.number().int().nonnegative().max(3),
   requestBudgetUsed: z.number().int().nonnegative().max(2),
@@ -119,6 +122,7 @@ export interface LearningAttentionRpcOptions {
   readonly onRetry?: (workItemId: string) => void
   readonly visibility?: (domain: Run2skillDomain) => PurgeVisibility
   readonly runMutation?: <T>(operation: () => Promise<T>) => Promise<T>
+  readonly diagnostics?: () => LearningDiagnosticStore | undefined
 }
 
 export function createLearningAttentionRpcHandler(
@@ -176,12 +180,14 @@ export function createLearningAttentionRpcHandler(
           || isIgnoredLearningFailure(item)
           || !visibleInWorkspace(item, request.workspaceId)
         ) return []
+        const failureDetail = options.diagnostics?.()?.detailFor(item)
         return [{
           workItemId: item.workItemId,
           workItemRevision: item.revision,
           createdAt: item.createdAt,
           updatedAt: item.updatedAt,
           failureCode: learning.failure.code,
+          ...(failureDetail === undefined ? {} : { failureDetail }),
           retryable: canRetry(item),
           attempt: learning.attempt,
           requestBudgetUsed: learning.requestBudgetUsed,

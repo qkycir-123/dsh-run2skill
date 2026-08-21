@@ -46,6 +46,7 @@ function setup(options: {
   learnThrows?: boolean
   catalogIncompleteCalls?: number
   modelFails?: boolean
+  diagnosticAttachFails?: boolean
 } = {}) {
   const fixture = makeLearningSessionFixture()
   const item = {
@@ -78,7 +79,9 @@ function setup(options: {
       requestOrdinal: reservation.requestOrdinal,
       kind: 'PRIMARY', inputTokens: 12, outputTokens: 8,
       outcome: options.modelFails === true ? 'FAILED' : 'SUCCEEDED',
-    })
+    }, options.modelFails === true ? {
+      code: 'MODEL_TERMINAL_FAILURE', retryable: true, occurredAt: NOW,
+    } : undefined, options.modelFails === true ? 'MODEL_USAGE_INVALID' : undefined)
     if (options.modelFails === true) {
       return { status: 'FAILED' as const, failureCode: 'MODEL_TERMINAL_FAILURE' }
     }
@@ -107,6 +110,10 @@ function setup(options: {
   }))
   const sleeps: number[] = []
   const onCompleted = vi.fn(async () => undefined)
+  const diagnosticAttach = vi.fn(async () => {
+    if (options.diagnosticAttachFails === true) throw new Error('synthetic diagnostic failure')
+  })
+  const notices = new RuntimeNotices({ now: () => Date.parse(NOW) })
   const worker = new LearningWorker({
     store,
     sessionReader,
@@ -116,12 +123,13 @@ function setup(options: {
       get: async () => undefined,
     },
     client,
-    notices: new RuntimeNotices({ now: () => Date.parse(NOW) }),
+    notices,
+    diagnostics: { attach: diagnosticAttach },
     now: () => Date.parse(NOW),
     sleep: async milliseconds => { sleeps.push(milliseconds) },
     onCompleted,
   })
-  return { fixture, item, domain, store, scopes, client, learn, snapshot, sleeps, onCompleted, worker }
+  return { fixture, item, domain, store, scopes, client, learn, snapshot, sleeps, onCompleted, diagnosticAttach, notices, worker }
 }
 
 describe('LearningWorker', () => {
@@ -182,7 +190,7 @@ describe('LearningWorker', () => {
   })
 
   it('keeps the effective model route with a failed durable call', async () => {
-    const { item, domain, worker } = setup({ modelFails: true })
+    const { item, domain, diagnosticAttach, worker } = setup({ modelFails: true })
 
     await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
@@ -194,6 +202,26 @@ describe('LearningWorker', () => {
         failure: { code: 'MODEL_TERMINAL_FAILURE', retryable: true },
       },
     })
+    expect(diagnosticAttach).toHaveBeenCalledWith(
+      expect.objectContaining({ processingState: 'ANALYZING', revision: 4 }),
+      1,
+      'MODEL_USAGE_INVALID',
+    )
+  })
+
+  it('keeps the main call durable when sidecar attachment fails and records only a health code', async () => {
+    const { item, domain, notices, worker } = setup({ modelFails: true, diagnosticAttachFails: true })
+
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
+
+    expect(domain.workItems.get(item.workItemId)).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      learning: { calls: [{ requestOrdinal: 1 }], failure: { code: 'MODEL_TERMINAL_FAILURE' } },
+    })
+    expect(notices.list()).toEqual([expect.objectContaining({
+      healthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE',
+      sessionId: item.signalKey.rootSessionId,
+    })])
   })
 
   it('retries an incomplete Skill catalog with the frozen bounded delays', async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
 import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import { createMemoryLearningDiagnosticDomain } from './support/memory-learning-diagnostic-domain.js'
 import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
 
 function settingsService(): DshSettingsPort {
@@ -53,6 +54,9 @@ describe('Host plugin assembly', () => {
   it('registers ingress before recovery and exposes one durable captured item', async () => {
     const order: string[] = []
     const domain = createMemoryRun2skillDomain()
+    const diagnosticDomain = createMemoryLearningDiagnosticDomain()
+    const diagnosticClose = vi.fn(async () => { order.push('diagnostic-close') })
+    diagnosticDomain.close = diagnosticClose
     const close = vi.fn(async () => { order.push('domain-close') })
     domain.close = close
     const header = { version: 1, id: 'session-1', createdAt: 1_725_000_000_000 }
@@ -86,9 +90,9 @@ describe('Host plugin assembly', () => {
         async readFrom() { return { meta: header, events: persistedEvents } },
       },
       storageDomain: {
-        async open() {
-          order.push('domain-open')
-          return domain
+        async open(spec: { readonly name: string }) {
+          order.push(`${spec.name}-open`)
+          return spec.name === 'run2skill_learning_diagnostics_v1' ? diagnosticDomain : domain
         },
       },
       workspaceRegistry: { async resolveByPath() { return undefined } },
@@ -110,7 +114,7 @@ describe('Host plugin assembly', () => {
 
     const dispose = await apply(context)
 
-    expect(order.indexOf('listener')).toBeLessThan(order.indexOf('domain-open'))
+    expect(order.indexOf('listener')).toBeLessThan(order.indexOf('run2skill_v1-open'))
     expect(eventListener).toBeTypeOf('function')
     expect(domain.workItems.size).toBe(0)
     persistedEvents = events
@@ -136,6 +140,8 @@ describe('Host plugin assembly', () => {
     await dispose()
     expect(disposeRpc).toHaveBeenCalledOnce()
     expect(close).toHaveBeenCalledOnce()
+    expect(diagnosticClose).toHaveBeenCalledOnce()
+    expect(order.indexOf('diagnostic-close')).toBeLessThan(order.indexOf('domain-close'))
     expect(order.indexOf('rpc-dispose')).toBeLessThan(order.indexOf('domain-close'))
   })
 
@@ -321,5 +327,38 @@ describe('Host plugin assembly', () => {
 
     await expect(dispose()).rejects.toThrow('synthetic rpc dispose failure')
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('continues with the main domain and exposes a non-sensitive health code when sidecar open fails', async () => {
+    const domain = createMemoryRun2skillDomain()
+    let rpcHandler: ObserveSummaryRpcHandler | undefined
+    const context = {
+      ...learningServices(),
+      sessions: {},
+      sessionPersistence: {
+        async listSnapshots() { return [] },
+        async readFrom() { throw new Error('must not read') },
+      },
+      storageDomain: {
+        async open(spec: { readonly name: string }) {
+          if (spec.name === 'run2skill_learning_diagnostics_v1') throw new Error('synthetic sidecar open failure')
+          return domain
+        },
+      },
+      workspaceRegistry: { async resolveByPath() { return undefined } },
+      connection: { rpc: { handle(_channel: string, handler: ObserveSummaryRpcHandler) {
+        rpcHandler = handler
+        return async () => undefined
+      } } },
+      on() {},
+    }
+
+    const dispose = await apply(context)
+    const response = await rpcHandler?.('observe-summary', { apiVersion: 1 }, new AbortController().signal)
+    expect(response).toMatchObject({
+      ok: true,
+      value: { status: 'READY', lastHealthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE' },
+    })
+    await dispose()
   })
 })

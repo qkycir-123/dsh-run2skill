@@ -44,5 +44,7 @@ export const run2skillDomainSpec = {
 export async function openRun2skillDomain(
   context: import('./types.js').Run2skillStorageContext,
 ): Promise<import('./types.js').Run2skillDomain> {
-  return await context.storageDomain.open(run2skillDomainSpec)
+  const domain = await context.storageDomain.open(run2skillDomainSpec)
+  if (domain.name !== run2skillDomainSpec.name) throw new Error('run2skill domain name mismatch')
+  return domain
 }

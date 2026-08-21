@@ -3,7 +3,6 @@ import type { LearningStateV1 } from './schemas.js'
 
 export type NextLearningRequestKind = 'PRIMARY' | 'TRUNCATION_RECOVERY'
 const MANUAL_RECOVERY_REVISION_CEILING = Date.parse('2000-01-01T00:00:00.000Z')
-
 /** Encodes an action source revision in an existing schema-v1 timestamp slot. */
 export function manualLearningAuthorizationTimestamp(sourceRevision: number): string | undefined {
   if (
@@ -43,13 +42,18 @@ export function nextLearningRequestKind(
 export function hasManualLearningAuthorization(item: CaptureWorkItemV1): boolean {
   const learning = item.learning
   const sourceRevision = manualLearningAuthorizationSourceRevision(learning)
-  return item.processingState === 'CAPTURED'
-    && item.review === undefined
-    && learning?.attempt === 2
+  const initialRecovery = learning?.attempt === 2
     && learning.requestBudgetUsed === 0
     && learning.calls.length === 0
-    && learning.failure?.retryable === true
     && sourceRevision === item.revision - 1
+  const truncationContinuation = learning?.attempt === 3
+    && nextLearningRequestKind(learning) === 'TRUNCATION_RECOVERY'
+    && sourceRevision !== undefined
+    && sourceRevision < item.revision
+  return item.processingState === 'CAPTURED'
+    && item.review === undefined
+    && learning?.failure?.retryable === true
+    && (initialRecovery || truncationContinuation)
 }
 
 /**

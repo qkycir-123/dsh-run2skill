@@ -271,6 +271,31 @@ describe('recoverable Purge saga', () => {
     })
   })
 
+  it('deletes sidecar facts before each main WorkItem and safely resumes a crash between domains', async () => {
+    const { domain, item } = populatedDomain()
+    const sidecars = new Set([item.workItemId])
+    let crash = true
+    const beforeDeleteWorkItem = async (workItemId: string) => {
+      expect(domain.workItems.has(workItemId)).toBe(true)
+      sidecars.delete(workItemId)
+      if (crash) {
+        crash = false
+        throw new Error('synthetic crash after sidecar delete')
+      }
+    }
+    const first = new PurgeService(domain, resolver, { now: () => NOW, beforeDeleteWorkItem })
+    const preview = await first.preview('PROJECT', binding.workspaceId)
+
+    await expect(first.confirm(preview.previewId, preview.digest))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    expect(sidecars.has(item.workItemId)).toBe(false)
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+
+    const restarted = new PurgeService(domain, resolver, { now: () => NOW + 1, beforeDeleteWorkItem })
+    await expect(restarted.recover()).resolves.toMatchObject({ state: 'COMPLETED' })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+  })
+
   it('serializes checkpoint writes with the journal and never resurrects a cleared fence', async () => {
     const domain = createMemoryRun2skillDomain()
     const checkpoint = new WriteBehindCheckpoint(domain, { now: () => NOW })
