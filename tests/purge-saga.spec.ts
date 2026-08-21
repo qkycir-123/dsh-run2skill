@@ -136,6 +136,76 @@ function populatedDomain() {
 }
 
 describe('recoverable Purge saga', () => {
+  it('fails USER and PROJECT purge closed while diagnostics are unavailable and rechecks before confirm', async () => {
+    const { domain, item, lineage } = populatedDomain()
+    const sidecars = new Set([item.workItemId])
+    let ready = false
+    const service = new PurgeService(domain, resolver, {
+      now: () => NOW,
+      assertDeletionReady() {
+        if (!ready) throw new Error('diagnostic sidecar unavailable')
+      },
+      beforeDeleteWorkItem(workItemId) { sidecars.delete(workItemId) },
+    })
+
+    await expect(service.preview('PROJECT', binding.workspaceId))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    await expect(service.preview('USER'))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineage.lineageId)).toBe(true)
+    expect(sidecars.has(item.workItemId)).toBe(true)
+
+    ready = true
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+    ready = false
+    await expect(service.confirm(preview.previewId, preview.digest))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(sidecars.has(item.workItemId)).toBe(true)
+
+    ready = true
+    await expect(service.confirm(preview.previewId, preview.digest))
+      .resolves.toMatchObject({ state: 'COMPLETED' })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+    expect(sidecars.has(item.workItemId)).toBe(false)
+  })
+
+  it('does not resume an existing purge journal until diagnostic deletion is ready again', async () => {
+    const { domain, item } = populatedDomain()
+    const sidecars = new Set([item.workItemId])
+    let ready = true
+    let stopOnce = true
+    const service = new PurgeService(domain, resolver, {
+      now: () => NOW,
+      assertDeletionReady() {
+        if (!ready) throw new Error('diagnostic sidecar unavailable')
+      },
+      beforeDeleteWorkItem(workItemId) { sidecars.delete(workItemId) },
+      onPhasePersisted(phase) {
+        if (stopOnce && phase === 'HIDING') {
+          stopOnce = false
+          throw new Error('synthetic crash after journal')
+        }
+      },
+    })
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+    await expect(service.confirm(preview.previewId, preview.digest))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    const purgeId = domain.global.get().purgeJournal!.purgeId
+
+    ready = false
+    await expect(service.retry(purgeId)).rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(sidecars.has(item.workItemId)).toBe(true)
+
+    ready = true
+    await expect(service.retry(purgeId)).resolves.toMatchObject({ state: 'COMPLETED' })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+    expect(sidecars.has(item.workItemId)).toBe(false)
+  })
+
   it('previews immutably, hides before deleting, completes idempotently, and keeps unproven data', async () => {
     const { domain, item, kept, lineage } = populatedDomain()
     const hidden = vi.fn()
@@ -269,6 +339,31 @@ describe('recoverable Purge saga', () => {
       deletedLineages: 1,
       deletedWorkItems: 1,
     })
+  })
+
+  it('deletes sidecar facts before each main WorkItem and safely resumes a crash between domains', async () => {
+    const { domain, item } = populatedDomain()
+    const sidecars = new Set([item.workItemId])
+    let crash = true
+    const beforeDeleteWorkItem = async (workItemId: string) => {
+      expect(domain.workItems.has(workItemId)).toBe(true)
+      sidecars.delete(workItemId)
+      if (crash) {
+        crash = false
+        throw new Error('synthetic crash after sidecar delete')
+      }
+    }
+    const first = new PurgeService(domain, resolver, { now: () => NOW, beforeDeleteWorkItem })
+    const preview = await first.preview('PROJECT', binding.workspaceId)
+
+    await expect(first.confirm(preview.previewId, preview.digest))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+    expect(sidecars.has(item.workItemId)).toBe(false)
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+
+    const restarted = new PurgeService(domain, resolver, { now: () => NOW + 1, beforeDeleteWorkItem })
+    await expect(restarted.recover()).resolves.toMatchObject({ state: 'COMPLETED' })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
   })
 
   it('serializes checkpoint writes with the journal and never resurrects a cleared fence', async () => {

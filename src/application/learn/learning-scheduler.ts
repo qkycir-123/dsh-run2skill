@@ -1,5 +1,6 @@
 import type { RuntimeNotices } from '../capture/runtime-notices.js'
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
+import { hasManualLearningAuthorization } from '../../domain/learn/index.js'
 import {
   permitsLearning,
   type AutomaticLearningPolicyPort,
@@ -131,7 +132,7 @@ export class LearningScheduler {
           if (
             this.#active.has(item.workItemId)
             || activeSessions.has(item.signalKey.rootSessionId)
-            || !permitsLearning(item, settings)
+            || (!permitsLearning(item, settings) && !hasManualLearningAuthorization(item))
           ) continue
           activeSessions.add(item.signalKey.rootSessionId)
           this.#launch(item, settings)

@@ -14,12 +14,19 @@ const USER_SCOPE_INTENT = /\b(?:across\s+(?:all\s+)?(?:projects?|repositories|wo
 const FORMAT_CONTROLS = /\p{Cf}/u
 const MARKDOWN_HEADING = /^#{1,6}\s+\S/mu
 
+export function intendedLearningPersistenceScope(
+  item: Pick<CaptureWorkItemV1, 'workspaceBinding' | 'evidenceRefs'>,
+): LearningPersistenceScope | undefined {
+  if (item.evidenceRefs.some(evidence => USER_SCOPE_INTENT.test(evidence.excerpt))) return 'USER'
+  return item.workspaceBinding.status === 'BOUND' ? 'PROJECT' : undefined
+}
+
 export function resolveLearningScope(
   item: CaptureWorkItemV1,
   sessionCwd: string | undefined,
 ): LearningScopeResolution {
-  const hasUserScopeIntent = item.evidenceRefs.some(evidence => USER_SCOPE_INTENT.test(evidence.excerpt))
-  if (hasUserScopeIntent && sessionCwd !== undefined && sessionCwd.length > 0) {
+  const intendedScope = intendedLearningPersistenceScope(item)
+  if (intendedScope === 'USER' && sessionCwd !== undefined && sessionCwd.length > 0) {
     return { status: 'AVAILABLE', persistenceScope: 'USER', cwd: sessionCwd }
   }
   if (item.workspaceBinding.status === 'BOUND') {

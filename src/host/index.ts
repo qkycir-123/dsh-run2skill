@@ -12,6 +12,11 @@ import {
   type DshSkillRegistryPort,
 } from '../adapters/dsh-skills/skill-catalog.js'
 import { LearningWorkItemStore } from '../adapters/dsh-storage/learning-work-item-store.js'
+import {
+  openLearningDiagnosticDomain,
+  type LearningDiagnosticDomain,
+} from '../adapters/dsh-storage/learning-diagnostic-domain.js'
+import { LearningDiagnosticStore } from '../adapters/dsh-storage/learning-diagnostic-store.js'
 import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 import type {
   DshSessionEvent,
@@ -23,6 +28,7 @@ import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
 import { registerObserveSummaryRpc, type ObserveSummaryHostConnection } from '../adapters/dsh-connection/observe-summary-rpc.js'
 import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/proposal-review-rpc.js'
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
+import { createLearningAttentionRpcHandler } from '../adapters/dsh-connection/learning-attention-rpc.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
@@ -149,6 +155,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentScheduler: LearningScheduler | undefined
   currentPublicationScheduler: PublicationScheduler | undefined
   currentPurgeService: PurgeService | undefined
+  currentDiagnosticStore: LearningDiagnosticStore | undefined
   readonly #stockRootResolver = new StockDshRootContractResolver()
   readonly #stockConfigurations: StockSkillRuntimeConfigurationCache<Run2skillAgent>
 
@@ -227,8 +234,35 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
 
   async open(): Promise<RecoveryRuntime> {
     const domain = await openRun2skillDomain(this.context)
+    let diagnosticDomain: LearningDiagnosticDomain | undefined
+    let diagnosticStore: LearningDiagnosticStore | undefined
     this.currentDomain = domain
     try {
+      try {
+        diagnosticDomain = await openLearningDiagnosticDomain(this.context)
+        diagnosticStore = new LearningDiagnosticStore(
+          domain,
+          diagnosticDomain,
+          operation => this.mutationGate.run(operation),
+        )
+        this.currentDiagnosticStore = diagnosticStore
+        try {
+          await diagnosticStore.cleanupOrphans()
+          await diagnosticStore.verifyReady()
+        } catch {
+          this.notices.record({ healthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE', sessionId: 'global' })
+        }
+      } catch {
+        this.notices.record({ healthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE', sessionId: 'global' })
+        try {
+          await diagnosticDomain?.close()
+        } catch {
+          // The main domain remains authoritative and can still start safely.
+        }
+        diagnosticDomain = undefined
+        diagnosticStore = undefined
+        this.currentDiagnosticStore = undefined
+      }
       const checkpoint = new WriteBehindCheckpoint(domain)
       const reader = new DshSessionGapReader(this.context.sessionPersistence)
       const visibility = new PurgeVisibility(domain)
@@ -386,6 +420,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         skills: skillCatalog,
         client: new RestrictedLearningClient(this.context.llm),
         notices: this.notices,
+        ...(diagnosticStore === undefined ? {} : { diagnostics: diagnosticStore }),
         onCompleted: stageLearned,
       })
       const scheduler = new LearningScheduler({
@@ -398,7 +433,17 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       const scopeResolver: PurgeScopeResolver = {
         resolve: async (scope, workspaceId) => await this.resolvePurgeScope(scope, workspaceId),
       }
+      const purgeDiagnostics = diagnosticStore
       const purgeService = new PurgeService(domain, scopeResolver, {
+        assertDeletionReady: async () => {
+          if (purgeDiagnostics === undefined) {
+            throw new Error('Learning diagnostic sidecar unavailable')
+          }
+          await purgeDiagnostics.verifyReady()
+        },
+        ...(purgeDiagnostics === undefined
+          ? {}
+          : { beforeDeleteWorkItem: async (id: string) => await purgeDiagnostics.deleteWorkItemWithinMutation(id) }),
         onHidden: () => {
           scheduler.abortMatching(item => !visibility.workItemVisible(item))
           scheduler.wake()
@@ -500,6 +545,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
             this.currentPublicationScheduler = undefined
           }
           if (this.currentPurgeService === purgeService) this.currentPurgeService = undefined
+          if (this.currentDiagnosticStore === diagnosticStore) this.currentDiagnosticStore = undefined
           publicationAbort.abort()
           if (this.currentDomain === domain) this.currentDomain = undefined
           if (this.currentCurationWake !== undefined) this.currentCurationWake = undefined
@@ -509,7 +555,11 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
             try {
               await scheduler.dispose()
             } finally {
-              await domain.close()
+              try {
+                await diagnosticDomain?.close()
+              } finally {
+                await domain.close()
+              }
             }
           }
         },
@@ -526,9 +576,14 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       this.currentScheduler = undefined
       this.currentPublicationScheduler = undefined
       this.currentPurgeService = undefined
+      this.currentDiagnosticStore = undefined
       if (this.currentDomain === domain) this.currentDomain = undefined
       this.currentCurationWake = undefined
-      await domain.close()
+      try {
+        await diagnosticDomain?.close()
+      } finally {
+        await domain.close()
+      }
       throw error
     }
   }
@@ -619,10 +674,19 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   const disposeRpc = registerObserveSummaryRpc(
     context.connection,
     readSummary,
-    createPurgeRpcHandler(
-      () => factory.currentPurgeService,
-      reviewRpc,
-      { runMutation: operation => mutationGate.run(operation) },
+    createLearningAttentionRpcHandler(
+      () => factory.currentDomain,
+      createPurgeRpcHandler(
+        () => factory.currentPurgeService,
+        reviewRpc,
+        { runMutation: operation => mutationGate.run(operation) },
+      ),
+      {
+        onRetry: () => { factory.wakeLearning() },
+        visibility: domain => new PurgeVisibility(domain),
+        runMutation: operation => mutationGate.run(operation),
+        diagnostics: () => factory.currentDiagnosticStore,
+      },
     ),
   )
 
