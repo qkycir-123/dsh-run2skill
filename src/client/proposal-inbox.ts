@@ -326,7 +326,19 @@ export class ProposalInboxController {
     if (this.#disposed) return
     this.#publish({ ...this.#state, open: true })
     await this.whenIdle()
-    if (!this.#disposed && this.#state.open) await this.#loadList()
+    if (this.#disposed || !this.#state.open) return
+    if (this.options.attentionDriven === true && this.#scopeAccess().actions.length === 0) {
+      this.#publish({
+        ...this.#state,
+        listPhase: 'READY',
+        items: [],
+        selectedProposalId: undefined,
+        detailPhase: 'IDLE',
+        detail: undefined,
+      })
+      return
+    }
+    await this.#loadList()
   }
 
   close(): void {
@@ -452,6 +464,17 @@ export class ProposalInboxController {
   async #refreshWithin(signal: AbortSignal): Promise<void> {
     if (this.options.attentionDriven === true) {
       if (!this.#state.open) return
+      if (this.#scopeAccess().actions.length === 0) {
+        this.#publish({
+          ...this.#state,
+          listPhase: 'READY',
+          items: [],
+          selectedProposalId: undefined,
+          detailPhase: 'IDLE',
+          detail: undefined,
+        })
+        return
+      }
       await this.#loadListWithin(signal)
       await this.#refreshPublishingDetailWithin(signal)
       return
@@ -493,7 +516,9 @@ export class ProposalInboxController {
   }
 
   async #loadListWithin(signal: AbortSignal): Promise<void> {
-    this.#publish({ ...this.#state, listPhase: 'LOADING' })
+    if (this.#state.listPhase !== 'READY') {
+      this.#publish({ ...this.#state, listPhase: 'LOADING' })
+    }
     const items: ProposalListItem[] = []
     let cursor: string | undefined
     for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
@@ -537,7 +562,10 @@ export class ProposalInboxController {
 
   #schedule(): void {
     if (this.#disposed || !this.#active) return
-    const delay = this.#state.open ? PROPOSAL_ACTIVE_POLL_INTERVAL_MS : PROPOSAL_POLL_INTERVAL_MS
+    const hasVisibleWork = this.options.attentionDriven !== true || this.#scopeAccess().actions.length > 0
+    const delay = this.#state.open && hasVisibleWork
+      ? PROPOSAL_ACTIVE_POLL_INTERVAL_MS
+      : PROPOSAL_POLL_INTERVAL_MS
     if (this.#timer !== undefined && this.#timerDelay === delay) return
     this.#unschedule()
     this.#timerDelay = delay

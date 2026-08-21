@@ -186,9 +186,9 @@ describe('Proposal Inbox client', () => {
       announcement: '',
     }
     for (const [status, copy] of [
-      ['RECOVERING', 'run2skill 正在恢复历史观察'],
-      ['DEGRADED', 'run2skill 当前功能受限'],
-      ['INCOMPATIBLE', 'run2skill 当前版本不兼容'],
+      ['RECOVERING', 'Run2Skill 正在恢复历史观察'],
+      ['DEGRADED', 'Run2Skill 当前功能受限'],
+      ['INCOMPATIBLE', 'Run2Skill 当前版本不兼容'],
     ] as const) {
       expect(describeProposalSummaryState({
         ...base,
@@ -335,7 +335,14 @@ describe('Proposal Inbox client', () => {
 
   it('uses Attention as the only queue summary when embedded in the settings surface', async () => {
     const domain = createMemoryRun2skillDomain()
-    const { host } = await securedReview(domain)
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const { host, scopeAccess } = await securedReview(domain)
     const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
       await host(endpoint, payload, signal)
     ))
@@ -344,7 +351,7 @@ describe('Proposal Inbox client', () => {
       'workspace-fixture',
       call,
       environment,
-      { attentionDriven: true },
+      { attentionDriven: true, scopeAccess },
     )
 
     controller.start()
@@ -356,6 +363,70 @@ describe('Proposal Inbox client', () => {
     const listPayload = call.mock.calls.find(([endpoint]) => endpoint === 'proposals/list')?.[1]
     expect(listPayload).toMatchObject({ limit: 20 })
     expect(listPayload).not.toHaveProperty('actions')
+    controller.dispose()
+  })
+
+  it('keeps the ready list visible while an active background refresh is pending', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const { host, scopeAccess } = await securedReview(domain)
+    const refresh = deferred<unknown>()
+    let deferNextList = false
+    const environment = fakeEnvironment()
+    const controller = new ProposalInboxController(
+      'workspace-fixture',
+      async (endpoint, payload, signal) => {
+        if (endpoint === 'proposals/list' && deferNextList) return await refresh.promise
+        return await host(endpoint, payload, signal)
+      },
+      environment,
+      { attentionDriven: true, scopeAccess },
+    )
+
+    controller.start()
+    await controller.whenIdle()
+    await controller.open()
+    expect(controller.snapshot()).toMatchObject({ listPhase: 'READY', items: [{ workItemId: item.workItemId }] })
+
+    deferNextList = true
+    environment.tick()
+    await Promise.resolve()
+    expect(controller.snapshot()).toMatchObject({ listPhase: 'READY', items: [{ workItemId: item.workItemId }] })
+
+    deferNextList = false
+    refresh.resolve(await host('proposals/list', {
+      apiVersion: 1,
+      currentScope,
+      limit: 20,
+    }, new AbortController().signal))
+    await controller.whenIdle()
+    expect(controller.snapshot()).toMatchObject({ listPhase: 'READY', items: [{ workItemId: item.workItemId }] })
+    controller.dispose()
+  })
+
+  it('does not enter active polling or load Proposal data when Attention has no Proposal action', async () => {
+    const call = vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [] } }))
+    const environment = fakeEnvironment()
+    const controller = new ProposalInboxController(
+      'workspace-fixture',
+      call,
+      environment,
+      { attentionDriven: true, scopeAccess: () => ({ currentScope, actions: [] }) },
+    )
+
+    controller.start()
+    await controller.whenIdle()
+    await controller.open()
+
+    expect(call).not.toHaveBeenCalled()
+    expect(controller.snapshot()).toMatchObject({ listPhase: 'READY', items: [] })
+    expect(environment.timerDelay()).toBe(10_000)
     controller.dispose()
   })
 

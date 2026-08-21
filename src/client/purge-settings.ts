@@ -151,12 +151,12 @@ function parseValue<T>(schema: z.ZodType<T>, response: unknown): T {
 }
 
 function completionAnnouncement(scope: PurgeScope | undefined, receipt: PurgeReceipt): string {
-  const subject = scope === undefined ? 'run2skill 数据' : `${scope} run2skill 数据`
+  const subject = scope === undefined ? 'Run2Skill 数据' : `${scope} Run2Skill 数据`
   return `${subject}清理完成：${String(receipt.deletedWorkItems)} 条待处理数据，${String(receipt.deletedLineages)} 条 Skill 关联记录。`
 }
 
 function polledCompletionAnnouncement(scope: PurgeScope | undefined): string {
-  return `${scope === undefined ? '' : `${scope} `}run2skill 数据清理完成。`
+  return `${scope === undefined ? '' : `${scope} `}Run2Skill 数据清理完成。`
 }
 
 function errorAnnouncement(error: PurgeClientError, durableBoundary = false): string {
@@ -403,7 +403,7 @@ export class PurgeSettingsController {
       mutationPending: false,
       preview: undefined,
       inProgressReceipt: receipt,
-      announcement: `run2skill 数据清理进行中：${receipt.phase ?? 'HIDING'}。`,
+      announcement: `Run2Skill 数据清理进行中：${receipt.phase ?? 'HIDING'}。`,
     })
   }
 
@@ -583,8 +583,8 @@ function PurgeConfirmationDialog(props: {
   if (preview === undefined || scope === undefined) return null
   return createElement(Modal, {
     open: true,
-    title: `确认清理 ${scope} run2skill 数据？`,
-    description: '此操作只清理本次预览边界内的 run2skill 数据，不会卸载插件。',
+    title: `确认清理 ${scope} Run2Skill 数据？`,
+    description: '此操作只清理本次预览边界内的 Run2Skill 数据，不会卸载插件。',
     closeLabel: '关闭清理确认框',
     onClose: () => { props.controller.cancelPreview() },
     footer: createElement('div', { className: css.actions },
@@ -621,7 +621,7 @@ function PurgeConfirmationDialog(props: {
     },
       createElement('ul', null,
         createElement('li', null,
-          '删除 run2skill 保存的技能草稿、经过筛选的学习材料、待处理记录、版本信息和相关运行记录。',
+          '删除 Run2Skill 保存的技能草稿、经过筛选的学习材料、待处理记录、版本信息和相关运行记录。',
         ),
         createElement('li', null, '保留 DSH 的原始会话记录。'),
         createElement('li', null, '保留所有已发布的原生 Skill。'),
@@ -655,8 +655,8 @@ export function PurgeSettingsSection(props: {
   const activePhase = active?.phase ?? activeReceipt?.phase ?? (activeReceipt === undefined ? undefined : 'HIDING')
   const disabled = state.previewPending || state.mutationPending || active !== undefined || activeReceipt !== undefined
   return createElement('section', { 'aria-labelledby': 'run2skill-purge-heading' },
-    createElement('h3', { id: 'run2skill-purge-heading' }, '清理 run2skill 数据'),
-    createElement('p', null, '清理只影响 run2skill 保存的数据；不会删除 DSH 的原始会话记录或已发布 Skill。'),
+    createElement('h3', { id: 'run2skill-purge-heading' }, '清理 Run2Skill 数据'),
+    createElement('p', null, '清理只影响 Run2Skill 保存的数据；不会删除 DSH 的原始会话记录或已发布 Skill。'),
     createElement('div', { className: css.actions },
     createElement(Button, {
       variant: 'outline',
