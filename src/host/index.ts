@@ -236,6 +236,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     const domain = await openRun2skillDomain(this.context)
     let diagnosticDomain: LearningDiagnosticDomain | undefined
     let diagnosticStore: LearningDiagnosticStore | undefined
+    let diagnosticDeletionReady = false
     this.currentDomain = domain
     try {
       try {
@@ -248,6 +249,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         this.currentDiagnosticStore = diagnosticStore
         try {
           await diagnosticStore.cleanupOrphans()
+          diagnosticDeletionReady = true
         } catch {
           this.notices.record({ healthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE', sessionId: 'global' })
         }
@@ -260,6 +262,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         }
         diagnosticDomain = undefined
         diagnosticStore = undefined
+        diagnosticDeletionReady = false
         this.currentDiagnosticStore = undefined
       }
       const checkpoint = new WriteBehindCheckpoint(domain)
@@ -434,6 +437,11 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       }
       const purgeDiagnostics = diagnosticStore
       const purgeService = new PurgeService(domain, scopeResolver, {
+        assertDeletionReady: () => {
+          if (purgeDiagnostics === undefined || !diagnosticDeletionReady) {
+            throw new Error('Learning diagnostic sidecar unavailable')
+          }
+        },
         ...(purgeDiagnostics === undefined
           ? {}
           : { beforeDeleteWorkItem: async (id: string) => await purgeDiagnostics.deleteWorkItemWithinMutation(id) }),

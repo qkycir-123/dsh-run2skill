@@ -3,6 +3,7 @@ import { apply, inject, name } from '../src/host/index.js'
 import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { createMemoryLearningDiagnosticDomain } from './support/memory-learning-diagnostic-domain.js'
+import { makeWorkItem } from './support/work-item-fixture.js'
 import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
 
 function settingsService(): DshSettingsPort {
@@ -331,6 +332,27 @@ describe('Host plugin assembly', () => {
 
   it('continues with the main domain and exposes a non-sensitive health code when sidecar open fails', async () => {
     const domain = createMemoryRun2skillDomain()
+    const sidecar = createMemoryLearningDiagnosticDomain()
+    const base = makeWorkItem()
+    const item = {
+      ...base,
+      processingState: 'LEARNED' as const,
+      learning: { proposal: { persistenceScope: 'USER' as const } } as never,
+    }
+    domain.workItems.set(item.workItemId, item)
+    sidecar.records.set(`${item.workItemId}:1:1`, {
+      schemaVersion: 1,
+      workItemId: item.workItemId,
+      workItemRevision: item.revision,
+      attempt: 1,
+      requestOrdinal: 1,
+      callKind: 'PRIMARY',
+      callOutcome: 'FAILED',
+      failureCode: 'MODEL_TERMINAL_FAILURE',
+      failureOccurredAt: '2026-08-20T00:00:01.000Z',
+      detail: 'MODEL_USAGE_INVALID',
+    })
+    let sidecarAvailable = false
     let rpcHandler: ObserveSummaryRpcHandler | undefined
     const context = {
       ...learningServices(),
@@ -341,7 +363,10 @@ describe('Host plugin assembly', () => {
       },
       storageDomain: {
         async open(spec: { readonly name: string }) {
-          if (spec.name === 'run2skill_learning_diagnostics_v1') throw new Error('synthetic sidecar open failure')
+          if (spec.name === 'run2skill_learning_diagnostics_v1') {
+            if (!sidecarAvailable) throw new Error('synthetic sidecar open failure')
+            return sidecar
+          }
           return domain
         },
       },
@@ -359,6 +384,30 @@ describe('Host plugin assembly', () => {
       ok: true,
       value: { status: 'READY', lastHealthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE' },
     })
+    for (const request of [
+      { apiVersion: 1 as const, scope: 'USER' as const },
+      { apiVersion: 1 as const, scope: 'PROJECT' as const, workspaceId: 'workspace-1' },
+    ]) {
+      await expect(rpcHandler?.('purge/preview', request, new AbortController().signal))
+        .resolves.toMatchObject({ ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' } })
+    }
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
     await dispose()
+
+    sidecarAvailable = true
+    const recoveredDispose = await apply(context)
+    const preview = await rpcHandler?.(
+      'purge/preview', { apiVersion: 1, scope: 'USER' }, new AbortController().signal,
+    )
+    expect(preview).toMatchObject({ ok: true })
+    if (preview === undefined || !preview.ok) throw new Error('expected recovered purge preview')
+    const value = preview.value as { previewId: string; digest: string }
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { state: 'COMPLETED' } })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+    expect(sidecar.records.size).toBe(0)
+    await recoveredDispose()
   })
 })
