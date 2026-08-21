@@ -34,16 +34,14 @@ export class SessionBatchStateConflictError extends Error {
   }
 }
 
-export interface SessionBatchFreezeContext {
-  readonly batchManifestBaseline: SessionBatchV2['batchManifestBaseline']
-  readonly routeSnapshot: SessionBatchV2['routeSnapshot']
-}
-
 export interface SessionBatchCoordinatorOptions {
-  readonly freezeContext: (
+  readonly captureBaseline: (
+    sessionLifecycleKey: string,
+  ) => Promise<SessionBatchV2['batchManifestBaseline']>
+  readonly captureRouteSnapshot: (
     sessionLifecycleKey: string,
     observations: readonly TurnObservationV2[],
-  ) => Promise<SessionBatchFreezeContext>
+  ) => Promise<SessionBatchV2['routeSnapshot']>
   readonly now?: () => number
   readonly detectorPolicyVersion?: string
 }
@@ -68,6 +66,11 @@ function withoutUndefinedActiveBatch(
   return rest
 }
 
+function withoutBatchManifestBaseline(cursor: SessionCursorV2): SessionCursorV2 {
+  const { batchManifestBaseline: _batchManifestBaseline, ...rest } = cursor
+  return rest
+}
+
 function canonicalReasons(reasons: Iterable<SessionBatchV2['triggerReasons'][number]>): SessionBatchV2['triggerReasons'] {
   const unique = new Set(reasons)
   return TRIGGER_ORDER.filter(reason => unique.has(reason))
@@ -82,19 +85,42 @@ export class SessionBatchCoordinator {
   readonly #global: Run2skillV2GlobalStore
   readonly #observations
   readonly #batches
-  readonly #freezeContext
+  readonly #captureBaseline
+  readonly #captureRouteSnapshot
   readonly #now
   readonly #detectorPolicyVersion
   #recovered = false
-  #recovery: Promise<readonly SessionBatchV2[]> | undefined
+  #recovery: Promise<void> | undefined
 
   constructor(domain: Run2skillV2Domain, options: SessionBatchCoordinatorOptions) {
     this.#global = Run2skillV2GlobalStore.for(domain)
     this.#observations = domain.table('turn_observations')
     this.#batches = domain.table('session_batches')
-    this.#freezeContext = options.freezeContext
+    this.#captureBaseline = options.captureBaseline
+    this.#captureRouteSnapshot = options.captureRouteSnapshot
     this.#now = options.now ?? Date.now
     this.#detectorPolicyVersion = options.detectorPolicyVersion ?? SESSION_BATCH_DETECTOR_POLICY_VERSION
+  }
+
+  prepareSessionWindow(sessionLifecycleKey: string): Promise<boolean> {
+    return this.#global.runExclusive(async current => {
+      const cursor = current.sessions[sessionLifecycleKey]
+      if (cursor?.batchManifestBaseline !== undefined) return { value: false }
+      const baseline = await this.#safeBaseline(sessionLifecycleKey, true)
+      const nextCursor: SessionCursorV2 = {
+        observedThroughTurnEndSeq: cursor?.observedThroughTurnEndSeq ?? 0,
+        detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
+        ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
+        ...(cursor?.lastActivityAt === undefined ? {} : { lastActivityAt: cursor.lastActivityAt }),
+        batchManifestBaseline: baseline,
+        openExperienceCarry: cursor?.openExperienceCarry ?? [],
+        updatedAt: this.#isoNow(),
+      }
+      return {
+        value: true,
+        global: { ...current, sessions: { ...current.sessions, [sessionLifecycleKey]: nextCursor } },
+      }
+    })
   }
 
   recordObservation(value: TurnObservationV2): Promise<ObservationBatchResult> {
@@ -114,11 +140,15 @@ export class SessionBatchCoordinator {
 
       const observationChanged = stored === undefined
       if (observationChanged) await this.#observations.put(observation.observationId, observation)
-      const nextCursor: GlobalV2['sessions'][string] = {
+      const baseline = cursor?.batchManifestBaseline ?? (
+        stored === undefined ? await this.#safeBaseline(observation.sessionLifecycleKey, false) : undefined
+      )
+      const nextCursor: SessionCursorV2 = {
         observedThroughTurnEndSeq: Math.max(cursor?.observedThroughTurnEndSeq ?? 0, observation.turnEndSeq),
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
         lastActivityAt: latestIso(cursor?.lastActivityAt, observation.observedAt),
+        ...(baseline === undefined ? {} : { batchManifestBaseline: baseline }),
         openExperienceCarry: cursor?.openExperienceCarry ?? [],
         updatedAt: this.#isoNow(),
       }
@@ -151,27 +181,22 @@ export class SessionBatchCoordinator {
     })
   }
 
-  recover(now = this.#now()): Promise<readonly SessionBatchV2[]> {
-    if (this.#recovered) return Promise.resolve([])
-    if (this.#recovery !== undefined) return this.#recovery.then(() => [])
+  recover(now = this.#now()): Promise<void> {
+    if (this.#recovered) return Promise.resolve()
+    if (this.#recovery !== undefined) return this.#recovery
     const attempt = this.#global.runExclusive(async current => {
       let next = this.#rebuildCursors(current)
-      const runnable = new Map<string, SessionBatchV2>()
       for (const lifecycleKey of Object.keys(next.sessions).sort()) {
-        const activeId = next.sessions[lifecycleKey]?.activeBatchId
-        if (activeId !== undefined) {
-          const active = this.#batches.get(activeId)
-          if (active?.state === 'FROZEN') runnable.set(active.batchId, active)
-          continue
-        }
+      const activeId = next.sessions[lifecycleKey]?.activeBatchId
+      if (activeId !== undefined) {
+        continue
+      }
         const result = await this.#freezeOne(next, lifecycleKey, now)
         next = result.global
-        if (result.batch !== undefined) runnable.set(result.batch.batchId, result.batch)
       }
-      return { value: [...runnable.values()], global: next }
-    }).then((batches) => {
+      return { value: undefined, global: next }
+    }).then(() => {
       this.#recovered = true
-      return batches
     })
     this.#recovery = attempt
     return attempt.finally(() => {
@@ -231,6 +256,9 @@ export class SessionBatchCoordinator {
         ),
         ...(existing?.activeBatchId === undefined ? {} : { activeBatchId: existing.activeBatchId }),
         lastActivityAt: latestIso(existing?.lastActivityAt, tail.observedAt),
+        ...(existing?.batchManifestBaseline === undefined
+          ? {}
+          : { batchManifestBaseline: existing.batchManifestBaseline }),
         openExperienceCarry: existing?.openExperienceCarry ?? [],
         updatedAt: this.#isoNow(),
       }
@@ -275,7 +303,8 @@ export class SessionBatchCoordinator {
     if (candidate === undefined) return { global: current, changed: false }
     const first = candidate.observations[0]!
     const last = candidate.observations.at(-1)!
-    const context = await this.#freezeContext(lifecycleKey, candidate.observations)
+    const baseline = cursor.batchManifestBaseline ?? await this.#safeBaseline(lifecycleKey, false)
+    const routeSnapshot = await this.#captureRouteSnapshot(lifecycleKey, candidate.observations)
     const facts = {
       sessionLifecycleKey: lifecycleKey,
       firstTurnEndSeq: first.turnEndSeq,
@@ -314,7 +343,11 @@ export class SessionBatchCoordinator {
           ...current,
           sessions: {
             ...current.sessions,
-            [lifecycleKey]: { ...cursor, activeBatchId: existing.batchId, updatedAt: this.#isoNow() },
+            [lifecycleKey]: {
+              ...withoutBatchManifestBaseline(cursor),
+              activeBatchId: existing.batchId,
+              updatedAt: this.#isoNow(),
+            },
           },
         },
       }
@@ -328,9 +361,9 @@ export class SessionBatchCoordinator {
       triggerReasons: canonicalReasons(candidate.reasons),
       observationManifest,
       observationManifestDigest: sha256Utf8(canonicalJson(observationManifest)),
-      batchManifestBaseline: context.batchManifestBaseline,
+      batchManifestBaseline: baseline,
       manifestEndObservation: { state: 'PENDING' },
-      routeSnapshot: context.routeSnapshot,
+      routeSnapshot,
       detector: { result: 'NOT_RUN', calls: [], intentIds: [] },
       state: 'FROZEN',
       createdAt: now,
@@ -344,7 +377,11 @@ export class SessionBatchCoordinator {
         ...current,
         sessions: {
           ...current.sessions,
-          [lifecycleKey]: { ...cursor, activeBatchId: batch.batchId, updatedAt: now },
+          [lifecycleKey]: {
+            ...withoutBatchManifestBaseline(cursor),
+            activeBatchId: batch.batchId,
+            updatedAt: now,
+          },
         },
       },
     }
@@ -382,5 +419,22 @@ export class SessionBatchCoordinator {
 
   #isoNow(): string {
     return new Date(this.#now()).toISOString()
+  }
+
+  async #safeBaseline(
+    sessionLifecycleKey: string,
+    atPreTurnBoundary: boolean,
+  ): Promise<SessionBatchV2['batchManifestBaseline']> {
+    try {
+      const baseline = await this.#captureBaseline(sessionLifecycleKey)
+      return { ...baseline, complete: atPreTurnBoundary && baseline.complete }
+    } catch {
+      return {
+        observedAt: this.#isoNow(),
+        rootManifestDigest: sha256Utf8(''),
+        runtimeCatalogDigest: sha256Utf8(''),
+        complete: false,
+      }
+    }
   }
 }

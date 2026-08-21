@@ -1117,6 +1117,7 @@ const SessionCursorV2Schema = z.object({
   detectedThroughTurnEndSeq: safeNonNegativeInteger,
   activeBatchId: z.string().regex(/^batch_[a-f0-9]{64}$/).optional(),
   lastActivityAt: isoDateTime.optional(),
+  batchManifestBaseline: BatchManifestBaselineV2Schema.optional(),
   openExperienceCarry: z.array(z.object({
     summary: z.string().min(1).max(2048),
     behaviorSignatureDraft: sha256Hex,

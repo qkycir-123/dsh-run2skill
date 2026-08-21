@@ -1,19 +1,19 @@
-import type { SessionBatchV2, TurnObservationV2 } from '../../domain/v2/index.js'
-import type { ObservationBatchResult, SessionBatchCoordinator } from './session-batch-coordinator.js'
+import type { TurnObservationV2 } from '../../domain/v2/index.js'
+import type { SessionBatchCoordinator } from './session-batch-coordinator.js'
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 export interface SessionBatchSchedulerOptions {
   readonly coordinator: SessionBatchCoordinator
-  readonly onFrozen: (batch: SessionBatchV2) => unknown | Promise<unknown>
   readonly now?: () => number
   readonly setTimer?: (callback: () => void, delay: number) => unknown
   readonly clearTimer?: (handle: unknown) => void
 }
 
+// This scheduler only freezes authoritative work. The Detector worker must scan
+// the durable table and claim FROZEN batches before making any model call.
 export class SessionBatchScheduler {
   readonly #coordinator
-  readonly #onFrozen
   readonly #now
   readonly #setTimer
   readonly #clearTimer
@@ -24,7 +24,6 @@ export class SessionBatchScheduler {
 
   constructor(options: SessionBatchSchedulerOptions) {
     this.#coordinator = options.coordinator
-    this.#onFrozen = options.onFrozen
     this.#now = options.now ?? Date.now
     this.#setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.#clearTimer = options.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
@@ -35,7 +34,15 @@ export class SessionBatchScheduler {
     if (this.#started) return await this.settle()
     this.#started = true
     return await this.#enqueue(async () => {
-      await this.#emit(await this.#coordinator.recover(this.#now()))
+      await this.#coordinator.recover(this.#now())
+    })
+  }
+
+  async prepareSessionWindow(sessionLifecycleKey: string): Promise<void> {
+    if (this.#disposed) throw new Error('SessionBatchScheduler is disposed')
+    if (!this.#started) await this.start()
+    await this.#enqueue(async () => {
+      await this.#coordinator.prepareSessionWindow(sessionLifecycleKey)
     })
   }
 
@@ -43,15 +50,14 @@ export class SessionBatchScheduler {
     if (this.#disposed) throw new Error('SessionBatchScheduler is disposed')
     if (!this.#started) await this.start()
     return await this.#enqueue(async () => {
-      const result = await this.#coordinator.recordObservation(observation)
-      await this.#emitObservationResult(result)
+      await this.#coordinator.recordObservation(observation)
     })
   }
 
   wake(): void {
     if (!this.#started || this.#disposed) return
     void this.#enqueue(async () => {
-      await this.#emit(await this.#coordinator.flushIdle(this.#now()))
+      await this.#coordinator.flushIdle(this.#now())
     })
   }
 
@@ -72,14 +78,6 @@ export class SessionBatchScheduler {
       () => { this.#schedule() },
     )
     return result
-  }
-
-  async #emitObservationResult(result: ObservationBatchResult): Promise<void> {
-    if (result.batchChanged && result.batch !== undefined) await this.#onFrozen(result.batch)
-  }
-
-  async #emit(batches: readonly SessionBatchV2[]): Promise<void> {
-    for (const batch of batches) await this.#onFrozen(batch)
   }
 
   #schedule(): void {

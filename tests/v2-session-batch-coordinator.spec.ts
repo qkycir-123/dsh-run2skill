@@ -68,10 +68,19 @@ function context() {
   }
 }
 
+function coordinatorOptions(overrides?: {
+  readonly captureBaseline?: () => Promise<ReturnType<typeof context>['batchManifestBaseline']>
+}) {
+  return {
+    captureBaseline: overrides?.captureBaseline ?? (async () => context().batchManifestBaseline),
+    captureRouteSnapshot: async () => context().routeSnapshot,
+  }
+}
+
 describe('v2 SessionBatch coordinator', () => {
   it('persists ordinary turns without a model claim and freezes exactly at the fifth complete turn', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const coordinator = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
     let latest
     for (let index = 1; index <= 5; index += 1) {
       latest = await coordinator.recordObservation(observation({ seq: index * 10, observedAt: index * MINUTE }))
@@ -90,7 +99,7 @@ describe('v2 SessionBatch coordinator', () => {
 
   it('freezes explicit save immediately and merges simultaneous threshold reason into one deterministic batch', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const coordinator = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
     for (let index = 1; index < 5; index += 1) {
       await coordinator.recordObservation(observation({ seq: index, observedAt: index * MINUTE }))
     }
@@ -105,7 +114,7 @@ describe('v2 SessionBatch coordinator', () => {
 
   it('uses the durable last activity for idle flush and stale timer wakeups cannot freeze a newer session tail', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const coordinator = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
     await coordinator.recordObservation(observation({ seq: 10, observedAt: 0 }))
     expect(coordinator.nextIdleAt()).toBe(IDLE)
     await coordinator.recordObservation(observation({ seq: 20, observedAt: IDLE - 1 }))
@@ -118,7 +127,7 @@ describe('v2 SessionBatch coordinator', () => {
 
   it('does not count incomplete turns as threshold progress or skip them out of a later frozen range', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const coordinator = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
     for (let index = 1; index <= 4; index += 1) {
       await coordinator.recordObservation(observation({ seq: index, observedAt: index, complete: index !== 3 }))
     }
@@ -132,13 +141,14 @@ describe('v2 SessionBatch coordinator', () => {
 
   it('recovers an idle durable tail once and reattaches a batch written before the cursor update', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const first = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const first = new SessionBatchCoordinator(domain, coordinatorOptions())
     for (let index = 1; index <= 3; index += 1) {
       await first.recordObservation(observation({ seq: index, observedAt: index * MINUTE }))
     }
-    const recovered = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
-    expect(await recovered.recover(40 * MINUTE)).toHaveLength(1)
-    expect(await recovered.recover(40 * MINUTE)).toHaveLength(0)
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await recovered.recover(40 * MINUTE)
+    await recovered.recover(40 * MINUTE)
+    expect(domain.sessionBatches.size).toBe(1)
 
     const batch = [...domain.sessionBatches.values()][0]!
     const global = domain.global.get()
@@ -152,7 +162,7 @@ describe('v2 SessionBatch coordinator', () => {
         },
       },
     })
-    const reattached = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const reattached = new SessionBatchCoordinator(domain, coordinatorOptions())
     await reattached.recover(40 * MINUTE)
     expect(domain.global.get().sessions[batch.sessionLifecycleKey]?.activeBatchId).toBe(batch.batchId)
     expect(domain.sessionBatches.size).toBe(1)
@@ -160,20 +170,42 @@ describe('v2 SessionBatch coordinator', () => {
 
   it('coalesces concurrent startup recovery so a frozen batch is dispatched once', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const first = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const first = new SessionBatchCoordinator(domain, coordinatorOptions())
     await first.recordObservation(observation({ seq: 1, observedAt: 0 }))
-    const recovered = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
-    const [left, right] = await Promise.all([
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await Promise.all([
       recovered.recover(40 * MINUTE),
       recovered.recover(40 * MINUTE),
     ])
-    expect([...left, ...right]).toHaveLength(1)
     expect(domain.sessionBatches.size).toBe(1)
+  })
+
+  it('durably captures the batch baseline before the first Agent turn and never refreshes it at freeze', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    let digest = '1'.repeat(64)
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions({
+      captureBaseline: async () => ({ ...context().batchManifestBaseline, rootManifestDigest: digest }),
+    }))
+    await coordinator.prepareSessionWindow(createMinimalV2Fixtures().turnObservation.sessionLifecycleKey)
+    digest = '2'.repeat(64)
+    for (let index = 1; index <= 5; index += 1) {
+      await coordinator.recordObservation(observation({ seq: index, observedAt: index }))
+    }
+    expect([...domain.sessionBatches.values()][0]?.batchManifestBaseline.rootManifestDigest).toBe('1'.repeat(64))
+  })
+
+  it('marks a late baseline incomplete when activation missed the pre-turn boundary', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
+    for (let index = 1; index <= 5; index += 1) {
+      await coordinator.recordObservation(observation({ seq: index, observedAt: index }))
+    }
+    expect([...domain.sessionBatches.values()][0]?.batchManifestBaseline.complete).toBe(false)
   })
 
   it('rejects changed facts at an existing observation identity', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    const coordinator = new SessionBatchCoordinator(domain, { freezeContext: async () => context() })
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
     const original = observation({ seq: 10, observedAt: 0 })
     await coordinator.recordObservation(original)
     await expect(coordinator.recordObservation({

@@ -48,46 +48,42 @@ function scheduledObservation(seq: number, observedAt: number) {
 }
 
 describe('v2 SessionBatch scheduler', () => {
-  it('arms one durable idle deadline and emits a frozen batch once', async () => {
+  it('arms one durable idle deadline and freezes one authoritative batch', async () => {
     let now = 0
     const timer = new ManualTimer()
     const domain = createMemoryRun2skillV2Domain()
     const coordinator = new SessionBatchCoordinator(domain, {
-      freezeContext: async () => ({
-        batchManifestBaseline: {
+      captureBaseline: async () => ({
           observedAt: new Date(now).toISOString(),
           rootManifestDigest: '1'.repeat(64),
           runtimeCatalogDigest: '2'.repeat(64),
           complete: true,
-        },
-        routeSnapshot: {
+      }),
+      captureRouteSnapshot: async () => ({
           provider: 'deepseek-official',
           model: 'deepseek-chat',
           policyVersion: 'batch-detector-v1',
           maxInputBytes: 128 * 1024,
           maxOutputBytes: 8 * 1024,
-        },
       }),
     })
-    const emitted: string[] = []
     const scheduler = new SessionBatchScheduler({
       coordinator,
       now: () => now,
       setTimer: timer.set,
       clearTimer: timer.clear,
-      onFrozen: batch => { emitted.push(batch.batchId) },
     })
     await scheduler.start()
+    await scheduler.prepareSessionWindow(createMinimalV2Fixtures().turnObservation.sessionLifecycleKey)
     await scheduler.observe(scheduledObservation(10, now))
     expect(timer.delay).toBe(30 * 60_000)
     now = 30 * 60_000
     timer.fire()
     await scheduler.settle()
-    expect(emitted).toHaveLength(1)
     expect(domain.sessionBatches.size).toBe(1)
     scheduler.wake()
     await scheduler.settle()
-    expect(emitted).toHaveLength(1)
+    expect(domain.sessionBatches.size).toBe(1)
     await scheduler.dispose()
   })
 })
