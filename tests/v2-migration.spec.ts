@@ -1,0 +1,152 @@
+import { describe, expect, it } from 'vitest'
+import { migrateRun2skillV1ToV2 } from '../src/application/migration/v1-to-v2.js'
+import { materializeLegacyItemV2 } from '../src/adapters/dsh-storage/legacy-v1-adapter.js'
+import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
+import { makeLearnedWorkItem } from './support/review-fixture.js'
+import { makeWorkItem } from './support/work-item-fixture.js'
+import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
+
+const NOW = '2026-08-22T00:00:00.000Z'
+
+describe('run2skill_v1 -> run2skill_v2 migration', () => {
+  it('copies deterministic legacy envelopes and commits activation without writing v1', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const captured = makeWorkItem()
+    const learned = makeLearnedWorkItem({
+      signalKey: {
+        ...captured.signalKey,
+        turn: 3,
+        turnEndSeq: 20,
+        turnInstanceDigest: 'e'.repeat(64),
+      },
+    })
+    v1.workItems.set(captured.workItemId, captured)
+    v1.workItems.set(learned.workItemId, learned)
+    const legacyLineage = createMinimalV2Fixtures().proposalLineage.legacySnapshot
+    v1.lineages.set(legacyLineage.lineageId, legacyLineage)
+    await v1.global.set({
+      ...v1.global.get(),
+      completedPurgeFences: {
+        schemaVersion: 1,
+        user: {
+          schemaVersion: 1,
+          scope: 'USER',
+          purgeId: `purge_${'a'.repeat(64)}`,
+          completedAt: NOW,
+          hideBefore: NOW,
+        },
+        projects: {},
+      },
+    })
+    v1.writeLog.length = 0
+    const v1Before = structuredClone([...v1.workItems.entries()])
+    const v2 = createMemoryRun2skillV2Domain()
+
+    const result = await migrateRun2skillV1ToV2(v1, v2, { now: () => NOW })
+
+    expect(result.status).toBe('COMMITTED')
+    expect(v2.global.get().migration.phase).toBe('COMMITTED')
+    expect(v2.legacyItems.size).toBe(2)
+    expect(v2.proposalLineages.get(legacyLineage.lineageId)?.legacySnapshot).toEqual(legacyLineage)
+    expect(v2.global.get().legacyCompletedPurgeFences).toEqual(v1.global.get().completedPurgeFences)
+    expect([...v1.workItems.entries()]).toEqual(v1Before)
+    expect(v1.writeLog).toEqual([])
+  })
+
+  it('resumes an interrupted deterministic copy without duplicating records', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const item = makeWorkItem()
+    v1.workItems.set(item.workItemId, item)
+    const v2 = createMemoryRun2skillV2Domain()
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, {
+      now: () => NOW,
+      afterPhase: phase => {
+        if (phase === 'COPYING') throw new Error('synthetic process stop')
+      },
+    })).rejects.toThrow('synthetic process stop')
+    expect(v2.global.get().migration.phase).toBe('COPYING')
+    const partial = materializeLegacyItemV2(item, NOW)
+    await v2.table('legacy_items').put(partial.legacyItemId, partial)
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, { now: () => NOW }))
+      .resolves.toMatchObject({ status: 'COMMITTED' })
+    expect(v2.legacyItems.size).toBe(1)
+    await expect(migrateRun2skillV1ToV2(v1, v2, { now: () => NOW }))
+      .resolves.toMatchObject({ status: 'ALREADY_COMMITTED' })
+  })
+
+  it('detects a changed v1 snapshot before commit instead of activating a partial copy', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const first = makeWorkItem()
+    v1.workItems.set(first.workItemId, first)
+    const v2 = createMemoryRun2skillV2Domain()
+    let changed = false
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, {
+      now: () => NOW,
+      afterPhase: (phase) => {
+        if (phase !== 'VALIDATING' || changed) return
+        changed = true
+        const second = makeWorkItem({
+          signalKey: {
+            ...first.signalKey,
+            turn: 9,
+            turnEndSeq: 90,
+            turnInstanceDigest: '8'.repeat(64),
+          },
+        })
+        v1.workItems.set(second.workItemId, second)
+      },
+    })).rejects.toThrow(/SOURCE_CHANGED_DURING_MIGRATION/)
+    expect(v2.global.get().migration).toMatchObject({
+      phase: 'FAILED',
+      failureCode: 'SOURCE_CHANGED_DURING_MIGRATION',
+    })
+    expect(v2.global.get().activation).toBeUndefined()
+  })
+
+  it('marks a conflicting partial v2 identity as FAILED instead of overwriting it', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const item = makeWorkItem()
+    v1.workItems.set(item.workItemId, item)
+    const v2 = createMemoryRun2skillV2Domain()
+    await expect(migrateRun2skillV1ToV2(v1, v2, {
+      now: () => NOW,
+      afterPhase: () => { throw new Error('synthetic process stop') },
+    })).rejects.toThrow('synthetic process stop')
+    const partial = materializeLegacyItemV2(item, NOW)
+    v2.legacyItems.set(partial.legacyItemId, { ...partial, sourceDigest: 'f'.repeat(64) })
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, { now: () => NOW }))
+      .rejects.toThrow(/V2_IDENTITY_CONFLICT/)
+    expect(v2.global.get().migration).toMatchObject({
+      phase: 'FAILED',
+      failureCode: 'V2_IDENTITY_CONFLICT',
+    })
+  })
+
+  it('refuses migration while legacy Purge is active', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    await v1.global.set({
+      ...v1.global.get(),
+      purgeJournal: {
+        schemaVersion: 1,
+        purgeId: `purge_${'a'.repeat(64)}`,
+        scopeBinding: { scope: 'USER' },
+        hideBefore: NOW,
+        candidateDigest: 'b'.repeat(64),
+        phase: 'HIDING',
+        deletedWorkItems: 0,
+        deletedLineages: 0,
+        startedAt: NOW,
+      },
+    })
+    const v2 = createMemoryRun2skillV2Domain()
+
+    await expect(migrateRun2skillV1ToV2(v1, v2, { now: () => NOW }))
+      .rejects.toThrow(/LEGACY_PURGE_ACTIVE/)
+    expect(v2.global.get().migration.phase).toBe('NOT_STARTED')
+  })
+})
