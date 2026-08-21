@@ -351,7 +351,8 @@ const SealedGenerationResultV2Schema = z.object({
   runtimeCatalogDigest: sha256Hex,
   pendingCatalogDigest: sha256Hex,
   externalPendingDigest: sha256Hex,
-  catalogEpoch: safeNonNegativeInteger,
+  inputCatalogEpoch: safeNonNegativeInteger,
+  outcomeCatalogEpoch: safeNonNegativeInteger,
   sealedAt: isoDateTime,
   mutationReceiptDigest: sha256Hex,
   receiptDigest: sha256Hex,
@@ -367,7 +368,8 @@ const GenerationBarrierV2Schema = z.object({
   inputDigest: sha256Hex,
   callId: z.string().regex(/^call_[a-f0-9]{64}$/).optional(),
   priorGenerationRevision: positiveSafeInteger.optional(),
-  catalogEpoch: safeNonNegativeInteger,
+  inputCatalogEpoch: safeNonNegativeInteger,
+  outcomeCatalogEpoch: safeNonNegativeInteger,
   mutationReceiptDigest: sha256Hex,
   recordedAt: isoDateTime,
   receiptDigest: sha256Hex,
@@ -696,12 +698,21 @@ export const ExperienceIntentV2Schema = z.object({
   if (new Set(receiptKinds).size !== receiptKinds.length) {
     context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Generation receipt kinds must be unique' })
   }
+  const receiptDigests = generation.receipts.map(receipt => receipt.digest)
+  if (new Set(receiptDigests).size !== receiptDigests.length) {
+    context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Generation receipt digests must be unique durable identities' })
+  }
   for (const [index, receipt] of generation.receipts.entries()) {
+    const expectedCatalogEpoch = ['RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED'].includes(receipt.kind)
+      ? generation.sealedResult?.outcomeCatalogEpoch
+      : receipt.kind === 'BARRIER_COMMITTED'
+        ? value.duplicateBarrier?.outcomeCatalogEpoch
+        : generation.catalogEpoch
     if (
       receipt.intentId !== value.intentId
       || receipt.generationRevision !== generation.generationRevision
       || receipt.leaseId !== generation.leaseId
-      || receipt.catalogEpoch !== generation.catalogEpoch
+      || receipt.catalogEpoch !== expectedCatalogEpoch
     ) context.addIssue({ code: 'custom', path: ['generation', 'receipts', index], message: 'Generation receipt is outside its exact owner revision and lease' })
     const expectedCallId = receipt.kind === 'BARRIER_COMMITTED'
       ? value.duplicateBarrier?.callId
@@ -724,11 +735,9 @@ export const ExperienceIntentV2Schema = z.object({
     PROPOSAL_READY: ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED'],
   }
   const expectedReceiptKinds = generation.state === 'NEEDS_ATTENTION'
-    ? [
-        'LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL',
-        ...(generation.sealedResult === undefined ? [] : ['RESULT_SEALED']),
-        'BARRIER_COMMITTED',
-      ]
+    ? generation.reasonCode === 'STALE_RESULT'
+      ? ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED']
+      : ['LEASE_ACQUIRED', 'CALL_RESERVED', 'CALL_TERMINAL', 'BARRIER_COMMITTED']
     : fixedReceiptPrefix[generation.state]
   if (canonicalJson(receiptKinds) !== canonicalJson(expectedReceiptKinds)) {
     context.addIssue({ code: 'custom', path: ['generation', 'receipts'], message: 'Generation receipts must equal the exact durable prefix for its state' })
@@ -751,19 +760,22 @@ export const ExperienceIntentV2Schema = z.object({
   const committedResultStates = new Set([
     'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED', 'PROPOSAL_READY',
   ])
-  if (committedResultStates.has(generation.state) && (
+  const hasAuthoritativeSealedResult = committedResultStates.has(generation.state)
+    || (generation.state === 'NEEDS_ATTENTION' && generation.reasonCode === 'STALE_RESULT')
+  if (hasAuthoritativeSealedResult && (
     currentGenerationCalls[0]?.outcome !== 'SUCCEEDED'
     || generation.sealedResult === undefined
     || generation.resultDigest === undefined
   )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Committed result state requires one successful call and sealed result' })
-  if (!committedResultStates.has(generation.state) && generation.state !== 'NEEDS_ATTENTION' && (
+  if (!hasAuthoritativeSealedResult && (
     generation.sealedResult !== undefined || generation.resultDigest !== undefined
   )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Pre-result generation cannot contain sealed result facts' })
   if (generation.sealedResult !== undefined && (
     generation.sealedResult.intentId !== value.intentId
     || generation.sealedResult.leaseId !== generation.leaseId
     || generation.sealedResult.generationRevision !== generation.generationRevision
-    || generation.sealedResult.catalogEpoch !== generation.catalogEpoch
+    || generation.sealedResult.inputCatalogEpoch !== generation.catalogEpoch
+    || generation.sealedResult.outcomeCatalogEpoch !== generation.sealedResult.inputCatalogEpoch + 1
     || generation.sealedResult.callId !== currentGenerationCalls[0]?.callId
     || generation.sealedResult.action !== generation.action
     || generation.sealedResult.inputDigest !== generation.inputDigest
@@ -784,14 +796,12 @@ export const ExperienceIntentV2Schema = z.object({
     ))
   ) context.addIssue({ code: 'custom', path: ['generation', 'revalidationAuthorization'], message: 'Proposal commit fields must exist only after exact authorization' })
   if (generation.revalidationAuthorization !== undefined && (
-    generation.revalidationAuthorization.catalogEpoch !== generation.catalogEpoch
-    || generation.revalidationAuthorization.catalogEpoch !== value.recall.catalogEpoch
-    || generation.revalidationAuthorization.catalogMutationReceiptDigest !== value.recall.catalogMutationReceiptDigest
+    generation.revalidationAuthorization.catalogEpoch !== generation.sealedResult?.outcomeCatalogEpoch
+    || generation.revalidationAuthorization.catalogMutationReceiptDigest !== generation.sealedResult?.mutationReceiptDigest
     || generation.revalidationAuthorization.sealedResultReceiptDigest !== generation.sealedResult?.receiptDigest
     || generation.revalidationAuthorization.runtimeCatalogDigest !== generation.sealedResult?.runtimeCatalogDigest
     || generation.revalidationAuthorization.runtimeCatalogDigest !== value.recall.runtimeCatalogDigest
-    || generation.revalidationAuthorization.pendingCatalogDigest !== generation.sealedResult?.pendingCatalogDigest
-    || generation.revalidationAuthorization.pendingCatalogDigest !== value.recall.pendingCatalogDigest
+    || generation.revalidationAuthorization.pendingCatalogDigest === generation.sealedResult?.pendingCatalogDigest
     || generation.revalidationAuthorization.externalPendingDigest !== generation.sealedResult?.externalPendingDigest
     || generation.revalidationAuthorization.externalPendingDigest !== generation.externalPendingDigest
     || generation.revalidationAuthorization.selfExclusionDigest !== generation.selfExclusionDigest
@@ -801,7 +811,15 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['generation', 'staleRefreshUsed'], message: 'Stale refresh marker must match its durable self-exclusion proof' })
   }
   const resultReplacedBarrier = committedResultStates.has(generation.state)
+  const hasTerminalCleanupReceipt = value.reasonReceipts.some(receipt => (
+    receipt.revision === value.revision
+    && ['CONFIRM_DISCARD', 'DISMISS_GENERATION'].includes(receipt.reasonCode)
+  ))
   const coveredClosedBarrier = value.status === 'COVERED'
+    || (value.status === 'DISCARDED' && hasTerminalCleanupReceipt)
+  if (value.status === 'DISCARDED' && !hasTerminalCleanupReceipt) {
+    context.addIssue({ code: 'custom', path: ['reasonReceipts'], message: 'Discard requires a current durable cleanup receipt' })
+  }
   if (selfExclusion !== undefined && !resultReplacedBarrier && !coveredClosedBarrier && value.duplicateBarrier === undefined) {
     context.addIssue({ code: 'custom', path: ['duplicateBarrier'], message: 'Stale refresh must keep its duplicate barrier until a terminal replacement' })
   }
@@ -819,11 +837,12 @@ export const ExperienceIntentV2Schema = z.object({
     if (
       (barrier.kind === 'STALE_RESULT' && barrier.priorGenerationRevision !== barrier.generationRevision)
       || (barrier.kind !== 'STALE_RESULT' && barrier.priorGenerationRevision !== undefined)
+      || barrier.outcomeCatalogEpoch !== barrier.inputCatalogEpoch + 1
     ) context.addIssue({ code: 'custom', path: ['duplicateBarrier', 'priorGenerationRevision'], message: 'Barrier prior revision is valid only for the exact stale generation' })
     const boundToAttention = generation.state === 'NEEDS_ATTENTION' && (
       barrier.leaseId === generation.leaseId
       && barrier.generationRevision === generation.generationRevision
-      && barrier.catalogEpoch === generation.catalogEpoch
+      && barrier.inputCatalogEpoch === generation.catalogEpoch
       && barrier.inputDigest === generation.inputDigest
       && barrier.callId === currentGenerationCalls[0]?.callId
       && barrier.mutationReceiptDigest === receiptFor('BARRIER_COMMITTED')?.digest
@@ -838,7 +857,8 @@ export const ExperienceIntentV2Schema = z.object({
       barrier.kind === 'STALE_RESULT'
       && barrier.generationRevision === selfExclusion.priorGenerationRevision
       && barrier.priorGenerationRevision === selfExclusion.priorGenerationRevision
-      && barrier.receiptDigest === selfExclusion.barrierReceiptDigest
+      && barrier.mutationReceiptDigest === selfExclusion.barrierReceiptDigest
+      && (value.recall.state !== 'COMPLETE' || value.recall.catalogEpoch === barrier.outcomeCatalogEpoch)
     )
     if (
       barrier.intentId !== value.intentId
@@ -847,8 +867,10 @@ export const ExperienceIntentV2Schema = z.object({
     ) context.addIssue({ code: 'custom', path: ['duplicateBarrier'], message: 'Duplicate barrier is outside its exact failed generation or stale refresh' })
   }
   if (generation.state === 'NEEDS_ATTENTION' && (
-    generation.reasonCode === undefined || value.duplicateBarrier === undefined
-  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Generation attention requires reason and an independent durable duplicate barrier' })
+    generation.reasonCode === undefined
+    || (generation.reasonCode === 'STALE_RESULT') !== (generation.sealedResult !== undefined)
+    || (generation.reasonCode === 'STALE_RESULT') === (value.duplicateBarrier !== undefined)
+  )) context.addIssue({ code: 'custom', path: ['generation'], message: 'Generation attention requires exactly one sealed result or unresolved barrier outcome' })
   if (value.status === 'PROPOSAL_READY' && (
     value.generation.state !== 'PROPOSAL_READY'
     || value.generation.sealedResult === undefined

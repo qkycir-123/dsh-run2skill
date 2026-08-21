@@ -204,7 +204,8 @@ export function createMinimalV2Fixtures() {
     runtimeCatalogDigest: '7'.repeat(64),
     pendingCatalogDigest: '8'.repeat(64),
     externalPendingDigest: 'd'.repeat(64),
-    catalogEpoch: 1,
+    inputCatalogEpoch: 1,
+    outcomeCatalogEpoch: 2,
     sealedAt: now,
     mutationReceiptDigest: '4'.repeat(64),
     receiptDigest: '9'.repeat(64),
@@ -223,7 +224,7 @@ export function createMinimalV2Fixtures() {
       pendingCatalogDigest: sealedResult.pendingCatalogDigest,
       complete: true,
       summaryScanComplete: true,
-      catalogEpoch: sealedResult.catalogEpoch,
+      catalogEpoch: sealedResult.inputCatalogEpoch,
       catalogMutationReceiptDigest: 'c'.repeat(64),
       candidates: [],
     },
@@ -235,16 +236,16 @@ export function createMinimalV2Fixtures() {
       resultDigest: sealedResult.receiptDigest,
       leaseId: nativeLeaseId,
       generationRevision: 1,
-      catalogEpoch: sealedResult.catalogEpoch,
+      catalogEpoch: sealedResult.inputCatalogEpoch,
       externalPendingDigest: sealedResult.externalPendingDigest,
       sealedResult,
       proposalId: nativeProposalId,
       revalidationAuthorization: {
         runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
-        pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+        pendingCatalogDigest: 'e'.repeat(64),
         externalPendingDigest: 'd'.repeat(64),
-        catalogEpoch: sealedResult.catalogEpoch,
-        catalogMutationReceiptDigest: 'c'.repeat(64),
+        catalogEpoch: sealedResult.outcomeCatalogEpoch,
+        catalogMutationReceiptDigest: sealedResult.mutationReceiptDigest,
         sealedResultReceiptDigest: sealedResult.receiptDigest,
         authorizedAt: now,
       },
@@ -260,7 +261,9 @@ export function createMinimalV2Fixtures() {
         intentId: experienceIntent.intentId,
         generationRevision: 1,
         ...(['CALL_RESERVED', 'CALL_TERMINAL', 'RESULT_SEALED'].includes(kind) ? { callId: sealedResult.callId } : {}),
-        catalogEpoch: sealedResult.catalogEpoch,
+        catalogEpoch: ['RESULT_SEALED', 'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED'].includes(kind)
+          ? sealedResult.outcomeCatalogEpoch
+          : sealedResult.inputCatalogEpoch,
         recordedAt: now,
       })),
     },
@@ -322,6 +325,25 @@ export function createMinimalV2Fixtures() {
       createdAt: now,
     }],
   }
+  const {
+    proposalId: _staleAttentionProposalId,
+    revalidationAuthorization: _staleAttentionAuthorization,
+    ...staleAttentionGenerationBase
+  } = proposalReadyIntent.generation
+  const {
+    lineageId: _staleAttentionLineageId,
+    ...staleAttentionIntentBase
+  } = proposalReadyIntent
+  const staleAttentionIntent = {
+    ...staleAttentionIntentBase,
+    status: 'NEEDS_ATTENTION' as const,
+    generation: {
+      ...staleAttentionGenerationBase,
+      state: 'NEEDS_ATTENTION' as const,
+      reasonCode: 'STALE_RESULT' as const,
+      receipts: proposalReadyIntent.generation.receipts.slice(0, 4),
+    },
+  }
   const staleBarrier = {
     barrierId: `barrier_${'e'.repeat(64)}`,
     leaseId: nativeLeaseId,
@@ -332,7 +354,8 @@ export function createMinimalV2Fixtures() {
     inputDigest: proposalReadyIntent.generation.inputDigest,
     callId: sealedResult.callId,
     priorGenerationRevision: 1,
-    catalogEpoch: sealedResult.catalogEpoch,
+    inputCatalogEpoch: sealedResult.outcomeCatalogEpoch,
+    outcomeCatalogEpoch: sealedResult.outcomeCatalogEpoch + 1,
     mutationReceiptDigest: 'e'.repeat(64),
     recordedAt: now,
     receiptDigest: 'f'.repeat(64),
@@ -344,7 +367,7 @@ export function createMinimalV2Fixtures() {
   const staleSelfExclusion = {
     intentId: experienceIntent.intentId,
     priorGenerationRevision: 1,
-    barrierReceiptDigest: staleBarrier.receiptDigest,
+    barrierReceiptDigest: staleBarrier.mutationReceiptDigest,
   }
   const staleRefreshIntent = {
     ...staleIntentBase,
@@ -378,6 +401,7 @@ export function createMinimalV2Fixtures() {
     nativeProposalLineage,
     nativeActiveProposalLineage,
     proposalReadyIntent,
+    staleAttentionIntent,
     staleRefreshIntent,
     legacyItem,
   }

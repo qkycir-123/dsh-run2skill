@@ -54,9 +54,13 @@ describe('run2skill_v2 storage contract', () => {
     expect(ProposalLineageV2Schema.parse(fixture.nativeProposalLineage)).toEqual(fixture.nativeProposalLineage)
     expect(ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)).toEqual(fixture.nativeActiveProposalLineage)
     expect(ExperienceIntentV2Schema.parse(fixture.proposalReadyIntent)).toEqual(fixture.proposalReadyIntent)
+    expect(ExperienceIntentV2Schema.parse(fixture.staleAttentionIntent)).toEqual(fixture.staleAttentionIntent)
     expect(ExperienceIntentV2Schema.parse(fixture.staleRefreshIntent)).toEqual(fixture.staleRefreshIntent)
     const refreshedRecall = {
       ...fixture.proposalReadyIntent.recall,
+      pendingCatalogDigest: 'f'.repeat(64),
+      catalogEpoch: fixture.staleRefreshIntent.duplicateBarrier.outcomeCatalogEpoch,
+      catalogMutationReceiptDigest: fixture.staleRefreshIntent.duplicateBarrier.mutationReceiptDigest,
       selfExclusion: fixture.staleRefreshIntent.recall.selfExclusion,
     }
     const coverageReadyAfterRefresh = {
@@ -74,6 +78,27 @@ describe('run2skill_v2 storage contract', () => {
       status: 'COVERAGE_ANALYZING',
       coverage: { state: 'ANALYZING' },
     })
+    const coveredNeedsConfirmation = {
+      ...coverageReadyAfterRefresh,
+      status: 'COVERED_NEEDS_CONFIRMATION' as const,
+      coverage: { state: 'COVERED' as const },
+    }
+    expect(ExperienceIntentV2Schema.safeParse(coveredNeedsConfirmation).success).toBe(true)
+    const {
+      duplicateBarrier: _discardedBarrier,
+      ...discardedIntentBase
+    } = coveredNeedsConfirmation
+    const discardedAfterConfirmation = {
+      ...discardedIntentBase,
+      revision: discardedIntentBase.revision + 1,
+      status: 'DISCARDED' as const,
+      reasonReceipts: [{
+        revision: discardedIntentBase.revision + 1,
+        reasonCode: 'CONFIRM_DISCARD',
+        recordedAt: discardedIntentBase.updatedAt,
+      }],
+    }
+    expect(ExperienceIntentV2Schema.parse(discardedAfterConfirmation)).toEqual(discardedAfterConfirmation)
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
   })
 
@@ -154,6 +179,43 @@ describe('run2skill_v2 storage contract', () => {
       generation: {
         ...fixture.proposalReadyIntent.generation,
         state: 'RESULT_COMMITTED',
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.staleAttentionIntent,
+      duplicateBarrier: fixture.staleRefreshIntent.duplicateBarrier,
+      generation: {
+        ...fixture.staleAttentionIntent.generation,
+        receipts: [...fixture.staleAttentionIntent.generation.receipts, {
+          kind: 'BARRIER_COMMITTED',
+          digest: fixture.staleRefreshIntent.duplicateBarrier.mutationReceiptDigest,
+          leaseId: fixture.staleAttentionIntent.generation.leaseId,
+          intentId: fixture.staleAttentionIntent.intentId,
+          generationRevision: fixture.staleAttentionIntent.generation.generationRevision,
+          callId: fixture.staleAttentionIntent.generation.sealedResult.callId,
+          catalogEpoch: fixture.staleRefreshIntent.duplicateBarrier.outcomeCatalogEpoch,
+          recordedAt: fixture.staleAttentionIntent.updatedAt,
+        }],
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.proposalReadyIntent,
+      generation: {
+        ...fixture.proposalReadyIntent.generation,
+        receipts: fixture.proposalReadyIntent.generation.receipts.map((receipt, index, receipts) => (
+          index === 1 ? { ...receipt, digest: receipts[0]!.digest } : receipt
+        )),
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...fixture.proposalReadyIntent,
+      generation: {
+        ...fixture.proposalReadyIntent.generation,
+        revalidationAuthorization: {
+          ...fixture.proposalReadyIntent.generation.revalidationAuthorization,
+          pendingCatalogDigest: fixture.proposalReadyIntent.generation.sealedResult.pendingCatalogDigest,
+          catalogMutationReceiptDigest: fixture.proposalReadyIntent.recall.catalogMutationReceiptDigest,
+        },
       },
     }).success).toBe(false)
     expect(ExperienceIntentV2Schema.safeParse({
