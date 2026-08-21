@@ -6,11 +6,20 @@ import { ExperienceRecordV1Schema } from '../../domain/learn/index.js'
 import { EvidenceRefSchema, type CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 import {
   ProposalRefV1Schema,
-  ProposalSnapshotV1Schema,
   proposalRefOf,
 } from '../../domain/review/index.js'
+import type { ProposalSnapshotV1 } from '../../domain/review/index.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
 import { PurgeVisibility } from '../../application/purge/index.js'
+import {
+  AttentionActionIdentityV1Schema,
+  AuthoritativeActionCursorError,
+  AuthoritativeActionCursorV1Schema,
+  CurrentScopeAuthorizer,
+  CurrentScopeAuthorizationError,
+  CurrentScopeV1Schema,
+  pageAuthoritativeActions,
+} from './current-scope-authorizer.js'
 
 export const PROPOSALS_LIST_ENDPOINT = 'proposals/list'
 export const PROPOSAL_SUMMARY_ENDPOINT = 'summary'
@@ -30,18 +39,26 @@ const safeNonNegativeInteger = z.number().refine(value => Number.isSafeInteger(v
 
 const listRequestSchema = z.object({
   apiVersion: z.literal(1),
-  workspaceId: identity,
-  cursor: z.string().regex(/^c_[0-9]+$/).max(32).optional(),
+  currentScope: CurrentScopeV1Schema,
+  cursor: AuthoritativeActionCursorV1Schema.optional(),
+  limit: z.number().int().positive().max(PAGE_SIZE).optional(),
 }).strict()
 const summaryRequestSchema = z.object({ apiVersion: z.literal(1), workspaceId: identity }).strict()
 
-const getRequestSchema = z.object({ apiVersion: z.literal(1), proposalId }).strict()
+const getRequestSchema = z.object({
+  apiVersion: z.literal(1),
+  currentScope: CurrentScopeV1Schema,
+  action: AttentionActionIdentityV1Schema,
+  proposalId,
+}).strict()
 
 const mutationRequestShape = {
   apiVersion: z.literal(1),
   workItemId,
   workItemRevision: positiveSafeInteger,
   proposalRef: ProposalRefV1Schema,
+  currentScope: CurrentScopeV1Schema,
+  action: AttentionActionIdentityV1Schema,
 }
 const mutationRequestSchema = z.object(mutationRequestShape).strict()
 const rejectRequestSchema = z.object({ ...mutationRequestShape, confirm: z.literal(true) }).strict()
@@ -62,7 +79,7 @@ const listItemSchema = z.object({
 const listResponseSchema = z.object({
   apiVersion: z.literal(1),
   items: z.array(listItemSchema).max(PAGE_SIZE),
-  nextCursor: z.string().regex(/^c_[0-9]+$/).optional(),
+  nextCursor: AuthoritativeActionCursorV1Schema.optional(),
 }).strict()
 const summaryResponseSchema = z.object({
   apiVersion: z.literal(1),
@@ -80,6 +97,67 @@ const summaryResponseSchema = z.object({
   ]),
 }).strict()
 
+const safeRootBindingSchema = z.object({
+  state: z.enum(['EXISTING', 'ABSENT']),
+  scope: z.enum(['PROJECT', 'USER']),
+  expectedProvider: identity,
+  expectedSource: z.enum(['project-dsh', 'user-dsh']),
+  resolverVersion: identity,
+  rootContractVersion: identity,
+  resolutionContractDigest: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+const safeActionBindingSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('CREATE'),
+    rootBinding: safeRootBindingSchema,
+    targetBinding: z.object({ skillName: identity }).strict(),
+    expectedAbsence: z.object({ observedAt: z.string().min(1).max(64) }).strict(),
+  }).strict(),
+  z.object({
+    kind: z.literal('MERGE'),
+    rootBinding: safeRootBindingSchema,
+    targetBinding: z.object({ skillName: identity }).strict(),
+    baseBinding: z.object({
+      candidateKey: z.string().regex(/^cand_[a-f0-9]{64}$/),
+      exactBytes: z.string().min(1).max(65_536),
+      bytesDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      observedAt: z.string().min(1).max(64),
+    }).strict(),
+  }).strict(),
+  z.object({
+    kind: z.literal('DISCARD'),
+    coveringCandidateBinding: z.object({
+      candidateKey: z.string().regex(/^cand_[a-f0-9]{64}$/),
+      name: z.string().min(1).max(128),
+      source: identity,
+      content: z.string().min(1).max(65_536),
+      contentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      observedAt: z.string().min(1).max(64),
+    }).strict(),
+  }).strict(),
+])
+const safeProposalSchema = z.object({
+  schemaVersion: z.literal(1), revision: positiveSafeInteger,
+  createdAt: z.string().min(1).max(64),
+  sourceLearningProposalId: z.string().regex(/^lp_[a-f0-9]{64}$/),
+  kind: z.enum(['CREATE', 'MERGE', 'DISCARD']),
+  name: z.string().min(1).max(128), description: z.string().min(1).max(2_048),
+  whenToUse: z.string().min(1).max(4_096),
+  invocation: z.object({ modelInvocable: z.literal(true), userInvocable: z.literal(false) }).strict(),
+  exactSkillBytes: z.string().min(1).max(65_536),
+  skillBytesDigest: z.string().regex(/^[a-f0-9]{64}$/), rendererVersion: identity,
+  persistenceScope: z.enum(['PROJECT', 'USER']),
+  workspaceBinding: z.object({ workspaceId: identity }).strict().optional(),
+  dshHomeBinding: z.object({
+    resolutionKind: z.enum(['CONFIGURATION', 'ENVIRONMENT', 'DEFAULT']),
+    identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().optional(),
+  supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
+  catalogObservationDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  curationRationale: z.string().min(1).max(4_096),
+  actionBinding: safeActionBindingSchema,
+  proposalId, digest: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
 const detailResponseSchema = z.object({
   apiVersion: z.literal(1),
   workItemId,
@@ -89,7 +167,7 @@ const detailResponseSchema = z.object({
   publicationOutcome: z.enum([
     'PENDING_REVIEW', 'DISCARDED', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISHED', 'PUBLISH_FAILED',
   ]),
-  proposal: ProposalSnapshotV1Schema,
+  proposal: safeProposalSchema,
   sessionCoordinate: z.object({
     rootSessionId: identity,
     sessionCreatedAt: safeNonNegativeInteger,
@@ -123,12 +201,6 @@ function requestFits(payload: unknown): boolean {
   } catch {
     return false
   }
-}
-
-function offsetOf(cursor: string | undefined): number | undefined {
-  if (cursor === undefined) return 0
-  const value = Number(cursor.slice(2))
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 function mutationReceipt(result: { readonly item: CaptureWorkItemV1; readonly changed: boolean }) {
@@ -167,9 +239,82 @@ function mappedStoreError(value: unknown): ObserveRpcResult<never> {
 }
 
 export interface ProposalReviewRpcOptions {
+  readonly authorizer?: CurrentScopeAuthorizer
   readonly onPublicationRequested?: (workItemId: string) => void
   readonly visibility?: (domain: Run2skillDomain) => PurgeVisibility
   readonly runMutation?: <T>(operation: () => Promise<T>) => Promise<T>
+}
+
+function safeProposal(proposal: ProposalSnapshotV1): z.infer<typeof safeProposalSchema> {
+  const rootBinding = proposal.actionBinding.kind === 'DISCARD' ? undefined : {
+    state: proposal.actionBinding.rootBinding.state,
+    scope: proposal.actionBinding.rootBinding.scope,
+    expectedProvider: proposal.actionBinding.rootBinding.expectedProvider,
+    expectedSource: proposal.actionBinding.rootBinding.expectedSource,
+    resolverVersion: proposal.actionBinding.rootBinding.resolverVersion,
+    rootContractVersion: proposal.actionBinding.rootBinding.rootContractVersion,
+    resolutionContractDigest: proposal.actionBinding.rootBinding.resolutionContractDigest,
+  }
+  const actionBinding = proposal.actionBinding.kind === 'CREATE'
+    ? {
+        kind: 'CREATE' as const,
+        rootBinding: rootBinding!,
+        targetBinding: { skillName: proposal.name },
+        expectedAbsence: { observedAt: proposal.actionBinding.expectedAbsence.observedAt },
+      }
+    : proposal.actionBinding.kind === 'MERGE'
+      ? {
+          kind: 'MERGE' as const,
+          rootBinding: rootBinding!,
+          targetBinding: { skillName: proposal.name },
+          baseBinding: {
+            candidateKey: proposal.actionBinding.baseBinding.candidateKey,
+            exactBytes: proposal.actionBinding.baseBinding.exactBytes,
+            bytesDigest: proposal.actionBinding.baseBinding.bytesDigest,
+            observedAt: proposal.actionBinding.baseBinding.observedAt,
+          },
+        }
+      : {
+          kind: 'DISCARD' as const,
+          coveringCandidateBinding: {
+            candidateKey: proposal.actionBinding.coveringCandidateBinding.candidateKey,
+            name: proposal.actionBinding.coveringCandidateBinding.name,
+            source: proposal.actionBinding.coveringCandidateBinding.source,
+            content: proposal.actionBinding.coveringCandidateBinding.content,
+            contentDigest: proposal.actionBinding.coveringCandidateBinding.contentDigest,
+            observedAt: proposal.actionBinding.coveringCandidateBinding.observedAt,
+          },
+        }
+  return safeProposalSchema.parse({
+    schemaVersion: proposal.schemaVersion,
+    revision: proposal.revision,
+    createdAt: proposal.createdAt,
+    sourceLearningProposalId: proposal.sourceLearningProposalId,
+    kind: proposal.kind,
+    name: proposal.name,
+    description: proposal.description,
+    whenToUse: proposal.whenToUse,
+    invocation: proposal.invocation,
+    exactSkillBytes: proposal.exactSkillBytes,
+    skillBytesDigest: proposal.skillBytesDigest,
+    rendererVersion: proposal.rendererVersion,
+    persistenceScope: proposal.persistenceScope,
+    ...(proposal.workspaceBinding === undefined ? {} : {
+      workspaceBinding: { workspaceId: proposal.workspaceBinding.workspaceId },
+    }),
+    ...(proposal.dshHomeBinding === undefined ? {} : {
+      dshHomeBinding: {
+        resolutionKind: proposal.dshHomeBinding.resolutionKind,
+        identityDigest: proposal.dshHomeBinding.identityDigest,
+      },
+    }),
+    supportingExperienceIds: proposal.supportingExperienceIds,
+    catalogObservationDigest: proposal.catalogObservationDigest,
+    curationRationale: proposal.curationRationale,
+    actionBinding,
+    proposalId: proposal.proposalId,
+    digest: proposal.digest,
+  })
 }
 
 export function createProposalReviewRpcHandler(
@@ -257,29 +402,35 @@ export function createProposalReviewRpcHandler(
 
     if (endpoint === PROPOSALS_LIST_ENDPOINT) {
       const request = listRequestSchema.parse(payload)
-      const offset = offsetOf(request.cursor)
-      if (offset === undefined) return error('bad-request')
-      const eligible = [...domain.table('work_items').entries()].flatMap(([id, item]) => {
-        const review = item.review
-        if (
-          !visibilityOf(domain).workItemVisible(item)
-          ||
-          review === undefined
-          || item.processingState === 'TERMINAL'
-          || (
-            review.proposal.persistenceScope === 'PROJECT'
-            && review.proposal.workspaceBinding?.workspaceId !== request.workspaceId
-          )
-        ) return []
-        return [{ id, item, review }]
-      }).sort((left, right) => (
-        right.review.proposal.createdAt.localeCompare(left.review.proposal.createdAt)
-        || left.review.proposal.proposalId.localeCompare(right.review.proposal.proposalId)
-      ))
-      const page = eligible.slice(offset, offset + PAGE_SIZE)
+      if (options.authorizer === undefined) return error('internal')
+      let page: ReturnType<typeof pageAuthoritativeActions>
+      try {
+        const queue = (await options.authorizer.project(
+          domain, request.currentScope, visibilityOf(domain),
+        )).filter(action => action.kind === 'REVIEW_PROPOSAL' || action.kind === 'RETRY_PUBLICATION')
+          .sort((left, right) => (
+            right.createdAt.localeCompare(left.createdAt) || left.actionKey.localeCompare(right.actionKey)
+          ))
+        page = pageAuthoritativeActions(
+          'PROPOSAL', request.currentScope, queue, request.cursor, request.limit ?? PAGE_SIZE,
+        )
+      } catch (caught) {
+        if (caught instanceof CurrentScopeAuthorizationError) return error('conflict')
+        return caught instanceof AuthoritativeActionCursorError ? error('bad-request') : error('internal')
+      }
+      const items = [] as Array<{
+        id: string
+        item: CaptureWorkItemV1
+        review: NonNullable<CaptureWorkItemV1['review']>
+      }>
+      for (const action of page.page) {
+        const item = domain.table('work_items').get(action.subjectId)
+        if (item?.review === undefined || item.processingState === 'TERMINAL') return error('conflict')
+        items.push({ id: item.workItemId, item, review: item.review })
+      }
       return { ok: true, value: listResponseSchema.parse({
         apiVersion: 1,
-        items: page.map(({ id, item, review }) => ({
+        items: items.map(({ id, item, review }) => ({
           workItemId: id,
           workItemRevision: item.revision,
           proposalRef: proposalRefOf(review.proposal),
@@ -291,18 +442,22 @@ export function createProposalReviewRpcHandler(
           processingState: item.processingState,
           publicationOutcome: review.publicationOutcome,
         })),
-        ...(offset + page.length < eligible.length ? { nextCursor: `c_${offset + page.length}` } : {}),
+        ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       }) }
     }
 
     if (endpoint === PROPOSALS_GET_ENDPOINT) {
       const request = getRequestSchema.parse(payload)
-      const item = [...domain.table('work_items').entries()]
-        .map(([, candidate]) => candidate)
-        .find(candidate => (
-          visibilityOf(domain).workItemVisible(candidate)
-          && candidate.review?.proposal.proposalId === request.proposalId
-        ))
+      if (options.authorizer === undefined) return error('internal')
+      let item: CaptureWorkItemV1
+      try {
+        item = (await options.authorizer.authorize(
+          domain, request.currentScope, request.action, visibilityOf(domain),
+        )).item
+      } catch (caught) {
+        return caught instanceof CurrentScopeAuthorizationError ? error('conflict') : error('internal')
+      }
+      if (item.review?.proposal.proposalId !== request.proposalId) return error('conflict')
       if (item?.review === undefined) return error('not-found')
       return { ok: true, value: detailResponseSchema.parse({
         apiVersion: 1,
@@ -311,7 +466,7 @@ export function createProposalReviewRpcHandler(
         processingState: item.processingState,
         reviewDecision: item.review.reviewDecision,
         publicationOutcome: item.review.publicationOutcome,
-        proposal: item.review.proposal,
+        proposal: safeProposal(item.review.proposal),
         sessionCoordinate: {
           rootSessionId: item.signalKey.rootSessionId,
           sessionCreatedAt: item.signalKey.sessionCreatedAt,
@@ -328,6 +483,20 @@ export function createProposalReviewRpcHandler(
       : mutationRequestSchema.parse(payload)
     try {
       const result = await runMutation(async () => {
+        if (options.authorizer === undefined) throw new CurrentScopeAuthorizationError('SCOPE_UNAVAILABLE')
+        const requiredAction = endpoint === PROPOSALS_APPROVE_ENDPOINT
+          ? 'APPROVE'
+          : endpoint === PROPOSALS_REJECT_ENDPOINT
+            ? 'REJECT'
+            : endpoint === COVERAGE_CONFIRM_DISCARD_ENDPOINT
+              ? 'CONFIRM_DISCARD'
+              : 'RETRY'
+        const authorized = await options.authorizer.authorize(
+          domain, request.currentScope, request.action, visibilityOf(domain), requiredAction,
+        )
+        if (authorized.item.workItemId !== request.workItemId) {
+          throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        }
         const currentVisible = domain.table('work_items').get(request.workItemId)
         if (currentVisible === undefined || !visibilityOf(domain).workItemVisible(currentVisible)) {
           throw new ProposalReviewStoreError('REVIEW_WORK_ITEM_NOT_FOUND')
@@ -397,6 +566,7 @@ export function createProposalReviewRpcHandler(
       }
       return { ok: true, value: mutationReceipt(result) }
     } catch (caught) {
+      if (caught instanceof CurrentScopeAuthorizationError) return error('conflict')
       return mappedStoreError(caught)
     }
   }

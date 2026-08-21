@@ -411,7 +411,7 @@ describe('Host plugin assembly', () => {
     const value = preview.value as { previewId: string; digest: string }
     sidecar.setUnavailable(true)
     await expect(rpcHandler?.('purge/confirm', {
-      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
     }, new AbortController().signal)).resolves.toMatchObject({
       ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
     })
@@ -423,7 +423,7 @@ describe('Host plugin assembly', () => {
     sidecar.setUnavailable(false)
     sidecar.failNextHealthPuts(1)
     await expect(rpcHandler?.('purge/confirm', {
-      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
     }, new AbortController().signal)).resolves.toMatchObject({
       ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
     })
@@ -434,7 +434,7 @@ describe('Host plugin assembly', () => {
 
     sidecar.failNextHealthDeletes(1)
     await expect(rpcHandler?.('purge/confirm', {
-      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
     }, new AbortController().signal)).resolves.toMatchObject({
       ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
     })
@@ -445,7 +445,7 @@ describe('Host plugin assembly', () => {
     expect(sidecar.healthChecks.size).toBe(1)
 
     await expect(rpcHandler?.('purge/confirm', {
-      apiVersion: 1, previewId: value.previewId, digest: value.digest,
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
     }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { state: 'COMPLETED' } })
     expect(domain.workItems.has(item.workItemId)).toBe(false)
     expect(domain.lineages.has(lineageId)).toBe(false)

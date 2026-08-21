@@ -16,11 +16,8 @@ import {
   RUN2SKILL_RPC_CHANNEL,
   registerObserveSummaryRpc,
 } from '../src/adapters/dsh-connection/observe-summary-rpc.ts'
-import {
-  applyObserveSummaryClient,
-  inject as clientInject,
-  type ObserveSummaryClientContext,
-} from '../src/client/observe-header-action.ts'
+import { applyRun2skillClient, type Run2skillClientContext } from '../src/client/run2skill-settings-page.ts'
+import { inject as clientInject } from '../src/client/index.ts'
 import { ProposalInboxController } from '../src/client/proposal-inbox.ts'
 import { ProposalInboxHeaderAction, ProposalInboxPanel } from '../src/client/proposal-inbox-view.ts'
 
@@ -130,35 +127,54 @@ describe('A5 Observe Summary on the pinned DSH Web seam', () => {
     expect(upgrades).toHaveLength(0)
   })
 
-  it('registers and removes the read-only Header entry through the real slot ledger', async () => {
+  it('registers and removes the native settings tab and zero-chrome Header lifecycle entry', async () => {
     const ctx = new Context()
     await ctx.plugin(SlotRegistry).await()
     ctx.slots.register({
       name: 'root',
       children: {
         'conversation.session.header.actions': { kind: 'list', scope: 'session' },
+        'settings.plugins.tab': { kind: 'list', scope: 'root' },
       },
     } as never, () => null)
     ctx.provide('connection', {
       rpc: { call: async () => ({ ok: true, value: null }) },
     } as never)
     ctx.provide('workspaces', {
-      list: { getSnapshot: () => ({ items: [] }) },
+      list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => undefined },
     } as never)
+    ctx.provide('sessions', {
+      list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => undefined },
+    } as never)
+    ctx.provide('settingsScope', {
+      bind: () => ({
+        getSnapshot: () => ({
+          status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+        }),
+        subscribe: () => () => undefined,
+        set: async () => undefined,
+      }),
+    } as never)
+    ctx.provide('remote', {} as never)
     const fiber = ctx.plugin({
       inject: [...clientInject],
       apply: (scope: Context) => {
-        applyObserveSummaryClient(scope as unknown as ObserveSummaryClientContext)
+        applyRun2skillClient(scope as unknown as Run2skillClientContext)
       },
     })
     await fiber.await()
 
     expect(ctx.slots.entries('conversation.session.header.actions'))
       .toContainEqual(expect.objectContaining({
-        options: expect.objectContaining({ id: 'run2skill-observe-summary' }),
+        options: expect.objectContaining({ id: 'run2skill-attention' }),
+      }))
+    expect(ctx.slots.entries('settings.plugins.tab'))
+      .toContainEqual(expect.objectContaining({
+        options: expect.objectContaining({ id: 'run2skill' }),
       }))
     await fiber.dispose()
     expect(ctx.slots.entries('conversation.session.header.actions')).toHaveLength(0)
+    expect(ctx.slots.entries('settings.plugins.tab')).toHaveLength(0)
   })
 
   it('keeps the Reject confirmation modal isolated with the pinned React runtime', async () => {

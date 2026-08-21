@@ -1,6 +1,8 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
+import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { PurgeVisibility } from '../src/application/purge/index.js'
 import { LearningWorkItemStore } from '../src/adapters/dsh-storage/learning-work-item-store.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-saga-store.js'
@@ -27,6 +29,10 @@ const binding: ProjectPurgeScopeBindingV1 = {
   resolverVersion: 'stock-root-resolver-v2',
   resolutionContractDigest: 'a'.repeat(64),
 }
+const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: binding.workspaceId }
+const authorizer = new CurrentScopeAuthorizer(async workspaceId => workspaceId === binding.workspaceId
+  ? { workspaceId, canonicalPath: PROJECT }
+  : undefined)
 
 async function hideProject(domain: ReturnType<typeof createMemoryRun2skillDomain>) {
   await domain.global.set({
@@ -60,23 +66,30 @@ describe('unified Purge visibility predicate', () => {
       learned.revision,
       makeCreateProposalSnapshot(learned),
     )
+    const projected = (await authorizer.project(domain, currentScope, new PurgeVisibility(domain)))[0]!
+    const action = {
+      actionKey: projected.actionKey, subjectId: projected.subjectId,
+      kind: projected.kind, proposalRef: projected.proposalRef,
+    }
     await hideProject(domain)
-    const handler = createProposalReviewRpcHandler(() => domain)
+    const handler = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
     const signal = new AbortController().signal
 
     await expect(handler('summary', { apiVersion: 1, workspaceId: binding.workspaceId }, signal))
       .resolves.toMatchObject({ ok: true, value: { queue: { pendingReview: 0 } } })
-    await expect(handler('proposals/list', { apiVersion: 1, workspaceId: binding.workspaceId }, signal))
+    await expect(handler('proposals/list', { apiVersion: 1, currentScope }, signal))
       .resolves.toMatchObject({ ok: true, value: { items: [] } })
     await expect(handler('proposals/get', {
-      apiVersion: 1, proposalId: staged.item.review!.proposal.proposalId,
-    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+      apiVersion: 1, currentScope, action, proposalId: staged.item.review!.proposal.proposalId,
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
     await expect(handler('proposals/approve', {
       apiVersion: 1,
+      currentScope,
+      action,
       workItemId: staged.item.workItemId,
       workItemRevision: staged.item.revision,
       proposalRef: proposalRefOf(staged.item.review!.proposal),
-    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
   })
 
   it('removes hidden records from learning/publication claims and aggregate summary', async () => {
@@ -119,6 +132,11 @@ describe('unified Purge visibility predicate', () => {
       learned.revision,
       makeCreateProposalSnapshot(learned),
     )
+    const projected = (await authorizer.project(domain, currentScope, new PurgeVisibility(domain)))[0]!
+    const action = {
+      actionKey: projected.actionKey, subjectId: projected.subjectId,
+      kind: projected.kind, proposalRef: projected.proposalRef,
+    }
     const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
     await domain.global.set({
       ...domain.global.get(),
@@ -136,18 +154,20 @@ describe('unified Purge visibility predicate', () => {
         },
       },
     })
-    const handler = createProposalReviewRpcHandler(() => domain)
+    const handler = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
     const signal = new AbortController().signal
 
     await expect(handler('proposals/list', {
-      apiVersion: 1, workspaceId: binding.workspaceId,
+      apiVersion: 1, currentScope,
     }, signal)).resolves.toMatchObject({ ok: true, value: { items: [] } })
     await expect(handler('proposals/approve', {
       apiVersion: 1,
+      currentScope,
+      action,
       workItemId: staged.item.workItemId,
       workItemRevision: staged.item.revision,
       proposalRef: proposalRefOf(staged.item.review!.proposal),
-    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(new LearningWorkItemStore(domain, () => NOW).listEligible(NOW)).toEqual([])
     expect(new PublicationSagaStore(domain).get(staged.item.workItemId)).toBeUndefined()
   })

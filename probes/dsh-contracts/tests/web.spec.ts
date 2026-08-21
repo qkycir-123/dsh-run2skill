@@ -126,7 +126,9 @@ describe('CP-WEB-001 loopback RPC and dual-face extension seams', () => {
     const require = createRequire(import.meta.url)
     const connectionPackagePath = require.resolve('@deepseek-ai/dsh-client-connection/package.json')
     const conversationPackagePath = require.resolve('@deepseek-ai/dsh-client-ui-conversation/package.json')
-    for (const packagePath of [connectionPackagePath, conversationPackagePath]) {
+    const primitivesPackagePath = require.resolve('@deepseek-ai/dsh-client-ui-primitives/package.json')
+    const settingsPackagePath = require.resolve('@deepseek-ai/dsh-client-ui-settings/package.json')
+    for (const packagePath of [connectionPackagePath, conversationPackagePath, settingsPackagePath]) {
       const manifest = JSON.parse(await readFile(packagePath, 'utf8')) as {
         exports?: Record<string, unknown>
         dsh?: { client?: { platform?: string } }
@@ -144,5 +146,15 @@ describe('CP-WEB-001 loopback RPC and dual-face extension seams', () => {
     expect(slotContract).toContain(
       "'conversation.session.header.actions': { kind: 'list'; scope: 'session'; owner: ConversationHeaderActionOwnerProps }",
     )
+    const settingsRoot = dirname(settingsPackagePath)
+    const settingsSlots = await readFile(join(settingsRoot, 'src', 'client', 'contract', 'slots.ts'), 'utf8')
+    expect(settingsSlots).toContain(
+      "'settings.plugins.tab': { kind: 'list'; scope: 'root'; owner: SettingsPluginsTabOwnerProps }",
+    )
+    const primitivesRoot = dirname(primitivesPackagePath)
+    const primitives = await readFile(join(primitivesRoot, 'src', 'index.ts'), 'utf8')
+    for (const exported of ['Button', 'Modal', 'Input', 'Pill', 'DisclosureRow', 'Toast']) {
+      expect(primitives).toContain(`export { ${exported} }`)
+    }
   })
 })

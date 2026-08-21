@@ -105,16 +105,6 @@ export function ObserveStatusPill({ state }: { readonly state: ObserveSummaryCli
     'aria-label': description,
     'data-run2skill-status': semanticStatus,
     title: description,
-    style: {
-      display: 'inline-flex',
-      alignItems: 'center',
-      maxWidth: '28rem',
-      padding: '0.25rem 0.5rem',
-      border: '1px solid currentColor',
-      borderRadius: '0.375rem',
-      fontSize: '0.75rem',
-      lineHeight: 1.25,
-    },
   }, description)
 }
 

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
+import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { PurgeVisibility } from '../src/application/purge/index.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { materializeProposalSnapshot } from '../src/domain/review/index.js'
 import {
@@ -15,6 +17,7 @@ import {
   RejectConfirmationBody,
   describeProposalSummaryState,
   factsFromAction,
+  proposalDetailAction,
   proposalInboxContentBlocked,
   trapDialogTab,
 } from '../src/client/proposal-inbox-view.js'
@@ -93,6 +96,26 @@ function fakeEnvironment(initiallyVisible = true): ProposalPollEnvironment & {
   }
 }
 
+const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-fixture' }
+const authorizer = new CurrentScopeAuthorizer(async workspaceId => workspaceId === 'workspace-fixture'
+  ? { workspaceId, canonicalPath: 'D:\\workspace' }
+  : undefined)
+
+async function securedReview(domain: ReturnType<typeof createMemoryRun2skillDomain>) {
+  const actions = (await authorizer.project(domain, currentScope, new PurgeVisibility(domain))).flatMap(action => (
+    action.proposalRef === undefined ? [] : [{
+      actionKey: action.actionKey,
+      subjectId: action.subjectId,
+      kind: action.kind as 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION',
+      proposalRef: action.proposalRef,
+    }]
+  ))
+  return {
+    scopeAccess: () => ({ currentScope, actions }),
+    host: createProposalReviewRpcHandler(() => domain, undefined, { authorizer }),
+  }
+}
+
 describe('Proposal Inbox client', () => {
   it('visualizes hidden format characters while raw text remains byte-for-byte content', () => {
     const raw = 'safe\u202Ehidden\u200B\t\u0000\nnext'
@@ -137,6 +160,19 @@ describe('Proposal Inbox client', () => {
       .toBe('已批准，正在发布')
     expect(describeProposalOutcome({ processingState: 'NEEDS_ATTENTION', publicationOutcome: 'PUBLISH_FAILED' }))
       .toBe('发布失败，可重试')
+    expect(proposalDetailAction({
+      reviewDecision: 'APPROVED',
+      processingState: 'NEEDS_ATTENTION',
+      publicationOutcome: 'PUBLISH_FAILED',
+    }, false)).toBe('RETRY_PUBLICATION')
+  })
+
+  it('never exposes absolute Workspace, DSH Home, root, or Skill target paths in review facts', () => {
+    const item = makeLearnedWorkItem()
+    const proposal = makeCreateProposalSnapshot(item)
+    const facts = factsFromAction({ proposal } as never)
+    expect(facts).toContain(`Skill name: ${proposal.name}`)
+    expect(facts).not.toMatch(/[A-Z]:\\|\/home\/|Declared root|Bundle target|Skill target|Flat target/iu)
   })
 
   it('gives UNKNOWN, RECOVERING, DEGRADED, and INCOMPATIBLE explicit summary copy', () => {
@@ -224,12 +260,12 @@ describe('Proposal Inbox client', () => {
       item.revision,
       makeCreateProposalSnapshot(item),
     )
-    const host = createProposalReviewRpcHandler(() => domain)
+    const { host, scopeAccess } = await securedReview(domain)
     const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
       await host(endpoint, payload, signal)
     ))
     const environment = fakeEnvironment()
-    const controller = new ProposalInboxController('workspace-fixture', call, environment)
+    const controller = new ProposalInboxController('workspace-fixture', call, environment, { scopeAccess })
 
     controller.start()
     await controller.whenIdle()
@@ -258,7 +294,7 @@ describe('Proposal Inbox client', () => {
     expect(environment.timerDelay()).toBe(2_000)
     expect(domain.workItems.get(item.workItemId)?.review?.reviewDecision).toBe('APPROVED')
     const approveCall = call.mock.calls.find(([endpoint]) => endpoint === 'proposals/approve')
-    expect(approveCall?.[1]).toEqual({
+    expect(approveCall?.[1]).toMatchObject({
       apiVersion: 1,
       workItemId: item.workItemId,
       workItemRevision: staged.item.revision,
@@ -267,9 +303,59 @@ describe('Proposal Inbox client', () => {
         revision: staged.item.review!.proposal.revision,
         digest: staged.item.review!.proposal.digest,
       },
+      currentScope,
     })
     controller.close()
     expect(environment.timerDelay()).toBe(10_000)
+    controller.dispose()
+  })
+
+  it('pauses all host-tab summary/detail polling and resumes without timer leaks', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const { host, scopeAccess } = await securedReview(domain)
+    const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
+      await host(endpoint, payload, signal)
+    ))
+    const environment = fakeEnvironment()
+    const controller = new ProposalInboxController('workspace-fixture', call, environment, { scopeAccess })
+    controller.start()
+    await controller.whenIdle()
+    expect(environment.timerCount()).toBe(1)
+
+    controller.pause()
+    expect(environment.timerCount()).toBe(0)
+    controller.resume()
+    await controller.whenIdle()
+    expect(environment.timerCount()).toBe(1)
+    expect(call.mock.calls.filter(([endpoint]) => endpoint === 'summary')).toHaveLength(2)
+
+    controller.dispose()
+    expect(environment.timerCount()).toBe(0)
+  })
+
+  it('uses Attention as the only queue summary when embedded in the settings surface', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const { host } = await securedReview(domain)
+    const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
+      await host(endpoint, payload, signal)
+    ))
+    const environment = fakeEnvironment()
+    const controller = new ProposalInboxController(
+      'workspace-fixture',
+      call,
+      environment,
+      { attentionDriven: true },
+    )
+
+    controller.start()
+    await controller.whenIdle()
+    await controller.open()
+
+    expect(call.mock.calls.some(([endpoint]) => endpoint === 'summary')).toBe(false)
+    expect(call.mock.calls.some(([endpoint]) => endpoint === 'proposals/list')).toBe(true)
+    const listPayload = call.mock.calls.find(([endpoint]) => endpoint === 'proposals/list')?.[1]
+    expect(listPayload).toMatchObject({ limit: 20 })
+    expect(listPayload).not.toHaveProperty('actions')
     controller.dispose()
   })
 
@@ -282,7 +368,7 @@ describe('Proposal Inbox client', () => {
       item.revision,
       makeCreateProposalSnapshot(item),
     )
-    const host = createProposalReviewRpcHandler(() => domain)
+    const { host, scopeAccess } = await securedReview(domain)
     let failNextSummary = false
     const controller = new ProposalInboxController(
       'workspace-fixture',
@@ -293,6 +379,7 @@ describe('Proposal Inbox client', () => {
         return response
       },
       fakeEnvironment(),
+      { scopeAccess },
     )
 
     controller.start()
@@ -320,11 +407,11 @@ describe('Proposal Inbox client', () => {
       item.revision,
       makeDiscardProposalSnapshot(item),
     )
-    const host = createProposalReviewRpcHandler(() => domain)
+    const { host, scopeAccess } = await securedReview(domain)
     const call = vi.fn(async (endpoint: string, payload: unknown, signal: AbortSignal) => (
       await host(endpoint, payload, signal)
     ))
-    const controller = new ProposalInboxController('workspace-fixture', call, fakeEnvironment())
+    const controller = new ProposalInboxController('workspace-fixture', call, fakeEnvironment(), { scopeAccess })
 
     controller.start()
     await controller.whenIdle()
@@ -348,11 +435,12 @@ describe('Proposal Inbox client', () => {
     const proposal = makeMergeProposal(item)
     domain.workItems.set(item.workItemId, item)
     const staged = await new ProposalReviewStore(domain).stage(item.workItemId, item.revision, proposal)
-    const host = createProposalReviewRpcHandler(() => domain)
+    const { host, scopeAccess } = await securedReview(domain)
     const controller = new ProposalInboxController(
       'workspace-fixture',
       async (calledEndpoint, payload, signal) => await host(calledEndpoint, payload, signal),
       fakeEnvironment(),
+      { scopeAccess },
     )
 
     controller.start()
@@ -362,7 +450,7 @@ describe('Proposal Inbox client', () => {
     const detail = controller.snapshot().detail
     expect(detail?.proposal.actionBinding).toMatchObject({
       kind: 'MERGE',
-      targetBinding: { skillFilePath: expect.stringContaining('SKILL.md') },
+      targetBinding: { skillName: 'generated-file-hygiene' },
       baseBinding: { exactBytes: expect.stringContaining('Existing file hygiene') },
     })
     expect(domain.workItems.get(item.workItemId)?.review?.reviewDecision).toBe('PENDING')
@@ -378,9 +466,12 @@ describe('Proposal Inbox client', () => {
       item.revision,
       makeCreateProposalSnapshot(item),
     )
-    const host = createProposalReviewRpcHandler(() => domain)
+    const { host, scopeAccess } = await securedReview(domain)
+    const action = scopeAccess().actions[0]!
     const response = await host('proposals/get', {
       apiVersion: 1,
+      currentScope,
+      action,
       proposalId: staged.item.review!.proposal.proposalId,
     }, new AbortController().signal)
     const mismatched = structuredClone(response) as {
@@ -391,7 +482,7 @@ describe('Proposal Inbox client', () => {
     expect(parseProposalDetail(mismatched)).toBeUndefined()
   })
 
-  it('accepts and preserves the immutable USER DSH Home binding on the review wire', async () => {
+  it('projects review detail without any absolute Workspace, root, or Skill target path', async () => {
     const domain = createMemoryRun2skillDomain()
     const item = makeLearnedWorkItem()
     domain.workItems.set(item.workItemId, item)
@@ -400,33 +491,21 @@ describe('Proposal Inbox client', () => {
       item.revision,
       makeCreateProposalSnapshot(item),
     )
-    const response = await createProposalReviewRpcHandler(() => domain)('proposals/get', {
+    const { host, scopeAccess } = await securedReview(domain)
+    const response = await host('proposals/get', {
       apiVersion: 1,
+      currentScope,
+      action: scopeAccess().actions[0],
       proposalId: staged.item.review!.proposal.proposalId,
     }, new AbortController().signal)
-    const userResponse = structuredClone(response) as {
-      value: { proposal: Record<string, unknown> & { actionBinding: { rootBinding: Record<string, unknown> } } }
-    }
-    userResponse.value.proposal.persistenceScope = 'USER'
-    delete userResponse.value.proposal.workspaceBinding
-    userResponse.value.proposal.dshHomeBinding = {
-      resolutionKind: 'ENVIRONMENT',
-      canonicalPath: 'D:\\dsh-home',
-      identityDigest: 'f'.repeat(64),
-      observedAt: '2026-08-20T00:00:00.000Z',
-    }
-    Object.assign(userResponse.value.proposal.actionBinding.rootBinding, {
-      scope: 'USER',
-      expectedSource: 'user-dsh',
-      declaredRootPath: 'D:\\dsh-home\\skills',
-    })
-
-    expect(parseProposalDetail(userResponse)?.proposal.dshHomeBinding).toEqual({
-      resolutionKind: 'ENVIRONMENT',
-      canonicalPath: 'D:\\dsh-home',
-      identityDigest: 'f'.repeat(64),
-      observedAt: '2026-08-20T00:00:00.000Z',
-    })
+    expect(response).toMatchObject({ ok: true, value: { proposal: {
+      workspaceBinding: { workspaceId: 'workspace-fixture' },
+      actionBinding: { targetBinding: { skillName: 'generated-file-hygiene' } },
+    } } })
+    const wire = JSON.stringify(response)
+    expect(wire).not.toContain('D:\\workspace')
+    expect(wire).not.toMatch(/canonicalPath|declaredRootPath|bundlePath|skillFilePath|flatSkillFilePath|"path"/)
+    expect(parseProposalDetail(response)).toBeDefined()
   })
 
   it('stops while hidden and refreshes on visibility, focus, and reconnect', async () => {

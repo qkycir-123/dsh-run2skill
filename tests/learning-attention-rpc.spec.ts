@@ -7,6 +7,8 @@ import {
 } from '../src/adapters/dsh-connection/learning-attention-rpc.js'
 import { LearningWorkItemStore } from '../src/adapters/dsh-storage/learning-work-item-store.js'
 import { LearningDiagnosticStore } from '../src/adapters/dsh-storage/learning-diagnostic-store.js'
+import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { PurgeVisibility } from '../src/application/purge/index.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { createMemoryLearningDiagnosticDomain } from './support/memory-learning-diagnostic-domain.js'
@@ -52,15 +54,32 @@ function failedItem(index = 1, overrides: Parameters<typeof makeWorkItem>[0] = {
 }
 
 describe('learning attention RPC', () => {
+  const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-1' }
+  const authorizer = new CurrentScopeAuthorizer(async workspaceId => workspaceId === 'workspace-1'
+    ? { workspaceId, canonicalPath: 'D:\\workspace' }
+    : undefined)
+  const actionsFor = async (domain: ReturnType<typeof createMemoryRun2skillDomain>) => (
+    await authorizer.project(domain, currentScope, new PurgeVisibility(domain))
+  ).map(({ actionKey, subjectId, kind, proposalRef }) => ({
+    actionKey, subjectId, kind, ...(proposalRef === undefined ? {} : { proposalRef }),
+  }))
+  const listRequest = async (domain: ReturnType<typeof createMemoryRun2skillDomain>, cursor?: string) => ({
+    apiVersion: 1 as const,
+    currentScope,
+    ...(cursor === undefined ? {} : { cursor }),
+  })
+  const handlerFor = (
+    domain: ReturnType<typeof createMemoryRun2skillDomain>,
+    options: Parameters<typeof createLearningAttentionRpcHandler>[2] = {},
+  ) => createLearningAttentionRpcHandler(() => domain, undefined, { authorizer, ...options })
+
   it('lists only safe failure diagnostics for the exact PROJECT workspace', async () => {
     const domain = createMemoryRun2skillDomain()
     const item = failedItem()
     domain.workItems.set(item.workItemId, item)
-    const handler = createLearningAttentionRpcHandler(() => domain)
+    const handler = handlerFor(domain)
 
-    const result = await handler(LEARNING_ISSUES_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-1',
-    }, new AbortController().signal)
+    const result = await handler(LEARNING_ISSUES_LIST_ENDPOINT, await listRequest(domain), new AbortController().signal)
 
     expect(result).toEqual({ ok: true, value: {
       apiVersion: 1,
@@ -79,6 +98,16 @@ describe('learning attention RPC', () => {
     } })
     expect(JSON.stringify(result)).not.toContain('canonicalPath')
     expect(JSON.stringify(result)).not.toContain(item.evidenceRefs[0]?.excerpt)
+    const action = (await actionsFor(domain))[0]!
+    await expect(handler(LEARNING_ISSUES_RETRY_ENDPOINT, {
+      apiVersion: 1,
+      currentScope: { kind: 'USER_ONLY', generation: 2 },
+      action,
+      workItemId: item.workItemId,
+      workItemRevision: item.revision,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'conflict' },
+    })
   })
 
   it('joins a safe durable terminal detail and omits it when the sidecar is unavailable', async () => {
@@ -94,14 +123,14 @@ describe('learning attention RPC', () => {
     domain.workItems.set(item.workItemId, item)
     const diagnostics = new LearningDiagnosticStore(domain, createMemoryLearningDiagnosticDomain())
     await diagnostics.attach(item, 1, 'MODEL_USAGE_INVALID')
-    const request = { apiVersion: 1 as const, workspaceId: 'workspace-1' }
+    const request = await listRequest(domain)
 
-    const joined = await createLearningAttentionRpcHandler(() => domain, undefined, {
+    const joined = await handlerFor(domain, {
       diagnostics: () => diagnostics,
     })(LEARNING_ISSUES_LIST_ENDPOINT, request, new AbortController().signal)
     expect(joined).toMatchObject({ ok: true, value: { items: [{ failureDetail: 'MODEL_USAGE_INVALID' }] } })
 
-    const generic = await createLearningAttentionRpcHandler(() => domain)(
+    const generic = await handlerFor(domain)(
       LEARNING_ISSUES_LIST_ENDPOINT, request, new AbortController().signal,
     )
     expect(JSON.stringify(generic)).not.toContain('failureDetail')
@@ -133,9 +162,8 @@ describe('learning attention RPC', () => {
     })
     domain.workItems.set(projectOther.workItemId, projectOther)
 
-    const result = await createLearningAttentionRpcHandler(() => domain)(LEARNING_ISSUES_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-1',
-    }, new AbortController().signal)
+    const result = await handlerFor(domain)(LEARNING_ISSUES_LIST_ENDPOINT,
+      await listRequest(domain), new AbortController().signal)
 
     expect(result).toMatchObject({ ok: true, value: { items: expect.any(Array) } })
     if (!result.ok) throw new Error('expected learning issues list')
@@ -151,29 +179,43 @@ describe('learning attention RPC', () => {
       const item = failedItem(index)
       domain.workItems.set(item.workItemId, item)
     }
-    const handler = createLearningAttentionRpcHandler(() => domain)
+    const handler = handlerFor(domain)
     const signal = new AbortController().signal
-    const first = await handler(LEARNING_ISSUES_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-1',
-    }, signal)
-    expect(first).toMatchObject({ ok: true, value: { items: { length: 20 }, nextCursor: 'c_20' } })
+    const first = await handler(LEARNING_ISSUES_LIST_ENDPOINT, await listRequest(domain), signal)
+    expect(Buffer.byteLength(JSON.stringify(await listRequest(domain)), 'utf8')).toBeLessThan(8 * 1024)
+    expect(first).toMatchObject({ ok: true, value: { items: { length: 20 } } })
     if (!first.ok) throw new Error('expected first page')
     const firstValue = first.value as {
       items: Array<{ workItemId: string }>
       nextCursor: string
     }
-    const second = await handler(LEARNING_ISSUES_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-1', cursor: firstValue.nextCursor,
-    }, signal)
+    expect(firstValue.nextCursor).toMatch(/^c_20_1_[a-f0-9]{64}$/)
+    const second = await handler(LEARNING_ISSUES_LIST_ENDPOINT,
+      await listRequest(domain, firstValue.nextCursor), signal)
     expect(second).toMatchObject({ ok: true, value: { items: { length: 5 } } })
     if (!second.ok) throw new Error('expected second page')
     const secondValue = second.value as { items: Array<{ workItemId: string }> }
     expect(secondValue).not.toHaveProperty('nextCursor')
     expect(new Set([...firstValue.items, ...secondValue.items].map(entry => entry.workItemId)).size).toBe(25)
 
+    await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT, {
+      ...await listRequest(domain, firstValue.nextCursor),
+      currentScope: { ...currentScope, generation: 2 },
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+    await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT, {
+      ...await listRequest(domain, firstValue.nextCursor),
+      currentScope: { ...currentScope, workspaceId: 'other-workspace' },
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+
+    const changed = failedItem(30)
+    domain.workItems.set(changed.workItemId, changed)
+    await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT,
+      await listRequest(domain, firstValue.nextCursor), signal))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+
     for (const cursor of ['c_0', 'c_020', 'c_25', 'c_999999999999999999999999999999']) {
       await expect(handler(LEARNING_ISSUES_LIST_ENDPOINT, {
-        apiVersion: 1, workspaceId: 'workspace-1', cursor,
+        ...await listRequest(domain), cursor,
       }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'bad-request' } })
     }
   })
@@ -193,8 +235,12 @@ describe('learning attention RPC', () => {
     })
     domain.workItems.set(item.workItemId, item)
     const wake = vi.fn()
-    const handler = createLearningAttentionRpcHandler(() => domain, undefined, { onRetry: wake })
-    const request = { apiVersion: 1 as const, workItemId: item.workItemId, workItemRevision: item.revision }
+    const handler = handlerFor(domain, { onRetry: wake })
+    const action = (await actionsFor(domain))[0]!
+    const request = {
+      apiVersion: 1 as const, currentScope, action,
+      workItemId: item.workItemId, workItemRevision: item.revision,
+    }
 
     const first = await handler(LEARNING_ISSUES_RETRY_ENDPOINT, request, new AbortController().signal)
     expect(first).toMatchObject({ ok: true, value: { changed: true, processingState: 'CAPTURED' } })
@@ -208,7 +254,7 @@ describe('learning attention RPC', () => {
     const authorized = domain.workItems.get(item.workItemId)!
     await new LearningWorkItemStore(domain).claim(item.workItemId, authorized.revision)
     const duplicate = await handler(LEARNING_ISSUES_RETRY_ENDPOINT, request, new AbortController().signal)
-    expect(duplicate).toMatchObject({ ok: true, value: { changed: false, processingState: 'ANALYZING' } })
+    expect(duplicate).toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(wake).toHaveBeenCalledOnce()
   })
 
@@ -216,31 +262,32 @@ describe('learning attention RPC', () => {
     const domain = createMemoryRun2skillDomain()
     const item = failedItem()
     domain.workItems.set(item.workItemId, item)
-    const handler = createLearningAttentionRpcHandler(() => domain)
+    const handler = handlerFor(domain)
+    const action = (await actionsFor(domain))[0]!
     expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, {
-      apiVersion: 1, workItemId: item.workItemId, workItemRevision: item.revision,
+      apiVersion: 1, currentScope, action, workItemId: item.workItemId, workItemRevision: item.revision,
     }, new AbortController().signal)).toMatchObject({ ok: false, error: { code: 'bad-request' } })
 
     const request = {
-      apiVersion: 1 as const, workItemId: item.workItemId,
+      apiVersion: 1 as const, currentScope, action, workItemId: item.workItemId,
       workItemRevision: item.revision, confirm: true as const,
     }
     expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, request, new AbortController().signal))
       .toMatchObject({ ok: true, value: { changed: true, processingState: 'NEEDS_ATTENTION', disposition: 'IGNORED' } })
     const ignored = domain.workItems.get(item.workItemId)!
     expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, request, new AbortController().signal))
-      .toMatchObject({ ok: true, value: { changed: false, disposition: 'IGNORED' } })
+      .toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(await handler(LEARNING_ISSUES_DISMISS_ENDPOINT, {
       ...request, workItemRevision: ignored.revision,
     }, new AbortController().signal))
-      .toMatchObject({ ok: true, value: { changed: false, disposition: 'IGNORED' } })
+      .toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(await handler(LEARNING_ISSUES_RETRY_ENDPOINT, {
-      apiVersion: 1, workItemId: item.workItemId, workItemRevision: ignored.revision,
+      apiVersion: 1, currentScope, action, workItemId: item.workItemId, workItemRevision: ignored.revision,
     }, new AbortController().signal))
-      .toMatchObject({ ok: false, error: { code: 'invalid-state' } })
+      .toMatchObject({ ok: false, error: { code: 'conflict' } })
     expect(domain.workItems.has(item.workItemId)).toBe(true)
     expect(await handler(LEARNING_ISSUES_LIST_ENDPOINT, {
-      apiVersion: 1, workspaceId: 'workspace-1',
+      apiVersion: 1, currentScope,
     }, new AbortController().signal)).toMatchObject({ ok: true, value: { items: [] } })
   })
 })
