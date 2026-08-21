@@ -84,6 +84,8 @@ export interface PurgeServiceOptions {
   readonly previewTtlMs?: number
   readonly onHidden?: (journal: PurgeJournalV1) => void | Promise<void>
   readonly onPhasePersisted?: (phase: PurgePhaseV1) => void | Promise<void>
+  readonly beforeDeleteWorkItem?: (workItemId: string) => void | Promise<void>
+  readonly assertDeletionReady?: () => void | Promise<void>
 }
 
 interface StoredPreview {
@@ -145,6 +147,8 @@ export class PurgeService {
   readonly #ttl
   readonly #onHidden
   readonly #onPhasePersisted
+  readonly #beforeDeleteWorkItem
+  readonly #assertDeletionReady
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
@@ -161,9 +165,12 @@ export class PurgeService {
     this.#ttl = Math.min(requestedTtl, DEFAULT_PREVIEW_TTL_MS)
     this.#onHidden = options.onHidden ?? (() => {})
     this.#onPhasePersisted = options.onPhasePersisted ?? (() => {})
+    this.#beforeDeleteWorkItem = options.beforeDeleteWorkItem ?? (() => {})
+    this.#assertDeletionReady = options.assertDeletionReady ?? (() => {})
   }
 
   async preview(scope: 'PROJECT' | 'USER', workspaceId?: string): Promise<PurgePreviewV1> {
+    await this.#requireDeletionReady()
     this.#prunePreviews()
     let binding: PurgeScopeBindingV1
     try {
@@ -211,6 +218,7 @@ export class PurgeService {
     return this.#serialize(async () => {
       const completed = this.#completed.get(previewId)
       if (completed !== undefined) return completed
+      await this.#requireDeletionReady()
       const stored = this.#previews.get(previewId)
       if (
         stored === undefined
@@ -312,6 +320,7 @@ export class PurgeService {
 
   async #runToCompletion(): Promise<PurgeReceiptV1> {
     try {
+      await this.#requireDeletionReady()
       while (this.#global.get().purgeJournal !== undefined) await this.#step()
       const last = this.#lastReceipt
       if (last === undefined) throw new PurgeError('PURGE_STORAGE_UNAVAILABLE')
@@ -354,6 +363,7 @@ export class PurgeService {
       const batch = candidates.workItemIds.slice(0, DELETE_BATCH_SIZE)
       let deleted = 0
       for (const id of batch) {
+        await this.#beforeDeleteWorkItem(id)
         if (await this.domain.table('work_items').delete(id)) deleted += 1
         else if (this.domain.table('work_items').get(id) !== undefined) throw new Error('PURGE_DELETE_FAILED')
       }
@@ -412,6 +422,15 @@ export class PurgeService {
       }))
     } catch {
       // The durable hide fence remains authoritative even if diagnostics cannot be updated.
+    }
+  }
+
+  async #requireDeletionReady(): Promise<void> {
+    try {
+      await this.#assertDeletionReady()
+    } catch (error) {
+      if (error instanceof PurgeError) throw error
+      throw new PurgeError('PURGE_STORAGE_UNAVAILABLE')
     }
   }
 

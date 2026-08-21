@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { Run2skillDomain } from '../dsh-storage/types.js'
 import { PurgeVisibility } from '../../application/purge/index.js'
 import type { RuntimeNotices } from '../../application/capture/runtime-notices.js'
+import { intendedLearningPersistenceScope, isIgnoredLearningFailure } from '../../domain/learn/index.js'
 import { PUBLICATION_LIMITS } from '../../domain/publication/index.js'
 import { proposalRefOf } from '../../domain/review/index.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
@@ -20,13 +21,13 @@ const requestSchema = z.object({
 interface ProjectedAttentionAction {
   readonly actionKey: string
   readonly subjectId: string
-  readonly kind: 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION'
+  readonly kind: 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION' | 'RETRY_LEARNING' | 'DISMISS_LEARNING'
   readonly reasonCode: string
   readonly scope: 'PROJECT' | 'USER'
   readonly availableActions: readonly string[]
   readonly createdAt: string
   readonly updatedAt: string
-  readonly proposalRef: { readonly proposalId: string; readonly revision: number; readonly digest: string }
+  readonly proposalRef?: { readonly proposalId: string; readonly revision: number; readonly digest: string }
 }
 
 export type AttentionWorkspaceResolver = (workspaceId: string) => Promise<{
@@ -91,7 +92,49 @@ export function createAttentionRpcHandler(
       }
       return [...domain.table('work_items').entries()].flatMap<ProjectedAttentionAction>(([, item]) => {
         const review = item.review
-        if (review === undefined || !visibility.workItemVisible(item)) return []
+        if (!visibility.workItemVisible(item)) return []
+        if (review === undefined) {
+          const learning = item.learning
+          const failure = learning?.failure
+          const scope = intendedLearningPersistenceScope(item)
+          if (
+            item.processingState !== 'NEEDS_ATTENTION'
+            || learning === undefined
+            || failure === undefined
+            || isIgnoredLearningFailure(item)
+            || scope === undefined
+            || (scope === 'PROJECT' && (
+              workspace === undefined
+              || item.workspaceBinding.status !== 'BOUND'
+              || item.workspaceBinding.workspaceId !== workspace.workspaceId
+              || !sameWorkspacePath(item.workspaceBinding.canonicalPath, workspace.canonicalPath)
+            ))
+          ) return []
+          const retryable = failure.retryable && learning.attempt < 3
+          const kind = retryable ? 'RETRY_LEARNING' as const : 'DISMISS_LEARNING' as const
+          const callsSummary = JSON.stringify([...learning.calls]
+            .sort((left, right) => left.requestOrdinal - right.requestOrdinal)
+            .map(call => ({
+              requestOrdinal: call.requestOrdinal,
+              kind: call.kind,
+              inputTokens: call.inputTokens ?? null,
+              outputTokens: call.outputTokens ?? null,
+              outcome: call.outcome,
+            })))
+          return [{
+            actionKey: actionKey([
+              'run2skill-action-v1', item.workItemId, kind, failure.code,
+              failure.occurredAt, String(learning.attempt), String(learning.requestBudgetUsed), callsSummary,
+            ]),
+            subjectId: item.workItemId,
+            kind,
+            reasonCode: failure.code,
+            scope,
+            availableActions: retryable ? ['RETRY', 'DISMISS'] as const : ['DISMISS'] as const,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+          }]
+        }
         const scope = review.proposal.persistenceScope
         if (scope === 'PROJECT' && (
           workspace === undefined

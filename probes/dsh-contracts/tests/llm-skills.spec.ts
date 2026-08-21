@@ -272,6 +272,9 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
         workItemId: `wi_${'b'.repeat(64)}`,
         catalogObservationDigest: 'c'.repeat(64),
         shortlistDigests: [],
+        requestBudgetAvailable: 2,
+        initialCallKind: 'PRIMARY',
+        expectedPersistenceScope: 'PROJECT',
         ledger,
       })
 

@@ -10,6 +10,7 @@ import {
   type ReactElement,
   type RefObject,
 } from 'react'
+import { z } from 'zod'
 import {
   Button,
   DisclosureRow,
@@ -71,6 +72,38 @@ export type AttentionCall = (
   payload: { readonly apiVersion: 1; readonly workspaceId?: string; readonly sessionId?: string },
   signal: AbortSignal,
 ) => Promise<unknown>
+
+const learningIssueSchema = z.object({
+  workItemId: z.string().regex(/^wi_[a-f0-9]{64}$/),
+  workItemRevision: z.number().int().safe().positive(),
+  createdAt: z.string().datetime({ offset: true }),
+  updatedAt: z.string().datetime({ offset: true }),
+  failureCode: z.string().min(1).max(256),
+  failureDetail: z.string().min(1).max(256).optional(),
+  retryable: z.boolean(),
+  attempt: z.number().int().nonnegative().max(3),
+  requestBudgetUsed: z.number().int().nonnegative().max(2),
+  modelRoute: z.object({
+    provider: z.string().min(1).max(256),
+    model: z.string().min(1).max(256),
+  }).strict().optional(),
+  calls: z.array(z.object({
+    requestOrdinal: z.number().int().positive(),
+    kind: z.string().min(1).max(256),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    outcome: z.string().min(1).max(256),
+  }).strict()).max(2),
+}).strict()
+type LearningIssue = z.infer<typeof learningIssueSchema>
+const learningIssuePageSchema = z.object({
+  ok: z.literal(true),
+  value: z.object({
+    apiVersion: z.literal(1),
+    items: z.array(learningIssueSchema).max(20),
+    nextCursor: z.string().regex(/^c_[1-9][0-9]*$/).optional(),
+  }).strict(),
+}).strict()
 
 function attentionValue(value: unknown): AttentionProjection | undefined {
   if (value === null || typeof value !== 'object' || !('ok' in value) || value.ok !== true || !('value' in value)) {
@@ -274,6 +307,155 @@ function ProposalSettingsSection(props: {
         setRejectConfirm(false)
         void controller.mutate('REJECT').finally(props.onMutationSettled)
       },
+    }),
+  )
+}
+
+export function LearningFailureSection(props: {
+  readonly workspaceId?: string
+  readonly call: ProposalReviewCall
+  readonly active: boolean
+  readonly actions: readonly AttentionAction[]
+  readonly onMutationSettled: () => void
+}): ReactElement {
+  const [phase, setPhase] = useState<'IDLE' | 'LOADING' | 'READY' | 'ERROR'>('IDLE')
+  const [items, setItems] = useState<readonly LearningIssue[]>([])
+  const [refreshGeneration, setRefreshGeneration] = useState(0)
+  const [pending, setPending] = useState<string>()
+  const [dismiss, setDismiss] = useState<LearningIssue>()
+  const learningActions = useMemo(() => new Map(props.actions.flatMap(action => (
+    action.subjectId === undefined
+    || !['RETRY_LEARNING', 'DISMISS_LEARNING'].includes(action.kind ?? '')
+      ? []
+      : [[action.subjectId, action] as const]
+  ))), [props.actions])
+  useEffect(() => {
+    if (!props.active || learningActions.size === 0) {
+      setPhase('IDLE')
+      setItems([])
+      return
+    }
+    if (props.workspaceId === undefined) {
+      setPhase('ERROR')
+      setItems([])
+      return
+    }
+    const abort = new AbortController()
+    setPhase('LOADING')
+    void (async () => {
+      const next: LearningIssue[] = []
+      let cursor: string | undefined
+      for (let page = 0; page < 10; page += 1) {
+        const parsed = learningIssuePageSchema.safeParse(await props.call(
+          'learning/issues/list',
+          {
+            apiVersion: 1,
+            workspaceId: props.workspaceId,
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+          abort.signal,
+        ))
+        if (!parsed.success) throw new Error('invalid learning issue response')
+        next.push(...parsed.data.value.items.filter(item => learningActions.has(item.workItemId)))
+        cursor = parsed.data.value.nextCursor
+        if (cursor === undefined) {
+          if (!abort.signal.aborted) {
+            setItems(next)
+            setPhase('READY')
+          }
+          return
+        }
+      }
+      throw new Error('learning issue page limit exceeded')
+    })().catch(() => {
+      if (!abort.signal.aborted) {
+        setItems([])
+        setPhase('ERROR')
+      }
+    })
+    return () => { abort.abort() }
+  }, [learningActions, props.active, props.call, props.workspaceId, refreshGeneration])
+  const mutate = (endpoint: 'learning/issues/retry' | 'learning/issues/dismiss', item: LearningIssue) => {
+    if (pending !== undefined) return
+    setPending(item.workItemId)
+    void props.call(endpoint, {
+      apiVersion: 1,
+      workItemId: item.workItemId,
+      workItemRevision: item.workItemRevision,
+      ...(endpoint === 'learning/issues/dismiss' ? { confirm: true } : {}),
+    }, new AbortController().signal).then(result => {
+      if (
+        result === null
+        || typeof result !== 'object'
+        || !('ok' in result)
+        || result.ok !== true
+      ) throw new Error('learning issue mutation rejected')
+      setItems(current => current.filter(candidate => candidate.workItemId !== item.workItemId))
+      props.onMutationSettled()
+    }).catch(() => { setPhase('ERROR') }).finally(() => { setPending(undefined) })
+  }
+  if (learningActions.size === 0) return createElement(Fragment)
+  return createElement('section', { className: css.sectionBody, 'aria-label': '学习失败恢复' },
+    createElement('div', { className: css.toolbar },
+      createElement('strong', null, `学习失败 · ${String(learningActions.size)} 项`),
+      createElement(Button, {
+        variant: 'outline',
+        size: 'sm',
+        icon: createElement(IconRefreshOutline16),
+        disabled: !props.active || pending !== undefined,
+        onClick: () => { setRefreshGeneration(value => value + 1) },
+      }, '刷新失败详情'),
+    ),
+    phase === 'LOADING' ? createElement('p', { role: 'status' }, '正在加载学习失败详情…') : null,
+    phase === 'ERROR' ? createElement('p', { role: 'alert' }, '学习失败详情暂不可用，请保持 DSH 运行并稍后重试。') : null,
+    ...items.map(item => {
+      const action = learningActions.get(item.workItemId)
+      const busy = pending === item.workItemId
+      return createElement('article', { className: css.detail, key: item.workItemId },
+        createElement('div', { className: css.toolbar },
+          createElement(Pill, null, item.failureCode),
+          item.failureDetail === undefined ? null : createElement(Pill, null, item.failureDetail),
+        ),
+        createElement('p', null, `第 ${String(item.attempt)} 轮 · 已使用 ${String(item.requestBudgetUsed)} 次模型请求`),
+        item.modelRoute === undefined
+          ? null
+          : createElement('p', null, `模型路由：${item.modelRoute.provider} / ${item.modelRoute.model}`),
+        createElement('div', { className: css.actions },
+          action?.availableActions?.includes('RETRY') === true
+            ? createElement(Button, {
+                variant: 'primary',
+                disabled: busy || pending !== undefined,
+                onClick: () => { mutate('learning/issues/retry', item) },
+              }, busy ? '正在重试…' : '重试学习')
+            : null,
+          action?.availableActions?.includes('DISMISS') === true
+            ? createElement(Button, {
+                variant: 'outline',
+                disabled: busy || pending !== undefined,
+                onClick: () => { setDismiss(item) },
+              }, '关闭此失败')
+            : null,
+        ),
+      )
+    }),
+    createElement(Modal, {
+      open: dismiss !== undefined,
+      title: '确认关闭此学习失败？',
+      closeLabel: '取消',
+      description: '该失败会从待处理列表隐藏；已有 Skill 和 DSH Session Log 不会改变。',
+      onClose: () => { setDismiss(undefined) },
+      footer: createElement('div', { className: css.actions },
+        createElement(Button, { variant: 'ghost', onClick: () => { setDismiss(undefined) } }, '取消'),
+        createElement(Button, {
+          variant: 'primary',
+          disabled: pending !== undefined,
+          onClick: () => {
+            const selected = dismiss
+            setDismiss(undefined)
+            if (selected !== undefined) mutate('learning/issues/dismiss', selected)
+          },
+        }, '确认关闭'),
+      ),
     }),
   )
 }
@@ -495,6 +677,13 @@ export function Run2skillSettingsPage(props: {
           active: hostTab.visible && open.has('attention'),
           actions: attention?.actions ?? [],
           attentionAvailable: attention !== undefined,
+          onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
+        }),
+        createElement(LearningFailureSection, {
+          ...(workspaceId === undefined ? {} : { workspaceId }),
+          call: props.callReview,
+          active: hostTab.visible && open.has('attention'),
+          actions: attention?.actions ?? [],
           onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
         }),
       )),

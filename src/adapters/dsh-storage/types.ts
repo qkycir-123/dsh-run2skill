@@ -24,6 +24,9 @@ export interface Run2skillDomain {
 
 export interface Run2skillStorageContext {
   readonly storageDomain: {
-    open(spec: typeof import('./domain.js').run2skillDomainSpec): Promise<Run2skillDomain>
+    open(spec:
+      | typeof import('./domain.js').run2skillDomainSpec
+      | typeof import('./learning-diagnostic-domain.js').learningDiagnosticDomainSpec
+    ): Promise<Run2skillDomain | import('./learning-diagnostic-domain.js').LearningDiagnosticDomain>
   }
 }

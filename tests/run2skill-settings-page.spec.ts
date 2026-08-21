@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   Run2skillAttentionToast,
+  LearningFailureSection,
   RejectProposalModal,
   Run2skillSettingsPage,
   actionableProposalItems,
@@ -178,6 +179,64 @@ describe('run2skill native settings surface', () => {
     }))
     expect((await screen.findByRole('alert')).textContent).toContain('设置 → 插件 → run2skill')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('renders real learning failure facts selected by Attention and invokes the bounded retry RPC', async () => {
+    const workItemId = `wi_${'a'.repeat(64)}`
+    const call = vi.fn(async (endpoint: string) => endpoint === 'learning/issues/list'
+      ? {
+          ok: true,
+          value: {
+            apiVersion: 1,
+            items: [{
+              workItemId,
+              workItemRevision: 3,
+              createdAt: '2026-08-21T00:00:00.000Z',
+              updatedAt: '2026-08-21T00:00:01.000Z',
+              failureCode: 'MODEL_TERMINAL_FAILURE',
+              failureDetail: 'MODEL_USAGE_INVALID',
+              retryable: true,
+              attempt: 1,
+              requestBudgetUsed: 2,
+              calls: [
+                { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' },
+                { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'FAILED' },
+              ],
+            }],
+          },
+        }
+      : {
+          ok: true,
+          value: {
+            apiVersion: 1,
+            workItemId,
+            workItemRevision: 4,
+            changed: true,
+            processingState: 'CAPTURED',
+            disposition: 'ACTIVE',
+          },
+        })
+    const settled = vi.fn()
+    render(createElement(LearningFailureSection, {
+      workspaceId: 'workspace-a',
+      call,
+      active: true,
+      actions: [{
+        actionKey: `act_${'b'.repeat(64)}`,
+        subjectId: workItemId,
+        kind: 'RETRY_LEARNING',
+        availableActions: ['RETRY', 'DISMISS'],
+      }],
+      onMutationSettled: settled,
+    }))
+
+    expect((await screen.findByRole('button', { name: '重试学习' })).closest('article')?.textContent)
+      .toContain('MODEL_USAGE_INVALID')
+    fireEvent.click(screen.getByRole('button', { name: '重试学习' }))
+    await waitFor(() => {
+      expect(call.mock.calls.some(([endpoint]) => endpoint === 'learning/issues/retry')).toBe(true)
+      expect(settled).toHaveBeenCalledOnce()
+    })
   })
 
   it('gives Reject Modal initial focus, a bidirectional trap, Escape, and trigger restoration', async () => {

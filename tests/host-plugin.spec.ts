@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
 import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import { createMemoryLearningDiagnosticDomain } from './support/memory-learning-diagnostic-domain.js'
+import { makeWorkItem } from './support/work-item-fixture.js'
 import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
 
 function settingsService(): DshSettingsPort {
@@ -53,6 +55,9 @@ describe('Host plugin assembly', () => {
   it('registers ingress before recovery and exposes one durable captured item', async () => {
     const order: string[] = []
     const domain = createMemoryRun2skillDomain()
+    const diagnosticDomain = createMemoryLearningDiagnosticDomain()
+    const diagnosticClose = vi.fn(async () => { order.push('diagnostic-close') })
+    diagnosticDomain.close = diagnosticClose
     const close = vi.fn(async () => { order.push('domain-close') })
     domain.close = close
     const header = { version: 1, id: 'session-1', createdAt: 1_725_000_000_000 }
@@ -86,9 +91,9 @@ describe('Host plugin assembly', () => {
         async readFrom() { return { meta: header, events: persistedEvents } },
       },
       storageDomain: {
-        async open() {
-          order.push('domain-open')
-          return domain
+        async open(spec: { readonly name: string }) {
+          order.push(`${spec.name}-open`)
+          return spec.name === 'run2skill_learning_diagnostics_v1' ? diagnosticDomain : domain
         },
       },
       workspaceRegistry: { async resolveByPath() { return undefined } },
@@ -110,7 +115,7 @@ describe('Host plugin assembly', () => {
 
     const dispose = await apply(context)
 
-    expect(order.indexOf('listener')).toBeLessThan(order.indexOf('domain-open'))
+    expect(order.indexOf('listener')).toBeLessThan(order.indexOf('run2skill_v1-open'))
     expect(eventListener).toBeTypeOf('function')
     expect(domain.workItems.size).toBe(0)
     persistedEvents = events
@@ -136,6 +141,8 @@ describe('Host plugin assembly', () => {
     await dispose()
     expect(disposeRpc).toHaveBeenCalledOnce()
     expect(close).toHaveBeenCalledOnce()
+    expect(diagnosticClose).toHaveBeenCalledOnce()
+    expect(order.indexOf('diagnostic-close')).toBeLessThan(order.indexOf('domain-close'))
     expect(order.indexOf('rpc-dispose')).toBeLessThan(order.indexOf('domain-close'))
   })
 
@@ -321,5 +328,129 @@ describe('Host plugin assembly', () => {
 
     await expect(dispose()).rejects.toThrow('synthetic rpc dispose failure')
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('continues with the main domain and exposes a non-sensitive health code when sidecar open fails', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const sidecar = createMemoryLearningDiagnosticDomain()
+    const base = makeWorkItem()
+    const item = {
+      ...base,
+      processingState: 'LEARNED' as const,
+      learning: { proposal: { persistenceScope: 'USER' as const } } as never,
+    }
+    domain.workItems.set(item.workItemId, item)
+    const lineageId = `lin_${'f'.repeat(64)}`
+    domain.lineages.set(lineageId, {
+      scope: 'USER',
+      revisions: [{ committedAt: '2026-08-20T00:00:00.000Z' }],
+    } as never)
+    sidecar.records.set(`${item.workItemId}:1:1`, {
+      schemaVersion: 1,
+      workItemId: item.workItemId,
+      workItemRevision: item.revision,
+      attempt: 1,
+      requestOrdinal: 1,
+      callKind: 'PRIMARY',
+      callOutcome: 'FAILED',
+      failureCode: 'MODEL_TERMINAL_FAILURE',
+      failureOccurredAt: '2026-08-20T00:00:01.000Z',
+      detail: 'MODEL_USAGE_INVALID',
+    })
+    let sidecarAvailable = false
+    let rpcHandler: ObserveSummaryRpcHandler | undefined
+    const context = {
+      ...learningServices(),
+      sessions: {},
+      sessionPersistence: {
+        async listSnapshots() { return [] },
+        async readFrom() { throw new Error('must not read') },
+      },
+      storageDomain: {
+        async open(spec: { readonly name: string }) {
+          if (spec.name === 'run2skill_learning_diagnostics_v1') {
+            if (!sidecarAvailable) throw new Error('synthetic sidecar open failure')
+            return sidecar
+          }
+          return domain
+        },
+      },
+      workspaceRegistry: { async resolveByPath() { return undefined } },
+      connection: { rpc: { handle(_channel: string, handler: ObserveSummaryRpcHandler) {
+        rpcHandler = handler
+        return async () => undefined
+      } } },
+      on() {},
+    }
+
+    const dispose = await apply(context)
+    const response = await rpcHandler?.('observe-summary', { apiVersion: 1 }, new AbortController().signal)
+    expect(response).toMatchObject({
+      ok: true,
+      value: { status: 'READY', lastHealthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE' },
+    })
+    for (const request of [
+      { apiVersion: 1 as const, scope: 'USER' as const },
+      { apiVersion: 1 as const, scope: 'PROJECT' as const, workspaceId: 'workspace-1' },
+    ]) {
+      await expect(rpcHandler?.('purge/preview', request, new AbortController().signal))
+        .resolves.toMatchObject({ ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' } })
+    }
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+    await dispose()
+
+    sidecarAvailable = true
+    const recoveredDispose = await apply(context)
+    const preview = await rpcHandler?.(
+      'purge/preview', { apiVersion: 1, scope: 'USER' }, new AbortController().signal,
+    )
+    expect(preview).toMatchObject({ ok: true })
+    if (preview === undefined || !preview.ok) throw new Error('expected recovered purge preview')
+    const value = preview.value as { previewId: string; digest: string }
+    sidecar.setUnavailable(true)
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+
+    sidecar.setUnavailable(false)
+    sidecar.failNextHealthPuts(1)
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+
+    sidecar.failNextHealthDeletes(1)
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'PURGE_STORAGE_UNAVAILABLE' },
+    })
+    expect(domain.global.get().purgeJournal).toBeUndefined()
+    expect(domain.workItems.has(item.workItemId)).toBe(true)
+    expect(domain.lineages.has(lineageId)).toBe(true)
+    expect(sidecar.records.size).toBe(1)
+    expect(sidecar.healthChecks.size).toBe(1)
+
+    await expect(rpcHandler?.('purge/confirm', {
+      apiVersion: 1, scope: 'USER', previewId: value.previewId, digest: value.digest,
+    }, new AbortController().signal)).resolves.toMatchObject({ ok: true, value: { state: 'COMPLETED' } })
+    expect(domain.workItems.has(item.workItemId)).toBe(false)
+    expect(domain.lineages.has(lineageId)).toBe(false)
+    expect(sidecar.records.size).toBe(0)
+    expect(sidecar.healthChecks.size).toBe(0)
+    await recoveredDispose()
   })
 })

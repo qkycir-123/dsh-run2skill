@@ -46,6 +46,7 @@ function setup(options: {
   learnThrows?: boolean
   catalogIncompleteCalls?: number
   modelFails?: boolean
+  diagnosticAttachFails?: boolean
 } = {}) {
   const fixture = makeLearningSessionFixture()
   const item = {
@@ -78,7 +79,9 @@ function setup(options: {
       requestOrdinal: reservation.requestOrdinal,
       kind: 'PRIMARY', inputTokens: 12, outputTokens: 8,
       outcome: options.modelFails === true ? 'FAILED' : 'SUCCEEDED',
-    })
+    }, options.modelFails === true ? {
+      code: 'MODEL_TERMINAL_FAILURE', retryable: true, occurredAt: NOW,
+    } : undefined, options.modelFails === true ? 'MODEL_USAGE_INVALID' : undefined)
     if (options.modelFails === true) {
       return { status: 'FAILED' as const, failureCode: 'MODEL_TERMINAL_FAILURE' }
     }
@@ -107,6 +110,10 @@ function setup(options: {
   }))
   const sleeps: number[] = []
   const onCompleted = vi.fn(async () => undefined)
+  const diagnosticAttach = vi.fn(async () => {
+    if (options.diagnosticAttachFails === true) throw new Error('synthetic diagnostic failure')
+  })
+  const notices = new RuntimeNotices({ now: () => Date.parse(NOW) })
   const worker = new LearningWorker({
     store,
     sessionReader,
@@ -116,12 +123,13 @@ function setup(options: {
       get: async () => undefined,
     },
     client,
-    notices: new RuntimeNotices({ now: () => Date.parse(NOW) }),
+    notices,
+    diagnostics: { attach: diagnosticAttach },
     now: () => Date.parse(NOW),
     sleep: async milliseconds => { sleeps.push(milliseconds) },
     onCompleted,
   })
-  return { fixture, item, domain, store, scopes, client, learn, snapshot, sleeps, onCompleted, worker }
+  return { fixture, item, domain, store, scopes, client, learn, snapshot, sleeps, onCompleted, diagnosticAttach, notices, worker }
 }
 
 describe('LearningWorker', () => {
@@ -182,18 +190,38 @@ describe('LearningWorker', () => {
   })
 
   it('keeps the effective model route with a failed durable call', async () => {
-    const { item, domain, worker } = setup({ modelFails: true })
+    const { item, domain, diagnosticAttach, worker } = setup({ modelFails: true })
 
     await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(item.workItemId)).toMatchObject({
-      processingState: 'CAPTURED',
+      processingState: 'NEEDS_ATTENTION',
       learning: {
         modelRoute: { provider: 'target-provider', model: 'target-model-last' },
         calls: [{ requestOrdinal: 1, outcome: 'FAILED' }],
         failure: { code: 'MODEL_TERMINAL_FAILURE', retryable: true },
       },
     })
+    expect(diagnosticAttach).toHaveBeenCalledWith(
+      expect.objectContaining({ processingState: 'ANALYZING', revision: 4 }),
+      1,
+      'MODEL_USAGE_INVALID',
+    )
+  })
+
+  it('keeps the main call durable when sidecar attachment fails and records only a health code', async () => {
+    const { item, domain, notices, worker } = setup({ modelFails: true, diagnosticAttachFails: true })
+
+    await worker.run(item, new AbortController().signal, { automaticLearning: true })
+
+    expect(domain.workItems.get(item.workItemId)).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      learning: { calls: [{ requestOrdinal: 1 }], failure: { code: 'MODEL_TERMINAL_FAILURE' } },
+    })
+    expect(notices.list()).toEqual([expect.objectContaining({
+      healthCode: 'LEARNING_DIAGNOSTIC_UNAVAILABLE',
+      sessionId: item.signalKey.rootSessionId,
+    })])
   })
 
   it('retries an incomplete Skill catalog with the frozen bounded delays', async () => {
@@ -245,5 +273,50 @@ describe('LearningWorker', () => {
       },
     })
     expect(domain.workItems.get(itemId)?.learning).not.toHaveProperty('claimedAt')
+  })
+
+  it('resumes a truncated PRIMARY after restart with recovery and never reserves PRIMARY twice', async () => {
+    const built = setup()
+    let current = await built.store.claim(built.item.workItemId, built.item.revision)
+    current = await built.store.reserveRequest(current.workItemId, current.revision, {
+      provider: 'target-provider', model: 'target-model-last',
+    })
+    await built.store.recordCall(current.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096,
+    }, {
+      code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', retryable: true, occurredAt: NOW,
+    })
+    await built.store.recoverInterrupted()
+    const recovered = built.domain.workItems.get(built.item.workItemId)!
+    built.learn.mockImplementationOnce(async (request) => {
+      expect(request.initialCallKind).toBe('TRUNCATION_RECOVERY')
+      const reservation = await request.ledger.reserve('TRUNCATION_RECOVERY')
+      await request.ledger.record({
+        requestOrdinal: reservation.requestOrdinal,
+        kind: 'FORMAT_REPAIR', inputTokens: 12, outputTokens: 8, outcome: 'SUCCEEDED',
+      })
+      return {
+        status: 'SUCCEEDED' as const,
+        ...materializeModelLearningOutput(rawOutput(built.item), {
+          workItemId: built.item.workItemId,
+          catalogObservationDigest: request.catalogObservationDigest,
+          shortlistDigests: request.shortlistDigests,
+        }),
+      }
+    })
+
+    await built.worker.run(recovered, new AbortController().signal, { automaticLearning: true })
+
+    expect(built.domain.workItems.get(built.item.workItemId)).toMatchObject({
+      processingState: 'LEARNED',
+      learning: {
+        requestBudgetUsed: 2,
+        calls: [
+          { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED' },
+          { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'SUCCEEDED' },
+        ],
+      },
+    })
+    expect(built.learn).toHaveBeenCalledOnce()
   })
 })

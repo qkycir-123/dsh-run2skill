@@ -137,6 +137,49 @@ describe('Attention projection RPC', () => {
     expect(action.actionKey).toMatch(/^act_[a-f0-9]{64}$/)
   })
 
+  it('projects a real terminal learning failure with retry and dismiss actions from its durable calls', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const base = makeLearnedWorkItem()
+    domain.workItems.set(base.workItemId, {
+      ...base,
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1',
+        attempt: 1,
+        requestBudgetUsed: 2,
+        calls: [
+          { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' },
+          { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'FAILED' },
+        ],
+        failure: {
+          code: 'MODEL_TERMINAL_FAILURE',
+          retryable: true,
+          occurredAt: '2026-08-20T00:00:10.000Z',
+        },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    const host = createAttentionRpcHandler(() => domain, new RuntimeNotices(), workspace)
+
+    const result = await host('attention', {
+      apiVersion: 1,
+      workspaceId: 'workspace-fixture',
+    }, new AbortController().signal)
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        actions: [{
+          subjectId: base.workItemId,
+          kind: 'RETRY_LEARNING',
+          reasonCode: 'MODEL_TERMINAL_FAILURE',
+          availableActions: ['RETRY', 'DISMISS'],
+        }],
+      },
+    })
+    expect(JSON.stringify(result)).not.toContain('D:\\workspace')
+  })
+
   it('returns only exhausted unsaved warnings for the current session', async () => {
     let now = 1_000
     const notices = new RuntimeNotices({ now: () => now })

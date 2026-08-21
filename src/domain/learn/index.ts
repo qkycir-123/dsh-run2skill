@@ -1,4 +1,6 @@
 export * from './envelope.js'
+export * from './attention.js'
+export * from './diagnostics.js'
 export * from './guards.js'
 export * from './identity.js'
 export * from './schemas.js'

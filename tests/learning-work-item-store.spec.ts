@@ -4,6 +4,9 @@ import { DurableCaptureStore } from '../src/adapters/dsh-storage/durable-capture
 import { makeLearningResult } from './support/learning-fixture.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
+import {
+  hasManualLearningAuthorization,
+} from '../src/domain/learn/index.js'
 
 const MODEL_ROUTE = { provider: 'target-provider', model: 'target-model' }
 
@@ -115,7 +118,7 @@ describe('LearningWorkItemStore', () => {
     })
   })
 
-  it('recovers interrupted analysis without losing consumed request budget', async () => {
+  it('recovers only a durably classified truncation and fails closed for an unclassified reserved call', async () => {
     const domain = createMemoryRun2skillDomain()
     const first = makeWorkItem()
     const second = makeWorkItem({
@@ -124,12 +127,91 @@ describe('LearningWorkItemStore', () => {
     domain.workItems.set(first.workItemId, first)
     domain.workItems.set(second.workItemId, second)
     const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
-    const claimed = await store.claim(first.workItemId, 1)
-    await store.reserveRequest(first.workItemId, claimed.revision, MODEL_ROUTE)
+    let truncated = await store.claim(first.workItemId, 1)
+    truncated = await store.reserveRequest(first.workItemId, truncated.revision, MODEL_ROUTE)
+    truncated = await store.recordCall(first.workItemId, truncated.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096,
+    }, {
+      code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', retryable: true, occurredAt: '2026-08-20T00:00:09.000Z',
+    })
+    const unclassified = await store.claim(second.workItemId, 1)
+    await store.reserveRequest(second.workItemId, unclassified.revision, MODEL_ROUTE)
 
     const recovered = await store.recoverInterrupted()
-    expect(recovered).toHaveLength(1)
-    expect(recovered[0]).toMatchObject({ processingState: 'CAPTURED', learning: { requestBudgetUsed: 1 } })
+    expect(recovered).toHaveLength(2)
+    expect(domain.workItems.get(first.workItemId)).toMatchObject({
+      processingState: 'CAPTURED',
+      learning: {
+        requestBudgetUsed: 1,
+        calls: [{ kind: 'PRIMARY', outcome: 'ABORTED' }],
+        failure: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED' },
+      },
+    })
+    expect(domain.workItems.get(second.workItemId)).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      learning: { failure: { code: 'MODEL_ABORTED', retryable: false } },
+    })
+  })
+
+  it('carries one manual authorization across PRIMARY truncation, crash recovery, and the recovery claim', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1,
+        calls: [{ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' }],
+        failure: { code: 'MODEL_ABORTED', retryable: true, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+    const authorized = await store.retryFailed(item.workItemId, item.revision)
+    let current = await store.claim(item.workItemId, authorized.item.revision)
+    current = await store.reserveRequest(item.workItemId, current.revision, MODEL_ROUTE)
+    await store.recordCall(item.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096,
+    }, {
+      code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', retryable: true, occurredAt: '2026-08-20T00:00:09.000Z',
+    })
+
+    await store.recoverInterrupted()
+    const recovered = domain.workItems.get(item.workItemId)!
+    expect(recovered).toMatchObject({
+      processingState: 'CAPTURED',
+      learning: {
+        attempt: 3, requestBudgetUsed: 1,
+        nextEligibleAt: '1970-01-01T00:00:00.001Z',
+      },
+    })
+    expect(hasManualLearningAuthorization(recovered)).toBe(true)
+    const recoveryClaim = await store.claim(item.workItemId, recovered.revision)
+    expect(recoveryClaim.learning?.attempt).toBe(3)
+    const reserved = await store.reserveRequest(item.workItemId, recoveryClaim.revision, MODEL_ROUTE)
+    expect(reserved.learning?.requestBudgetUsed).toBe(2)
+  })
+
+  it('fails closed after a successful primary response if structure-repair intent was not durable before restart', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+    let current = await store.claim(item.workItemId, item.revision)
+    current = await store.reserveRequest(item.workItemId, current.revision, MODEL_ROUTE)
+    await store.recordCall(item.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'SUCCEEDED', outputTokens: 120,
+    })
+
+    await store.recoverInterrupted()
+
+    expect(domain.workItems.get(item.workItemId)).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        requestBudgetUsed: 1,
+        calls: [{ kind: 'PRIMARY', outcome: 'SUCCEEDED' }],
+        failure: { code: 'MODEL_ABORTED', retryable: false },
+      },
+    })
   })
 
   it('preserves learned facts when Slice A replays the same capture', async () => {
@@ -201,15 +283,25 @@ describe('LearningWorkItemStore', () => {
         publicationOutcome: 'NEEDS_ATTENTION',
       },
     })
+    const ignoredCandidate = makeWorkItem({
+      signalKey: { ...available.signalKey, turn: 4, turnEndSeq: 30, turnInstanceDigest: 'e'.repeat(64) },
+      processingState: 'NEEDS_ATTENTION',
+      learning: available.learning,
+    })
     domain.workItems.set(available.workItemId, available)
     domain.workItems.set(unavailable.workItemId, unavailable)
+    domain.workItems.set(ignoredCandidate.workItemId, ignoredCandidate)
     const store = new LearningWorkItemStore(domain)
+    const ignored = await store.dismissFailed(ignoredCandidate.workItemId, ignoredCandidate.revision)
 
-    const reopened = await store.resumeAvailableAgentScopes(item => item.workItemId === available.workItemId)
+    const reopened = await store.resumeAvailableAgentScopes(item => (
+      item.workItemId === available.workItemId || item.workItemId === ignored.item.workItemId
+    ))
 
     expect(reopened.map(item => item.workItemId)).toEqual([available.workItemId])
     expect(reopened[0]).toMatchObject({ processingState: 'CAPTURED', revision: 2 })
     expect(reopened[0]?.learning).not.toHaveProperty('failure')
+    expect(domain.workItems.get(ignored.item.workItemId)).toEqual(ignored.item)
     expect(domain.workItems.get(unavailable.workItemId)?.processingState).toBe('NEEDS_ATTENTION')
   })
 
@@ -255,5 +347,116 @@ describe('LearningWorkItemStore', () => {
       },
     })
     expect(store.listEligible(new Date().toISOString())).toEqual([])
+  })
+
+  it('opens at most one explicit bounded recovery and makes duplicate requests idempotent', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 2,
+        calls: [
+          { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096 },
+          { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'ABORTED', outputTokens: 4096 },
+        ],
+        failure: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', retryable: true, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+
+    const recovered = await store.retryFailed(item.workItemId, item.revision)
+    expect(recovered).toMatchObject({
+      changed: true,
+      item: {
+        processingState: 'CAPTURED', revision: item.revision + 1,
+        learning: {
+          attempt: 2, requestBudgetUsed: 0, calls: [],
+          failure: item.learning!.failure,
+          nextEligibleAt: '1970-01-01T00:00:00.001Z',
+        },
+      },
+    })
+    expect(await store.retryFailed(item.workItemId, item.revision)).toMatchObject({
+      changed: false, item: { revision: item.revision + 1 },
+    })
+
+    let current = await store.claim(item.workItemId, recovered.item.revision)
+    expect(await store.retryFailed(item.workItemId, item.revision)).toMatchObject({
+      changed: false, item: { processingState: 'ANALYZING' },
+    })
+    current = await store.reserveRequest(item.workItemId, current.revision, MODEL_ROUTE)
+    current = await store.recordCall(item.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED',
+    })
+    current = await store.fail(item.workItemId, current.revision, {
+      code: 'MODEL_ABORTED', retryable: true, occurredAt: '2026-08-20T00:00:11.000Z',
+    })
+    expect(current.processingState).toBe('NEEDS_ATTENTION')
+    await expect(store.retryFailed(item.workItemId, current.revision))
+      .rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+  })
+
+  it('keeps the explicit recovery receipt idempotent when its third attempt becomes stale', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1,
+        calls: [{ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' }],
+        failure: { code: 'MODEL_ABORTED', retryable: true, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+
+    const recovered = await store.retryFailed(item.workItemId, item.revision)
+    const claimed = await store.claim(item.workItemId, recovered.item.revision)
+    const reset = await store.resetStale(item.workItemId, claimed.learning!.attempt)
+
+    expect(reset).toMatchObject({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        attempt: 3,
+        nextEligibleAt: '1970-01-01T00:00:00.001Z',
+        failure: { code: 'STORE_WRITE_FAILED', retryable: false },
+      },
+    })
+    expect(await store.retryFailed(item.workItemId, item.revision)).toMatchObject({
+      changed: false,
+      item: { revision: reset.revision },
+    })
+  })
+
+  it('dismisses a failed learning item without deleting it and makes duplicate dismissal idempotent', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeWorkItem({
+      processingState: 'NEEDS_ATTENTION',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 1, requestBudgetUsed: 1,
+        calls: [{ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'FAILED' }],
+        failure: { code: 'MODEL_TERMINAL_FAILURE', retryable: false, occurredAt: '2026-08-20T00:00:00.000Z' },
+        publicationOutcome: 'NEEDS_ATTENTION',
+      },
+    })
+    domain.workItems.set(item.workItemId, item)
+    const store = new LearningWorkItemStore(domain, () => '2026-08-20T00:00:10.000Z')
+
+    const dismissed = await store.dismissFailed(item.workItemId, item.revision)
+    expect(dismissed).toMatchObject({
+      changed: true,
+      item: {
+        processingState: 'NEEDS_ATTENTION',
+        learning: { nextEligibleAt: '2026-08-20T00:00:00.000Z' },
+      },
+    })
+    expect(dismissed.item.learning).toMatchObject({ publicationOutcome: 'NEEDS_ATTENTION' })
+    expect(await store.dismissFailed(item.workItemId, item.revision)).toMatchObject({ changed: false })
+    expect(await store.dismissFailed(item.workItemId, dismissed.item.revision)).toMatchObject({ changed: false })
+    await expect(store.retryFailed(item.workItemId, dismissed.item.revision))
+      .rejects.toMatchObject({ code: 'INVALID_LEARNING_STATE' })
+    expect(store.listEligible('2026-08-20T00:01:00.000Z')).toEqual([])
   })
 })
