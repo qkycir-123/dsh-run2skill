@@ -30,10 +30,10 @@ const workspace = readPortableText('../pnpm-workspace.yaml')
 const thirdPartyNotices = readPortableText('../THIRD_PARTY_NOTICES.md')
 
 describe('published package contract', () => {
-  it('pins the public alpha identity and portable repository metadata', () => {
+  it('pins the public 0.2 identity and portable repository metadata', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
-      version: '0.1.1-alpha',
+      version: '0.2.0',
       description: 'A DSH-native, local-first Run to Skill plugin',
       license: 'MIT',
       repository: {
@@ -42,7 +42,7 @@ describe('published package contract', () => {
       },
       bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
       homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
-      publishConfig: { access: 'public', tag: 'alpha' },
+      publishConfig: { access: 'public', tag: 'latest' },
     })
     expect(manifest.private).not.toBe(true)
   })

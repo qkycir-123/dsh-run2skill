@@ -7,7 +7,7 @@ import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/p
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { ProposalInboxHeaderAction } from '../src/client/proposal-inbox-view.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
-import { makeCreateProposalSnapshot, makeLearnedWorkItem } from './support/review-fixture.js'
+import { makeLearnedWorkItem, makeMergeProposalSnapshot } from './support/review-fixture.js'
 import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
 import { PurgeVisibility } from '../src/application/purge/index.js'
 
@@ -21,7 +21,7 @@ describe('Proposal Inbox browser accessibility', () => {
     const staged = await new ProposalReviewStore(domain).stage(
       item.workItemId,
       item.revision,
-      makeCreateProposalSnapshot(item),
+      makeMergeProposalSnapshot(item),
     )
     const currentScope = { kind: 'WORKSPACE' as const, generation: 1, workspaceId: 'workspace-fixture' }
     const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({
@@ -40,22 +40,28 @@ describe('Proposal Inbox browser accessibility', () => {
       scopeAccess: () => ({ currentScope, actions }),
     }))
 
-    const trigger = await screen.findByRole('button', { name: '1 条 Skill 提案待处理：1 条待审核' })
+    const trigger = await screen.findByRole('button', { name: '1 份技能草稿待处理：1 份待审核' })
     fireEvent.click(trigger)
-    const dialog = await screen.findByRole('dialog', { name: 'Skill Proposal Inbox' })
+    const dialog = await screen.findByRole('dialog', { name: '技能草稿' })
     expect(dialog.getAttribute('aria-modal')).toBe('true')
     const close = screen.getByRole('button', { name: '关闭' })
     await waitFor(() => { expect(document.activeElement).toBe(close) })
 
     const proposalButton = await screen.findByRole('button', {
-      name: new RegExp(`CREATE .* PROJECT .* 待审核`),
+      name: new RegExp(`MERGE .* PROJECT .* 待审核`),
     })
     fireEvent.click(proposalButton)
     await screen.findByText(staged.item.review!.proposal.digest)
-    const reject = screen.getByRole('button', { name: '拒绝 Proposal' })
+    expect(screen.getByText('项目工作区')).toBeTruthy()
+    expect(screen.getAllByText(/当前项目（PROJECT）/)).toHaveLength(2)
+    expect(screen.getAllByText(/消息序号/).length).toBeGreaterThan(0)
+    expect(screen.getByText('合并前的 Skill 内容')).toBeTruthy()
+    expect(screen.getByText('内容差异（精确对比）')).toBeTruthy()
+    expect(dialog.textContent).not.toMatch(/Workspace|DSH Home|message seq|Evidence|MERGE Base/)
+    const reject = screen.getByRole('button', { name: '放弃草稿' })
     reject.focus()
     fireEvent.click(reject)
-    const confirmation = screen.getByRole('alertdialog', { name: '确认拒绝 Proposal？' })
+    const confirmation = screen.getByRole('alertdialog', { name: '确认放弃这份技能草稿？' })
     expect(confirmation.getAttribute('aria-describedby')).toBe('run2skill-reject-description')
     const cancel = screen.getByRole('button', { name: '取消' })
     expect(document.activeElement).toBe(cancel)
@@ -63,10 +69,10 @@ describe('Proposal Inbox browser accessibility', () => {
     await waitFor(() => { expect(screen.queryByRole('alertdialog')).toBeNull() })
     expect(document.activeElement).toBe(reject)
 
-    fireEvent.click(screen.getByRole('button', { name: '批准并发布' }))
-    await waitFor(() => { expect(screen.getAllByText('已批准，正在发布')).toHaveLength(1) })
+    fireEvent.click(screen.getByRole('button', { name: '确认并保存' }))
+    await waitFor(() => { expect(screen.getAllByText('已确认，正在保存')).toHaveLength(1) })
     const live = dialog.querySelector('[aria-live="polite"][aria-atomic="true"]')
-    expect(live?.textContent).toContain('已批准，正在发布')
+    expect(live?.textContent).toContain('已确认，正在保存')
 
     close.focus()
     fireEvent.keyDown(close, { key: 'Escape' })

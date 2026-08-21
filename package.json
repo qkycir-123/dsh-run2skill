@@ -1,6 +1,6 @@
 {
   "name": "dsh-run2skill",
-  "version": "0.1.1-alpha",
+  "version": "0.2.0",
   "description": "A DSH-native, local-first Run to Skill plugin",
   "license": "MIT",
   "repository": {
@@ -13,7 +13,7 @@
   "homepage": "https://github.com/qkycir-123/dsh-run2skill#readme",
   "publishConfig": {
     "access": "public",
-    "tag": "alpha"
+    "tag": "latest"
   },
   "type": "module",
   "main": "./lib/index.js",

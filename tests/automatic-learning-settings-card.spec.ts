@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+// @vitest-environment jsdom
+
+import { createElement, type ComponentType } from 'react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AutomaticLearningSettingsController,
   applyAutomaticLearningSettingsClient,
 } from '../src/client/automatic-learning-settings.js'
+
+afterEach(() => { cleanup() })
 
 function scopeFixture() {
   let snapshot = {
@@ -35,7 +41,7 @@ describe('Automatic Learning native settings card', () => {
   it('registers a run2skill-keyed card and binds the native settings scope', () => {
     const fixture = scopeFixture()
     const install = vi.fn((_name: string, callback: () => unknown) => callback())
-    const register = vi.fn(() => () => {})
+    const register = vi.fn((_options: Record<string, unknown>, _component: unknown) => () => {})
     const bind = vi.fn(() => fixture.scope)
 
     applyAutomaticLearningSettingsClient({
@@ -50,6 +56,15 @@ describe('Automatic Learning native settings card', () => {
     expect(register).toHaveBeenCalledWith(expect.objectContaining({
       name: 'settings.plugin.item', key: 'run2skill',
     }), expect.any(Function))
+
+    const [options, component] = register.mock.calls[0]!
+    const cardProps = (options.inject as () => Record<string, unknown>)()
+    render(createElement(component as ComponentType<Record<string, unknown>>, cardProps))
+    expect(screen.getByText('将真实执行中的明确经验整理为待确认的技能草稿')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /run2skill/ }))
+    expect(screen.getByRole('checkbox', { name: '自动学习' })).toBeTruthy()
+    expect(screen.getByText('分析时沿用发起会话已经选择的模型。')).toBeTruthy()
+    expect(document.body.textContent).not.toMatch(/Skill Proposal|Automatic Learning|inherit-session/)
   })
 
   it('wires USER Purge through the loopback channel without a Workspace identity', async () => {

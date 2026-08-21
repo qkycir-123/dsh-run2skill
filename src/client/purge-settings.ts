@@ -152,7 +152,7 @@ function parseValue<T>(schema: z.ZodType<T>, response: unknown): T {
 
 function completionAnnouncement(scope: PurgeScope | undefined, receipt: PurgeReceipt): string {
   const subject = scope === undefined ? 'run2skill 数据' : `${scope} run2skill 数据`
-  return `${subject}清理完成：${String(receipt.deletedWorkItems)} 条待处理数据，${String(receipt.deletedLineages)} 条发布沿袭记录。`
+  return `${subject}清理完成：${String(receipt.deletedWorkItems)} 条待处理数据，${String(receipt.deletedLineages)} 条 Skill 关联记录。`
 }
 
 function polledCompletionAnnouncement(scope: PurgeScope | undefined): string {
@@ -162,7 +162,7 @@ function polledCompletionAnnouncement(scope: PurgeScope | undefined): string {
 function errorAnnouncement(error: PurgeClientError, durableBoundary = false): string {
   if (error.code === 'PURGE_PREVIEW_STALE') return '清理预览已失效，请重新预览后确认。'
   if (error.code === 'PURGE_BUSY') {
-    return `当前有 ${String(error.busyPublicationCount ?? 0)} 条正在发布；请等待发布完成后重新预览。`
+    return `当前有 ${String(error.busyPublicationCount ?? 0)} 份技能草稿正在保存；请等待保存完成后重新预览。`
   }
   if (error.code === 'PURGE_ALREADY_RUNNING') return '已有一项数据清理正在运行，请等待完成。'
   if (error.code === 'PURGE_SCOPE_UNAVAILABLE') return '当前作用域无法可靠确认，未执行清理。'
@@ -519,7 +519,7 @@ export class PurgeSettingsController {
 
 const phaseCopy: Record<Exclude<PurgeStatus, { state: 'IDLE' }>['phase'], string> = {
   HIDING: '正在隐藏命中数据',
-  DELETING_LINEAGES: '正在删除发布沿袭记录',
+  DELETING_LINEAGES: '正在删除 Skill 关联记录',
   DELETING_WORK_ITEMS: '正在删除待处理数据',
   VERIFYING: '正在验证清理结果',
 }
@@ -528,15 +528,15 @@ function PreviewSummary({ preview }: { readonly preview: PurgePreview }): ReactE
   const keep = Object.fromEntries(preview.willKeep.map(item => [item.reason, item.count]))
   return createElement('dl', null,
     createElement('dt', null, '将删除'),
-    createElement('dd', null, `${String(preview.workItemCount)} 条待处理数据；${String(preview.lineageCount)} 条发布沿袭记录`),
+    createElement('dd', null, `${String(preview.workItemCount)} 条待处理数据；${String(preview.lineageCount)} 条 Skill 关联记录`),
     createElement('dt', null, '将保留'),
     createElement('dd', null,
       `${String(keep.KEEP_NEW ?? 0)} 条边界后新数据；${String(keep.KEEP_SCOPE ?? 0)} 条其他作用域数据`,
     ),
     createElement('dt', null, '无法证明'),
     createElement('dd', null, `${String(preview.blockedOrUnprovenCount)} 条无法证明作用域的数据将保留`),
-    createElement('dt', null, '正在发布'),
-    createElement('dd', null, `${String(preview.busyPublicationCount)} 条；存在时确认会安全拒绝`),
+    createElement('dt', null, '正在保存的技能草稿'),
+    createElement('dd', null, `${String(preview.busyPublicationCount)} 份；存在时不会开始清理`),
   )
 }
 
@@ -621,11 +621,11 @@ function PurgeConfirmationDialog(props: {
     },
       createElement('ul', null,
         createElement('li', null,
-          '删除 run2skill 的过滤 Evidence、Experience、pending、Proposal、Revision metadata、usage 和相关审计事实。',
+          '删除 run2skill 保存的技能草稿、经过筛选的学习材料、待处理记录、版本信息和相关运行记录。',
         ),
-        createElement('li', null, '保留 DSH Session Log。'),
+        createElement('li', null, '保留 DSH 的原始会话记录。'),
         createElement('li', null, '保留所有已发布的原生 Skill。'),
-        createElement('li', null, '删除 Lineage 后，保留的 Skill 将作为普通现有 Skill 使用。'),
+        createElement('li', null, '删除 Skill 关联记录后，保留的 Skill 仍可作为普通 Skill 使用。'),
       ),
       createElement(PreviewSummary, { preview }),
     ))
@@ -656,7 +656,7 @@ export function PurgeSettingsSection(props: {
   const disabled = state.previewPending || state.mutationPending || active !== undefined || activeReceipt !== undefined
   return createElement('section', { 'aria-labelledby': 'run2skill-purge-heading' },
     createElement('h3', { id: 'run2skill-purge-heading' }, '清理 run2skill 数据'),
-    createElement('p', null, '清理只影响 run2skill 派生数据；不会删除 DSH Session Log 或已发布 Skill。'),
+    createElement('p', null, '清理只影响 run2skill 保存的数据；不会删除 DSH 的原始会话记录或已发布 Skill。'),
     createElement('div', { className: css.actions },
     createElement(Button, {
       variant: 'outline',
@@ -676,16 +676,16 @@ export function PurgeSettingsSection(props: {
         void props.controller.preview('USER')
       },
     }, '预览并清理 USER 数据')),
-    state.statusPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在读取 Purge 状态…') : null,
-    state.statusPhase === 'UNAVAILABLE' ? createElement('p', { role: 'alert' }, 'Purge 状态暂不可用') : null,
-    state.statusPhase === 'STALE' ? createElement('p', { role: 'status' }, 'Purge 状态可能已过期') : null,
+    state.statusPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在读取数据清理状态…') : null,
+    state.statusPhase === 'UNAVAILABLE' ? createElement('p', { role: 'alert' }, '数据清理状态暂不可用') : null,
+    state.statusPhase === 'STALE' ? createElement('p', { role: 'status' }, '数据清理状态可能已过期') : null,
     state.previewPending ? createElement('p', { role: 'status' }, '正在生成清理预览…') : null,
     activePhase === undefined
       ? null
-      : createElement('div', { role: 'status', 'aria-label': '当前 Purge 状态' },
+      : createElement('div', { role: 'status', 'aria-label': '当前数据清理状态' },
           createElement('p', null, phaseCopy[activePhase]),
           createElement('p', null,
-            `已删除 ${String(active?.deletedWorkItems ?? activeReceipt?.deletedWorkItems ?? 0)} 条待处理数据和 ${String(active?.deletedLineages ?? activeReceipt?.deletedLineages ?? 0)} 条发布沿袭记录。`,
+            `已删除 ${String(active?.deletedWorkItems ?? activeReceipt?.deletedWorkItems ?? 0)} 条待处理数据和 ${String(active?.deletedLineages ?? activeReceipt?.deletedLineages ?? 0)} 条 Skill 关联记录。`,
           ),
           active?.lastError === undefined
             ? null
@@ -702,7 +702,7 @@ export function PurgeSettingsSection(props: {
     state.error === undefined ? null : createElement('p', { role: 'alert' }, state.announcement),
     createElement('div', {
       role: 'status',
-      'aria-label': 'Purge 状态播报',
+      'aria-label': '数据清理状态播报',
       'aria-live': 'polite',
       'aria-atomic': true,
     }, state.announcement),

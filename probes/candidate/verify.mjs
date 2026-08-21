@@ -230,7 +230,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.1.1-alpha',
+  version: '0.2.0',
   private: undefined,
   license: 'MIT',
   files: ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'],
@@ -240,7 +240,7 @@ assert.deepEqual({
   },
   bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
   homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
-  publishConfig: { access: 'public', tag: 'alpha' },
+  publishConfig: { access: 'public', tag: 'latest' },
   exports: {
     '.': { types: './lib/index.d.ts', default: './lib/index.js' },
     './client': { default: './lib/client.js' },

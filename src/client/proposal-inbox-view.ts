@@ -61,28 +61,28 @@ function useDialogFocus(
 
 function countLabel(state: ProposalInboxState): string {
   const queue = state.summary?.queue
-  if (queue === undefined || queue.completeness === 'UNKNOWN') return 'Skill 提案，待处理数量未知'
+  if (queue === undefined || queue.completeness === 'UNKNOWN') return '技能草稿待处理数量未知'
   const total = queue.pendingReview + queue.publishing + queue.needsAttention
   const facts = [
-    queue.pendingReview > 0 ? `${String(queue.pendingReview)} 条待审核` : undefined,
-    queue.publishing > 0 ? `${String(queue.publishing)} 条正在发布` : undefined,
-    queue.needsAttention > 0 ? `${String(queue.needsAttention)} 条需要处理` : undefined,
+    queue.pendingReview > 0 ? `${String(queue.pendingReview)} 份待审核` : undefined,
+    queue.publishing > 0 ? `${String(queue.publishing)} 份正在保存` : undefined,
+    queue.needsAttention > 0 ? `${String(queue.needsAttention)} 份需要处理` : undefined,
   ].filter(fact => fact !== undefined)
   return facts.length === 0
-    ? '当前没有待处理 Skill 提案'
-    : `${String(total)} 条 Skill 提案待处理：${facts.join('，')}`
+    ? '当前没有待处理的技能草稿'
+    : `${String(total)} 份技能草稿待处理：${facts.join('，')}`
 }
 
 export function describeProposalSummaryState(state: ProposalInboxState): string {
-  if (state.summaryPhase === 'LOADING') return 'Proposal 队列状态加载中'
-  if (state.summaryPhase === 'UNAVAILABLE') return 'Proposal 队列状态暂不可用'
-  if (state.summary === undefined) return 'Proposal 队列状态未知'
+  if (state.summaryPhase === 'LOADING') return '正在加载技能草稿队列'
+  if (state.summaryPhase === 'UNAVAILABLE') return '技能草稿队列暂不可用'
+  if (state.summary === undefined) return '技能草稿队列状态未知'
   const health = describeRun2skillHealth(state.summary.status)
   const queue = state.summary.queue.completeness === 'UNKNOWN'
-    ? '待处理数量未知'
+    ? '技能草稿待处理数量未知'
     : countLabel(state)
   return state.summaryPhase === 'STALE'
-    ? `Proposal 队列状态可能已过期：${health}；${queue}`
+    ? `技能草稿队列状态可能已过期：${health}；${queue}`
     : `${health}；${queue}`
 }
 
@@ -189,9 +189,9 @@ export function ProposalInboxPanel(props: {
     inert: props.rejectConfirm ? '' : undefined,
     className: props.rejectConfirm ? css.blocked : undefined,
   },
-  createElement('section', { 'aria-label': 'Proposal 待处理队列', className: css.queue },
+  createElement('section', { 'aria-label': '技能草稿待处理队列', className: css.queue },
     createElement('div', { className: css.legacyHeader },
-      createElement('h2', { id: 'run2skill-proposal-inbox-title' }, 'Skill Proposal Inbox'),
+      createElement('h2', { id: 'run2skill-proposal-inbox-title' }, '技能草稿'),
       createElement('button', {
         type: 'button',
         'data-initial-focus': true,
@@ -203,7 +203,7 @@ export function ProposalInboxPanel(props: {
     state.listPhase === 'LOADING' ? createElement('p', null, '正在加载待处理队列…') : null,
     state.listPhase === 'ERROR' ? createElement('p', { role: 'alert' }, '待处理队列暂不可用') : null,
     state.listPhase === 'READY' && state.items.length === 0
-      ? createElement('p', null, '当前没有待处理 Proposal')
+      ? createElement('p', null, '当前没有待处理的技能草稿')
       : null,
     createElement('ul', { className: css.legacyList },
       ...state.items.map(item => createElement('li', { key: item.proposalRef.proposalId },
@@ -217,10 +217,10 @@ export function ProposalInboxPanel(props: {
       )),
     ),
   ),
-  createElement('section', { 'aria-label': 'Proposal 详情', className: css.legacyDetail },
-    state.detailPhase === 'IDLE' ? createElement('p', null, '选择一个 Proposal 查看完整事实') : null,
-    state.detailPhase === 'LOADING' ? createElement('p', null, '正在加载 Proposal 详情…') : null,
-    state.detailPhase === 'ERROR' ? createElement('p', { role: 'alert' }, 'Proposal 详情暂不可用') : null,
+  createElement('section', { 'aria-label': '技能草稿详情', className: css.legacyDetail },
+    state.detailPhase === 'IDLE' ? createElement('p', null, '选择一份技能草稿查看完整内容') : null,
+    state.detailPhase === 'LOADING' ? createElement('p', null, '正在加载技能草稿详情…') : null,
+    state.detailPhase === 'ERROR' ? createElement('p', { role: 'alert' }, '技能草稿详情暂不可用') : null,
     state.detail === undefined ? null : createElement(ProposalDetailView, {
       detail: state.detail,
       textMode: props.textMode,
@@ -252,38 +252,38 @@ export function factsFromAction(detail: ProposalDetail): string {
   const action = detail.proposal.actionBinding
   if (action.kind === 'CREATE') {
     return [
-      `Root contract: ${action.rootBinding.rootContractVersion}`,
-      `Root resolver: ${action.rootBinding.resolverVersion}`,
-      `Expected provider/source: ${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
-      `Resolution digest: ${action.rootBinding.resolutionContractDigest}`,
-      `Root state: ${action.rootBinding.state}`,
-      `Skill name: ${action.targetBinding.skillName}`,
-      `Skill bytes digest: ${detail.proposal.skillBytesDigest}`,
-      `Expected absence observed: ${action.expectedAbsence.observedAt}`,
-      'Bundle absent: yes',
-      'Skill file absent: yes',
-      'Flat Skill file absent: yes',
+      `Skill 存储规则版本：${action.rootBinding.rootContractVersion}`,
+      `Skill 存储定位器版本：${action.rootBinding.resolverVersion}`,
+      `预期存储方式 / 来源：${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
+      `存储定位规则校验值：${action.rootBinding.resolutionContractDigest}`,
+      `存储目录状态：${action.rootBinding.state}`,
+      `Skill 名称：${action.targetBinding.skillName}`,
+      `Skill 内容校验值：${detail.proposal.skillBytesDigest}`,
+      `确认目标不存在的时间：${action.expectedAbsence.observedAt}`,
+      '目标文件夹不存在：是',
+      '目标 SKILL.md 不存在：是',
+      '同名扁平 Skill 文件不存在：是',
     ].join('\n')
   }
   if (action.kind === 'MERGE') {
     return [
-      `Root contract: ${action.rootBinding.rootContractVersion}`,
-      `Root resolver: ${action.rootBinding.resolverVersion}`,
-      `Expected provider/source: ${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
-      `Resolution digest: ${action.rootBinding.resolutionContractDigest}`,
-      `Root state: ${action.rootBinding.state}`,
-      `Target identity: ${action.baseBinding.candidateKey}`,
-      `Skill name: ${action.targetBinding.skillName}`,
-      `Base digest: ${action.baseBinding.bytesDigest}`,
-      `Base observed: ${action.baseBinding.observedAt}`,
+      `Skill 存储规则版本：${action.rootBinding.rootContractVersion}`,
+      `Skill 存储定位器版本：${action.rootBinding.resolverVersion}`,
+      `预期存储方式 / 来源：${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
+      `存储定位规则校验值：${action.rootBinding.resolutionContractDigest}`,
+      `存储目录状态：${action.rootBinding.state}`,
+      `现有 Skill 标识：${action.baseBinding.candidateKey}`,
+      `Skill 名称：${action.targetBinding.skillName}`,
+      `原内容校验值：${action.baseBinding.bytesDigest}`,
+      `原内容确认时间：${action.baseBinding.observedAt}`,
     ].join('\n')
   }
   return [
-    `Covering candidate: ${action.coveringCandidateBinding.candidateKey}`,
-    `Name: ${action.coveringCandidateBinding.name}`,
-    `Source: ${action.coveringCandidateBinding.source}`,
-    `Digest: ${action.coveringCandidateBinding.contentDigest}`,
-    `Observed: ${action.coveringCandidateBinding.observedAt}`,
+    `匹配到的现有 Skill 标识：${action.coveringCandidateBinding.candidateKey}`,
+    `名称：${action.coveringCandidateBinding.name}`,
+    `来源：${action.coveringCandidateBinding.source}`,
+    `内容校验值：${action.coveringCandidateBinding.contentDigest}`,
+    `确认时间：${action.coveringCandidateBinding.observedAt}`,
   ].join('\n')
 }
 
@@ -333,49 +333,53 @@ export function ProposalDetailView(props: {
     createElement('dl', null,
       createElement('dt', null, '说明'), createElement('dd', null, makeSafeText(proposal.description)),
       createElement('dt', null, '何时使用'), createElement('dd', null, makeSafeText(proposal.whenToUse)),
-      createElement('dt', null, 'Scope'), createElement('dd', null, proposal.persistenceScope),
-      createElement('dt', null, 'Proposal revision'), createElement('dd', null, String(proposal.revision)),
-      createElement('dt', null, 'Proposal digest'), createElement('dd', null, proposal.digest),
-      createElement('dt', null, 'Session / Turn'),
-      createElement('dd', null, `${coordinate.rootSessionId} / ${String(coordinate.turn)} / seq ${String(coordinate.turnEndSeq)}`),
+      createElement('dt', null, '保存范围'), createElement('dd', null,
+        proposal.persistenceScope === 'PROJECT' ? '当前项目（PROJECT）' : '当前用户（USER）',
+      ),
+      createElement('dt', null, '草稿版本'), createElement('dd', null, String(proposal.revision)),
+      createElement('dt', null, '草稿校验值'), createElement('dd', null, proposal.digest),
+      createElement('dt', null, '会话位置'),
+      createElement('dd', null,
+        `${coordinate.rootSessionId} / 回合 ${String(coordinate.turn)} / 消息序号 ${String(coordinate.turnEndSeq)}`,
+      ),
       proposal.workspaceBinding === undefined
         ? null
         : createElement(Fragment, null,
-            createElement('dt', null, 'Workspace'),
-            createElement('dd', null, `PROJECT · ${proposal.workspaceBinding.workspaceId}`),
+            createElement('dt', null, '项目工作区'),
+            createElement('dd', null, `当前项目（PROJECT）· ${proposal.workspaceBinding.workspaceId}`),
           ),
       proposal.dshHomeBinding === undefined
         ? null
         : createElement(Fragment, null,
-            createElement('dt', null, 'DSH Home'),
-            createElement('dd', null, `USER · ${proposal.dshHomeBinding.resolutionKind}`),
-            createElement('dt', null, 'DSH Home identity'),
+            createElement('dt', null, 'DSH 用户目录'),
+            createElement('dd', null, `当前用户（USER）· ${proposal.dshHomeBinding.resolutionKind}`),
+            createElement('dt', null, 'DSH 用户目录校验值'),
             createElement('dd', null, proposal.dshHomeBinding.identityDigest),
           ),
       createElement('dt', null, '审核决定'),
       createElement('dd', null, describeReviewDecision(detail.reviewDecision)),
       createElement('dt', null, '处理状态'),
       createElement('dd', null, describeProcessingState(detail.processingState)),
-      createElement('dt', null, '发布结果'),
+      createElement('dt', null, '保存结果'),
       createElement('dd', null, describePublicationOutcome(detail.publicationOutcome)),
     ),
-    createElement('h4', null, 'Why learned'),
+    createElement('h4', null, '为什么生成这份草稿'),
     createElement('p', null, makeSafeText(proposal.curationRationale)),
     ...detail.experiences.map(experience => createElement('article', { key: experience.experienceId },
       createElement('strong', null, `${experience.type} · ${experience.evidenceStrength}`),
       createElement('p', null, makeSafeText(experience.lesson)),
     )),
-    createElement('h4', null, '过滤后的 Evidence'),
+    createElement('h4', null, '相关对话片段（已过滤）'),
     ...detail.evidenceRefs.map(evidence => createElement('article', { key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}` },
-      createElement('strong', null, `message seq ${String(evidence.messageSeq)}${evidence.truncated ? ' · 已截断' : ''}`),
+      createElement('strong', null, `消息序号 ${String(evidence.messageSeq)}${evidence.truncated ? ' · 已截断' : ''}`),
       createElement(ProposalTextView, {
         value: evidence.excerpt,
         mode: 'SAFE',
-        label: `Evidence ${String(evidence.messageSeq)}`,
+        label: `相关对话片段 ${String(evidence.messageSeq)}`,
       }),
     )),
-    createElement('h4', null, '绑定事实'),
-    createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '绑定事实' }),
+    createElement('h4', null, '保存前核对信息'),
+    createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '保存前核对信息' }),
     createElement('div', { role: 'group', 'aria-label': '内容显示方式', className: css.modeGroup },
       createElement(Pill, {
         'aria-pressed': props.textMode === 'SAFE',
@@ -388,17 +392,17 @@ export function ProposalDetailView(props: {
         onClick: () => { props.setTextMode('RAW') },
       }, '原始内容'),
     ),
-    createElement('h4', null, '将要批准的完整 SKILL.md'),
+    createElement('h4', null, '将要保存的完整 SKILL.md'),
     createElement(ProposalTextView, {
       value: proposal.exactSkillBytes,
       mode: props.textMode,
-      label: '将要批准的完整 SKILL.md',
+      label: '将要保存的完整 SKILL.md',
     }),
     baseBytes === undefined ? null : createElement(Fragment, null,
-      createElement('h4', null, 'MERGE Base'),
-      createElement(ProposalTextView, { value: baseBytes, mode: props.textMode, label: 'MERGE Base' }),
-      createElement('h4', null, '精确 Diff'),
-      createElement('pre', { 'aria-label': '精确 Diff' },
+      createElement('h4', null, '合并前的 Skill 内容'),
+      createElement(ProposalTextView, { value: baseBytes, mode: props.textMode, label: '合并前的 Skill 内容' }),
+      createElement('h4', null, '内容差异（精确对比）'),
+      createElement('pre', { 'aria-label': '内容差异（精确对比）' },
         diff.map(line => `${line.kind === 'ADD' ? '+' : line.kind === 'REMOVE' ? '-' : ' '} ${makeSafeText(line.text)}`).join('\n'),
       ),
     ),
@@ -406,11 +410,11 @@ export function ProposalDetailView(props: {
       createElement('h4', null, '覆盖已有 Skill 的完整内容'),
       createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '覆盖已有 Skill 的完整内容' }),
     ),
-    createElement('div', { role: 'group', 'aria-label': 'Proposal 操作', className: css.actions },
+    createElement('div', { role: 'group', 'aria-label': '技能草稿操作', className: css.actions },
       action === 'RETRY_PUBLICATION'
         ? createElement(Button, {
             variant: 'primary', disabled: mutationPending, onClick: props.onRetry,
-          }, '重试发布')
+          }, '重试保存')
         : proposal.kind === 'DISCARD'
         ? createElement(Fragment, null,
             createElement(Button, {
@@ -423,10 +427,10 @@ export function ProposalDetailView(props: {
         : createElement(Fragment, null,
             createElement(Button, {
               variant: 'primary', disabled: !actionable, onClick: props.onApprove,
-            }, detail.processingState === 'PUBLISHING' ? '正在发布…' : '批准并发布'),
+            }, detail.processingState === 'PUBLISHING' ? '正在保存…' : '确认并保存'),
             createElement(Button, {
               variant: 'outline', disabled: !actionable, onClick: event => { props.onReject(event.currentTarget) },
-            }, '拒绝 Proposal'),
+            }, '放弃草稿'),
           ),
     ),
   )
@@ -438,16 +442,16 @@ export function RejectConfirmationBody(props: {
   readonly onConfirm: () => void
 }): ReactElement {
   return createElement(Fragment, null,
-    createElement('h3', { id: 'run2skill-reject-title' }, '确认拒绝 Proposal？'),
+    createElement('h3', { id: 'run2skill-reject-title' }, '确认放弃这份技能草稿？'),
     createElement('p', { id: 'run2skill-reject-description' },
-      '现有 Skill 不会改变；该 Proposal 将离开待处理队列；过滤后的 Evidence 仍按项目策略保留。',
+      '现有 Skill 不会改变；这份技能草稿将离开待处理队列；经过筛选的学习材料仍按项目规则保留。',
     ),
     createElement('button', {
       type: 'button', 'data-initial-focus': true, disabled: props.disabled, onClick: props.onCancel,
     }, '取消'),
     createElement('button', {
       type: 'button', disabled: props.disabled, onClick: props.onConfirm,
-    }, '确认拒绝'),
+    }, '确认放弃'),
   )
 }
 
