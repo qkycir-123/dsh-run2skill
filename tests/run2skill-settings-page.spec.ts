@@ -183,7 +183,7 @@ describe('run2skill native settings surface', () => {
 
   it('renders real learning failure facts selected by Attention and invokes the bounded retry RPC', async () => {
     const workItemId = `wi_${'a'.repeat(64)}`
-    const call = vi.fn(async (endpoint: string) => endpoint === 'learning/issues/list'
+    const call = vi.fn(async (endpoint: string, _payload?: unknown, _signal?: AbortSignal) => endpoint === 'learning/issues/list'
       ? {
           ok: true,
           value: {
@@ -218,7 +218,6 @@ describe('run2skill native settings surface', () => {
         })
     const settled = vi.fn()
     render(createElement(LearningFailureSection, {
-      workspaceId: 'workspace-a',
       call,
       active: true,
       actions: [{
@@ -232,6 +231,8 @@ describe('run2skill native settings surface', () => {
 
     expect((await screen.findByRole('button', { name: '重试学习' })).closest('article')?.textContent)
       .toContain('MODEL_USAGE_INVALID')
+    expect(call.mock.calls.find(([endpoint]) => endpoint === 'learning/issues/list')?.[1])
+      .toMatchObject({ workspaceId: '__run2skill_user_only__' })
     fireEvent.click(screen.getByRole('button', { name: '重试学习' }))
     await waitFor(() => {
       expect(call.mock.calls.some(([endpoint]) => endpoint === 'learning/issues/retry')).toBe(true)

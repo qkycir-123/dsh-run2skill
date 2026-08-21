@@ -335,12 +335,8 @@ export function LearningFailureSection(props: {
       setItems([])
       return
     }
-    if (props.workspaceId === undefined) {
-      setPhase('ERROR')
-      setItems([])
-      return
-    }
     const abort = new AbortController()
+    const requestedWorkspaceId = props.workspaceId ?? '__run2skill_user_only__'
     setPhase('LOADING')
     void (async () => {
       const next: LearningIssue[] = []
@@ -350,7 +346,7 @@ export function LearningFailureSection(props: {
           'learning/issues/list',
           {
             apiVersion: 1,
-            workspaceId: props.workspaceId,
+            workspaceId: requestedWorkspaceId,
             ...(cursor === undefined ? {} : { cursor }),
           },
           abort.signal,
