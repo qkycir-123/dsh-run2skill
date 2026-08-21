@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import { PurgeVisibility } from '../../application/purge/index.js'
-import { LearningCallV1Schema, LearningFailureCodeSchema } from '../../domain/learn/index.js'
+import {
+  intendedLearningPersistenceScope,
+  isIgnoredLearningFailure,
+  LearningCallV1Schema,
+  LearningFailureCodeSchema,
+} from '../../domain/learn/index.js'
+import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
 import { LearningStoreError, LearningWorkItemStore } from '../dsh-storage/learning-work-item-store.js'
 import type { Run2skillDomain } from '../dsh-storage/types.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
@@ -14,10 +20,12 @@ const PAGE_SIZE = 20
 const identity = z.string().min(1).max(256)
 const workItemId = z.string().regex(/^wi_[a-f0-9]{64}$/)
 const positiveSafeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 1)
+const cursor = z.string().regex(/^c_[1-9][0-9]*$/).max(32)
 
 const listRequestSchema = z.object({
   apiVersion: z.literal(1),
   workspaceId: identity,
+  cursor: cursor.optional(),
 }).strict()
 const mutationRequestShape = {
   apiVersion: z.literal(1),
@@ -36,13 +44,13 @@ const listItemSchema = z.object({
   retryable: z.boolean(),
   attempt: z.number().int().nonnegative().max(3),
   requestBudgetUsed: z.number().int().nonnegative().max(2),
-  manualRecoveryCount: z.union([z.literal(0), z.literal(1)]),
   modelRoute: z.object({ provider: identity, model: identity }).strict().optional(),
   calls: z.array(LearningCallV1Schema).max(2),
 }).strict()
 const listResponseSchema = z.object({
   apiVersion: z.literal(1),
   items: z.array(listItemSchema).max(PAGE_SIZE),
+  nextCursor: cursor.optional(),
 }).strict()
 const receiptSchema = z.object({
   apiVersion: z.literal(1),
@@ -58,8 +66,8 @@ const receiptSchema = z.object({
     'TERMINAL',
     'NEEDS_ATTENTION',
     'RESOLVED_NO_SIGNAL',
-    'DISMISSED',
   ]),
+  disposition: z.enum(['ACTIVE', 'IGNORED']),
 }).strict()
 
 function error(code: 'bad-request' | 'cancelled' | 'internal' | 'not-found' | 'conflict' | 'invalid-state'): ObserveRpcResult<never> {
@@ -72,6 +80,29 @@ function requestFits(payload: unknown): boolean {
   } catch {
     return false
   }
+}
+
+function offsetOf(value: string | undefined): number | undefined {
+  if (value === undefined) return 0
+  const offset = Number(value.slice(2))
+  return Number.isSafeInteger(offset) && offset > 0 ? offset : undefined
+}
+
+function canRetry(item: CaptureWorkItemV1): boolean {
+  return item.processingState === 'NEEDS_ATTENTION'
+    && item.review === undefined
+    && item.learning?.failure?.retryable === true
+    && item.learning.attempt < 3
+    && !isIgnoredLearningFailure(item)
+}
+
+function visibleInWorkspace(item: CaptureWorkItemV1, workspaceId: string): boolean {
+  const scope = intendedLearningPersistenceScope(item)
+  return scope === 'USER' || (
+    scope === 'PROJECT'
+    && item.workspaceBinding.status === 'BOUND'
+    && item.workspaceBinding.workspaceId === workspaceId
+  )
 }
 
 function mappedStoreError(value: unknown): ObserveRpcResult<never> {
@@ -133,15 +164,17 @@ export function createLearningAttentionRpcHandler(
 
     if (endpoint === LEARNING_ISSUES_LIST_ENDPOINT) {
       const request = listRequestSchema.parse(payload)
-      const items = [...domain.table('work_items').entries()].flatMap(([, item]) => {
+      const offset = offsetOf(request.cursor)
+      if (offset === undefined) return error('bad-request')
+      const eligible = [...domain.table('work_items').entries()].flatMap(([, item]) => {
         const learning = item.learning
         if (
           !visibilityOf(domain).workItemVisible(item)
           || item.processingState !== 'NEEDS_ATTENTION'
           || item.review !== undefined
           || learning?.failure === undefined
-          || item.workspaceBinding.status !== 'BOUND'
-          || item.workspaceBinding.workspaceId !== request.workspaceId
+          || isIgnoredLearningFailure(item)
+          || !visibleInWorkspace(item, request.workspaceId)
         ) return []
         return [{
           workItemId: item.workItemId,
@@ -149,18 +182,23 @@ export function createLearningAttentionRpcHandler(
           createdAt: item.createdAt,
           updatedAt: item.updatedAt,
           failureCode: learning.failure.code,
-          retryable: learning.failure.retryable && (learning.manualRecoveryCount ?? 0) < 1,
+          retryable: canRetry(item),
           attempt: learning.attempt,
           requestBudgetUsed: learning.requestBudgetUsed,
-          manualRecoveryCount: learning.manualRecoveryCount ?? 0,
           ...(learning.modelRoute === undefined ? {} : { modelRoute: learning.modelRoute }),
           calls: learning.calls,
         }]
       }).sort((left, right) => (
         right.updatedAt.localeCompare(left.updatedAt)
         || left.workItemId.localeCompare(right.workItemId)
-      )).slice(0, PAGE_SIZE)
-      return { ok: true, value: listResponseSchema.parse({ apiVersion: 1, items }) }
+      ))
+      if (request.cursor !== undefined && offset >= eligible.length) return error('bad-request')
+      const page = eligible.slice(offset, offset + PAGE_SIZE)
+      return { ok: true, value: listResponseSchema.parse({
+        apiVersion: 1,
+        items: page,
+        ...(offset + page.length < eligible.length ? { nextCursor: `c_${offset + page.length}` } : {}),
+      }) }
     }
 
     const request = endpoint === LEARNING_ISSUES_RETRY_ENDPOINT
@@ -174,7 +212,7 @@ export function createLearningAttentionRpcHandler(
         try {
           options.onRetry?.(result.item.workItemId)
         } catch {
-          // The durable recovery is authoritative; a failed wake is recovered on restart.
+          // The durable authorization is authoritative; restart recovery can wake it again.
         }
       }
       return { ok: true, value: receiptSchema.parse({
@@ -183,6 +221,7 @@ export function createLearningAttentionRpcHandler(
         workItemRevision: result.item.revision,
         changed: result.changed,
         processingState: result.item.processingState,
+        disposition: isIgnoredLearningFailure(result.item) ? 'IGNORED' : 'ACTIVE',
       }) }
     } catch (caught) {
       return mappedStoreError(caught)

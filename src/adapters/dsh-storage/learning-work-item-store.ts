@@ -6,6 +6,12 @@ import type {
   LearningProposalV1,
   LearningStateV1,
 } from '../../domain/learn/index.js'
+import {
+  isIgnoredLearningFailure,
+  manualLearningAuthorizationSourceRevision,
+  manualLearningAuthorizationTimestamp,
+  nextLearningRequestKind,
+} from '../../domain/learn/index.js'
 import type { Run2skillDomain } from './types.js'
 import { PurgeVisibility } from './purge-visibility.js'
 
@@ -66,6 +72,7 @@ export class LearningWorkItemStore {
       && item.evidenceRefs.length > 0
       && (item.learning?.attempt ?? 0) < 3
       && (item.learning?.requestBudgetUsed ?? 0) < 2
+      && nextLearningRequestKind(item.learning) !== undefined
       && (item.learning?.nextEligibleAt === undefined
         || Date.parse(item.learning.nextEligibleAt) <= instant)
     )).sort((left, right) => (
@@ -103,6 +110,7 @@ export class LearningWorkItemStore {
         throw new LearningStoreError('INVALID_LEARNING_STATE')
       }
       const previous = current.learning
+      const manualSourceRevision = manualLearningAuthorizationSourceRevision(previous)
       const claimedAt = this.#now()
       if (
         previous?.nextEligibleAt !== undefined
@@ -121,6 +129,7 @@ export class LearningWorkItemStore {
           claimedAt,
           calls: previous?.calls ?? [],
           ...(previous?.modelRoute === undefined ? {} : { modelRoute: previous.modelRoute }),
+          nextEligibleAt: manualSourceRevision === undefined ? undefined : previous?.nextEligibleAt,
           failure: undefined,
           publicationOutcome: undefined,
           experiences: undefined,
@@ -162,6 +171,7 @@ export class LearningWorkItemStore {
     workItemId: string,
     expectedRevision: number,
     call: LearningCallV1,
+    failure?: LearningFailureV1,
   ): Promise<CaptureWorkItemV1> {
     return this.#update(workItemId, expectedRevision, (current) => {
       const learning = this.#analyzing(current)
@@ -169,7 +179,14 @@ export class LearningWorkItemStore {
         call.requestOrdinal > learning.requestBudgetUsed
         || learning.calls.some(existing => existing.requestOrdinal === call.requestOrdinal)
       ) throw new LearningStoreError('INVALID_LEARNING_STATE')
-      return { ...current, learning: { ...learning, calls: [...learning.calls, call] } }
+      return {
+        ...current,
+        learning: withoutUndefined({
+          ...learning,
+          calls: [...learning.calls, call],
+          failure,
+        }),
+      }
     })
   }
 
@@ -177,6 +194,7 @@ export class LearningWorkItemStore {
     workItemId: string,
     expectedAttempt: number,
     call: LearningCallV1,
+    failure?: LearningFailureV1,
   ): Promise<CaptureWorkItemV1> {
     return this.#updateLatest(workItemId, (current) => {
       const learning = this.#analyzing(current)
@@ -185,7 +203,14 @@ export class LearningWorkItemStore {
         || call.requestOrdinal > learning.requestBudgetUsed
         || learning.calls.some(existing => existing.requestOrdinal === call.requestOrdinal)
       ) throw new LearningStoreError('INVALID_LEARNING_STATE')
-      return { ...current, learning: { ...learning, calls: [...learning.calls, call] } }
+      return {
+        ...current,
+        learning: withoutUndefined({
+          ...learning,
+          calls: [...learning.calls, call],
+          failure,
+        }),
+      }
     })
   }
 
@@ -223,19 +248,21 @@ export class LearningWorkItemStore {
   ): Promise<CaptureWorkItemV1> {
     return this.#update(workItemId, expectedRevision, (current) => {
       const learning = this.#analyzing(current)
+      const failedLearning = { ...learning, failure }
+      const manualSourceRevision = manualLearningAuthorizationSourceRevision(learning)
       const retry = failure.retryable
         && nextEligibleAt !== undefined
         && learning.attempt < 3
         && learning.requestBudgetUsed < 2
+        && nextLearningRequestKind(failedLearning) !== undefined
       if (retry) {
         return {
           ...current,
           processingState: 'CAPTURED',
           learning: withoutUndefined({
-            ...learning,
+            ...failedLearning,
             claimedAt: undefined,
             nextEligibleAt,
-            failure,
           }),
         }
       }
@@ -243,10 +270,9 @@ export class LearningWorkItemStore {
         ...current,
         processingState: 'NEEDS_ATTENTION',
         learning: withoutUndefined({
-          ...learning,
+          ...failedLearning,
           claimedAt: undefined,
-          nextEligibleAt: undefined,
-          failure,
+          nextEligibleAt: manualSourceRevision === undefined ? undefined : learning.nextEligibleAt,
           publicationOutcome: 'NEEDS_ATTENTION' as const,
         }),
       }
@@ -258,10 +284,30 @@ export class LearningWorkItemStore {
     for (const [workItemId, item] of this.#table.entries()) {
       if (!this.#visibility.workItemVisible(item)) continue
       if (item.processingState !== 'ANALYZING') continue
-      const failure: LearningFailureV1 = {
-        code: 'MODEL_ABORTED', retryable: true, occurredAt: this.#now(),
+      const nextKind = nextLearningRequestKind(item.learning)
+      if (nextKind === 'TRUNCATION_RECOVERY') {
+        recovered.push(await this.#update(workItemId, item.revision, (current) => ({
+          ...current,
+          processingState: 'CAPTURED',
+          learning: withoutUndefined({
+            ...current.learning!,
+            claimedAt: undefined,
+            nextEligibleAt: this.#now(),
+          }),
+        })))
+        continue
       }
-      recovered.push(await this.fail(workItemId, item.revision, failure, this.#now()))
+      const failure: LearningFailureV1 = {
+        code: 'MODEL_ABORTED',
+        retryable: nextKind === 'PRIMARY',
+        occurredAt: this.#now(),
+      }
+      recovered.push(await this.fail(
+        workItemId,
+        item.revision,
+        failure,
+        nextKind === 'PRIMARY' ? this.#now() : undefined,
+      ))
     }
     return recovered
   }
@@ -322,13 +368,16 @@ export class LearningWorkItemStore {
         throw new LearningStoreError('INVALID_LEARNING_STATE')
       }
       const exhausted = learning.attempt >= 3 || learning.requestBudgetUsed >= 2
+      const manualSourceRevision = manualLearningAuthorizationSourceRevision(learning)
       return {
         ...current,
         processingState: exhausted ? 'NEEDS_ATTENTION' : 'CAPTURED',
         learning: withoutUndefined({
           ...learning,
           claimedAt: undefined,
-          nextEligibleAt: undefined,
+          nextEligibleAt: exhausted && manualSourceRevision !== undefined
+            ? learning.nextEligibleAt
+            : undefined,
           failure: exhausted
             ? {
                 code: 'STORE_WRITE_FAILED' as const,
@@ -361,10 +410,16 @@ export class LearningWorkItemStore {
       if (snapshot === undefined || !this.#visibility.workItemVisible(snapshot)) {
         throw new LearningStoreError('LEARNING_WORK_ITEM_NOT_FOUND')
       }
-      if (
-        snapshot.learning?.attentionAction?.kind === kind
-        && snapshot.learning.attentionAction.sourceRevision === expectedRevision
-      ) return { item: snapshot, changed: false }
+      const duplicate = (
+        (kind === 'RECOVER'
+          && manualLearningAuthorizationSourceRevision(snapshot.learning) === expectedRevision)
+        || (
+          kind === 'DISMISS'
+          && snapshot.revision - expectedRevision === 1
+          && isIgnoredLearningFailure(snapshot)
+        )
+      )
+      if (duplicate) return { item: snapshot, changed: false }
       if (snapshot.revision !== expectedRevision) {
         throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
       }
@@ -377,45 +432,51 @@ export class LearningWorkItemStore {
         kind === 'RECOVER'
         && (
           snapshot.learning.failure.retryable !== true
-          || (snapshot.learning.manualRecoveryCount ?? 0) >= 1
+          || snapshot.learning.attempt >= 3
         )
       ) throw new LearningStoreError('INVALID_LEARNING_STATE')
-      const occurredAt = this.#now()
+      const updatedAt = this.#now()
+      const manualAuthorization = kind === 'RECOVER'
+        ? manualLearningAuthorizationTimestamp(expectedRevision)
+        : undefined
+      if (kind === 'RECOVER' && manualAuthorization === undefined) {
+        throw new LearningStoreError('INVALID_LEARNING_STATE')
+      }
       const item = await this.#table.update(workItemId, (current) => {
         if (current.revision !== expectedRevision || current.processingState !== 'NEEDS_ATTENTION') {
           throw new LearningStoreError('LEARNING_REVISION_CONFLICT')
         }
         const learning = current.learning
-        if (learning === undefined) throw new LearningStoreError('INVALID_LEARNING_STATE')
-        const attentionAction = { kind, sourceRevision: expectedRevision, occurredAt }
+        if (learning?.failure === undefined) throw new LearningStoreError('INVALID_LEARNING_STATE')
         const next = kind === 'RECOVER'
           ? {
               ...current,
               processingState: 'CAPTURED' as const,
-              learning: {
-                policyVersion: 'learning-v1' as const,
-                attempt: 0,
+              learning: withoutUndefined({
+                ...learning,
+                attempt: 2,
                 requestBudgetUsed: 0,
                 calls: [],
-                manualRecoveryCount: 1 as const,
-                attentionAction,
-              },
+                claimedAt: undefined,
+                nextEligibleAt: manualAuthorization!,
+                experiences: undefined,
+                proposal: undefined,
+                publicationOutcome: undefined,
+              }),
             }
           : {
               ...current,
-              processingState: 'DISMISSED' as const,
+              processingState: 'NEEDS_ATTENTION' as const,
               learning: withoutUndefined({
                 ...learning,
                 claimedAt: undefined,
-                nextEligibleAt: undefined,
-                publicationOutcome: undefined,
-                attentionAction,
+                nextEligibleAt: learning.failure.occurredAt,
               }),
             }
         return CaptureWorkItemV1Schema.parse({
           ...next,
           revision: current.revision + 1,
-          updatedAt: occurredAt,
+          updatedAt,
         })
       })
       return { item, changed: true }

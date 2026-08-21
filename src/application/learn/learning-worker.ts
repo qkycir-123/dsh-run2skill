@@ -8,16 +8,18 @@ import {
   LearningStoreError,
   type LearningWorkItemStore,
 } from '../../adapters/dsh-storage/learning-work-item-store.js'
-import type {
-  LearningEnvelopeBudgetResult,
-  RestrictedLearningRequest,
-  RestrictedLearningResult,
+import {
+  persistentLearningFailureCode,
+  type LearningEnvelopeBudgetResult,
+  type RestrictedLearningRequest,
+  type RestrictedLearningResult,
 } from '../../adapters/dsh-llm/restricted-learning-client.js'
 import type { RuntimeNotices } from '../capture/runtime-notices.js'
 import {
   buildLearningEnvelope,
   canonicalJson,
   guardLearningResult,
+  nextLearningRequestKind,
   recallExistingSkills,
   resolveLearningScope,
   type LearningFailureCode,
@@ -71,9 +73,8 @@ const RETRYABLE_FAILURES = new Set<LearningFailureCode>([
   'CATALOG_INCOMPLETE',
   'CANDIDATE_UNAVAILABLE',
   'MODEL_TIMEOUT',
-  'MODEL_OUTPUT_TRUNCATED',
-  'MODEL_STREAM_FAILURE',
-  'MODEL_FINISH_MISSING',
+  'MODEL_ABORTED',
+  'MODEL_OUTPUT_LIMIT_EXCEEDED',
   'MODEL_TERMINAL_FAILURE',
   'STORE_WRITE_FAILED',
 ])
@@ -188,6 +189,7 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
     signal: AbortSignal,
     deadlineExpired: () => boolean,
   ): Promise<void> {
+    const initialCallKind = nextLearningRequestKind(candidate.learning)
     let current: CaptureWorkItemV1
     try {
       current = await this.#store.claim(candidate.workItemId, candidate.revision)
@@ -214,6 +216,10 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
           this.#notice('STORE_WRITE_FAILED', current)
         }
       }
+    }
+
+    if (initialCallKind === undefined) {
+      return await fail('MODEL_TERMINAL_FAILURE', false)
     }
 
     try {
@@ -274,12 +280,12 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
           if (ordinal !== 1 && ordinal !== 2) throw new Error('Invalid durable request ordinal')
           return { requestOrdinal: ordinal }
         },
-        record: async (call) => {
+        record: async (call, failure) => {
           try {
-            current = await this.#store.recordCall(current.workItemId, current.revision, call)
+            current = await this.#store.recordCall(current.workItemId, current.revision, call, failure)
           } catch (error) {
             if (error instanceof LearningStoreError && error.code === 'LEARNING_REVISION_CONFLICT') {
-              current = await this.#store.recordCallLatest(current.workItemId, attempt, call)
+              current = await this.#store.recordCallLatest(current.workItemId, attempt, call, failure)
               stale = true
               throw new LearningInputStale()
             }
@@ -300,6 +306,7 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
           catalogObservationDigest: recalled.observation.catalogObservationDigest,
           shortlistDigests: recalled.observation.candidates.map(item => item.candidateDigest),
           requestBudgetAvailable,
+          initialCallKind,
           expectedPersistenceScope: scopeResolution.persistenceScope,
           ledger,
           signal,
@@ -314,7 +321,9 @@ export class LearningWorker<TAgent extends LearningAgent = LearningAgent> {
       }
       if (stale) return await this.#resetStale(current, attempt)
       if (learned.status === 'FAILED') {
-        const code = deadlineExpired() ? 'MODEL_TIMEOUT' : learned.failureCode
+        const code = deadlineExpired()
+          ? 'MODEL_TIMEOUT'
+          : persistentLearningFailureCode(learned.failureCode)
         return await fail(code, signal.aborted ? true : undefined)
       }
       const guarded = guardLearningResult({

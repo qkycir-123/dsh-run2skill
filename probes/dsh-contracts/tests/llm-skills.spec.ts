@@ -273,6 +273,7 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
         catalogObservationDigest: 'c'.repeat(64),
         shortlistDigests: [],
         requestBudgetAvailable: 2,
+        initialCallKind: 'PRIMARY',
         expectedPersistenceScope: 'PROJECT',
         ledger,
       })
@@ -283,7 +284,7 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
       expect(adapter.calls.every(call => call.provider === 'session-provider')).toBe(true)
       expect(calls.map(call => [call.requestOrdinal, call.kind, call.outcome])).toEqual([
         [1, 'PRIMARY', 'SUCCEEDED'],
-        [2, 'STRUCTURE_REPAIR', 'SUCCEEDED'],
+        [2, 'FORMAT_REPAIR', 'SUCCEEDED'],
       ])
     } finally {
       await llmFiber.dispose()

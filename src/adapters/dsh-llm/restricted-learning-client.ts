@@ -4,6 +4,7 @@ import {
   ModelLearningOutputV1Schema,
   type ExperienceRecordV1,
   type LearningCallV1,
+  type LearningFailureV1,
   type LearningFailureCode,
   type LearningProposalV1,
 } from '../../domain/learn/index.js'
@@ -119,9 +120,19 @@ export interface DshLlmPort {
 }
 
 export interface LearningCallLedger {
-  reserve(kind: LearningCallV1['kind']): Promise<{ readonly requestOrdinal: 1 | 2 }>
-  record(call: LearningCallV1): Promise<void>
+  reserve(kind: LearningRequestKind): Promise<{ readonly requestOrdinal: 1 | 2 }>
+  record(call: LearningCallV1, failure?: LearningFailureV1): Promise<void>
 }
+
+export type LearningRequestKind = 'PRIMARY' | 'STRUCTURE_REPAIR' | 'TRUNCATION_RECOVERY'
+
+export type RestrictedLearningFailureCode = LearningFailureCode
+  | 'MODEL_OUTPUT_TRUNCATED'
+  | 'MODEL_STREAM_FAILURE'
+  | 'MODEL_FINISH_MISSING'
+  | 'MODEL_USAGE_INVALID'
+  | 'MODEL_ASSEMBLY_FAILED'
+  | 'MODEL_UNEXPECTED_FINISH'
 
 export interface RestrictedLearningRequest {
   readonly route: { readonly provider: string; readonly model: string }
@@ -130,6 +141,7 @@ export interface RestrictedLearningRequest {
   readonly catalogObservationDigest: string
   readonly shortlistDigests: readonly string[]
   readonly requestBudgetAvailable: 1 | 2
+  readonly initialCallKind: 'PRIMARY' | 'TRUNCATION_RECOVERY'
   readonly expectedPersistenceScope: 'PROJECT' | 'USER'
   readonly ledger: LearningCallLedger
   readonly signal?: AbortSignal
@@ -141,7 +153,7 @@ export type RestrictedLearningResult =
     readonly experiences: readonly ExperienceRecordV1[]
     readonly proposal: LearningProposalV1
   }
-  | { readonly status: 'FAILED'; readonly failureCode: LearningFailureCode }
+  | { readonly status: 'FAILED'; readonly failureCode: RestrictedLearningFailureCode }
 
 export type LearningEnvelopeBudgetResult =
   | { readonly status: 'AVAILABLE'; readonly maxBytes: number }
@@ -225,7 +237,34 @@ interface SuccessfulCall {
 
 type CallResult = SuccessfulCall | {
   readonly status: 'FAILED'
-  readonly failureCode: LearningFailureCode
+  readonly failureCode: RestrictedLearningFailureCode
+}
+
+function persistentCallKind(kind: LearningRequestKind): LearningCallV1['kind'] {
+  return kind === 'PRIMARY' ? 'PRIMARY' : 'FORMAT_REPAIR'
+}
+
+export function persistentLearningFailureCode(
+  code: RestrictedLearningFailureCode,
+): LearningFailureCode {
+  switch (code) {
+    case 'MODEL_OUTPUT_TRUNCATED': return 'MODEL_OUTPUT_LIMIT_EXCEEDED'
+    case 'MODEL_STREAM_FAILURE': return 'MODEL_ABORTED'
+    case 'MODEL_FINISH_MISSING':
+    case 'MODEL_USAGE_INVALID':
+    case 'MODEL_ASSEMBLY_FAILED':
+    case 'MODEL_UNEXPECTED_FINISH': return 'MODEL_TERMINAL_FAILURE'
+    default: return code
+  }
+}
+
+function persistentFailure(code: RestrictedLearningFailureCode): LearningFailureV1 {
+  const mapped = persistentLearningFailureCode(code)
+  return {
+    code: mapped,
+    retryable: ['MODEL_TIMEOUT', 'MODEL_ABORTED', 'MODEL_OUTPUT_LIMIT_EXCEEDED'].includes(mapped),
+    occurredAt: new Date().toISOString(),
+  }
 }
 
 function validUsage(usage: DshTokenUsage | undefined): usage is DshTokenUsage {
@@ -332,18 +371,24 @@ export class RestrictedLearningClient {
       return { status: 'FAILED', failureCode: 'ENVELOPE_UNBUILDABLE' }
     }
 
-    const primary = await this.#call(
+    const firstKind = request.initialCallKind
+    const first = await this.#call(
       request,
-      'PRIMARY',
-      scopedSystem(PRIMARY_SYSTEM, request.expectedPersistenceScope),
+      firstKind,
+      scopedSystem(
+        firstKind === 'PRIMARY' ? PRIMARY_SYSTEM : TRUNCATION_RECOVERY_SYSTEM,
+        request.expectedPersistenceScope,
+      ),
       request.envelope,
     )
     let response: SuccessfulCall
-    if (primary.status === 'FAILED') {
+    let responseWasPrimary = firstKind === 'PRIMARY'
+    if (first.status === 'FAILED') {
       if (
-        primary.failureCode !== 'MODEL_OUTPUT_TRUNCATED'
+        firstKind !== 'PRIMARY'
+        || first.failureCode !== 'MODEL_OUTPUT_TRUNCATED'
         || request.requestBudgetAvailable < 2
-      ) return primary
+      ) return first
       const recovery = await this.#call(
         request,
         'TRUNCATION_RECOVERY',
@@ -352,13 +397,14 @@ export class RestrictedLearningClient {
       )
       if (recovery.status === 'FAILED') return recovery
       response = recovery
+      responseWasPrimary = false
     } else {
-      response = primary
+      response = first
     }
     let parsed = parseModelOutput(response.text)
 
     if (!parsed.success) {
-      if (response !== primary || request.requestBudgetAvailable < 2) {
+      if (!responseWasPrimary || request.requestBudgetAvailable < 2) {
         return { status: 'FAILED', failureCode: 'INVALID_STRUCTURED_OUTPUT' }
       }
       const filtered = preprocessPersistentText(response.text).text
@@ -403,7 +449,7 @@ export class RestrictedLearningClient {
 
   async #call(
     request: RestrictedLearningRequest,
-    kind: LearningCallV1['kind'],
+    kind: LearningRequestKind,
     system: string,
     userText: string,
   ): Promise<CallResult> {
@@ -419,7 +465,7 @@ export class RestrictedLearningClient {
     }, LEARNING_CALL_TIMEOUT_MS)
 
     const assembler = new TextBlockAssembler()
-    let failureCode: LearningFailureCode | undefined
+    let failureCode: RestrictedLearningFailureCode | undefined
     try {
       const stream = this.llm.stream({
         provider: request.route.provider,
@@ -482,21 +528,21 @@ export class RestrictedLearningClient {
 
     const outcome: LearningCallV1['outcome'] = failureCode === undefined
       ? 'SUCCEEDED'
-      : failureCode === 'MODEL_OUTPUT_TRUNCATED'
-        ? 'TRUNCATED'
       : failureCode === 'MODEL_TIMEOUT'
         ? 'TIMED_OUT'
-        : failureCode === 'MODEL_ABORTED' || failureCode === 'MODEL_OUTPUT_LIMIT_EXCEEDED'
+        : failureCode === 'MODEL_ABORTED'
+          || failureCode === 'MODEL_OUTPUT_LIMIT_EXCEEDED'
+          || failureCode === 'MODEL_OUTPUT_TRUNCATED'
           ? 'ABORTED'
           : 'FAILED'
     await request.ledger.record({
       requestOrdinal: reservation.requestOrdinal,
-      kind,
+      kind: persistentCallKind(kind),
       ...(validUsage(assembler.usage)
         ? { inputTokens: assembler.usage.inputTokens, outputTokens: assembler.usage.outputTokens }
         : {}),
       outcome,
-    })
+    }, failureCode === undefined ? undefined : persistentFailure(failureCode))
     if (failureCode !== undefined) return { status: 'FAILED', failureCode }
     if (assembledText === undefined) throw new Error('Restricted learning call invariant violated')
     return { status: 'SUCCEEDED', text: assembledText }

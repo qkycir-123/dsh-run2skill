@@ -259,4 +259,31 @@ describe('LearningScheduler', () => {
     ordinaryGate.resolve()
     await scheduler.dispose()
   })
+
+  it('runs one durable manual recovery while automatic learning is OFF', async () => {
+    const ordinary = queuedItem('session-manual', 10, '9', 'CONSTRAINT')
+    const authorized = makeWorkItem({
+      ...ordinary,
+      revision: 2,
+      processingState: 'CAPTURED',
+      learning: {
+        policyVersion: 'learning-v1', attempt: 2, requestBudgetUsed: 0, calls: [],
+        failure: { code: 'MODEL_TERMINAL_FAILURE', retryable: true, occurredAt: '2026-08-20T00:00:00.000Z' },
+        nextEligibleAt: '1970-01-01T00:00:00.001Z',
+      },
+    })
+    const store = storePort([authorized])
+    const run = vi.fn(async (_item: CaptureWorkItemV1) => { store.remaining = [] })
+    const scheduler = new LearningScheduler({
+      store,
+      policy: policy(false),
+      worker: { canResolveScope: () => true, run },
+      notices: new RuntimeNotices(),
+    })
+
+    await scheduler.start()
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce())
+    expect(run.mock.calls[0]?.[0].workItemId).toBe(authorized.workItemId)
+    await scheduler.dispose()
+  })
 })

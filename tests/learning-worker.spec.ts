@@ -187,7 +187,7 @@ describe('LearningWorker', () => {
     await worker.run(item, new AbortController().signal, { automaticLearning: true })
 
     expect(domain.workItems.get(item.workItemId)).toMatchObject({
-      processingState: 'CAPTURED',
+      processingState: 'NEEDS_ATTENTION',
       learning: {
         modelRoute: { provider: 'target-provider', model: 'target-model-last' },
         calls: [{ requestOrdinal: 1, outcome: 'FAILED' }],
@@ -245,5 +245,50 @@ describe('LearningWorker', () => {
       },
     })
     expect(domain.workItems.get(itemId)?.learning).not.toHaveProperty('claimedAt')
+  })
+
+  it('resumes a truncated PRIMARY after restart with recovery and never reserves PRIMARY twice', async () => {
+    const built = setup()
+    let current = await built.store.claim(built.item.workItemId, built.item.revision)
+    current = await built.store.reserveRequest(current.workItemId, current.revision, {
+      provider: 'target-provider', model: 'target-model-last',
+    })
+    await built.store.recordCall(current.workItemId, current.revision, {
+      requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096,
+    }, {
+      code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', retryable: true, occurredAt: NOW,
+    })
+    await built.store.recoverInterrupted()
+    const recovered = built.domain.workItems.get(built.item.workItemId)!
+    built.learn.mockImplementationOnce(async (request) => {
+      expect(request.initialCallKind).toBe('TRUNCATION_RECOVERY')
+      const reservation = await request.ledger.reserve('TRUNCATION_RECOVERY')
+      await request.ledger.record({
+        requestOrdinal: reservation.requestOrdinal,
+        kind: 'FORMAT_REPAIR', inputTokens: 12, outputTokens: 8, outcome: 'SUCCEEDED',
+      })
+      return {
+        status: 'SUCCEEDED' as const,
+        ...materializeModelLearningOutput(rawOutput(built.item), {
+          workItemId: built.item.workItemId,
+          catalogObservationDigest: request.catalogObservationDigest,
+          shortlistDigests: request.shortlistDigests,
+        }),
+      }
+    })
+
+    await built.worker.run(recovered, new AbortController().signal, { automaticLearning: true })
+
+    expect(built.domain.workItems.get(built.item.workItemId)).toMatchObject({
+      processingState: 'LEARNED',
+      learning: {
+        requestBudgetUsed: 2,
+        calls: [
+          { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED' },
+          { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'SUCCEEDED' },
+        ],
+      },
+    })
+    expect(built.learn).toHaveBeenCalledOnce()
   })
 })

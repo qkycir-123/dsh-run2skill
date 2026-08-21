@@ -10,6 +10,7 @@ import type {
 } from './capture/recovery-lifecycle.js'
 import type { RuntimeNotice, RuntimeNotices } from './capture/runtime-notices.js'
 import { PurgeVisibility } from '../adapters/dsh-storage/purge-visibility.js'
+import { isIgnoredLearningFailure } from '../domain/learn/index.js'
 
 export type ObserveCompatibility = 'COMPATIBLE' | 'INCOMPATIBLE'
 
@@ -65,9 +66,8 @@ export function createObserveSummary(sources: ObserveSummarySources): ObserveSum
         break
       case 'ANALYZING': learning.analyzing += 1; break
       case 'LEARNED': learning.learned += 1; break
-      case 'NEEDS_ATTENTION': learning.needsAttention += 1; break
+      case 'NEEDS_ATTENTION': learning.needsAttention += isIgnoredLearningFailure(item) ? 0 : 1; break
       case 'RESOLVED_NO_SIGNAL': break
-      case 'DISMISSED': break
     }
   }
 

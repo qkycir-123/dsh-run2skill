@@ -143,7 +143,6 @@ export const CaptureWorkItemV1Schema = z.object({
     'TERMINAL',
     'NEEDS_ATTENTION',
     'RESOLVED_NO_SIGNAL',
-    'DISMISSED',
   ]),
   learning: LearningStateV1Schema.optional(),
   review: ReviewStateV1Schema.optional(),
@@ -195,7 +194,7 @@ export const CaptureWorkItemV1Schema = z.object({
       context.addIssue({ code: 'custom', message: 'Resolved no-signal items cannot have learning or review facts' })
     }
   }
-  if (['ANALYZING', 'LEARNED', 'READY_FOR_REVIEW', 'PUBLISHING', 'TERMINAL', 'NEEDS_ATTENTION', 'DISMISSED'].includes(value.processingState) && value.learning === undefined) {
+  if (['ANALYZING', 'LEARNED', 'READY_FOR_REVIEW', 'PUBLISHING', 'TERMINAL', 'NEEDS_ATTENTION'].includes(value.processingState) && value.learning === undefined) {
     context.addIssue({ code: 'custom', message: 'Learning states require learning facts' })
   }
   if (value.processingState === 'CAPTURED' && value.learning !== undefined) {
@@ -331,17 +330,6 @@ export const CaptureWorkItemV1Schema = z.object({
       || value.review.failure === undefined
     ) {
       context.addIssue({ code: 'custom', message: 'Review attention requires a visible structured failure' })
-    }
-  }
-  if (value.processingState === 'DISMISSED' && value.learning !== undefined) {
-    if (
-      value.review !== undefined
-      || value.learning.failure === undefined
-      || value.learning.proposal !== undefined
-      || value.learning.publicationOutcome !== undefined
-      || value.learning.attentionAction?.kind !== 'DISMISS'
-    ) {
-      context.addIssue({ code: 'custom', message: 'Dismissed learning requires one retained failure and dismissal action' })
     }
   }
   const triggerKeys = value.triggerHits.map((hit) => `${hit.messageSeq}\u0000${hit.kind}\u0000${hit.ruleId}`)

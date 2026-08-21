@@ -5,7 +5,9 @@ import {
   type DshLlmPort,
   type DshStreamChunk,
   type LearningCallLedger,
+  type LearningRequestKind,
 } from '../src/adapters/dsh-llm/restricted-learning-client.js'
+import type { LearningCallV1, LearningFailureV1 } from '../src/domain/learn/index.js'
 
 const digest = (character: string) => character.repeat(64)
 
@@ -60,22 +62,18 @@ class RecordingLlm implements DshLlmPort {
 }
 
 class RecordingLedger implements LearningCallLedger {
-  readonly reservations: Array<'PRIMARY' | 'FORMAT_REPAIR' | 'STRUCTURE_REPAIR' | 'TRUNCATION_RECOVERY'> = []
-  readonly calls: Array<{
-    requestOrdinal: 1 | 2
-    kind: 'PRIMARY' | 'FORMAT_REPAIR' | 'STRUCTURE_REPAIR' | 'TRUNCATION_RECOVERY'
-    inputTokens?: number
-    outputTokens?: number
-    outcome: 'SUCCEEDED' | 'FAILED' | 'TRUNCATED' | 'ABORTED' | 'TIMED_OUT'
-  }> = []
+  readonly reservations: LearningRequestKind[] = []
+  readonly calls: LearningCallV1[] = []
+  readonly failures: Array<LearningFailureV1 | undefined> = []
 
   async reserve(kind: Parameters<LearningCallLedger['reserve']>[0]) {
     this.reservations.push(kind)
     return { requestOrdinal: this.reservations.length as 1 | 2 }
   }
 
-  async record(call: (typeof this.calls)[number]) {
+  async record(call: LearningCallV1, failure?: LearningFailureV1) {
     this.calls.push(call)
+    this.failures.push(failure)
   }
 }
 
@@ -92,6 +90,7 @@ function request(llm: DshLlmPort, ledger: LearningCallLedger, signal?: AbortSign
     catalogObservationDigest: digest('c'),
     shortlistDigests: [digest('d')],
     requestBudgetAvailable: 2,
+    initialCallKind: 'PRIMARY',
     expectedPersistenceScope: 'PROJECT',
     ledger,
     ...(signal === undefined ? {} : { signal }),
@@ -235,8 +234,8 @@ describe('RestrictedLearningClient', () => {
     expect(llm.calls).toHaveLength(2)
     expect(ledger.reservations).toEqual(['PRIMARY', 'TRUNCATION_RECOVERY'])
     expect(ledger.calls).toMatchObject([
-      { kind: 'PRIMARY', outcome: 'TRUNCATED', outputTokens: 4096 },
-      { kind: 'TRUNCATION_RECOVERY', outcome: 'SUCCEEDED' },
+      { kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096 },
+      { kind: 'FORMAT_REPAIR', outcome: 'SUCCEEDED' },
     ])
     expect(llm.calls[1]?.system).toContain('compact recovery')
     expect(llm.calls[1]?.system).not.toBe(llm.calls[0]?.system)
@@ -256,13 +255,43 @@ describe('RestrictedLearningClient', () => {
       catalogObservationDigest: digest('c'),
       shortlistDigests: [],
       requestBudgetAvailable: 1,
+      initialCallKind: 'PRIMARY',
       expectedPersistenceScope: 'PROJECT',
       ledger,
     })
 
     expect(result).toEqual({ status: 'FAILED', failureCode: 'MODEL_OUTPUT_TRUNCATED' })
     expect(llm.calls).toHaveLength(1)
-    expect(ledger.calls[0]?.outcome).toBe('TRUNCATED')
+    expect(ledger.calls[0]?.outcome).toBe('ABORTED')
+    expect(ledger.failures[0]?.code).toBe('MODEL_OUTPUT_LIMIT_EXCEEDED')
+  })
+
+  it('resumes a durably classified truncation with recovery and never repeats PRIMARY after restart', async () => {
+    const llm = new RecordingLlm([responseChunks(JSON.stringify(validModelOutput()))])
+    const ledger = new RecordingLedger()
+    ledger.reservations.push('PRIMARY')
+    ledger.calls.push({ requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED', outputTokens: 4096 })
+    const client = new RestrictedLearningClient(llm)
+
+    const result = await client.learn({
+      route: { provider: 'session-provider', model: 'session-model' },
+      envelope: '{}',
+      workItemId: `wi_${digest('b')}`,
+      catalogObservationDigest: digest('c'),
+      shortlistDigests: [],
+      requestBudgetAvailable: 1,
+      expectedPersistenceScope: 'PROJECT',
+      initialCallKind: 'TRUNCATION_RECOVERY',
+      ledger,
+    })
+
+    expect(result.status).toBe('SUCCEEDED')
+    expect(ledger.reservations).toEqual(['PRIMARY', 'TRUNCATION_RECOVERY'])
+    expect(ledger.calls).toMatchObject([
+      { requestOrdinal: 1, kind: 'PRIMARY', outcome: 'ABORTED' },
+      { requestOrdinal: 2, kind: 'FORMAT_REPAIR', outcome: 'SUCCEEDED' },
+    ])
+    expect(llm.calls[0]?.system).toContain('compact recovery')
   })
 
   it('rejects unknown model fields and never makes a third call', async () => {
