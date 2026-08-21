@@ -192,7 +192,10 @@ export class BatchDetectorWorker {
             failureCode: 'DETECTOR_INPUT_UNAVAILABLE',
             calls: [],
             intentIds: [],
-            carry: [],
+            ...(cursor.openExperienceCarry.length === 0
+              ? {}
+              : { carryDigest: sha256Utf8(canonicalJson(cursor.openExperienceCarry)) }),
+            carry: cursor.openExperienceCarry,
           },
           state: 'NEEDS_ATTENTION',
           updatedAt: this.#isoNow(),
@@ -453,8 +456,7 @@ export class BatchDetectorWorker {
     for (const intentId of batch.detector.intentIds) {
       await this.#intents.update(intentId, current => {
         if (current.batchId !== batch.batchId) throw new Error('Ready Intent belongs to another batch')
-        if (current.status === 'READY') return current
-        if (current.status !== 'DETECTOR_STAGED') throw new Error('Ready Intent has contradictory status')
+        if (current.status !== 'DETECTOR_STAGED') return current
         return ExperienceIntentV2Schema.parse({
           ...current,
           revision: current.revision + 1,
