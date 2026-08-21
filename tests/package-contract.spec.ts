@@ -10,6 +10,7 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
   repository?: { type?: string; url?: string }
   bugs?: { url?: string }
   homepage?: string
+  publishConfig?: { access?: string; tag?: string }
   main?: string
   exports?: Record<string, unknown>
   files?: string[]
@@ -41,6 +42,7 @@ describe('published package contract', () => {
       },
       bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
       homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
+      publishConfig: { access: 'public', tag: 'alpha' },
     })
     expect(manifest.private).not.toBe(true)
   })
@@ -60,7 +62,7 @@ describe('published package contract', () => {
       'THIRD_PARTY_NOTICES.md',
     ])
     expect(manifest.peerDependencies).toEqual({
-      '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7',
+      '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7 || 0.1.0-rc.8',
     })
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },

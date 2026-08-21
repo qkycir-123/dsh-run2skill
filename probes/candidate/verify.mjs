@@ -222,6 +222,7 @@ assert.deepEqual({
   repository: packedManifest.repository,
   bugs: packedManifest.bugs,
   homepage: packedManifest.homepage,
+  publishConfig: packedManifest.publishConfig,
   exports: packedManifest.exports,
   dsh: packedManifest.dsh,
   peerDependencies: packedManifest.peerDependencies,
@@ -237,6 +238,7 @@ assert.deepEqual({
   },
   bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
   homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
+  publishConfig: { access: 'public', tag: 'alpha' },
   exports: {
     '.': { types: './lib/index.d.ts', default: './lib/index.js' },
     './client': { default: './lib/client.js' },
@@ -255,7 +257,7 @@ assert.deepEqual({
       ],
     },
   },
-  peerDependencies: { '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7' },
+  peerDependencies: { '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7 || 0.1.0-rc.8' },
 }, 'candidate package metadata changed')
 assert.equal(
   run('tar', ['-xOf', tarballPath, 'package/cordis.patch.yml']).replaceAll('\r\n', '\n'),

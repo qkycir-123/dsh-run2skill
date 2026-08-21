@@ -8,7 +8,7 @@ describe('run2skill_v1 domain contract', () => {
   it('freezes the first public alpha storage identity and record versions', () => {
     expect(RUN2SKILL_ALPHA_SCHEMA_CONTRACT).toEqual({
       release: '0.1.0-alpha',
-      dshBaselineCommit: '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca',
+      dshBaselineCommit: '141eb6fef83422698aef7a981029e843e8161534',
       domainName: 'run2skill_v1',
       domainVersion: 2,
       globalSchemaVersion: 1,
