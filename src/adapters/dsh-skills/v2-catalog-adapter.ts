@@ -203,6 +203,20 @@ export class DshV2CatalogAdapter<TView extends object> {
     }
   }
 
+  async observeRuntimeCatalog(sessionLifecycleKey: string): Promise<{
+    readonly complete: boolean
+    readonly runtimeCatalogDigest: string
+  }> {
+    const view = this.#resolveView(sessionLifecycleKey)
+    if (view === undefined) return { complete: false, runtimeCatalogDigest: EMPTY_DIGEST }
+    const first = await this.#runtime(view, sessionLifecycleKey)
+    const second = await this.#runtime(view, sessionLifecycleKey)
+    if (!first.complete || !second.complete || first.digest !== second.digest) {
+      return { complete: false, runtimeCatalogDigest: EMPTY_DIGEST }
+    }
+    return { complete: true, runtimeCatalogDigest: first.digest }
+  }
+
   async #recallSnapshot(batch: SessionBatchV2, intent: ExperienceIntentV2): Promise<RecallCatalogSnapshot> {
     const captured = await this.#capture(batch, intent)
     return {

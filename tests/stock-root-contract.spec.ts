@@ -70,6 +70,8 @@ describe('stock DSH root contract', () => {
 
   it('derives the exact filesystem configuration from the stock fiber mounted for one Agent generation', async () => {
     const configuredHome = resolve('configured-dsh-home')
+    const configuredAgentsHome = resolve('configured-agents-home')
+    const configuredBundledSkillDir = resolve('configured-bundled-skills')
     const customRoot = resolve('custom-skills')
     type Fiber = { parent: { fiber: Fiber }; config: unknown }
     const root = { config: {} } as Fiber
@@ -81,6 +83,8 @@ describe('stock DSH root contract', () => {
         providerName: 'renamed-filesystem',
         includeDefaultRoots: false,
         dshHome: configuredHome,
+        agentsHome: configuredAgentsHome,
+        bundledSkillDir: configuredBundledSkillDir,
         customSkillDirs: [customRoot],
       },
     } as Fiber
@@ -104,6 +108,8 @@ describe('stock DSH root contract', () => {
       includeDefaultRoots: false,
       customSkillDirs: [customRoot],
       configuredDshHome: configuredHome,
+      configuredAgentsHome,
+      configuredBundledSkillDir,
     })
     const duplicate = { parent: { fiber: mount }, config: {} } as Fiber
     await expect(resolveStockSkillRuntimeConfiguration(mounts, {
@@ -111,6 +117,11 @@ describe('stock DSH root contract', () => {
     })).resolves.toBeUndefined()
     await expect(resolveStockSkillRuntimeConfiguration({ standingMountFor: () => undefined }, agent))
       .resolves.toBeUndefined()
+
+    await expect(resolveStockSkillRuntimeConfiguration({ standingMountFor: () => ({ presetId: 'standard', fiber: mount }) }, {
+      ...agent,
+      ctx: { ...agent.ctx, get: name => name === 'fs' ? {} : undefined },
+    })).resolves.toMatchObject({ usesContextFileSystem: true })
   })
 
   it('accepts only the versioned RootBindingV2 stock contract facts', () => {

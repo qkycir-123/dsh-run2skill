@@ -192,4 +192,16 @@ describe('DshV2StageLlmClient', () => {
       ...detectorInput(), route: { ...route, maxOutputBytes: 8 },
     })).rejects.toEqual(expect.objectContaining({ code: 'MODEL_OUTPUT_LIMIT_EXCEEDED' }))
   })
+
+  it('does not request more output tokens than the frozen route budget permits', async () => {
+    const llm = new RecordingLlm([chunks('{"result":"NONE"}')])
+    const client = new DshV2StageLlmClient(llm)
+
+    await client.detect({
+      ...detectorInput(),
+      route: { ...route, maxOutputBytes: 2_048 },
+    })
+
+    expect(llm.calls[0]?.maxTokens).toBe(512)
+  })
 })
