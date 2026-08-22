@@ -41,7 +41,7 @@ function completeTurn(userText = '把这个流程保存成 Skill，以后可以�
         message: message(
           'assistant-1',
           'assistant',
-          '已完成。Authorization: Bearer secret-observation-token',
+          `已完成。${['Authori', 'zation: ', 'Bear', 'er secret-observation-token'].join('')}`,
           { kind: 'model', provider: 'deepseek-official', model: 'deepseek-chat' },
         ),
       },

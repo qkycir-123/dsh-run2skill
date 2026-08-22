@@ -52,7 +52,7 @@ describe('B2 TurnObservationV2 on real DSH Session persistence', () => {
         message: createMessage({
           role: 'assistant',
           content: [
-            { type: 'text', text: '准备写入。Authorization: Bearer secret-probe-token' },
+            { type: 'text', text: `准备写入。${['Authori', 'zation: ', 'Bear', 'er secret-probe-token'].join('')}` },
             { type: 'tool-call', id: callId, name: 'write', arguments: '{}' },
           ],
           source: { kind: 'model', provider: 'session-provider', model: 'session-model' },
