@@ -365,6 +365,8 @@ export const OwnershipEvidenceV2Schema = z.discriminatedUnion('status', [
   }).strict(),
   z.object({
     status: z.literal('OBSERVED'),
+    inputDigest: sha256Hex,
+    observedAfterTurnEndSeq: safeNonNegativeInteger,
     observedAt: isoDateTime,
     endManifest: z.object({
       rootManifestDigest: sha256Hex,
@@ -399,6 +401,25 @@ export interface OwnershipClaimFactsV2 {
   readonly intentRevision: number
 }
 
+export interface OwnershipInputFactsV2 {
+  readonly batchId: string
+  readonly intentId: string
+  readonly claimId: string
+  readonly batchEndTurnEndSeq: number
+  readonly batchFrozenAt: string
+  readonly observationManifestDigest: string
+  readonly baseline: {
+    readonly observedAt: string
+    readonly rootManifestDigest: string
+    readonly runtimeCatalogDigest: string
+    readonly complete: boolean
+  }
+}
+
+export function deriveOwnershipInputDigestV2(facts: OwnershipInputFactsV2): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
 export function deriveOwnershipClaimIdV2(facts: OwnershipClaimFactsV2): `claim_${string}` {
   return `claim_${sha256Utf8(canonicalJson(facts))}`
 }
@@ -413,6 +434,7 @@ export interface OwnershipReceiptFactsV2 {
   readonly claimId: string
   readonly decision: 'RESOLVED_BY_AGENT' | 'NEEDS_CONFIRMATION' | 'RUN2SKILL_OWNED'
   readonly evidenceDigest: string
+  readonly inputDigest?: string | undefined
   readonly reasonCode?: string | undefined
   readonly resolvedCandidateId?: string | undefined
   readonly resolvedCandidateBodyDigest?: string | undefined
@@ -425,6 +447,7 @@ export function deriveOwnershipReceiptDigestV2(facts: OwnershipReceiptFactsV2): 
     claimId: facts.claimId,
     decision: facts.decision,
     evidenceDigest: facts.evidenceDigest,
+    ...(facts.inputDigest === undefined ? {} : { inputDigest: facts.inputDigest }),
     ...(facts.reasonCode === undefined ? {} : { reasonCode: facts.reasonCode }),
     ...(facts.resolvedCandidateId === undefined ? {} : { resolvedCandidateId: facts.resolvedCandidateId }),
     ...(facts.resolvedCandidateBodyDigest === undefined ? {} : { resolvedCandidateBodyDigest: facts.resolvedCandidateBodyDigest }),
@@ -532,6 +555,7 @@ export const ExperienceIntentV2Schema = z.object({
     claimId: z.string().regex(/^claim_[a-f0-9]{64}$/).optional(),
     claimedIntentRevision: positiveSafeInteger.optional(),
     claimedAt: isoDateTime.optional(),
+    inputDigest: sha256Hex.optional(),
     evidence: OwnershipEvidenceV2Schema.optional(),
     evidenceDigest: sha256Hex.optional(),
     receiptDigest: sha256Hex.optional(),
@@ -773,6 +797,9 @@ export const ExperienceIntentV2Schema = z.object({
   if ((ownership.evidence === undefined) !== (ownership.evidenceDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['ownership'], message: 'Ownership evidence and digest must appear together' })
   }
+  if (ownership.evidence?.status === 'OBSERVED' && ownership.evidence.inputDigest !== ownership.inputDigest) {
+    context.addIssue({ code: 'custom', path: ['ownership', 'inputDigest'], message: 'Observed ownership evidence must bind the durable arbitration input' })
+  }
   const terminalOwnership = ['RESOLVED_BY_AGENT', 'NEEDS_CONFIRMATION', 'RUN2SKILL_OWNED'].includes(ownership.state)
   if (terminalOwnership) {
     if (
@@ -788,6 +815,7 @@ export const ExperienceIntentV2Schema = z.object({
         claimId: ownership.claimId,
         decision: ownership.state as OwnershipReceiptFactsV2['decision'],
         evidenceDigest: ownership.evidenceDigest,
+        inputDigest: ownership.inputDigest,
         reasonCode: ownership.reasonCode,
         resolvedCandidateId: ownership.resolvedCandidateId,
         resolvedCandidateBodyDigest: ownership.resolvedCandidateBodyDigest,

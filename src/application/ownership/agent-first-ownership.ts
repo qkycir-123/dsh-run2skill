@@ -5,6 +5,7 @@ import {
   SessionBatchV2Schema,
   deriveOwnershipClaimIdV2,
   deriveOwnershipEvidenceDigestV2,
+  deriveOwnershipInputDigestV2,
   deriveOwnershipReceiptDigestV2,
   type ExperienceIntentV2,
   type OwnershipEvidenceV2,
@@ -15,6 +16,7 @@ export interface OwnershipObservationPort {
   observe(input: {
     readonly batch: SessionBatchV2
     readonly intent: ExperienceIntentV2
+    readonly inputDigest: string
   }): Promise<OwnershipEvidenceV2>
 }
 
@@ -55,9 +57,11 @@ export class AgentFirstOwnershipCoordinator {
     if (candidate === undefined) return 'IDLE'
 
     const claimId = deriveOwnershipClaimIdV2({ intentId: candidate.intentId, intentRevision: candidate.revision })
+    let didClaim = false
     const claimed = await this.#intents.update(candidate.intentId, current => {
       const parsed = ExperienceIntentV2Schema.parse(current)
       if (parsed.status !== 'READY') return parsed
+      didClaim = true
       return ExperienceIntentV2Schema.parse({
         ...parsed,
         revision: parsed.revision + 1,
@@ -70,7 +74,7 @@ export class AgentFirstOwnershipCoordinator {
         updatedAt: this.#isoNow(),
       })
     })
-    if (claimed.status !== 'OWNERSHIP_ARBITRATING' || claimed.ownership.claimId !== claimId) return 'PROCESSED'
+    if (!didClaim || claimed.status !== 'OWNERSHIP_ARBITRATING' || claimed.ownership.claimId !== claimId) return 'PROCESSED'
 
     await this.#observeAndFinalize(claimed)
     return 'PROCESSED'
@@ -84,8 +88,14 @@ export class AgentFirstOwnershipCoordinator {
     for (const intent of claimed) {
       if (intent.ownership.evidence === undefined) {
         await this.#sealEvidence(intent, unavailable('OBSERVATION_OUTCOME_UNKNOWN'))
-      } else if (intent.ownership.evidence.status === 'OBSERVED' && this.#batches.get(intent.batchId) !== undefined) {
-        await this.#recordEndObservation(intent.batchId, intent.ownership.evidence)
+      } else if (intent.ownership.evidence.status === 'OBSERVED') {
+        const batchValue = this.#batches.get(intent.batchId)
+        if (batchValue !== undefined) {
+          const batch = SessionBatchV2Schema.parse(batchValue)
+          if (this.#evidenceBindingIsValid(intent, batch, intent.ownership.evidence)) {
+            await this.#recordEndObservation(intent.batchId, intent.ownership.evidence)
+          }
+        }
       }
       await this.#finalize(intent.intentId)
     }
@@ -110,17 +120,50 @@ export class AgentFirstOwnershipCoordinator {
       return
     }
 
+    const boundClaim = await this.#bindInput(claimed, batch)
+    const inputDigest = boundClaim.ownership.inputDigest!
     let evidence: OwnershipEvidenceV2
     try {
-      const raw = await this.#observation.observe({ batch, intent: claimed })
+      const raw = await this.#observation.observe({ batch, intent: boundClaim, inputDigest })
       const parsed = OwnershipEvidenceV2Schema.safeParse(raw)
-      evidence = parsed.success ? parsed.data : unavailable('OBSERVATION_INVALID')
+      evidence = parsed.success && (
+        parsed.data.status !== 'OBSERVED' || this.#evidenceBindingIsValid(boundClaim, batch, parsed.data)
+      ) ? parsed.data : unavailable('OBSERVATION_INVALID')
     } catch {
       evidence = unavailable('OBSERVATION_FAILED')
     }
-    await this.#sealEvidence(claimed, evidence)
+    await this.#sealEvidence(boundClaim, evidence)
     if (evidence.status === 'OBSERVED') await this.#recordEndObservation(batch.batchId, evidence)
     await this.#finalize(claimed.intentId)
+  }
+
+  async #bindInput(claimed: ExperienceIntentV2, batch: SessionBatchV2): Promise<ExperienceIntentV2> {
+    const claimId = claimed.ownership.claimId
+    if (claimId === undefined) throw new Error('Ownership claim is missing its identity')
+    const inputDigest = deriveOwnershipInputDigestV2({
+      batchId: batch.batchId,
+      intentId: claimed.intentId,
+      claimId,
+      batchEndTurnEndSeq: batch.lastTurnEndSeq,
+      batchFrozenAt: batch.createdAt,
+      observationManifestDigest: batch.observationManifestDigest,
+      baseline: batch.batchManifestBaseline,
+    })
+    return this.#intents.update(claimed.intentId, current => {
+      const parsed = ExperienceIntentV2Schema.parse(current)
+      if (parsed.status !== 'OWNERSHIP_ARBITRATING') return parsed
+      if (parsed.ownership.claimId !== claimId) throw new Error('Ownership claim changed before input binding')
+      if (parsed.ownership.inputDigest !== undefined) {
+        if (parsed.ownership.inputDigest !== inputDigest) throw new Error('Ownership claim already has a different input binding')
+        return parsed
+      }
+      return ExperienceIntentV2Schema.parse({
+        ...parsed,
+        revision: parsed.revision + 1,
+        ownership: { ...parsed.ownership, inputDigest },
+        updatedAt: this.#isoNow(),
+      })
+    })
   }
 
   async #sealEvidence(claimed: ExperienceIntentV2, evidence: OwnershipEvidenceV2): Promise<void> {
@@ -178,6 +221,7 @@ export class AgentFirstOwnershipCoordinator {
         claimId,
         decision: decision.state,
         evidenceDigest,
+        inputDigest: intent.ownership.inputDigest,
         reasonCode: decision.reasonCode,
         resolvedCandidateId: decision.resolvedCandidateId,
         resolvedCandidateBodyDigest: decision.resolvedCandidateBodyDigest,
@@ -204,6 +248,9 @@ export class AgentFirstOwnershipCoordinator {
     if (batch === undefined) return { state: 'NEEDS_CONFIRMATION', reasonCode: 'CLAIM_INPUT_UNAVAILABLE' }
     if (intent.completeness.status !== 'COMPLETE') return { state: 'NEEDS_CONFIRMATION', reasonCode: 'INTENT_INCOMPLETE' }
     if (!batch.batchManifestBaseline.complete) return { state: 'NEEDS_CONFIRMATION', reasonCode: 'BASELINE_INCOMPLETE' }
+    if (!this.#evidenceBindingIsValid(intent, batch, evidence)) {
+      return { state: 'NEEDS_CONFIRMATION', reasonCode: 'OBSERVATION_INVALID' }
+    }
     if (!evidence.endManifest.complete) return { state: 'NEEDS_CONFIRMATION', reasonCode: 'END_MANIFEST_INCOMPLETE' }
     if (!evidence.catalogComplete) return { state: 'NEEDS_CONFIRMATION', reasonCode: 'CATALOG_INCOMPLETE' }
     if (!evidence.toolEvidenceComplete) return { state: 'NEEDS_CONFIRMATION', reasonCode: 'TOOL_EVIDENCE_INCOMPLETE' }
@@ -258,6 +305,31 @@ export class AgentFirstOwnershipCoordinator {
       resolvedCandidateId: match.candidateId,
       resolvedCandidateBodyDigest: match.bodyDigest!,
     }
+  }
+
+  #evidenceBindingIsValid(
+    intent: ExperienceIntentV2,
+    batch: SessionBatchV2,
+    evidence: Extract<OwnershipEvidenceV2, { status: 'OBSERVED' }>,
+  ): boolean {
+    const claimId = intent.ownership.claimId
+    const inputDigest = intent.ownership.inputDigest
+    if (claimId === undefined || inputDigest === undefined) return false
+    const expectedInputDigest = deriveOwnershipInputDigestV2({
+      batchId: batch.batchId,
+      intentId: intent.intentId,
+      claimId,
+      batchEndTurnEndSeq: batch.lastTurnEndSeq,
+      batchFrozenAt: batch.createdAt,
+      observationManifestDigest: batch.observationManifestDigest,
+      baseline: batch.batchManifestBaseline,
+    })
+    return (
+      inputDigest === expectedInputDigest
+      && evidence.inputDigest === expectedInputDigest
+      && evidence.observedAfterTurnEndSeq === batch.lastTurnEndSeq
+      && Date.parse(evidence.observedAt) >= Date.parse(batch.createdAt)
+    )
   }
 
   #isoNow(): string {

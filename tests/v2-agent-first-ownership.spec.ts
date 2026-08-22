@@ -8,6 +8,7 @@ import {
   SessionBatchV2Schema,
   deriveOwnershipClaimIdV2,
   deriveOwnershipEvidenceDigestV2,
+  deriveOwnershipInputDigestV2,
   type OwnershipEvidenceV2,
 } from '../src/domain/v2/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -18,6 +19,8 @@ const NOW = '2026-08-22T01:00:00.000Z'
 function observed(overrides: Partial<Extract<OwnershipEvidenceV2, { status: 'OBSERVED' }>> = {}): Extract<OwnershipEvidenceV2, { status: 'OBSERVED' }> {
   return {
     status: 'OBSERVED',
+    inputDigest: '0'.repeat(64),
+    observedAfterTurnEndSeq: 8,
     observedAt: NOW,
     endManifest: {
       rootManifestDigest: '1'.repeat(64),
@@ -32,13 +35,21 @@ function observed(overrides: Partial<Extract<OwnershipEvidenceV2, { status: 'OBS
   }
 }
 
-function port(evidence: OwnershipEvidenceV2): OwnershipObservationPort & { readonly calls: number } {
+function port(
+  evidence: OwnershipEvidenceV2,
+  options: { preserveBinding?: boolean } = {},
+): OwnershipObservationPort & { readonly calls: number } {
   let calls = 0
   return {
     get calls() { return calls },
-    observe: async () => {
+    observe: async input => {
       calls += 1
-      return evidence
+      if (evidence.status !== 'OBSERVED' || options.preserveBinding) return evidence
+      return {
+        ...evidence,
+        inputDigest: input.inputDigest,
+        observedAfterTurnEndSeq: input.batch.lastTurnEndSeq,
+      }
     },
   }
 }
@@ -158,17 +169,60 @@ describe('v2 Agent-first ownership coordinator', () => {
     })
   })
 
+  it('rejects stale evidence observed before the durable batch end', async () => {
+    const { domain, intent } = await seedReadyIntent()
+    const observation = port(observed({ observedAt: '2000-01-01T00:00:00.000Z' }))
+    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'OBSERVATION_INVALID' },
+    })
+  })
+
+  it('rejects evidence replayed from another ownership input', async () => {
+    for (const replayKind of ['BATCH', 'INTENT'] as const) {
+      const { domain, intent, batch } = await seedReadyIntent()
+      const replayIntentId = replayKind === 'INTENT' ? `intent_${'e'.repeat(64)}` : intent.intentId
+      const replayClaimId = deriveOwnershipClaimIdV2({ intentId: replayIntentId, intentRevision: intent.revision })
+      const replayInputDigest = deriveOwnershipInputDigestV2({
+        batchId: replayKind === 'BATCH' ? `batch_${'d'.repeat(64)}` : batch.batchId,
+        intentId: replayIntentId,
+        claimId: replayClaimId,
+        batchEndTurnEndSeq: batch.lastTurnEndSeq,
+        batchFrozenAt: batch.createdAt,
+        observationManifestDigest: batch.observationManifestDigest,
+        baseline: batch.batchManifestBaseline,
+      })
+      const observation = port(observed({ inputDigest: replayInputDigest }), { preserveBinding: true })
+      await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+      expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
+        status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'OBSERVATION_INVALID' },
+      })
+    }
+  })
+
   it('recovers a sealed arbitration without observing external state again', async () => {
     const { domain, intent } = await seedReadyIntent()
     const evidence = observed()
     const claimId = deriveOwnershipClaimIdV2({ intentId: intent.intentId, intentRevision: intent.revision })
+    const batch = domain.sessionBatches.get(intent.batchId)!
+    const inputDigest = deriveOwnershipInputDigestV2({
+      batchId: batch.batchId,
+      intentId: intent.intentId,
+      claimId,
+      batchEndTurnEndSeq: batch.lastTurnEndSeq,
+      batchFrozenAt: batch.createdAt,
+      observationManifestDigest: batch.observationManifestDigest,
+      baseline: batch.batchManifestBaseline,
+    })
+    const sealedEvidence = { ...evidence, inputDigest, observedAfterTurnEndSeq: batch.lastTurnEndSeq }
     await domain.table('experience_intents').put(intent.intentId, ExperienceIntentV2Schema.parse({
       ...intent,
       revision: intent.revision + 1,
       status: 'OWNERSHIP_ARBITRATING',
       ownership: {
         state: 'ARBITRATING', claimId, claimedIntentRevision: intent.revision, claimedAt: NOW,
-        evidence, evidenceDigest: deriveOwnershipEvidenceDigestV2(evidence),
+        inputDigest,
+        evidence: sealedEvidence, evidenceDigest: deriveOwnershipEvidenceDigestV2(sealedEvidence),
       },
       updatedAt: NOW,
     }))

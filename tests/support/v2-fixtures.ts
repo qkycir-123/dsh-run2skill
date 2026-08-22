@@ -11,6 +11,7 @@ import {
   deriveTurnObservationIdV2,
   deriveTurnObservationContentDigestV2,
   deriveOwnershipClaimIdV2,
+  deriveOwnershipInputDigestV2,
   deriveOwnershipEvidenceDigestV2,
   deriveOwnershipReceiptDigestV2,
 } from '../../src/domain/v2/index.js'
@@ -222,8 +223,23 @@ export function createMinimalV2Fixtures() {
     mutationReceiptDigest: '4'.repeat(64),
     receiptDigest: '9'.repeat(64),
   }
+  const ownershipClaimId = deriveOwnershipClaimIdV2({
+    intentId: experienceIntent.intentId,
+    intentRevision: experienceIntent.revision,
+  })
+  const ownershipInputDigest = deriveOwnershipInputDigestV2({
+    batchId: sessionBatch.batchId,
+    intentId: experienceIntent.intentId,
+    claimId: ownershipClaimId,
+    batchEndTurnEndSeq: sessionBatch.lastTurnEndSeq,
+    batchFrozenAt: sessionBatch.createdAt,
+    observationManifestDigest: sessionBatch.observationManifestDigest,
+    baseline: sessionBatch.batchManifestBaseline,
+  })
   const ownershipEvidence = {
     status: 'OBSERVED' as const,
+    inputDigest: ownershipInputDigest,
+    observedAfterTurnEndSeq: sessionBatch.lastTurnEndSeq,
     observedAt: now,
     endManifest: {
       rootManifestDigest: sessionBatch.batchManifestBaseline.rootManifestDigest,
@@ -235,10 +251,6 @@ export function createMinimalV2Fixtures() {
     agentActivity: 'NONE' as const,
     changedCandidates: [],
   }
-  const ownershipClaimId = deriveOwnershipClaimIdV2({
-    intentId: experienceIntent.intentId,
-    intentRevision: experienceIntent.revision,
-  })
   const ownershipEvidenceDigest = deriveOwnershipEvidenceDigestV2(ownershipEvidence)
   const ownershipReasonCode = 'NO_AGENT_SKILL_ACTIVITY'
   const proposalReadyIntent = {
@@ -249,6 +261,7 @@ export function createMinimalV2Fixtures() {
       claimId: ownershipClaimId,
       claimedIntentRevision: experienceIntent.revision,
       claimedAt: now,
+      inputDigest: ownershipInputDigest,
       evidence: ownershipEvidence,
       evidenceDigest: ownershipEvidenceDigest,
       reasonCode: ownershipReasonCode,
@@ -258,6 +271,7 @@ export function createMinimalV2Fixtures() {
         claimId: ownershipClaimId,
         decision: 'RUN2SKILL_OWNED',
         evidenceDigest: ownershipEvidenceDigest,
+        inputDigest: ownershipInputDigest,
         reasonCode: ownershipReasonCode,
       }),
     },

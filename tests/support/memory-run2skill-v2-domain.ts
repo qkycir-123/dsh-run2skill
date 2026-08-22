@@ -11,6 +11,7 @@ import type { Run2skillV2Domain } from '../../src/adapters/dsh-storage/v2-types.
 import { createInitialGlobalV2 } from '../../src/adapters/dsh-storage/v2-domain.js'
 
 function memoryTable<V>(values: Map<string, V>, writeLog: string[], name: string): Run2skillTable<string, V> {
+  let updateTail: Promise<void> = Promise.resolve()
   return {
     get: key => values.get(key),
     entries: () => [...values.entries()][Symbol.iterator](),
@@ -26,12 +27,16 @@ function memoryTable<V>(values: Map<string, V>, writeLog: string[], name: string
       return deleted
     },
     update: async (key, transform) => {
-      const current = values.get(key)
-      if (current === undefined) throw new Error('missing-key')
-      const next = transform(structuredClone(current))
-      values.set(key, structuredClone(next))
-      writeLog.push(name)
-      return next
+      const result = updateTail.then(() => {
+        const current = values.get(key)
+        if (current === undefined) throw new Error('missing-key')
+        const next = transform(structuredClone(current))
+        values.set(key, structuredClone(next))
+        writeLog.push(name)
+        return next
+      })
+      updateTail = result.then(() => {}, () => {})
+      return result
     },
   }
 }
