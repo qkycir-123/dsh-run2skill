@@ -944,6 +944,20 @@ export class GenerationWorker {
     intent = ExperienceIntentV2Schema.parse(value)
     let lease = this.#global.get().proposalGenerationLease
     if (lease === undefined || lease.leaseId !== initialLease.leaseId) return
+    if (
+      intent.generation.state === 'PROPOSAL_BODY_COMMITTED'
+      && lease.state === 'PROPOSAL_COMMIT_AUTHORIZED'
+      && this.#global.get().proposalCatalogMutationJournal === undefined
+    ) {
+      const facts = this.#proposalMutationFacts(intent)
+      const expected = this.#buildProposalLineage(intent, intent.revision - 1)
+      if (facts !== undefined && expected !== undefined) {
+        await this.#rollbackPreparedProposal(intent, expected, facts.mutationId)
+      } else {
+        await this.#markStaleResult(intent.intentId, lease.leaseId)
+      }
+      return
+    }
 
     if (['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(lease.state)) {
       const batchValue = this.#batches.get(intent.batchId)
@@ -1237,8 +1251,32 @@ export class GenerationWorker {
       outcome = 'INCOMPLETE'
     }
     if (outcome !== 'COMMITTED') {
+      if (this.#proposalBodyCommitIsDurable(intent, expectedLineage, facts)) return
       await this.#rollbackPreparedProposal(intent, expectedLineage, facts.mutationId)
     }
+  }
+
+  #proposalBodyCommitIsDurable(
+    priorIntent: ExperienceIntentV2,
+    expectedLineage: z.infer<typeof ProposalLineageV2Schema>,
+    facts: ProposalMutationFacts,
+  ): boolean {
+    const value = this.#intents.get(priorIntent.intentId)
+    if (value === undefined) return false
+    const intent = ExperienceIntentV2Schema.safeParse(value)
+    const lineage = ProposalLineageV2Schema.safeParse(this.#lineages.get(expectedLineage.lineageId))
+    const global = this.#global.get()
+    const lease = global.proposalGenerationLease
+    return intent.success
+      && intent.data.generation.state === 'PROPOSAL_BODY_COMMITTED'
+      && intent.data.generation.leaseId === priorIntent.generation.leaseId
+      && lineage.success
+      && canonicalJson(lineage.data) === canonicalJson(expectedLineage)
+      && global.proposalCatalogMutationJournal === undefined
+      && global.proposalCatalogEpoch === facts.outcomeCatalogEpoch
+      && lease !== undefined
+      && lease.leaseId === priorIntent.generation.leaseId
+      && lease.state === 'BODY_COMMITTED_INDEX_PENDING'
   }
 
   async #rollbackPreparedProposal(
@@ -1261,6 +1299,9 @@ export class GenerationWorker {
     const existing = this.#lineages.get(facts.lineageId)
     if (existing === undefined) {
       await this.#abandonProposalJournal(mutationId)
+      if (intent.generation.state === 'PROPOSAL_BODY_COMMITTED') {
+        await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
+      }
       return
     }
     const parsed = ProposalLineageV2Schema.safeParse(existing)
