@@ -24,6 +24,9 @@ export interface StockSkillRuntimeConfiguration {
   readonly includeDefaultRoots: boolean
   readonly customSkillDirs: readonly string[]
   readonly configuredDshHome?: string | undefined
+  readonly configuredAgentsHome?: string | undefined
+  readonly configuredBundledSkillDir?: string | undefined
+  readonly usesContextFileSystem?: true | undefined
 }
 
 interface StockFiberProjection {
@@ -50,6 +53,7 @@ export interface StockPresetMountPort {
 export interface StockComposedAgentProjection {
   readonly ctx: {
     readonly registry: { values(): Iterable<StockPluginRuntimeProjection> }
+    readonly get?: (name: string) => unknown
   }
 }
 
@@ -57,6 +61,15 @@ export interface StockAgentPresetObservationPort {
   composedPreset(agentContext: object): string | undefined
   resolve(id: string): Promise<{ readonly id: string; readonly trust: 'system' | 'user' }>
   read(id: string): Promise<string>
+}
+
+function contextUsesFileSystem(context: object): boolean {
+  if (!('get' in context) || typeof context.get !== 'function') return false
+  try {
+    return context.get('fs') !== undefined
+  } catch {
+    return true
+  }
 }
 
 export async function resolvePinnedStockPresetConfiguration(
@@ -77,6 +90,7 @@ export async function resolvePinnedStockPresetConfiguration(
       providerName: 'filesystem',
       includeDefaultRoots: true,
       customSkillDirs: [],
+      ...(contextUsesFileSystem(agent.ctx) ? { usesContextFileSystem: true as const } : {}),
     }
   } catch {
     return undefined
@@ -194,12 +208,17 @@ export async function resolveStockSkillRuntimeConfiguration(
   const includeDefaultRoots = config.includeDefaultRoots ?? true
   const customSkillDirs = config.customSkillDirs ?? []
   const configuredDshHome = config.dshHome
+  const configuredAgentsHome = config.agentsHome
+  const configuredBundledSkillDir = config.bundledSkillDir
+  const usesContextFileSystem = contextUsesFileSystem(agent.ctx)
   if (
     typeof providerName !== 'string'
     || typeof includeDefaultRoots !== 'boolean'
     || !Array.isArray(customSkillDirs)
     || !customSkillDirs.every(value => typeof value === 'string')
     || (configuredDshHome !== undefined && typeof configuredDshHome !== 'string')
+    || (configuredAgentsHome !== undefined && typeof configuredAgentsHome !== 'string')
+    || (configuredBundledSkillDir !== undefined && typeof configuredBundledSkillDir !== 'string')
   ) return undefined
   return {
     profile: 'web',
@@ -208,6 +227,9 @@ export async function resolveStockSkillRuntimeConfiguration(
     includeDefaultRoots,
     customSkillDirs: [...customSkillDirs],
     ...(configuredDshHome === undefined ? {} : { configuredDshHome }),
+    ...(configuredAgentsHome === undefined ? {} : { configuredAgentsHome }),
+    ...(configuredBundledSkillDir === undefined ? {} : { configuredBundledSkillDir }),
+    ...(usesContextFileSystem ? { usesContextFileSystem: true as const } : {}),
   }
 }
 
@@ -228,6 +250,9 @@ function canonicalConfiguration(configuration: StockSkillRuntimeConfiguration) {
     includeDefaultRoots: configuration.includeDefaultRoots,
     customSkillDirs: [...configuration.customSkillDirs],
     configuredDshHome: configuration.configuredDshHome ?? null,
+    configuredAgentsHome: configuration.configuredAgentsHome ?? null,
+    configuredBundledSkillDir: configuration.configuredBundledSkillDir ?? null,
+    usesContextFileSystem: configuration.usesContextFileSystem ?? false,
   }
 }
 

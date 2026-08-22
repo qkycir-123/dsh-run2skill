@@ -88,6 +88,8 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
   },
 })
 
+const OUTPUT_BYTE_RATIO = 4
+
 interface PartialBlock {
   readonly type: string
   text: string
@@ -236,7 +238,7 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
         provider: route.provider,
         model: route.model,
         system: policy.system,
-        maxTokens: policy.maxTokens,
+        maxTokens: Math.min(policy.maxTokens, Math.max(1, Math.floor(route.maxOutputBytes / OUTPUT_BYTE_RATIO))),
         messages: [{
           id: randomUUID(),
           role: 'user',

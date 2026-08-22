@@ -47,6 +47,29 @@ const runtimeSkill = {
 }
 
 describe('DSH v2 Runtime and Pending Catalog adapter', () => {
+  it('exposes one stable Runtime-only manifest for the pre-Turn ownership baseline', async () => {
+    const { domain, fixture } = await seed()
+    let calls = 0
+    const view = { cwd: 'D:\\repo', scope: {}, signal: new AbortController().signal }
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async input => {
+          expect(input).toBe(view)
+          calls += 1
+          return { complete: true, skills: [runtimeSkill] }
+        },
+        get: async () => undefined,
+      },
+      resolveView: key => key === fixture.experienceIntent.sessionLifecycleKey ? view : undefined,
+    })
+
+    const observed = await adapter.observeRuntimeCatalog(fixture.experienceIntent.sessionLifecycleKey)
+    expect(observed).toMatchObject({ complete: true })
+    expect(observed.runtimeCatalogDigest).toMatch(/^[a-f0-9]{64}$/u)
+    expect(calls).toBe(2)
+    await expect(adapter.observeRuntimeCatalog('sl_missing')).resolves.toMatchObject({ complete: false })
+  })
+
   it('uses one exact DSH view and projects the same stable Catalog into both ports', async () => {
     const { domain, fixture, sessionBatch } = await seed()
     const view = { cwd: 'D:\\repo', scope: { id: 'agent' }, signal: new AbortController().signal }

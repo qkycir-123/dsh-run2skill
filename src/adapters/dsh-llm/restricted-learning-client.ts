@@ -116,7 +116,10 @@ export interface DshLlmPort {
     provider: string,
     model: string,
     signal?: AbortSignal,
-  ): Promise<{ readonly context?: { readonly contextWindow: number } }>
+  ): Promise<{
+    readonly context?: { readonly contextWindow: number }
+    readonly defaultMaxTokens?: number
+  }>
   stream(options: DshGenerateOptions): AsyncIterable<DshStreamChunk>
 }
 
