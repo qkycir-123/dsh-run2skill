@@ -575,6 +575,17 @@ export const ExperienceIntentV2Schema = z.object({
     summaryScanComplete: z.boolean(),
     catalogEpoch: safeNonNegativeInteger.optional(),
     catalogMutationReceiptDigest: sha256Hex.optional(),
+    scanPlanDigest: sha256Hex.optional(),
+    scanPageCount: safeNonNegativeInteger.optional(),
+    summaryClassifications: z.array(z.object({
+      candidateId: identity,
+      summaryDigest: sha256Hex,
+      classification: z.enum(['RELEVANT', 'POSSIBLE', 'UNRELATED']),
+      pageOrdinal: positiveSafeInteger,
+      callId: z.string().regex(/^call_[a-f0-9]{64}$/),
+      inputDigest: sha256Hex,
+      outputDigest: sha256Hex,
+    }).strict()).max(1024).optional(),
     incompleteReason: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
     selfExclusion: z.object({
       intentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
@@ -879,10 +890,16 @@ export const ExperienceIntentV2Schema = z.object({
     || value.recall.pendingCatalogDigest === undefined
     || value.recall.catalogEpoch === undefined
     || value.recall.catalogMutationReceiptDigest === undefined
+    || value.recall.scanPlanDigest === undefined
+    || value.recall.scanPageCount === undefined
+    || value.recall.summaryClassifications === undefined
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Complete recall requires full Catalog and summary-scan facts' })
   if (value.recall.state === 'NOT_STARTED' && (
     value.recall.summaryScanComplete
     || value.recall.candidates.length > 0
+    || (value.recall.summaryClassifications?.length ?? 0) > 0
+    || value.recall.scanPlanDigest !== undefined
+    || value.recall.scanPageCount !== undefined
     || value.recall.runtimeCatalogDigest !== undefined
     || value.recall.pendingCatalogDigest !== undefined
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Unstarted recall cannot contain Catalog results' })
@@ -890,6 +907,13 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['recall', 'incompleteReason'], message: 'Incomplete recall requires a reason' })
   }
   for (const [index, candidate] of value.recall.candidates.entries()) {
+    if (candidate.classification === 'UNRELATED') {
+      context.addIssue({ code: 'custom', path: ['recall', 'candidates', index, 'classification'], message: 'Unrelated summaries must not trigger full-body candidate reads' })
+    }
+    const classification = value.recall.summaryClassifications?.find(item => item.candidateId === candidate.candidateId)
+    if (classification !== undefined && classification.classification !== candidate.classification) {
+      context.addIssue({ code: 'custom', path: ['recall', 'candidates', index, 'classification'], message: 'Candidate classification must match the durable summary scan result' })
+    }
     if ((candidate.capability === 'UNAVAILABLE') !== (candidate.unavailableReason !== undefined)) {
       context.addIssue({ code: 'custom', path: ['recall', 'candidates', index], message: 'Unavailable capability requires exactly one reason' })
     }
@@ -1145,8 +1169,29 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Stage call cannot belong to a future Intent revision' })
   }
   const callsFor = (stage: 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION') => value.stageCalls.filter(call => call.stage === stage)
-  if (value.recall.state === 'COMPLETE' && callsFor('CATALOG_SCAN').length === 0) {
-    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Complete recall requires a durable Catalog scan ledger' })
+  const summaryClassifications = value.recall.summaryClassifications ?? []
+  const classificationIds = summaryClassifications.map(item => item.candidateId)
+  if (new Set(classificationIds).size !== classificationIds.length) {
+    context.addIssue({ code: 'custom', path: ['recall', 'summaryClassifications'], message: 'Summary classifications must have unique candidate identities' })
+  }
+  for (const [index, classification] of summaryClassifications.entries()) {
+    const call = callsFor('CATALOG_SCAN').find(item => item.callId === classification.callId)
+    if (
+      call?.outcome !== 'SUCCEEDED'
+      || call.ordinal !== classification.pageOrdinal
+      || call.inputDigest !== classification.inputDigest
+      || call.outputDigest !== classification.outputDigest
+    ) context.addIssue({
+      code: 'custom', path: ['recall', 'summaryClassifications', index],
+      message: 'Summary classification must bind one exact successful Catalog scan call',
+    })
+  }
+  if (value.recall.state === 'COMPLETE' && (
+    callsFor('CATALOG_SCAN').length !== value.recall.scanPageCount
+    || callsFor('CATALOG_SCAN').some(call => call.outcome !== 'SUCCEEDED')
+    || summaryClassifications.filter(item => item.classification !== 'UNRELATED').length !== value.recall.candidates.length
+  )) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Complete recall requires the exact successful Catalog scan ledger' })
   }
   if (['COVERED', 'CREATE', 'MERGE'].includes(value.coverage.state) && callsFor('COVERAGE').length === 0) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal coverage requires a durable coverage call ledger' })
