@@ -14,9 +14,11 @@ import {
   deriveGenerationReceiptDigestV2,
   deriveGenerationResultIdV2,
   deriveGenerationResultReceiptDigestV2,
+  deriveNativeProposalLineageIdV2,
   deriveProposalCatalogMutationIdV2,
   deriveProposalCatalogMutationReceiptDigestV2,
   ExperienceIntentV2Schema,
+  ProposalLineageV2Schema,
   SessionBatchV2Schema,
   type ExperienceIntentV2,
   type GlobalV2,
@@ -60,6 +62,14 @@ function digestUnknownOutput(value: unknown): string {
   }
 }
 
+function deriveNativeProposalId(input: {
+  readonly lineageId: string
+  readonly generationResultReceiptDigest: string
+  readonly proposalRevision: number
+}): `prop_${string}` {
+  return `prop_${sha256Utf8(canonicalJson(input))}`
+}
+
 export interface GenerationCatalogSnapshot {
   readonly complete: boolean
   readonly runtimeCatalogDigest: string
@@ -70,7 +80,15 @@ export interface GenerationCatalogSnapshot {
 }
 
 export interface GenerationCatalogPort {
-  snapshot(input: { readonly batch: SessionBatchV2; readonly intent: ExperienceIntentV2 }): Promise<GenerationCatalogSnapshot>
+  snapshot(input: {
+    readonly batch: SessionBatchV2
+    readonly intent: ExperienceIntentV2
+    readonly exclude?: {
+      readonly kind: 'GENERATION_RESULT'
+      readonly resultId: string
+      readonly receiptDigest: string
+    } | undefined
+  }): Promise<GenerationCatalogSnapshot>
   read(input: {
     readonly candidateId: string
     readonly batch: SessionBatchV2
@@ -109,11 +127,21 @@ type AcquireOutcome = 'ACQUIRED' | 'BLOCKED' | 'STALE' | 'CONFLICT' | 'HANDLED'
 type LeaseBinding =
   | { readonly outcome: 'ACQUIRED'; readonly leaseId: string; readonly acquiredAt: string }
   | { readonly outcome: 'BLOCKED' | 'STALE' | 'CONFLICT' }
+interface ProposalMutationFacts {
+  readonly result: NonNullable<ExperienceIntentV2['generation']['sealedResult']>
+  readonly revalidation: NonNullable<ExperienceIntentV2['generation']['revalidationAuthorization']>
+  readonly proposalId: string
+  readonly lineageId: string
+  readonly outcomeCatalogEpoch: number
+  readonly mutationId: string
+  readonly mutationReceiptDigest: string
+}
 
 export class GenerationWorker {
   readonly #global: Run2skillV2GlobalStore
   readonly #intents
   readonly #batches
+  readonly #lineages
   readonly #catalog: GenerationCatalogPort
   readonly #generator: SkillGenerator
   readonly #policy: GenerationPolicy
@@ -123,6 +151,7 @@ export class GenerationWorker {
     this.#global = Run2skillV2GlobalStore.for(domain)
     this.#intents = domain.table('experience_intents')
     this.#batches = domain.table('session_batches')
+    this.#lineages = domain.table('proposal_lineages')
     this.#catalog = options.catalog
     this.#generator = options.generator
     this.#policy = { ...DEFAULT_POLICY, ...options.policy }
@@ -135,7 +164,14 @@ export class GenerationWorker {
   }
 
   async runOnce(): Promise<'IDLE' | 'PROCESSED'> {
-    const currentLeaseOwner = this.#global.get().proposalGenerationLease?.ownerIntentId
+    const currentLease = this.#global.get().proposalGenerationLease
+    if (currentLease !== undefined && [
+      'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE',
+    ].includes(currentLease.state)) {
+      await this.#continueProposalCommit(currentLease)
+      return 'PROCESSED'
+    }
+    const currentLeaseOwner = currentLease?.ownerIntentId
     const candidate = [...this.#intents.entries()]
       .map(([, value]) => ExperienceIntentV2Schema.parse(value))
       .filter(intent => ['CREATE_AUTHORIZED', 'MERGE_AUTHORIZED'].includes(intent.status))
@@ -307,7 +343,12 @@ export class GenerationWorker {
       }
       await this.#abandonPreparedMutation(intent)
     }
-    if (lease.state === 'RESULT_COMMITTED') return
+    if ([
+      'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE',
+    ].includes(lease.state)) {
+      await this.#continueProposalCommit(lease)
+      return
+    }
 
     const currentCall = intent.stageCalls.find(call => (
       call.stage === 'GENERATION' && call.intentRevision === lease.generationRevision
@@ -476,6 +517,23 @@ export class GenerationWorker {
 
   async #safeSnapshot(batch: SessionBatchV2, intent: ExperienceIntentV2): Promise<GenerationCatalogSnapshot | undefined> {
     try { return await this.#catalog.snapshot({ batch, intent }) } catch { return undefined }
+  }
+
+  async #safePostResultSnapshot(
+    batch: SessionBatchV2,
+    intent: ExperienceIntentV2,
+  ): Promise<GenerationCatalogSnapshot | undefined> {
+    const result = intent.generation.sealedResult
+    if (result === undefined) return undefined
+    try {
+      return await this.#catalog.snapshot({
+        batch,
+        intent,
+        exclude: { kind: 'GENERATION_RESULT', resultId: result.resultId, receiptDigest: result.receiptDigest },
+      })
+    } catch {
+      return undefined
+    }
   }
 
   #modelInput(intent: ExperienceIntentV2, batch: SessionBatchV2, baseSkill?: string) {
@@ -854,6 +912,498 @@ export class GenerationWorker {
     })
   }
 
+  async #continueProposalCommit(initialLease: ProposalGenerationLease): Promise<void> {
+    let value = this.#intents.get(initialLease.ownerIntentId)
+    if (value === undefined) return
+    let intent = ExperienceIntentV2Schema.parse(value)
+    if (intent.generation.leaseId !== initialLease.leaseId || intent.generation.sealedResult === undefined) return
+    if (intent.generation.state === 'NEEDS_ATTENTION' && intent.generation.reasonCode === 'STALE_RESULT') {
+      await this.#markStaleResult(intent.intentId, initialLease.leaseId)
+      return
+    }
+
+    const currentGlobal = this.#global.get()
+    if (currentGlobal.proposalCatalogMutationJournal?.kind === 'PROPOSAL') {
+      await this.#recoverPreparedProposal(intent, currentGlobal.proposalCatalogMutationJournal.mutationId)
+    }
+
+    value = this.#intents.get(initialLease.ownerIntentId)
+    if (value === undefined) return
+    intent = ExperienceIntentV2Schema.parse(value)
+    let lease = this.#global.get().proposalGenerationLease
+    if (lease === undefined || lease.leaseId !== initialLease.leaseId) return
+
+    if (['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(lease.state)) {
+      const batchValue = this.#batches.get(intent.batchId)
+      const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
+      const snapshot = batch?.success ? await this.#revalidateResult(batch.data, intent, lease) : undefined
+      if (snapshot === undefined) {
+        await this.#markStaleResult(intent.intentId, lease.leaseId)
+        return
+      }
+      if (!await this.#authorizeProposal(intent.intentId, lease.leaseId, snapshot)) return
+    }
+
+    await this.#commitProposalBody(initialLease.ownerIntentId, initialLease.leaseId)
+    await this.#activateProposal(initialLease.ownerIntentId, initialLease.leaseId)
+    await this.#releaseCompletedProposal(initialLease.ownerIntentId, initialLease.leaseId)
+  }
+
+  async #revalidateResult(
+    batch: SessionBatchV2,
+    intent: ExperienceIntentV2,
+    lease: ProposalGenerationLease,
+  ): Promise<GenerationCatalogSnapshot | undefined> {
+    const result = intent.generation.sealedResult
+    if (result === undefined || lease.sealedResultReceiptDigest !== result.receiptDigest) return undefined
+    const snapshot = await this.#safePostResultSnapshot(batch, intent)
+    if (
+      snapshot === undefined
+      || !snapshot.complete
+      || snapshot.runtimeCatalogDigest !== result.runtimeCatalogDigest
+      || snapshot.pendingCatalogDigest === result.pendingCatalogDigest
+      || snapshot.externalPendingDigest !== result.externalPendingDigest
+      || snapshot.catalogEpoch !== result.outcomeCatalogEpoch
+      || snapshot.catalogMutationReceiptDigest !== result.mutationReceiptDigest
+    ) return undefined
+    const global = this.#global.get()
+    if (
+      global.proposalGenerationLease?.leaseId !== lease.leaseId
+      || !['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(global.proposalGenerationLease.state)
+      || global.proposalCatalogEpoch !== snapshot.catalogEpoch
+      || global.proposalCatalogMutationJournal !== undefined
+      || global.purgeJournal !== undefined
+    ) return undefined
+    if (intent.generation.revalidationAuthorization !== undefined) {
+      const prior = intent.generation.revalidationAuthorization
+      if (
+        prior.runtimeCatalogDigest !== snapshot.runtimeCatalogDigest
+        || prior.pendingCatalogDigest !== snapshot.pendingCatalogDigest
+        || prior.externalPendingDigest !== snapshot.externalPendingDigest
+        || prior.catalogEpoch !== snapshot.catalogEpoch
+        || prior.catalogMutationReceiptDigest !== snapshot.catalogMutationReceiptDigest
+      ) return undefined
+    }
+    if (result.action === 'MERGE') {
+      const candidateId = intent.coverage.targetCandidateId
+      if (candidateId === undefined) return undefined
+      try {
+        const target = await this.#catalog.read({ candidateId, batch, intent })
+        if (target === undefined || sha256Utf8(target.content) !== result.targetDigest) return undefined
+      } catch {
+        return undefined
+      }
+      const afterRead = await this.#safePostResultSnapshot(batch, intent)
+      if (afterRead === undefined || canonicalJson(afterRead) !== canonicalJson(snapshot)) return undefined
+    }
+    return snapshot
+  }
+
+  async #authorizeProposal(
+    intentId: string,
+    leaseId: string,
+    snapshot: GenerationCatalogSnapshot,
+  ): Promise<boolean> {
+    let authorizationDigest: string | undefined
+    let authorized = false
+    await this.#intents.update(intentId, current => {
+      const intent = ExperienceIntentV2Schema.parse(current)
+      if (intent.generation.leaseId !== leaseId || intent.generation.sealedResult === undefined) return intent
+      if (intent.generation.state === 'PROPOSAL_COMMIT_AUTHORIZED') {
+        authorizationDigest = intent.generation.receipts.find(item => item.kind === 'PROPOSAL_AUTHORIZED')?.digest
+        authorized = authorizationDigest !== undefined
+        return intent
+      }
+      if (intent.generation.state !== 'RESULT_COMMITTED') return intent
+      const result = intent.generation.sealedResult
+      const recordedAt = this.#isoNow()
+      const receipt = this.#receipt(
+        'PROPOSAL_AUTHORIZED', intent, leaseId, recordedAt, undefined, result.outcomeCatalogEpoch,
+      )
+      const lineageId = deriveNativeProposalLineageIdV2(intent.persistenceScope, intent.behaviorSignature)
+      const proposalId = deriveNativeProposalId({
+        lineageId,
+        generationResultReceiptDigest: result.receiptDigest,
+        proposalRevision: 1,
+      })
+      authorizationDigest = receipt.digest
+      authorized = true
+      return ExperienceIntentV2Schema.parse({
+        ...intent,
+        revision: intent.revision + 1,
+        generation: {
+          ...intent.generation,
+          state: 'PROPOSAL_COMMIT_AUTHORIZED',
+          proposalId,
+          revalidationAuthorization: {
+            runtimeCatalogDigest: result.runtimeCatalogDigest,
+            pendingCatalogDigest: snapshot.pendingCatalogDigest,
+            externalPendingDigest: result.externalPendingDigest,
+            catalogEpoch: result.outcomeCatalogEpoch,
+            catalogMutationReceiptDigest: result.mutationReceiptDigest,
+            sealedResultReceiptDigest: result.receiptDigest,
+            ...(intent.generation.selfExclusionDigest === undefined
+              ? {}
+              : { selfExclusionDigest: intent.generation.selfExclusionDigest }),
+            authorizedAt: recordedAt,
+          },
+          receipts: [...intent.generation.receipts, receipt],
+        },
+        updatedAt: recordedAt,
+      })
+    })
+    if (!authorized || authorizationDigest === undefined) return false
+    return this.#global.runExclusive(async current => {
+      const lease = current.proposalGenerationLease
+      if (
+        lease?.leaseId !== leaseId
+        || !['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(lease.state)
+        || current.proposalCatalogMutationJournal !== undefined
+        || current.purgeJournal !== undefined
+      ) return { value: false }
+      return {
+        value: true,
+        global: {
+          ...current,
+          proposalGenerationLease: {
+            ...lease,
+            proposalAuthorizationReceiptDigest: authorizationDigest,
+            state: 'PROPOSAL_COMMIT_AUTHORIZED',
+          },
+        },
+      }
+    })
+  }
+
+  #proposalMutationFacts(intent: ExperienceIntentV2): ProposalMutationFacts | undefined {
+    const result = intent.generation.sealedResult
+    const revalidation = intent.generation.revalidationAuthorization
+    const proposalId = intent.generation.proposalId
+    if (result === undefined || revalidation === undefined || proposalId === undefined) return undefined
+    const lineageId = deriveNativeProposalLineageIdV2(intent.persistenceScope, intent.behaviorSignature)
+    const outcomeCatalogEpoch = revalidation.catalogEpoch + 1
+    const mutationId = deriveProposalCatalogMutationIdV2({
+      ownerId: proposalId,
+      kind: 'PROPOSAL',
+      inputCatalogEpoch: revalidation.catalogEpoch,
+    })
+    const mutationReceiptDigest = deriveProposalCatalogMutationReceiptDigestV2({
+      mutationId,
+      ownerId: proposalId,
+      kind: 'PROPOSAL',
+      outcomeCatalogEpoch,
+    })
+    return { result, revalidation, proposalId, lineageId, outcomeCatalogEpoch, mutationId, mutationReceiptDigest }
+  }
+
+  #buildProposalLineage(intent: ExperienceIntentV2) {
+    const facts = this.#proposalMutationFacts(intent)
+    if (facts === undefined) return undefined
+    return ProposalLineageV2Schema.parse({
+      schemaVersion: 1,
+      revision: 1,
+      lineageId: facts.lineageId,
+      persistenceScope: intent.persistenceScope,
+      origin: 'RUN2SKILL_V2',
+      state: 'ACTIVE_PROPOSAL',
+      behaviorSignature: intent.behaviorSignature,
+      ownerIntentId: intent.intentId,
+      ownerIntentRevision: intent.revision,
+      currentProposalRevision: 1,
+      proposalRevisions: [{
+        revision: 1,
+        proposalId: facts.proposalId,
+        ownerIntentId: intent.intentId,
+        ownerIntentRevision: intent.revision,
+        action: facts.result.action,
+        body: facts.result.body,
+        runtimeCatalogDigest: facts.revalidation.runtimeCatalogDigest,
+        pendingCatalogDigest: facts.revalidation.pendingCatalogDigest,
+        generationResultReceiptDigest: facts.result.receiptDigest,
+        catalogMutationReceiptDigest: facts.mutationReceiptDigest,
+        catalogEpoch: facts.outcomeCatalogEpoch,
+        targetIdentityDigest: facts.result.targetDigest,
+        state: 'ACTIVE_PROPOSAL',
+        createdAt: facts.revalidation.authorizedAt,
+      }],
+      createdAt: facts.revalidation.authorizedAt,
+      updatedAt: facts.revalidation.authorizedAt,
+    })
+  }
+
+  async #commitProposalBody(intentId: string, leaseId: string): Promise<void> {
+    let intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
+    if (intent.generation.state !== 'PROPOSAL_COMMIT_AUTHORIZED' || intent.generation.leaseId !== leaseId) return
+    const facts = this.#proposalMutationFacts(intent)
+    const lineage = this.#buildProposalLineage(intent)
+    if (facts === undefined || lineage === undefined) return
+    const prepared = await this.#global.runExclusive(async current => {
+      const lease = current.proposalGenerationLease
+      if (
+        lease?.leaseId !== leaseId
+        || lease.state !== 'PROPOSAL_COMMIT_AUTHORIZED'
+        || current.proposalCatalogEpoch !== facts.revalidation.catalogEpoch
+        || current.proposalCatalogMutationJournal !== undefined
+        || current.purgeJournal !== undefined
+      ) return { value: false }
+      return {
+        value: true,
+        global: {
+          ...current,
+          proposalCatalogMutationJournal: {
+            schemaVersion: 1,
+            mutationId: facts.mutationId,
+            ownerId: facts.proposalId,
+            kind: 'PROPOSAL',
+            phase: 'PREPARED',
+            preparedAt: this.#isoNow(),
+          },
+        },
+      }
+    })
+    if (!prepared) return
+
+    const existing = this.#lineages.get(facts.lineageId)
+    if (existing === undefined) await this.#lineages.put(facts.lineageId, lineage)
+    else if (canonicalJson(ProposalLineageV2Schema.parse(existing)) !== canonicalJson(lineage)) {
+      await this.#abandonProposalJournal(facts.mutationId)
+      await this.#markStaleResult(intentId, leaseId)
+      return
+    }
+    await this.#markProposalBodyCommitted(intentId, leaseId, facts)
+    intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
+    await this.#finalizeProposalBody(intent, facts)
+  }
+
+  async #recoverPreparedProposal(intent: ExperienceIntentV2, mutationId: string): Promise<void> {
+    if (!['PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED'].includes(intent.generation.state)) return
+    const facts = this.#proposalMutationFacts(intent)
+    if (facts === undefined || facts.mutationId !== mutationId) return
+    const existing = this.#lineages.get(facts.lineageId)
+    if (existing === undefined) {
+      await this.#abandonProposalJournal(mutationId)
+      return
+    }
+    const parsed = ProposalLineageV2Schema.safeParse(existing)
+    const exactProposal = parsed.success
+      && parsed.data.origin === 'RUN2SKILL_V2'
+      && parsed.data.ownerIntentId === intent.intentId
+      && parsed.data.proposalRevisions.at(-1)?.proposalId === facts.proposalId
+      && parsed.data.proposalRevisions.at(-1)?.generationResultReceiptDigest === facts.result.receiptDigest
+      && parsed.data.proposalRevisions.at(-1)?.catalogMutationReceiptDigest === facts.mutationReceiptDigest
+    if (!exactProposal) {
+      await this.#abandonProposalJournal(mutationId)
+      await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
+      return
+    }
+    await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)
+    await this.#finalizeProposalBody(
+      ExperienceIntentV2Schema.parse(this.#intents.get(intent.intentId)),
+      facts,
+    )
+  }
+
+  async #markProposalBodyCommitted(
+    intentId: string,
+    leaseId: string,
+    facts: ProposalMutationFacts,
+  ): Promise<void> {
+    await this.#intents.update(intentId, current => {
+      const intent = ExperienceIntentV2Schema.parse(current)
+      if (intent.generation.state === 'PROPOSAL_BODY_COMMITTED') return intent
+      if (intent.generation.state !== 'PROPOSAL_COMMIT_AUTHORIZED' || intent.generation.leaseId !== leaseId) return intent
+      const recordedAt = this.#isoNow()
+      return ExperienceIntentV2Schema.parse({
+        ...intent,
+        revision: intent.revision + 1,
+        lineageId: facts.lineageId,
+        generation: {
+          ...intent.generation,
+          state: 'PROPOSAL_BODY_COMMITTED',
+          receipts: [...intent.generation.receipts, {
+            kind: 'BODY_COMMITTED',
+            digest: facts.mutationReceiptDigest,
+            leaseId,
+            intentId,
+            generationRevision: intent.generation.generationRevision!,
+            catalogEpoch: facts.outcomeCatalogEpoch,
+            recordedAt,
+          }],
+        },
+        updatedAt: recordedAt,
+      })
+    })
+  }
+
+  async #finalizeProposalBody(
+    intent: ExperienceIntentV2,
+    facts: ProposalMutationFacts,
+  ): Promise<void> {
+    if (intent.generation.state !== 'PROPOSAL_BODY_COMMITTED') return
+    await this.#global.runExclusive(async current => {
+      const lease = current.proposalGenerationLease
+      const journal = current.proposalCatalogMutationJournal
+      if (
+        lease === undefined
+        || lease.leaseId !== intent.generation.leaseId
+        || lease.state !== 'PROPOSAL_COMMIT_AUTHORIZED'
+        || current.proposalCatalogEpoch !== facts.revalidation.catalogEpoch
+        || journal?.mutationId !== facts.mutationId
+        || journal.ownerId !== facts.proposalId
+        || journal.kind !== 'PROPOSAL'
+      ) return { value: undefined }
+      return {
+        value: undefined,
+        global: {
+          ...current,
+          proposalCatalogEpoch: facts.outcomeCatalogEpoch,
+          proposalCatalogMutationJournal: undefined,
+          proposalGenerationLease: { ...lease, state: 'BODY_COMMITTED_INDEX_PENDING' },
+        },
+      }
+    })
+  }
+
+  async #activateProposal(intentId: string, leaseId: string): Promise<void> {
+    let intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
+    let indexReceipt = intent.generation.receipts.find(item => item.kind === 'INDEX_COMMITTED')
+    if (intent.generation.state === 'PROPOSAL_BODY_COMMITTED') {
+      const authorization = intent.generation.revalidationAuthorization
+      if (authorization === undefined) return
+      const recordedAt = this.#isoNow()
+      const receipt = this.#receipt(
+        'INDEX_COMMITTED', intent, leaseId, recordedAt, undefined, authorization.catalogEpoch + 1,
+      )
+      let advanced = false
+      await this.#intents.update(intentId, current => {
+        const parsed = ExperienceIntentV2Schema.parse(current)
+        if (parsed.generation.state !== 'PROPOSAL_BODY_COMMITTED' || parsed.generation.leaseId !== leaseId) return parsed
+        advanced = true
+        return ExperienceIntentV2Schema.parse({
+          ...parsed,
+          revision: parsed.revision + 1,
+          status: 'PROPOSAL_READY',
+          generation: {
+            ...parsed.generation,
+            state: 'PROPOSAL_READY',
+            receipts: [...parsed.generation.receipts, receipt],
+          },
+          updatedAt: recordedAt,
+        })
+      })
+      if (!advanced) return
+      intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
+      indexReceipt = receipt
+    }
+    if (intent.generation.state !== 'PROPOSAL_READY' || indexReceipt === undefined) return
+    const lineageId = intent.lineageId
+    const proposalId = intent.generation.proposalId
+    if (lineageId === undefined || proposalId === undefined) return
+    const lineage = ProposalLineageV2Schema.safeParse(this.#lineages.get(lineageId))
+    if (
+      !lineage.success
+      || lineage.data.origin !== 'RUN2SKILL_V2'
+      || lineage.data.state !== 'ACTIVE_PROPOSAL'
+      || lineage.data.proposalRevisions.at(-1)?.proposalId !== proposalId
+    ) return
+    const key = deriveBehaviorSignatureIndexKeyV2(intent.persistenceScope, intent.behaviorSignature)
+    await this.#global.runExclusive(async current => {
+      const lease = current.proposalGenerationLease
+      const indexed = current.behaviorSignatureIndex[key]
+      if (
+        lease?.leaseId !== leaseId
+        || !['BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE'].includes(lease.state)
+        || current.proposalCatalogMutationJournal !== undefined
+        || current.proposalCatalogEpoch !== intent.generation.revalidationAuthorization!.catalogEpoch + 1
+        || indexed?.ownerIntentId !== intentId
+        || (indexed.state !== 'RESERVED' && indexed.state !== 'ACTIVE')
+      ) return { value: undefined }
+      return {
+        value: undefined,
+        global: {
+          ...current,
+          behaviorSignatureIndex: {
+            ...current.behaviorSignatureIndex,
+            [key]: {
+              ...indexed,
+              ownerRevision: intent.revision,
+              state: 'ACTIVE',
+              updatedAt: indexReceipt!.recordedAt,
+            },
+          },
+          proposalGenerationLease: {
+            ...lease,
+            completionReceiptDigest: indexReceipt!.digest,
+            state: 'ACTIVE_COMPLETE',
+          },
+        },
+      }
+    })
+  }
+
+  async #releaseCompletedProposal(intentId: string, leaseId: string): Promise<void> {
+    const value = this.#intents.get(intentId)
+    if (value === undefined) return
+    const intent = ExperienceIntentV2Schema.parse(value)
+    const completion = intent.generation.receipts.find(item => item.kind === 'INDEX_COMMITTED')
+    if (intent.generation.state !== 'PROPOSAL_READY' || completion === undefined) return
+    await this.#global.runExclusive(async current => {
+      const lease = current.proposalGenerationLease
+      if (
+        lease?.leaseId !== leaseId
+        || lease.state !== 'ACTIVE_COMPLETE'
+        || lease.completionReceiptDigest !== completion.digest
+        || current.proposalCatalogMutationJournal !== undefined
+      ) return { value: undefined }
+      const { proposalGenerationLease: _lease, ...rest } = current
+      return { value: undefined, global: rest }
+    })
+  }
+
+  async #abandonProposalJournal(mutationId: string): Promise<void> {
+    await this.#global.runExclusive(async current => {
+      if (current.proposalCatalogMutationJournal?.mutationId !== mutationId) return { value: undefined }
+      const { proposalCatalogMutationJournal: _journal, ...rest } = current
+      return { value: undefined, global: rest }
+    })
+  }
+
+  async #markStaleResult(intentId: string, leaseId: string): Promise<void> {
+    await this.#intents.update(intentId, current => {
+      const intent = ExperienceIntentV2Schema.parse(current)
+      if (intent.generation.leaseId !== leaseId || intent.generation.sealedResult === undefined) return intent
+      if (intent.generation.state === 'NEEDS_ATTENTION' && intent.generation.reasonCode === 'STALE_RESULT') return intent
+      if (!['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(intent.generation.state)) return intent
+      const {
+        proposalId: _proposalId,
+        revalidationAuthorization: _authorization,
+        reasonCode: _reason,
+        ...generation
+      } = intent.generation
+      return ExperienceIntentV2Schema.parse({
+        ...intent,
+        revision: intent.revision + 1,
+        status: 'NEEDS_ATTENTION',
+        generation: {
+          ...generation,
+          state: 'NEEDS_ATTENTION',
+          reasonCode: 'STALE_RESULT',
+          receipts: generation.receipts.filter(receipt => receipt.kind !== 'PROPOSAL_AUTHORIZED'),
+        },
+        updatedAt: this.#isoNow(),
+      })
+    })
+    await this.#global.runExclusive(async current => {
+      if (
+        current.proposalGenerationLease?.leaseId !== leaseId
+        || !['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(current.proposalGenerationLease.state)
+        || current.proposalCatalogMutationJournal !== undefined
+      ) return { value: undefined }
+      const { proposalGenerationLease: _lease, ...rest } = current
+      return { value: undefined, global: rest }
+    })
+  }
+
   async #abandonPreparedMutation(intent: ExperienceIntentV2): Promise<void> {
     const call = intent.stageCalls.find(item => (
       item.stage === 'GENERATION' && item.intentRevision === intent.generation.generationRevision
@@ -970,7 +1520,7 @@ export class GenerationWorker {
   }
 
   #receipt(
-    kind: 'LEASE_ACQUIRED' | 'CALL_RESERVED' | 'CALL_TERMINAL',
+    kind: 'LEASE_ACQUIRED' | 'CALL_RESERVED' | 'CALL_TERMINAL' | 'PROPOSAL_AUTHORIZED' | 'INDEX_COMMITTED',
     intent: ExperienceIntentV2,
     leaseId: string,
     recordedAt: string,

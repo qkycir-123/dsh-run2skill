@@ -97,8 +97,12 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
     catalogMutationReceiptDigest: snapshot.catalogMutationReceiptDigest,
   }
   let reads = 0
+  const snapshotExclusions: Array<Parameters<GenerationCatalogPort['snapshot']>[0]['exclude']> = []
   const catalog: GenerationCatalogPort = {
-    snapshot: async () => generationSnapshot,
+    snapshot: async input => {
+      snapshotExclusions.push(input.exclude)
+      return generationSnapshot
+    },
     read: async input => {
       reads += 1
       return recallCatalog.read(input)
@@ -111,8 +115,23 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
     bodies,
     catalog,
     get reads() { return reads },
+    snapshotExclusions,
     setGenerationSnapshot(next: typeof generationSnapshot) { generationSnapshot = next },
   }
+}
+
+async function exposeSealedResultForRevalidation(seeded: Awaited<ReturnType<typeof seedAuthorized>>) {
+  const intent = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+  const result = intent.generation.sealedResult!
+  seeded.setGenerationSnapshot({
+    complete: true,
+    runtimeCatalogDigest: result.runtimeCatalogDigest,
+    pendingCatalogDigest: 'e'.repeat(64),
+    externalPendingDigest: result.externalPendingDigest,
+    catalogEpoch: result.outcomeCatalogEpoch,
+    catalogMutationReceiptDigest: result.mutationReceiptDigest,
+  })
+  return { intent, result }
 }
 
 function generator(overrides: Partial<SkillGenerator> = {}) {
@@ -264,6 +283,213 @@ describe('v2 generation lease worker', () => {
     })
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
     expect(seeded.domain.proposalLineages.size).toBe(0)
+  })
+
+  it('revalidates the sealed result and commits exactly one active Proposal', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+
+    await worker.runOnce()
+    const { result } = await exposeSealedResultForRevalidation(seeded)
+    await worker.runOnce()
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.snapshotExclusions).toContainEqual({
+      kind: 'GENERATION_RESULT', resultId: result.resultId, receiptDigest: result.receiptDigest,
+    })
+    expect(seeded.domain.proposalLineages.size).toBe(1)
+    const lineage = [...seeded.domain.proposalLineages.values()][0]
+    expect(lineage).toMatchObject({
+      origin: 'RUN2SKILL_V2',
+      state: 'ACTIVE_PROPOSAL',
+      persistenceScope: 'PROJECT',
+      behaviorSignature: ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId)).behaviorSignature,
+      currentProposalRevision: 1,
+      proposalRevisions: [expect.objectContaining({
+        action: 'CREATE',
+        body: result.body,
+        generationResultReceiptDigest: result.receiptDigest,
+        state: 'ACTIVE_PROPOSAL',
+      })],
+    })
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'PROPOSAL_READY',
+      generation: {
+        state: 'PROPOSAL_READY',
+        receipts: [
+          expect.objectContaining({ kind: 'LEASE_ACQUIRED' }),
+          expect.objectContaining({ kind: 'CALL_RESERVED' }),
+          expect.objectContaining({ kind: 'CALL_TERMINAL' }),
+          expect.objectContaining({ kind: 'RESULT_SEALED' }),
+          expect.objectContaining({ kind: 'PROPOSAL_AUTHORIZED' }),
+          expect.objectContaining({ kind: 'BODY_COMMITTED' }),
+          expect.objectContaining({ kind: 'INDEX_COMMITTED' }),
+        ],
+      },
+    })
+    const global = seeded.domain.global.get()
+    expect(global.proposalCatalogEpoch).toBe(result.outcomeCatalogEpoch + 1)
+    expect(global.proposalGenerationLease).toBeUndefined()
+    expect(global.proposalCatalogMutationJournal).toBeUndefined()
+    expect(Object.values(global.behaviorSignatureIndex)).toEqual([
+      expect.objectContaining({ ownerIntentId: seeded.intentId, state: 'ACTIVE' }),
+    ])
+  })
+
+  it('does not commit a Proposal when external Pending Catalog membership changed after generation', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+
+    await worker.runOnce()
+    const { result } = await exposeSealedResultForRevalidation(seeded)
+    seeded.setGenerationSnapshot({
+      complete: true,
+      runtimeCatalogDigest: result.runtimeCatalogDigest,
+      pendingCatalogDigest: 'e'.repeat(64),
+      externalPendingDigest: '9'.repeat(64),
+      catalogEpoch: result.outcomeCatalogEpoch,
+      catalogMutationReceiptDigest: result.mutationReceiptDigest,
+    })
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT', sealedResult: result },
+    })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+    expect(Object.values(seeded.domain.global.get().behaviorSignatureIndex)).toEqual([
+      expect.objectContaining({ ownerIntentId: seeded.intentId, state: 'RESERVED' }),
+    ])
+  })
+
+  it('re-reads the exact MERGE target after generation and rejects a changed body', async () => {
+    const seeded = await seedAuthorized('MERGE')
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+    seeded.bodies.set(seeded.candidate.candidateId, '# Changed after generation\n')
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.reads).toBe(2)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
+  })
+
+  it('never duplicates the Proposal body when commit workers race or replay', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const first = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const second = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await first.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+
+    await Promise.all([first.runOnce(), second.runOnce()])
+    await Promise.all([first.recover(), second.recover()])
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(1)
+    const lineage = [...seeded.domain.proposalLineages.values()][0]
+    expect(lineage?.origin === 'RUN2SKILL_V2' ? lineage.proposalRevisions : []).toHaveLength(1)
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
+  it('recovers when the Intent authorization was durable but the lease promotion was lost', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    const resultGlobal = seeded.domain.global.get()
+    await exposeSealedResultForRevalidation(seeded)
+    await worker.runOnce()
+    const ready = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    const authorized = ExperienceIntentV2Schema.parse({
+      ...ready,
+      revision: ready.revision - 2,
+      status: 'GENERATING',
+      lineageId: undefined,
+      generation: {
+        ...ready.generation,
+        state: 'PROPOSAL_COMMIT_AUTHORIZED',
+        receipts: ready.generation.receipts.slice(0, 5),
+      },
+    })
+    seeded.domain.proposalLineages.clear()
+    await seeded.domain.table('experience_intents').put(authorized.intentId, authorized)
+    await seeded.domain.global.set(resultGlobal)
+
+    await worker.recover()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(1)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'PROPOSAL_READY', generation: { state: 'PROPOSAL_READY' },
+    })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
+  it('repairs a prepared Proposal mutation from the authoritative body without generating again', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    const resultGlobal = seeded.domain.global.get()
+    const { result } = await exposeSealedResultForRevalidation(seeded)
+    await worker.runOnce()
+    const ready = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    const authorized = ExperienceIntentV2Schema.parse({
+      ...ready,
+      revision: ready.revision - 2,
+      status: 'GENERATING',
+      lineageId: undefined,
+      generation: {
+        ...ready.generation,
+        state: 'PROPOSAL_COMMIT_AUTHORIZED',
+        receipts: ready.generation.receipts.slice(0, 5),
+      },
+    })
+    const authorizationReceipt = authorized.generation.receipts.at(-1)!
+    const mutationId = deriveProposalCatalogMutationIdV2({
+      ownerId: authorized.generation.proposalId!,
+      kind: 'PROPOSAL',
+      inputCatalogEpoch: result.outcomeCatalogEpoch,
+    })
+    await seeded.domain.table('experience_intents').put(authorized.intentId, authorized)
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...resultGlobal,
+      proposalGenerationLease: {
+        ...resultGlobal.proposalGenerationLease!,
+        proposalAuthorizationReceiptDigest: authorizationReceipt.digest,
+        state: 'PROPOSAL_COMMIT_AUTHORIZED',
+      },
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId,
+        ownerId: authorized.generation.proposalId!,
+        kind: 'PROPOSAL',
+        phase: 'PREPARED',
+        preparedAt: new Date(NOW).toISOString(),
+      },
+    }))
+
+    await worker.recover()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(1)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'PROPOSAL_READY', generation: { state: 'PROPOSAL_READY' },
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
   })
 
   it('distinguishes a known call failure from a returned result rejected by the Guard', async () => {
