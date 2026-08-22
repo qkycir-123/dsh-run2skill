@@ -1495,22 +1495,25 @@ export class GenerationWorker {
       const intent = ExperienceIntentV2Schema.parse(current)
       if (intent.generation.leaseId !== leaseId || intent.generation.sealedResult === undefined) return intent
       if (intent.generation.state === 'NEEDS_ATTENTION' && intent.generation.reasonCode === 'STALE_RESULT') return intent
-      if (!['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(intent.generation.state)) return intent
+      if (!['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'PROPOSAL_BODY_COMMITTED'].includes(intent.generation.state)) return intent
       const {
         proposalId: _proposalId,
         revalidationAuthorization: _authorization,
         reasonCode: _reason,
         ...generation
       } = intent.generation
+      const { lineageId: _lineageId, ...intentWithoutLineage } = intent
       return ExperienceIntentV2Schema.parse({
-        ...intent,
+        ...intentWithoutLineage,
         revision: intent.revision + 1,
         status: 'NEEDS_ATTENTION',
         generation: {
           ...generation,
           state: 'NEEDS_ATTENTION',
           reasonCode: 'STALE_RESULT',
-          receipts: generation.receipts.filter(receipt => receipt.kind !== 'PROPOSAL_AUTHORIZED'),
+          receipts: generation.receipts.filter(receipt => ![
+            'PROPOSAL_AUTHORIZED', 'BODY_COMMITTED', 'INDEX_COMMITTED',
+          ].includes(receipt.kind)),
         },
         updatedAt: this.#isoNow(),
       })

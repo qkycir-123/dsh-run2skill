@@ -610,6 +610,72 @@ describe('v2 generation lease worker', () => {
     ])
   })
 
+  it('rolls a prepared body-committed crash back to stale attention when the Runtime guard is unavailable', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    const resultGlobal = seeded.domain.global.get()
+    const { result } = await exposeSealedResultForRevalidation(seeded)
+    await worker.runOnce()
+    const ready = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    const bodyCommitted = ExperienceIntentV2Schema.parse({
+      ...ready,
+      revision: ready.revision - 1,
+      status: 'GENERATING',
+      generation: {
+        ...ready.generation,
+        state: 'PROPOSAL_BODY_COMMITTED',
+        receipts: ready.generation.receipts.slice(0, 6),
+      },
+    })
+    await seeded.domain.table('experience_intents').put(bodyCommitted.intentId, bodyCommitted)
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...resultGlobal,
+      proposalGenerationLease: {
+        ...resultGlobal.proposalGenerationLease!,
+        proposalAuthorizationReceiptDigest: bodyCommitted.generation.receipts[4]!.digest,
+        state: 'PROPOSAL_COMMIT_AUTHORIZED',
+      },
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId: deriveProposalCatalogMutationIdV2({
+          ownerId: bodyCommitted.generation.proposalId!, kind: 'PROPOSAL', inputCatalogEpoch: result.outcomeCatalogEpoch,
+        }),
+        ownerId: bodyCommitted.generation.proposalId!,
+        kind: 'PROPOSAL',
+        phase: 'PREPARED',
+        preparedAt: new Date(NOW).toISOString(),
+      },
+    }))
+    const unavailableCatalog: GenerationCatalogPort = {
+      ...seeded.catalog,
+      commitWithRuntimeCatalogGuard: async () => 'INCOMPLETE',
+    }
+
+    await new GenerationWorker(seeded.domain, {
+      catalog: unavailableCatalog, generator: model, now: () => NOW,
+    }).recover()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    const stale = seeded.domain.experienceIntents.get(seeded.intentId)!
+    expect(stale).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      generation: {
+        state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT',
+      },
+    })
+    expect(stale).not.toHaveProperty('lineageId')
+    expect(stale.generation).not.toHaveProperty('proposalId')
+    expect(stale.generation).not.toHaveProperty('revalidationAuthorization')
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+    expect(Object.values(seeded.domain.global.get().behaviorSignatureIndex)).toEqual([
+      expect.objectContaining({ ownerIntentId: seeded.intentId, state: 'RESERVED' }),
+    ])
+  })
+
   it('rejects a schema-valid prepared Proposal body that differs from the sealed result', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
