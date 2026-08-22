@@ -113,7 +113,8 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
     },
   }
   let quiescenceState: 'VALID' | 'STALE' | 'INCOMPLETE' = 'VALID'
-  const quiescence = { validate: async () => quiescenceState }
+  let quiescenceHook: (() => typeof quiescenceState) | undefined
+  const quiescence = { validate: async () => quiescenceHook?.() ?? quiescenceState }
   return {
     domain,
     intentId: owned.intentId,
@@ -126,6 +127,7 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
     setGenerationSnapshot(next: typeof generationSnapshot) { generationSnapshot = next },
     setSnapshotHook(next: typeof snapshotHook) { snapshotHook = next },
     setQuiescence(next: typeof quiescenceState) { quiescenceState = next },
+    setQuiescenceHook(next: typeof quiescenceHook) { quiescenceHook = next },
   }
 }
 
@@ -455,6 +457,30 @@ describe('v2 generation lease worker', () => {
     expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
       status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
     })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
+  it('rolls back a prepared Proposal body when Session quiescence is lost during the body commit', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = generationWorker(seeded, {
+      catalog: seeded.catalog, generator: model, now: () => NOW,
+    })
+    await worker.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+    seeded.setQuiescenceHook(() => {
+      const intent = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+      return intent.generation.state === 'PROPOSAL_BODY_COMMITTED' ? 'STALE' : 'VALID'
+    })
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
     expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
   })
 

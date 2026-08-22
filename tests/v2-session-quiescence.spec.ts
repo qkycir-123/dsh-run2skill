@@ -23,6 +23,12 @@ function activity(initial = { complete: true, activeAgent: false, activityRevisi
   return port
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(next => { resolve = next })
+  return { promise, resolve }
+}
+
 async function seedWaiting(options: { explicit?: boolean; lastActivityAt?: string } = {}) {
   const domain = createMemoryRun2skillV2Domain()
   const fixture = createMinimalV2Fixtures()
@@ -163,5 +169,74 @@ describe('v2 Session quiescence fence', () => {
     })
     expect(await worker.runOnce()).toBe('IDLE')
     expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
+  })
+
+  it('does not release a waiting Intent when a new Turn arrives during live activity observation', async () => {
+    const seeded = await seedWaiting({ explicit: true })
+    const entered = deferred<void>()
+    const observation = deferred<unknown>()
+    const worker = new SessionQuiescenceCoordinator(seeded.domain, {
+      activity: {
+        observe: async () => {
+          entered.resolve()
+          return observation.promise
+        },
+      },
+      now: () => BASE + 1,
+    })
+    const pending = worker.runOnce()
+    await entered.promise
+    const global = seeded.domain.global.get()
+    await seeded.domain.global.set({
+      ...global,
+      sessions: {
+        ...global.sessions,
+        [seeded.batch.sessionLifecycleKey]: {
+          ...global.sessions[seeded.batch.sessionLifecycleKey]!,
+          observedThroughTurnEndSeq: seeded.batch.lastTurnEndSeq + 1,
+          detectedThroughTurnEndSeq: seeded.batch.lastTurnEndSeq + 1,
+        },
+      },
+    })
+    observation.resolve({ complete: true, activeAgent: false, activityRevision: 'process-a:4' })
+
+    await expect(pending).resolves.toBe('IDLE')
+    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
+  })
+
+  it('returns STALE when durable Turn watermarks change during fence validation', async () => {
+    const seeded = await seedWaiting({ explicit: false })
+    const release = new SessionQuiescenceCoordinator(seeded.domain, {
+      activity: activity(), now: () => BASE + IDLE_MS,
+    })
+    await release.runOnce()
+    const entered = deferred<void>()
+    const observation = deferred<unknown>()
+    const validator = new SessionQuiescenceCoordinator(seeded.domain, {
+      activity: {
+        observe: async () => {
+          entered.resolve()
+          return observation.promise
+        },
+      },
+      now: () => BASE + IDLE_MS,
+    })
+    const pending = validator.validate(seeded.intent.intentId)
+    await entered.promise
+    const global = seeded.domain.global.get()
+    await seeded.domain.global.set({
+      ...global,
+      sessions: {
+        ...global.sessions,
+        [seeded.batch.sessionLifecycleKey]: {
+          ...global.sessions[seeded.batch.sessionLifecycleKey]!,
+          observedThroughTurnEndSeq: seeded.batch.lastTurnEndSeq + 1,
+          detectedThroughTurnEndSeq: seeded.batch.lastTurnEndSeq + 1,
+        },
+      },
+    })
+    observation.resolve({ complete: true, activeAgent: false, activityRevision: 'process-a:4' })
+
+    await expect(pending).resolves.toBe('STALE')
   })
 })

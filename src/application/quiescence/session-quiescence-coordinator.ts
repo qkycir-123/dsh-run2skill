@@ -23,6 +23,7 @@ export interface SessionQuiescenceCoordinatorOptions {
 }
 
 type FenceValidation = 'VALID' | 'STALE' | 'INCOMPLETE'
+type SessionCursor = NonNullable<ReturnType<Run2skillV2Domain['global']['get']>['sessions'][string]>
 
 /**
  * Releases detector READY facts only after the Session tail is fully detected,
@@ -62,7 +63,7 @@ export class SessionQuiescenceCoordinator {
     const intent = parsed.data
     const fence = intent.quiescence
     if (fence.state !== 'SATISFIED') return 'INCOMPLETE'
-    const cursor = this.#global.get().sessions[intent.sessionLifecycleKey]
+    const cursor = this.#cursor(intent.sessionLifecycleKey)
     if (cursor === undefined) return 'INCOMPLETE'
     if (
       cursor.activeBatchId !== undefined
@@ -72,6 +73,9 @@ export class SessionQuiescenceCoordinator {
     ) return 'STALE'
     const activity = await this.#observe(intent.sessionLifecycleKey)
     if (activity === undefined || !activity.complete) return 'INCOMPLETE'
+    const afterActivity = this.#cursor(intent.sessionLifecycleKey)
+    if (afterActivity === undefined) return 'INCOMPLETE'
+    if (!this.#sameCursorFence(cursor, afterActivity)) return 'STALE'
     return activity.activeAgent || activity.activityRevision !== fence.activityRevision ? 'STALE' : 'VALID'
   }
 
@@ -85,7 +89,7 @@ export class SessionQuiescenceCoordinator {
       || batch.data.sessionLifecycleKey !== intent.sessionLifecycleKey
       || batch.data.lastTurnEndSeq !== intent.quiescence.batchLastTurnEndSeq
     ) return false
-    const cursor = this.#global.get().sessions[intent.sessionLifecycleKey]
+    const cursor = this.#cursor(intent.sessionLifecycleKey)
     if (cursor === undefined || cursor.activeBatchId !== undefined) return false
     if (
       cursor.observedThroughTurnEndSeq !== batch.data.lastTurnEndSeq
@@ -99,6 +103,8 @@ export class SessionQuiescenceCoordinator {
     }
     const activity = await this.#observe(intent.sessionLifecycleKey)
     if (activity === undefined || !activity.complete || activity.activeAgent) return false
+    const afterActivity = this.#cursor(intent.sessionLifecycleKey)
+    if (afterActivity === undefined || !this.#sameCursorFence(cursor, afterActivity)) return false
     const satisfiedAt = this.#isoNow()
     const fenceFacts = {
       intentId: intent.intentId,
@@ -162,6 +168,19 @@ export class SessionQuiescenceCoordinator {
     } catch {
       return undefined
     }
+  }
+
+  #cursor(sessionLifecycleKey: string) {
+    return this.#global.get().sessions[sessionLifecycleKey]
+  }
+
+  #sameCursorFence(
+    left: SessionCursor,
+    right: SessionCursor,
+  ): boolean {
+    return left.observedThroughTurnEndSeq === right.observedThroughTurnEndSeq
+      && left.detectedThroughTurnEndSeq === right.detectedThroughTurnEndSeq
+      && left.activeBatchId === right.activeBatchId
   }
 
   #isoNow(): string { return new Date(this.#now()).toISOString() }

@@ -1254,6 +1254,9 @@ export class GenerationWorker {
       if (!await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)) {
         throw new Error('Proposal body was not committed')
       }
+      if (await this.#validateQuiescence(intent.intentId) !== 'VALID') {
+        throw new Error('Session quiescence fence changed during Proposal body commit')
+      }
       committed = await this.#finalizeProposalBody(
         ExperienceIntentV2Schema.parse(this.#intents.get(intent.intentId)),
         facts,

@@ -81,11 +81,38 @@ async function seedReadyIntent() {
   return { domain, batch, intent }
 }
 
+const validQuiescence = { validate: async () => 'VALID' as const }
+
+function ownershipCoordinator(
+  domain: ReturnType<typeof createMemoryRun2skillV2Domain>,
+  options: Omit<ConstructorParameters<typeof AgentFirstOwnershipCoordinator>[1], 'quiescence'>,
+) {
+  return new AgentFirstOwnershipCoordinator(domain, { ...options, quiescence: validQuiescence })
+}
+
 describe('v2 Agent-first ownership coordinator', () => {
+  it('requeues a READY Intent without observing ownership when its Session fence is stale', async () => {
+    const { domain, intent } = await seedReadyIntent()
+    const observation = port(observed())
+    const worker = new AgentFirstOwnershipCoordinator(domain, {
+      observation,
+      quiescence: { validate: async () => 'STALE' },
+      now: () => Date.parse(NOW),
+    })
+
+    expect(await worker.runOnce()).toBe('PROCESSED')
+    expect(observation.calls).toBe(0)
+    expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
+      status: 'WAITING_FOR_QUIESCENCE',
+      quiescence: { state: 'WAITING' },
+      ownership: { state: 'NOT_STARTED' },
+    })
+  })
+
   it('gives Run2Skill ownership only when complete facts prove no Agent Skill activity or manifest change', async () => {
     const { domain, batch, intent } = await seedReadyIntent()
     const observation = port(observed())
-    const worker = new AgentFirstOwnershipCoordinator(domain, { observation, now: () => Date.parse(NOW) })
+    const worker = ownershipCoordinator(domain, { observation, now: () => Date.parse(NOW) })
 
     expect(await worker.runOnce()).toBe('PROCESSED')
     expect(await worker.runOnce()).toBe('IDLE')
@@ -111,7 +138,7 @@ describe('v2 Agent-first ownership coordinator', () => {
       endManifest: { rootManifestDigest: '9'.repeat(64), runtimeCatalogDigest: '8'.repeat(64), complete: true },
       agentActivity: 'WRITE_SUCCEEDED', changedCandidates: [candidate],
     }))
-    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    await ownershipCoordinator(domain, { observation }).runOnce()
 
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'RESOLVED_BY_AGENT',
@@ -132,7 +159,7 @@ describe('v2 Agent-first ownership coordinator', () => {
     })],
   ])('stops at confirmation for %s instead of granting ownership', async (reasonCode, evidence) => {
     const { domain, intent } = await seedReadyIntent()
-    await new AgentFirstOwnershipCoordinator(domain, { observation: port(evidence) }).runOnce()
+    await ownershipCoordinator(domain, { observation: port(evidence) }).runOnce()
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { state: 'NEEDS_CONFIRMATION', reasonCode },
     })
@@ -145,7 +172,7 @@ describe('v2 Agent-first ownership coordinator', () => {
       batchManifestBaseline: { ...batch.batchManifestBaseline, complete: false },
     }))
     const observation = port(observed())
-    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    await ownershipCoordinator(domain, { observation }).runOnce()
     expect(observation.calls).toBe(0)
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'BASELINE_INCOMPLETE' },
@@ -164,7 +191,7 @@ describe('v2 Agent-first ownership coordinator', () => {
     expect(SessionBatchV2Schema.safeParse(invalidBatch).success).toBe(false)
     await domain.table('session_batches').put(batch.batchId, invalidBatch)
     const observation = port(observed({ observedAt: '2031-01-01T00:00:00.000Z' }))
-    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    await ownershipCoordinator(domain, { observation }).runOnce()
     expect(observation.calls).toBe(0)
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'BASELINE_TIME_INVALID' },
@@ -182,7 +209,7 @@ describe('v2 Agent-first ownership coordinator', () => {
         writeAttribution: 'AGENT_WRITE_SUCCEEDED', intentBinding: 'UNKNOWN',
       }],
     }))
-    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    await ownershipCoordinator(domain, { observation }).runOnce()
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'CANDIDATE_READBACK_INCOMPLETE' },
     })
@@ -191,7 +218,7 @@ describe('v2 Agent-first ownership coordinator', () => {
   it('rejects stale evidence observed before the durable batch end', async () => {
     const { domain, intent } = await seedReadyIntent()
     const observation = port(observed({ observedAt: '2000-01-01T00:00:00.000Z' }))
-    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    await ownershipCoordinator(domain, { observation }).runOnce()
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'OBSERVATION_INVALID' },
     })
@@ -212,7 +239,7 @@ describe('v2 Agent-first ownership coordinator', () => {
         baseline: batch.batchManifestBaseline,
       })
       const observation = port(observed({ inputDigest: replayInputDigest }), { preserveBinding: true })
-      await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+      await ownershipCoordinator(domain, { observation }).runOnce()
       expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
         status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'OBSERVATION_INVALID' },
       })
@@ -246,7 +273,7 @@ describe('v2 Agent-first ownership coordinator', () => {
       updatedAt: NOW,
     }))
     const observation = port(observed({ agentActivity: 'AMBIGUOUS' }))
-    const worker = new AgentFirstOwnershipCoordinator(domain, { observation })
+    const worker = ownershipCoordinator(domain, { observation })
     await worker.recover()
     expect(observation.calls).toBe(0)
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({ status: 'RUN2SKILL_OWNED' })
@@ -267,7 +294,7 @@ describe('v2 Agent-first ownership coordinator', () => {
       updatedAt: NOW,
     }))
     const observation = port(observed())
-    await new AgentFirstOwnershipCoordinator(domain, { observation }).recover()
+    await ownershipCoordinator(domain, { observation }).recover()
     expect(observation.calls).toBe(0)
     expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'OBSERVATION_OUTCOME_UNKNOWN' },
@@ -277,8 +304,8 @@ describe('v2 Agent-first ownership coordinator', () => {
   it('claims once when multiple workers race and therefore observes only once', async () => {
     const { domain, intent } = await seedReadyIntent()
     const observation = port(observed())
-    const first = new AgentFirstOwnershipCoordinator(domain, { observation })
-    const second = new AgentFirstOwnershipCoordinator(domain, { observation })
+    const first = ownershipCoordinator(domain, { observation })
+    const second = ownershipCoordinator(domain, { observation })
     await Promise.all([first.runOnce(), second.runOnce()])
     expect(observation.calls).toBe(1)
     expect(domain.experienceIntents.get(intent.intentId)?.status).toBe('RUN2SKILL_OWNED')

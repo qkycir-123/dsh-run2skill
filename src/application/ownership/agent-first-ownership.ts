@@ -22,6 +22,9 @@ export interface OwnershipObservationPort {
 
 export interface AgentFirstOwnershipOptions {
   readonly observation: OwnershipObservationPort
+  readonly quiescence: {
+    validate(intentId: string): Promise<'VALID' | 'STALE' | 'INCOMPLETE'>
+  }
   readonly now?: () => number
 }
 
@@ -40,12 +43,14 @@ export class AgentFirstOwnershipCoordinator {
   readonly #intents
   readonly #batches
   readonly #observation: OwnershipObservationPort
+  readonly #quiescence: AgentFirstOwnershipOptions['quiescence']
   readonly #now: () => number
 
   constructor(domain: Run2skillV2Domain, options: AgentFirstOwnershipOptions) {
     this.#intents = domain.table('experience_intents')
     this.#batches = domain.table('session_batches')
     this.#observation = options.observation
+    this.#quiescence = options.quiescence
     this.#now = options.now ?? Date.now
   }
 
@@ -55,6 +60,10 @@ export class AgentFirstOwnershipCoordinator {
       .filter(intent => intent.status === 'READY')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.ordinal - right.ordinal)[0]
     if (candidate === undefined) return 'IDLE'
+    if (await this.#validateQuiescence(candidate.intentId) !== 'VALID') {
+      await this.#requeueForQuiescence(candidate.intentId)
+      return 'PROCESSED'
+    }
 
     const claimId = deriveOwnershipClaimIdV2({ intentId: candidate.intentId, intentRevision: candidate.revision })
     let didClaim = false
@@ -76,6 +85,11 @@ export class AgentFirstOwnershipCoordinator {
     })
     if (!didClaim || claimed.status !== 'OWNERSHIP_ARBITRATING' || claimed.ownership.claimId !== claimId) return 'PROCESSED'
 
+    if (await this.#validateQuiescence(claimed.intentId) !== 'VALID') {
+      await this.#requeueForQuiescence(claimed.intentId)
+      return 'PROCESSED'
+    }
+
     await this.#observeAndFinalize(claimed)
     return 'PROCESSED'
   }
@@ -86,6 +100,10 @@ export class AgentFirstOwnershipCoordinator {
       .filter(intent => intent.status === 'OWNERSHIP_ARBITRATING')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.ordinal - right.ordinal)
     for (const intent of claimed) {
+      if (await this.#validateQuiescence(intent.intentId) !== 'VALID') {
+        await this.#requeueForQuiescence(intent.intentId)
+        continue
+      }
       if (intent.ownership.evidence === undefined) {
         await this.#sealEvidence(intent, unavailable('OBSERVATION_OUTCOME_UNKNOWN'))
       } else if (intent.ownership.evidence.status === 'OBSERVED') {
@@ -143,8 +161,16 @@ export class AgentFirstOwnershipCoordinator {
     } catch {
       evidence = unavailable('OBSERVATION_FAILED')
     }
+    if (await this.#validateQuiescence(claimed.intentId) !== 'VALID') {
+      await this.#requeueForQuiescence(claimed.intentId)
+      return
+    }
     await this.#sealEvidence(boundClaim, evidence)
     if (evidence.status === 'OBSERVED') await this.#recordEndObservation(batch.batchId, evidence)
+    if (await this.#validateQuiescence(claimed.intentId) !== 'VALID') {
+      await this.#requeueForQuiescence(claimed.intentId)
+      return
+    }
     await this.#finalize(claimed.intentId)
   }
 
@@ -347,6 +373,33 @@ export class AgentFirstOwnershipCoordinator {
 
   #baselineTimeIsInvalid(batch: SessionBatchV2): boolean {
     return Date.parse(batch.batchManifestBaseline.observedAt) > Date.parse(batch.createdAt)
+  }
+
+  async #validateQuiescence(intentId: string): Promise<'VALID' | 'STALE' | 'INCOMPLETE'> {
+    try {
+      return await this.#quiescence.validate(intentId)
+    } catch {
+      return 'INCOMPLETE'
+    }
+  }
+
+  async #requeueForQuiescence(intentId: string): Promise<void> {
+    await this.#intents.update(intentId, current => {
+      const intent = ExperienceIntentV2Schema.parse(current)
+      if (!['READY', 'OWNERSHIP_ARBITRATING'].includes(intent.status)) return intent
+      return ExperienceIntentV2Schema.parse({
+        ...intent,
+        revision: intent.revision + 1,
+        status: 'WAITING_FOR_QUIESCENCE',
+        quiescence: {
+          state: 'WAITING',
+          batchLastTurnEndSeq: intent.quiescence.batchLastTurnEndSeq,
+          requiredIdleMs: intent.quiescence.requiredIdleMs,
+        },
+        ownership: { state: 'NOT_STARTED' },
+        updatedAt: this.#isoNow(),
+      })
+    })
   }
 
   #isoNow(): string {
