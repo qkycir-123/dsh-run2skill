@@ -6,7 +6,13 @@ import {
   type CompleteRecallCatalogPort,
   type RecallCatalogSnapshot,
 } from '../src/application/recall/index.js'
-import { deriveCatalogScanCallIdV2, ExperienceIntentV2Schema, SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import {
+  deriveCatalogScanBindingDigestV2,
+  deriveCatalogScanCallIdV2,
+  deriveCatalogScanPlanDigestV2,
+  ExperienceIntentV2Schema,
+  SessionBatchV2Schema,
+} from '../src/domain/v2/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
@@ -208,12 +214,13 @@ describe('v2 complete Catalog recall', () => {
 
   it('replaces untrusted provider and source text with path-free opaque labels before model or durable use', async () => {
     const { domain, intent } = await seedOwnedIntent()
+    const noncanonicalProviderLabel = ['sk', 'live', '51QkycirSyntheticValue123456789'].join('_')
     const unsafeFacts = {
       name: 'private-workflow',
       description: 'Reusable private workflow',
       whenToUse: 'Use for a private workflow',
-      provider: 'token=private-credential-material',
-      source: 'C:\\Users\\alice\\private\\skills',
+      provider: noncanonicalProviderLabel,
+      source: 'private-acme-root',
       scope: 'PROJECT' as const,
       writable: false,
       rootIdentityDigest: '7'.repeat(64),
@@ -236,9 +243,10 @@ describe('v2 complete Catalog recall', () => {
 
     const recalled = domain.experienceIntents.get(intent.intentId)!
     expect(modelSummary).not.toMatchObject({ provider: unsafeFacts.provider, source: unsafeFacts.source })
-    expect(JSON.stringify(modelSummary)).not.toContain('alice')
-    expect(JSON.stringify(recalled)).not.toContain('alice')
-    expect(JSON.stringify(recalled)).not.toContain('private-credential-material')
+    expect(JSON.stringify(modelSummary)).not.toContain(noncanonicalProviderLabel)
+    expect(JSON.stringify(modelSummary)).not.toContain('private-acme-root')
+    expect(JSON.stringify(recalled)).not.toContain(noncanonicalProviderLabel)
+    expect(JSON.stringify(recalled)).not.toContain('private-acme-root')
     expect(recalled).toMatchObject({
       recall: { candidates: [{
         candidateId: item.candidateId,
@@ -248,6 +256,50 @@ describe('v2 complete Catalog recall', () => {
         },
       }] },
     })
+  })
+
+  it('rejects forged scan revisions and classifications that do not match the sealed model output', async () => {
+    const { domain, intent } = await seedOwnedIntent()
+    const item = summary(1)
+    const model = classifier(async input => ({
+      classifications: input.summaries.map(candidate => ({
+        candidateId: candidate.candidateId,
+        classification: 'UNRELATED' as const,
+      })),
+    }))
+    await new CompleteCatalogRecallWorker(domain, {
+      catalog: catalog(snapshot([item])), classifier: model,
+    }).runOnce()
+    const recalled = domain.experienceIntents.get(intent.intentId)!
+
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...recalled,
+      recall: { ...recalled.recall, scanBasisRevision: recalled.revision + 1 },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...recalled,
+      recall: {
+        ...recalled.recall,
+        scanPages: recalled.recall.scanPages?.map(page => ({ ...page, inputDigest: '9'.repeat(64) })),
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...recalled,
+      recall: {
+        ...recalled.recall,
+        summaryClassifications: recalled.recall.summaryClassifications?.map(classification => ({
+          ...classification, classification: 'RELEVANT',
+        })),
+        candidates: [{
+          candidateId: item.candidateId,
+          summary: {
+            name: item.name, description: item.description, whenToUse: item.whenToUse,
+            provider: item.provider, source: item.source, scope: item.scope, writable: item.writable,
+          },
+          classification: 'RELEVANT', capability: 'AVAILABLE', bodyDigest: '8'.repeat(64),
+        }],
+      },
+    }).success).toBe(false)
   })
 
   it('reads 8940-byte and 14/20 KiB candidates completely when each fits the route envelope', async () => {
@@ -340,20 +392,35 @@ describe('v2 complete Catalog recall', () => {
   it('marks a crash-left reserved scan call outcome unknown without replaying it', async () => {
     const { domain, intent } = await seedOwnedIntent()
     const item = summary(1)
+    const scanBasisRevision = intent.revision + 1
+    const scanBindingDigest = deriveCatalogScanBindingDigestV2({
+      intentId: intent.intentId, scanBasisRevision,
+      provider: 'deepseek-official', model: 'deepseek-chat', policyVersion: 'catalog-scan-v1',
+    })
+    const scanPlanDigest = deriveCatalogScanPlanDigestV2({
+      policyVersion: 'catalog-scan-v1',
+      runtimeCatalogDigest: '1'.repeat(64), pendingCatalogDigest: '2'.repeat(64),
+      catalogEpoch: 4, catalogMutationReceiptDigest: '3'.repeat(64), scanBindingDigest,
+      pages: [{ ordinal: 1, inputDigest: '6'.repeat(64) }],
+    })
     await domain.table('experience_intents').put(intent.intentId, ExperienceIntentV2Schema.parse({
       ...intent,
-      revision: intent.revision + 1,
+      revision: intent.revision + 3,
       status: 'RECALLING',
       recall: {
         state: 'SCANNING', complete: false, summaryScanComplete: false, candidates: [],
         runtimeCatalogDigest: '1'.repeat(64), pendingCatalogDigest: '2'.repeat(64), catalogEpoch: 4,
-        catalogMutationReceiptDigest: '3'.repeat(64), scanBasisRevision: intent.revision + 1,
-        scanPlanDigest: '4'.repeat(64), scanPageCount: 1, scanSummaryCount: 1,
+        catalogMutationReceiptDigest: '3'.repeat(64), scanBasisRevision,
+        scanRouteProvider: 'deepseek-official', scanRouteModel: 'deepseek-chat',
+        scanPolicyVersion: 'catalog-scan-v1',
+        scanBindingDigest,
+        scanPlanDigest, scanPageCount: 1, scanSummaryCount: 1,
+        scanPages: [{ ordinal: 1, itemCount: 1, inputDigest: '6'.repeat(64) }],
         summaryClassifications: [],
       },
       stageCalls: [{
-        stage: 'CATALOG_SCAN', intentRevision: intent.revision + 1,
-        callId: deriveCatalogScanCallIdV2(intent.intentId, '4'.repeat(64), 1), ordinal: 1, itemCount: 1,
+        stage: 'CATALOG_SCAN', intentRevision: intent.revision + 2,
+        callId: deriveCatalogScanCallIdV2(intent.intentId, scanPlanDigest, 1), ordinal: 1, itemCount: 1,
         inputDigest: '6'.repeat(64),
         provider: 'deepseek-official', model: 'deepseek-chat', policyVersion: 'catalog-scan-v1', outcome: 'RESERVED',
       }],

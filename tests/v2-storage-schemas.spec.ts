@@ -7,6 +7,9 @@ import {
   SessionBatchV2Schema,
   TurnObservationV2Schema,
   deriveBehaviorSignatureIndexKeyV2,
+  deriveCatalogScanBindingDigestV2,
+  deriveCatalogScanCallIdV2,
+  deriveCatalogScanPlanDigestV2,
   deriveTurnObservationContentDigestV2,
 } from '../src/domain/v2/index.js'
 import {
@@ -56,17 +59,47 @@ describe('run2skill_v2 storage contract', () => {
     expect(ExperienceIntentV2Schema.parse(fixture.proposalReadyIntent)).toEqual(fixture.proposalReadyIntent)
     expect(ExperienceIntentV2Schema.parse(fixture.staleAttentionIntent)).toEqual(fixture.staleAttentionIntent)
     expect(ExperienceIntentV2Schema.parse(fixture.staleRefreshIntent)).toEqual(fixture.staleRefreshIntent)
+    const refreshedScanBindingDigest = deriveCatalogScanBindingDigestV2({
+        intentId: fixture.staleRefreshIntent.intentId,
+        scanBasisRevision: fixture.staleRefreshIntent.revision,
+        selfExclusionDigest: fixture.staleRefreshIntent.recall.selfExclusion.selfExclusionDigest,
+        provider: fixture.proposalReadyIntent.recall.scanRouteProvider,
+        model: fixture.proposalReadyIntent.recall.scanRouteModel,
+        policyVersion: fixture.proposalReadyIntent.recall.scanPolicyVersion,
+    })
+    const refreshedScanPlanDigest = deriveCatalogScanPlanDigestV2({
+      policyVersion: fixture.proposalReadyIntent.recall.scanPolicyVersion,
+      runtimeCatalogDigest: fixture.proposalReadyIntent.recall.runtimeCatalogDigest,
+      pendingCatalogDigest: 'f'.repeat(64),
+      catalogEpoch: fixture.staleRefreshIntent.duplicateBarrier.outcomeCatalogEpoch,
+      catalogMutationReceiptDigest: fixture.staleRefreshIntent.duplicateBarrier.mutationReceiptDigest,
+      scanBindingDigest: refreshedScanBindingDigest,
+      pages: [{ ordinal: 1, inputDigest: fixture.proposalReadyIntent.stageCalls[0]!.inputDigest }],
+    })
+    const refreshedScanCallId = deriveCatalogScanCallIdV2(
+      fixture.staleRefreshIntent.intentId, refreshedScanPlanDigest, 1,
+    )
     const refreshedRecall = {
       ...fixture.proposalReadyIntent.recall,
+      scanBasisRevision: fixture.staleRefreshIntent.revision,
+      scanBindingDigest: refreshedScanBindingDigest,
+      scanPlanDigest: refreshedScanPlanDigest,
       pendingCatalogDigest: 'f'.repeat(64),
       catalogEpoch: fixture.staleRefreshIntent.duplicateBarrier.outcomeCatalogEpoch,
       catalogMutationReceiptDigest: fixture.staleRefreshIntent.duplicateBarrier.mutationReceiptDigest,
       selfExclusion: fixture.staleRefreshIntent.recall.selfExclusion,
+      summaryClassifications: fixture.proposalReadyIntent.recall.summaryClassifications.map(item => ({
+        ...item, callId: refreshedScanCallId,
+      })),
     }
     const coverageReadyAfterRefresh = {
       ...fixture.staleRefreshIntent,
+      revision: fixture.staleRefreshIntent.revision + 3,
       status: 'COVERAGE_READY' as const,
       recall: refreshedRecall,
+      stageCalls: fixture.staleRefreshIntent.stageCalls.map(call => call.stage === 'CATALOG_SCAN'
+        ? { ...call, intentRevision: fixture.staleRefreshIntent.revision + 1, callId: refreshedScanCallId }
+        : call),
     }
     expect(ExperienceIntentV2Schema.parse(coverageReadyAfterRefresh)).toEqual(coverageReadyAfterRefresh)
     expect(ExperienceIntentV2Schema.parse({

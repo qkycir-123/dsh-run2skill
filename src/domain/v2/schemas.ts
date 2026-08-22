@@ -436,6 +436,60 @@ export function deriveCatalogScanCallIdV2(
   return `call_${sha256Utf8(canonicalJson({ intentId, scanPlanDigest, ordinal }))}`
 }
 
+export interface CatalogScanBindingFactsV2 {
+  readonly intentId: string
+  readonly scanBasisRevision: number
+  readonly selfExclusionDigest?: string | undefined
+  readonly provider: string
+  readonly model: string
+  readonly policyVersion: string
+}
+
+export function deriveCatalogScanBindingDigestV2(facts: CatalogScanBindingFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    intentId: facts.intentId,
+    scanBasisRevision: facts.scanBasisRevision,
+    selfExclusionDigest: facts.selfExclusionDigest ?? null,
+    provider: facts.provider,
+    model: facts.model,
+    policyVersion: facts.policyVersion,
+  }))
+}
+
+export function deriveCatalogScanOutputDigestV2(
+  classifications: readonly { readonly candidateId: string; readonly classification: 'RELEVANT' | 'POSSIBLE' | 'UNRELATED' }[],
+): string {
+  return sha256Utf8(canonicalJson({
+    classifications: classifications
+      .map(item => ({ candidateId: item.candidateId, classification: item.classification }))
+      .sort((left, right) => left.candidateId.localeCompare(right.candidateId)),
+  }))
+}
+
+export interface CatalogScanPlanFactsV2 {
+  readonly policyVersion: string
+  readonly runtimeCatalogDigest: string
+  readonly pendingCatalogDigest: string
+  readonly catalogEpoch: number
+  readonly catalogMutationReceiptDigest: string
+  readonly scanBindingDigest: string
+  readonly pages: readonly { readonly ordinal: number; readonly inputDigest: string }[]
+}
+
+export function deriveCatalogScanPlanDigestV2(facts: CatalogScanPlanFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    policyVersion: facts.policyVersion,
+    catalogs: {
+      runtimeCatalogDigest: facts.runtimeCatalogDigest,
+      pendingCatalogDigest: facts.pendingCatalogDigest,
+      catalogEpoch: facts.catalogEpoch,
+      catalogMutationReceiptDigest: facts.catalogMutationReceiptDigest,
+    },
+    scanBindingDigest: facts.scanBindingDigest,
+    pages: [...facts.pages].sort((left, right) => left.ordinal - right.ordinal),
+  }))
+}
+
 export function deriveOwnershipEvidenceDigestV2(evidence: OwnershipEvidenceV2): string {
   return sha256Utf8(canonicalJson(evidence))
 }
@@ -584,9 +638,18 @@ export const ExperienceIntentV2Schema = z.object({
     catalogEpoch: safeNonNegativeInteger.optional(),
     catalogMutationReceiptDigest: sha256Hex.optional(),
     scanBasisRevision: positiveSafeInteger.optional(),
+    scanRouteProvider: identity.optional(),
+    scanRouteModel: identity.optional(),
+    scanPolicyVersion: identity.optional(),
+    scanBindingDigest: sha256Hex.optional(),
     scanPlanDigest: sha256Hex.optional(),
     scanPageCount: safeNonNegativeInteger.optional(),
     scanSummaryCount: safeNonNegativeInteger.optional(),
+    scanPages: z.array(z.object({
+      ordinal: positiveSafeInteger,
+      itemCount: positiveSafeInteger,
+      inputDigest: sha256Hex,
+    }).strict()).max(32).optional(),
     summaryClassifications: z.array(z.object({
       candidateId: identity,
       summaryDigest: sha256Hex,
@@ -902,9 +965,14 @@ export const ExperienceIntentV2Schema = z.object({
     || value.recall.catalogEpoch === undefined
     || value.recall.catalogMutationReceiptDigest === undefined
     || value.recall.scanBasisRevision === undefined
+    || value.recall.scanRouteProvider === undefined
+    || value.recall.scanRouteModel === undefined
+    || value.recall.scanPolicyVersion === undefined
+    || value.recall.scanBindingDigest === undefined
     || value.recall.scanPlanDigest === undefined
     || value.recall.scanPageCount === undefined
     || value.recall.scanSummaryCount === undefined
+    || value.recall.scanPages === undefined
     || value.recall.summaryClassifications === undefined
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Complete recall requires full Catalog and summary-scan facts' })
   if (value.recall.state === 'NOT_STARTED' && (
@@ -912,9 +980,14 @@ export const ExperienceIntentV2Schema = z.object({
     || value.recall.candidates.length > 0
     || (value.recall.summaryClassifications?.length ?? 0) > 0
     || value.recall.scanBasisRevision !== undefined
+    || value.recall.scanRouteProvider !== undefined
+    || value.recall.scanRouteModel !== undefined
+    || value.recall.scanPolicyVersion !== undefined
+    || value.recall.scanBindingDigest !== undefined
     || value.recall.scanPlanDigest !== undefined
     || value.recall.scanPageCount !== undefined
     || value.recall.scanSummaryCount !== undefined
+    || value.recall.scanPages !== undefined
     || value.recall.runtimeCatalogDigest !== undefined
     || value.recall.pendingCatalogDigest !== undefined
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Unstarted recall cannot contain Catalog results' })
@@ -923,12 +996,60 @@ export const ExperienceIntentV2Schema = z.object({
   }
   const scanPlanFieldPresence = [
     value.recall.scanBasisRevision,
+    value.recall.scanRouteProvider,
+    value.recall.scanRouteModel,
+    value.recall.scanPolicyVersion,
+    value.recall.scanBindingDigest,
     value.recall.scanPlanDigest,
     value.recall.scanPageCount,
     value.recall.scanSummaryCount,
+    value.recall.scanPages,
   ].map(item => item !== undefined)
   if (scanPlanFieldPresence.some(Boolean) && !scanPlanFieldPresence.every(Boolean)) {
     context.addIssue({ code: 'custom', path: ['recall'], message: 'Catalog scan plan must bind its exact Intent revision and complete size' })
+  }
+  if (
+    value.recall.scanBasisRevision !== undefined
+    && (
+      value.recall.scanBasisRevision >= value.revision
+      || value.recall.scanBindingDigest !== deriveCatalogScanBindingDigestV2({
+        intentId: value.intentId,
+        scanBasisRevision: value.recall.scanBasisRevision,
+        selfExclusionDigest: value.recall.selfExclusion?.selfExclusionDigest,
+        provider: value.recall.scanRouteProvider!,
+        model: value.recall.scanRouteModel!,
+        policyVersion: value.recall.scanPolicyVersion!,
+      })
+    )
+  ) context.addIssue({ code: 'custom', path: ['recall', 'scanBindingDigest'], message: 'Catalog scan binding must match an existing Intent revision and exact route' })
+  const scanPages = value.recall.scanPages ?? []
+  if (
+    value.recall.scanPlanDigest !== undefined
+    && value.recall.scanPageCount !== undefined
+    && value.recall.scanSummaryCount !== undefined
+    && value.recall.runtimeCatalogDigest !== undefined
+    && value.recall.pendingCatalogDigest !== undefined
+    && value.recall.catalogEpoch !== undefined
+    && value.recall.catalogMutationReceiptDigest !== undefined
+    && value.recall.scanBindingDigest !== undefined
+    && value.recall.scanPolicyVersion !== undefined
+  ) {
+    const orderedPages = [...scanPages].sort((left, right) => left.ordinal - right.ordinal)
+    const expectedPlanDigest = deriveCatalogScanPlanDigestV2({
+      policyVersion: value.recall.scanPolicyVersion,
+      runtimeCatalogDigest: value.recall.runtimeCatalogDigest,
+      pendingCatalogDigest: value.recall.pendingCatalogDigest,
+      catalogEpoch: value.recall.catalogEpoch,
+      catalogMutationReceiptDigest: value.recall.catalogMutationReceiptDigest,
+      scanBindingDigest: value.recall.scanBindingDigest,
+      pages: orderedPages.map(page => ({ ordinal: page.ordinal, inputDigest: page.inputDigest })),
+    })
+    if (
+      orderedPages.length !== value.recall.scanPageCount
+      || orderedPages.reduce((total, page) => total + page.itemCount, 0) !== value.recall.scanSummaryCount
+      || orderedPages.some((page, index) => page.ordinal !== index + 1)
+      || expectedPlanDigest !== value.recall.scanPlanDigest
+    ) context.addIssue({ code: 'custom', path: ['recall', 'scanPlanDigest'], message: 'Catalog scan plan must be derived from the exact durable pages and Catalog facts' })
   }
   for (const [index, candidate] of value.recall.candidates.entries()) {
     if (candidate.classification === 'UNRELATED') {
@@ -1200,13 +1321,23 @@ export const ExperienceIntentV2Schema = z.object({
   if (value.stageCalls.some(call => (call.stage === 'CATALOG_SCAN') !== (call.itemCount !== undefined))) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Only Catalog scan calls require an exact page item count' })
   }
-  const currentCatalogScanCallIds = value.recall.scanPlanDigest === undefined || value.recall.scanPageCount === undefined
-    ? new Set<string>()
-    : new Set(Array.from(
-      { length: value.recall.scanPageCount },
-      (_, index) => deriveCatalogScanCallIdV2(value.intentId, value.recall.scanPlanDigest!, index + 1),
-    ))
-  const currentCatalogScanCalls = callsFor('CATALOG_SCAN').filter(call => currentCatalogScanCallIds.has(call.callId))
+  const currentCatalogScanCalls = value.recall.scanBasisRevision === undefined
+    ? []
+    : callsFor('CATALOG_SCAN').filter(call => call.intentRevision > value.recall.scanBasisRevision!)
+  if (currentCatalogScanCalls.some(call => (
+    call.provider !== value.recall.scanRouteProvider
+    || call.model !== value.recall.scanRouteModel
+    || call.policyVersion !== value.recall.scanPolicyVersion
+  ))) context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Current Catalog scan calls must bind the exact scan revision, route, and policy' })
+  if (currentCatalogScanCalls.some(call => {
+    const page = scanPages.find(item => item.ordinal === call.ordinal)
+    return page === undefined
+      || call.inputDigest !== page.inputDigest
+      || call.itemCount !== page.itemCount
+      || call.callId !== deriveCatalogScanCallIdV2(value.intentId, value.recall.scanPlanDigest!, call.ordinal)
+  }) || new Set(currentCatalogScanCalls.map(call => call.ordinal)).size !== currentCatalogScanCalls.length) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Current Catalog scan calls must match unique durable plan pages' })
+  }
   const summaryClassifications = value.recall.summaryClassifications ?? []
   const classificationIds = summaryClassifications.map(item => item.candidateId)
   if (new Set(classificationIds).size !== classificationIds.length) {
@@ -1225,14 +1356,18 @@ export const ExperienceIntentV2Schema = z.object({
     })
   }
   for (const call of currentCatalogScanCalls) {
-    const classificationCount = summaryClassifications.filter(item => item.callId === call.callId).length
-    if (call.outcome === 'SUCCEEDED' ? classificationCount !== call.itemCount : classificationCount !== 0) {
+    const pageClassifications = summaryClassifications.filter(item => item.callId === call.callId)
+    const sealedSuccess = call.outcome === 'SUCCEEDED' && call.failureCode === undefined
+    if (sealedSuccess ? pageClassifications.length !== call.itemCount : pageClassifications.length !== 0) {
       context.addIssue({ code: 'custom', path: ['recall', 'summaryClassifications'], message: 'Every current Catalog page summary must be classified exactly once' })
+    }
+    if (sealedSuccess && call.outputDigest !== deriveCatalogScanOutputDigestV2(pageClassifications)) {
+      context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Catalog scan output digest must seal the exact canonical classifications' })
     }
   }
   if (value.recall.state === 'COMPLETE' && (
     currentCatalogScanCalls.length !== value.recall.scanPageCount
-    || currentCatalogScanCalls.some(call => call.outcome !== 'SUCCEEDED')
+    || currentCatalogScanCalls.some(call => call.outcome !== 'SUCCEEDED' || call.failureCode !== undefined)
     || currentCatalogScanCalls.reduce((total, call) => total + (call.itemCount ?? 0), 0) !== value.recall.scanSummaryCount
     || summaryClassifications.length !== value.recall.scanSummaryCount
     || summaryClassifications.filter(item => item.classification !== 'UNRELATED').length !== value.recall.candidates.length

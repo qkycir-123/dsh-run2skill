@@ -4,7 +4,10 @@ import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { preprocessPersistentText } from '../../domain/observe/redaction.js'
 import {
+  deriveCatalogScanBindingDigestV2,
   deriveCatalogScanCallIdV2,
+  deriveCatalogScanOutputDigestV2,
+  deriveCatalogScanPlanDigestV2,
   ExperienceIntentV2Schema,
   SessionBatchV2Schema,
   type ExperienceIntentV2,
@@ -128,11 +131,16 @@ interface ScanPlan {
   readonly pages: readonly ScanPage[]
 }
 
-const safeCatalogLabel = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/
+const canonicalCatalogLabels = Object.freeze({
+  provider: new Set(['filesystem', 'run2skill-pending']),
+  source: new Set([
+    'project-dsh', 'project-agents', 'custom', 'user-dsh', 'user-agents', 'bundled',
+    'active-proposal', 'sealed-generation-result', 'generation-barrier', 'legacy-proposal',
+  ]),
+})
 
 function projectCatalogLabel(kind: 'provider' | 'source', value: string): string {
-  const redacted = preprocessPersistentText(value).text
-  return redacted === value && safeCatalogLabel.test(value)
+  return canonicalCatalogLabels[kind].has(value)
     ? value
     : `${kind}-${sha256Utf8(value)}`
 }
@@ -274,7 +282,7 @@ export class CompleteCatalogRecallWorker {
       return
     }
     if (intent.recall.scanPlanDigest === undefined) {
-      intent = await this.#commitPlan(intentId, snapshot, plan)
+      intent = await this.#commitPlan(intentId, batch, snapshot, plan)
     } else if (!this.#snapshotMatchesIntent(snapshot, intent) || intent.recall.scanPlanDigest !== plan.digest) {
       await this.#commitIncomplete(intentId, 'CATALOG_CHANGED')
       return
@@ -305,12 +313,12 @@ export class CompleteCatalogRecallWorker {
         await this.#finishFailedCall(intentId, callId(intent.intentId, plan.digest, page.ordinal), 'CATALOG_SCAN_FAILED')
         return
       }
-      const outputDigest = this.#outputDigest(raw)
       const parsed = classifierOutputSchema.safeParse(raw)
       if (!parsed.success || !this.#classificationsMatchPage(parsed.data.classifications, page)) {
-        await this.#finishInvalidCall(intentId, callId(intent.intentId, plan.digest, page.ordinal), outputDigest)
+        await this.#finishInvalidCall(intentId, callId(intent.intentId, plan.digest, page.ordinal), this.#outputDigest(raw))
         return
       }
+      const outputDigest = deriveCatalogScanOutputDigestV2(parsed.data.classifications)
       await this.#finishSuccessfulPage(intentId, page, plan, parsed.data.classifications, outputDigest)
     }
 
@@ -353,15 +361,19 @@ export class CompleteCatalogRecallWorker {
 
   #plan(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot): ScanPlan | undefined {
     const summaries = [...snapshot.summaries].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
-    const scanBinding = {
+    const scanBindingDigest = deriveCatalogScanBindingDigestV2({
+      intentId: intent.intentId,
       scanBasisRevision: intent.recall.scanBasisRevision ?? intent.revision,
-      selfExclusionDigest: intent.recall.selfExclusion?.selfExclusionDigest ?? null,
-    }
+      selfExclusionDigest: intent.recall.selfExclusion?.selfExclusionDigest,
+      provider: batch.routeSnapshot.provider,
+      model: batch.routeSnapshot.model,
+      policyVersion: this.#policy.policyVersion,
+    })
     const fixedBytes = Buffer.byteLength(canonicalJson({
       intent: this.#intentProjection(intent),
       route: batch.routeSnapshot,
       catalogs: this.#catalogFacts(snapshot),
-      scanBinding,
+      scanBindingDigest,
       protocol: this.#policy.policyVersion,
     }), 'utf8') + this.#policy.catalogScanReserveBytes
     const pageBudget = batch.routeSnapshot.maxInputBytes - fixedBytes
@@ -390,7 +402,7 @@ export class CompleteCatalogRecallWorker {
           intent: this.#intentProjection(intent),
           route: batch.routeSnapshot,
           catalogs: this.#catalogFacts(snapshot),
-          scanBinding,
+          scanBindingDigest,
           policyVersion: this.#policy.policyVersion,
           ordinal,
           summaries: items,
@@ -399,16 +411,21 @@ export class CompleteCatalogRecallWorker {
     })
     return {
       pages,
-      digest: sha256Utf8(canonicalJson({
+      digest: deriveCatalogScanPlanDigestV2({
         policyVersion: this.#policy.policyVersion,
-        catalogs: this.#catalogFacts(snapshot),
-        scanBinding,
+        ...this.#catalogFacts(snapshot),
+        scanBindingDigest,
         pages: pages.map(item => ({ ordinal: item.ordinal, inputDigest: item.inputDigest })),
-      })),
+      }),
     }
   }
 
-  async #commitPlan(intentId: string, snapshot: RecallCatalogSnapshot, plan: ScanPlan): Promise<ExperienceIntentV2> {
+  async #commitPlan(
+    intentId: string,
+    batch: SessionBatchV2,
+    snapshot: RecallCatalogSnapshot,
+    plan: ScanPlan,
+  ): Promise<ExperienceIntentV2> {
     return this.#intents.update(intentId, current => {
       const intent = ExperienceIntentV2Schema.parse(current)
       if (intent.status !== 'RECALLING' || intent.recall.scanPlanDigest !== undefined) return intent
@@ -422,9 +439,23 @@ export class CompleteCatalogRecallWorker {
           catalogEpoch: snapshot.catalogEpoch,
           catalogMutationReceiptDigest: snapshot.catalogMutationReceiptDigest,
           scanBasisRevision: intent.revision,
+          scanRouteProvider: batch.routeSnapshot.provider,
+          scanRouteModel: batch.routeSnapshot.model,
+          scanPolicyVersion: this.#policy.policyVersion,
+          scanBindingDigest: deriveCatalogScanBindingDigestV2({
+            intentId: intent.intentId,
+            scanBasisRevision: intent.revision,
+            selfExclusionDigest: intent.recall.selfExclusion?.selfExclusionDigest,
+            provider: batch.routeSnapshot.provider,
+            model: batch.routeSnapshot.model,
+            policyVersion: this.#policy.policyVersion,
+          }),
           scanPlanDigest: plan.digest,
           scanPageCount: plan.pages.length,
           scanSummaryCount: plan.pages.reduce((total, page) => total + page.summaries.length, 0),
+          scanPages: plan.pages.map(page => ({
+            ordinal: page.ordinal, itemCount: page.summaries.length, inputDigest: page.inputDigest,
+          })),
           summaryClassifications: [],
         },
         updatedAt: this.#isoNow(),
