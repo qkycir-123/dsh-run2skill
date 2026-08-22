@@ -377,6 +377,7 @@ export const SessionBatchV2Schema = z.object({
     policyVersion: identity,
     maxInputBytes: positiveSafeInteger,
     maxOutputBytes: positiveSafeInteger,
+    failureCode: z.literal('ROUTE_UNAVAILABLE').optional(),
   }).strict(),
   detector: z.object({
     result: z.enum(['NOT_RUN', 'NONE', 'DEFER', 'READY', 'NEEDS_ATTENTION']),
@@ -447,6 +448,16 @@ export const SessionBatchV2Schema = z.object({
   }
   if ((value.detector.result === 'NEEDS_ATTENTION') !== (value.detector.failureCode !== undefined)) {
     context.addIssue({ code: 'custom', path: ['detector', 'failureCode'], message: 'Detector attention requires exactly one failure code' })
+  }
+  if (value.routeSnapshot.failureCode !== undefined && (
+    value.state !== 'NEEDS_ATTENTION'
+    || value.detector.failureCode !== value.routeSnapshot.failureCode
+    || value.detector.calls.length !== 0
+  )) {
+    context.addIssue({ code: 'custom', path: ['routeSnapshot', 'failureCode'], message: 'Unavailable route requires terminal attention without a model call' })
+  }
+  if (value.detector.failureCode === 'ROUTE_UNAVAILABLE' && value.routeSnapshot.failureCode !== 'ROUTE_UNAVAILABLE') {
+    context.addIssue({ code: 'custom', path: ['routeSnapshot', 'failureCode'], message: 'Route attention requires an unavailable route snapshot' })
   }
   if (value.detector.result === 'DEFER' && value.detector.carry.length === 0) {
     context.addIssue({ code: 'custom', path: ['detector', 'carry'], message: 'DEFER requires bounded carry' })

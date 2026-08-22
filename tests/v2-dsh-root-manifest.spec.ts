@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -34,6 +34,39 @@ function runtime(
 }
 
 describe('DshV2RootManifestAdapter', () => {
+  it('matches DSH_HOME blank fallback and supported tilde expansion exactly', async () => {
+    const root = await tempRoot()
+    const project = join(root, 'project')
+    const home = join(root, 'home')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await write(join(home, '.dsh', 'skills', 'default-home', 'SKILL.md'), '# default')
+    await write(join(home, 'env-dsh', 'skills', 'tilde-home', 'SKILL.md'), '# tilde')
+    const configuration: StockSkillRuntimeConfiguration = {
+      profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true,
+      customSkillDirs: [], configuredAgentsHome: join(root, 'agents-home'),
+    }
+    const capture = async (
+      environment: Record<string, string | undefined>,
+      configuredDshHome?: string,
+    ) => await new DshV2RootManifestAdapter({
+      resolveSession: () => ({
+        cwd: project,
+        configuration: { ...configuration, ...(configuredDshHome === undefined ? {} : { configuredDshHome }) },
+      }),
+      runtimeCatalog: runtime(), environment, homeDirectory: () => home,
+    }).capture('sl_session')
+
+    const blank = await capture({ DSH_HOME: '   ' })
+    const explicitDefault = await capture({}, join(home, '.dsh'))
+    expect(blank.complete).toBe(true)
+    expect(blank.rootManifestDigest).toBe(explicitDefault.rootManifestDigest)
+
+    const tilde = await capture({ DSH_HOME: '~/env-dsh' })
+    const explicitTilde = await capture({}, join(home, 'env-dsh'))
+    expect(tilde.complete).toBe(true)
+    expect(tilde.rootManifestDigest).toBe(explicitTilde.rootManifestDigest)
+  })
+
   it('observes every effective stock Skill root and detects a shadowed candidate outside the Runtime winners', async () => {
     const root = await tempRoot()
     const project = join(root, 'project')
@@ -116,5 +149,33 @@ describe('DshV2RootManifestAdapter', () => {
     const drifted = new DshV2RootManifestAdapter({ ...base, runtimeCatalog: runtime() })
     environment.DSH_HOME = join(root, 'home-b')
     expect((await drifted.capture('sl_session')).complete).toBe(false)
+  })
+
+  it('fails closed on a root-entry link escape or a bounded streaming scan overflow', async () => {
+    const root = await tempRoot()
+    const project = join(root, 'project')
+    const outside = join(root, 'outside')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await write(join(outside, 'SKILL.md'), '# outside')
+    const skillRoot = join(project, '.dsh', 'skills')
+    await mkdir(skillRoot, { recursive: true })
+    await symlink(outside, join(skillRoot, 'escaped'), process.platform === 'win32' ? 'junction' : 'dir')
+    const configuration: StockSkillRuntimeConfiguration = {
+      profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true,
+      customSkillDirs: [], configuredDshHome: join(root, 'dsh-home'), configuredAgentsHome: join(root, 'agents-home'),
+    }
+    const base = {
+      resolveSession: () => ({ cwd: project, configuration }),
+      runtimeCatalog: runtime(), environment: {}, homeDirectory: () => join(root, 'home'),
+    }
+    expect((await new DshV2RootManifestAdapter(base).capture('sl_session')).complete).toBe(false)
+
+    await rm(join(skillRoot, 'escaped'), { recursive: true, force: true })
+    await write(join(skillRoot, 'large', 'SKILL.md'), 'x'.repeat(64))
+    const bounded = new DshV2RootManifestAdapter({
+      ...base,
+      internalPolicy: { maxTotalBytes: 32 },
+    })
+    expect((await bounded.capture('sl_session')).complete).toBe(false)
   })
 })

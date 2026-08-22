@@ -15,6 +15,7 @@ import {
 export const SESSION_BATCH_COMPLETE_TURN_THRESHOLD = 5
 export const SESSION_BATCH_IDLE_MS = RUN2SKILL_V2_LIMITS.sessionIdleMs
 export const SESSION_BATCH_DETECTOR_POLICY_VERSION = 'batch-detector-v1'
+export const SESSION_BATCH_ROUTE_UNAVAILABLE_POLICY_VERSION = 'route-unavailable-v1'
 
 const TERMINAL_BATCH_STATES = new Set<SessionBatchV2['state']>([
   'COMMITTED_NONE', 'COMMITTED_DEFER', 'COMMITTED_READY', 'NEEDS_ATTENTION',
@@ -344,7 +345,6 @@ export class SessionBatchCoordinator {
       ? cursor.batchManifestBaseline
       : await this.#safeBaseline(lifecycleKey, windowStart, false)
     const { afterTurnEndSeq: _afterTurnEndSeq, ...baseline } = boundBaseline
-    const routeSnapshot = await this.#captureRouteSnapshot(lifecycleKey, candidate.observations)
     const facts = {
       sessionLifecycleKey: lifecycleKey,
       firstTurnEndSeq: first.turnEndSeq,
@@ -373,9 +373,17 @@ export class SessionBatchCoordinator {
         triggerReasons: existing.triggerReasons,
         observationManifest: existing.observationManifest,
       })
-      if (expectedStableFacts !== existingStableFacts || existing.state !== 'FROZEN') {
+      if (expectedStableFacts !== existingStableFacts) {
         throw new SessionBatchIdentityConflictError('Batch identity conflict')
       }
+      if (existing.state === 'NEEDS_ATTENTION' && existing.routeSnapshot.failureCode === 'ROUTE_UNAVAILABLE') {
+        return {
+          batch: existing,
+          changed: false,
+          global: this.#commitTerminalCursor(current, lifecycleKey, cursor, existing, this.#isoNow()),
+        }
+      }
+      if (existing.state !== 'FROZEN') throw new SessionBatchIdentityConflictError('Batch identity conflict')
       return {
         batch: existing,
         changed: false,
@@ -393,6 +401,48 @@ export class SessionBatchCoordinator {
       }
     }
     const now = this.#isoNow()
+    let routeSnapshot: SessionBatchV2['routeSnapshot']
+    try {
+      routeSnapshot = await this.#captureRouteSnapshot(lifecycleKey, candidate.observations)
+    } catch {
+      const carry = cursor.openExperienceCarry
+      const batch = SessionBatchV2Schema.parse({
+        schemaVersion: 1,
+        revision: 1,
+        batchId,
+        ...facts,
+        triggerReasons: canonicalReasons(candidate.reasons),
+        observationManifest,
+        observationManifestDigest: sha256Utf8(canonicalJson(observationManifest)),
+        batchManifestBaseline: baseline,
+        manifestEndObservation: { state: 'PENDING' },
+        routeSnapshot: {
+          provider: 'unavailable',
+          model: 'unavailable',
+          policyVersion: SESSION_BATCH_ROUTE_UNAVAILABLE_POLICY_VERSION,
+          maxInputBytes: 1,
+          maxOutputBytes: 1,
+          failureCode: 'ROUTE_UNAVAILABLE',
+        },
+        detector: {
+          result: 'NEEDS_ATTENTION',
+          failureCode: 'ROUTE_UNAVAILABLE',
+          calls: [],
+          intentIds: [],
+          carry,
+          ...(carry.length === 0 ? {} : { carryDigest: sha256Utf8(canonicalJson(carry)) }),
+        },
+        state: 'NEEDS_ATTENTION',
+        createdAt: now,
+        updatedAt: now,
+      })
+      await this.#batches.put(batch.batchId, batch)
+      return {
+        batch,
+        changed: true,
+        global: this.#commitTerminalCursor(current, lifecycleKey, cursor, batch, now),
+      }
+    }
     const batch = SessionBatchV2Schema.parse({
       schemaVersion: 1,
       revision: 1,
@@ -422,6 +472,28 @@ export class SessionBatchCoordinator {
             activeBatchId: batch.batchId,
             updatedAt: now,
           },
+        },
+      },
+    }
+  }
+
+  #commitTerminalCursor(
+    current: GlobalV2,
+    lifecycleKey: string,
+    cursor: SessionCursorV2,
+    batch: SessionBatchV2,
+    now: string,
+  ): GlobalV2 {
+    const withoutBaseline = withoutBatchManifestBaseline(withoutUndefinedActiveBatch(cursor))
+    return {
+      ...current,
+      sessions: {
+        ...current.sessions,
+        [lifecycleKey]: {
+          ...withoutBaseline,
+          detectedThroughTurnEndSeq: Math.max(cursor.detectedThroughTurnEndSeq, batch.lastTurnEndSeq),
+          openExperienceCarry: batch.detector.carry,
+          updatedAt: now,
         },
       },
     }

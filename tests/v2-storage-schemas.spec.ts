@@ -271,6 +271,13 @@ describe('run2skill_v2 storage contract', () => {
       ...fixture.sessionBatch,
       state: 'DETECTION_CLAIMED',
     }).success).toBe(false)
+    expect(SessionBatchV2Schema.safeParse({
+      ...fixture.sessionBatch,
+      routeSnapshot: {
+        ...fixture.sessionBatch.routeSnapshot,
+        failureCode: 'ROUTE_UNAVAILABLE',
+      },
+    }).success).toBe(false)
     expect(ExperienceIntentV2Schema.safeParse({
       ...fixture.experienceIntent,
       status: 'PROPOSAL_READY',

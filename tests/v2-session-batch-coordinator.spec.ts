@@ -4,12 +4,15 @@ import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import {
   deriveTurnObservationContentDigestV2,
   deriveTurnObservationIdV2,
+  type SessionBatchV2,
   type TurnObservationV2,
 } from '../src/domain/v2/index.js'
 import {
   SessionBatchCoordinator,
   SessionBatchIdentityConflictError,
 } from '../src/application/batch/index.js'
+import { DshV2RouteSnapshotAdapter } from '../src/adapters/dsh-llm/v2-route-snapshot.js'
+import type { DshLlmPort } from '../src/adapters/dsh-llm/restricted-learning-client.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
@@ -70,10 +73,14 @@ function context() {
 
 function coordinatorOptions(overrides?: {
   readonly captureBaseline?: () => Promise<ReturnType<typeof context>['batchManifestBaseline']>
+  readonly captureRouteSnapshot?: (
+    sessionLifecycleKey: string,
+    observations: readonly TurnObservationV2[],
+  ) => Promise<SessionBatchV2['routeSnapshot']>
 }) {
   return {
     captureBaseline: overrides?.captureBaseline ?? (async () => context().batchManifestBaseline),
-    captureRouteSnapshot: async () => context().routeSnapshot,
+    captureRouteSnapshot: overrides?.captureRouteSnapshot ?? (async () => context().routeSnapshot),
   }
 }
 
@@ -201,6 +208,64 @@ describe('v2 SessionBatch coordinator', () => {
       await coordinator.recordObservation(observation({ seq: index, observedAt: index }))
     }
     expect([...domain.sessionBatches.values()][0]?.batchManifestBaseline.complete).toBe(false)
+  })
+
+  it('commits route-unavailable attention without blocking later observations', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const blocked: DshLlmPort = {
+      resolveModelInfo: async () => await new Promise<never>(() => undefined),
+      stream: async function * () { yield* [] },
+    }
+    const route = new DshV2RouteSnapshotAdapter(blocked, { internalTimeoutMs: 5 })
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions({
+      captureRouteSnapshot: (lifecycleKey, observations) => route.capture(lifecycleKey, observations),
+    }))
+    for (let index = 1; index <= 5; index += 1) {
+      await expect(coordinator.recordObservation(observation({ seq: index, observedAt: index }))).resolves.toBeDefined()
+    }
+
+    expect(domain.turnObservations.size).toBe(5)
+    const batch = [...domain.sessionBatches.values()][0]
+    expect(batch).toMatchObject({
+      state: 'NEEDS_ATTENTION',
+      routeSnapshot: { failureCode: 'ROUTE_UNAVAILABLE' },
+      detector: { result: 'NEEDS_ATTENTION', failureCode: 'ROUTE_UNAVAILABLE', calls: [] },
+    })
+    const lifecycleKey = observation({ seq: 1, observedAt: 1 }).sessionLifecycleKey
+    expect(domain.global.get().sessions[lifecycleKey]?.detectedThroughTurnEndSeq).toBe(5)
+    expect(domain.global.get().sessions[lifecycleKey]?.activeBatchId).toBeUndefined()
+
+    await expect(coordinator.recordObservation(observation({ seq: 6, observedAt: 6 }))).resolves.toMatchObject({
+      observationChanged: true,
+      batchChanged: false,
+    })
+    expect(domain.turnObservations.size).toBe(6)
+  })
+
+  it('recovers a route-unavailable batch written before its cursor commit without recapturing the route', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    let routeCaptures = 0
+    const options = coordinatorOptions({
+      captureRouteSnapshot: async () => {
+        routeCaptures += 1
+        throw new Error('route unavailable')
+      },
+    })
+    const coordinator = new SessionBatchCoordinator(domain, options)
+    for (let index = 1; index <= 4; index += 1) {
+      await coordinator.recordObservation(observation({ seq: index, observedAt: index }))
+    }
+    const beforeBatchCommit = domain.global.get()
+    await coordinator.recordObservation(observation({ seq: 5, observedAt: 5 }))
+    await domain.global.set(beforeBatchCommit)
+
+    const recovered = new SessionBatchCoordinator(domain, options)
+    await recovered.recover(5)
+    const lifecycleKey = observation({ seq: 1, observedAt: 1 }).sessionLifecycleKey
+    expect(routeCaptures).toBe(1)
+    expect(domain.sessionBatches.size).toBe(1)
+    expect(domain.global.get().sessions[lifecycleKey]?.detectedThroughTurnEndSeq).toBe(5)
+    expect(domain.global.get().sessions[lifecycleKey]?.activeBatchId).toBeUndefined()
   })
 
   it('keeps a missing pre-turn baseline incomplete after an observation-only crash window', async () => {

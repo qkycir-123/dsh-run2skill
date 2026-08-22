@@ -2,13 +2,19 @@ import { canonicalJson } from '../../domain/learn/identity.js'
 import type { SessionBatchV2, TurnObservationV2 } from '../../domain/v2/index.js'
 import type { DshLlmPort } from './restricted-learning-client.js'
 
-export const V2_ROUTE_BUDGET_POLICY_VERSION = 'route-budget-v1'
+export const V2_ROUTE_BUDGET_POLICY_VERSION = 'route-budget-v2'
 
 const MAX_STAGE_OUTPUT_TOKENS = 16_384
 const CONTEXT_SAFETY_TOKENS = 2_048
 const OUTPUT_BYTE_RATIO = 4
+const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000
 
 type RouteSnapshot = SessionBatchV2['routeSnapshot']
+
+interface DshV2RouteSnapshotAdapterOptions {
+  /** @internal Allows deterministic boundary tests; Host wiring uses the versioned default deadline. */
+  readonly internalTimeoutMs?: number
+}
 
 export class DshV2RouteSnapshotError extends Error {
   constructor(readonly code:
@@ -50,7 +56,17 @@ function resolvedCapacity(value: Awaited<ReturnType<DshLlmPort['resolveModelInfo
  * policy and the stage client also caps the requested token count from it.
  */
 export class DshV2RouteSnapshotAdapter {
-  constructor(private readonly llm: DshLlmPort) {}
+  readonly #timeoutMs: number
+
+  constructor(
+    private readonly llm: DshLlmPort,
+    options: DshV2RouteSnapshotAdapterOptions = {},
+  ) {
+    this.#timeoutMs = options.internalTimeoutMs ?? ROUTE_RESOLUTION_TIMEOUT_MS
+    if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs <= 0) {
+      throw new TypeError('Invalid v2 route resolution timeout')
+    }
+  }
 
   async capture(
     _sessionLifecycleKey: string,
@@ -67,8 +83,8 @@ export class DshV2RouteSnapshotAdapter {
     let first
     let second
     try {
-      first = resolvedCapacity(await this.llm.resolveModelInfo(route.provider, route.model))
-      second = resolvedCapacity(await this.llm.resolveModelInfo(route.provider, route.model))
+      first = resolvedCapacity(await this.#resolveModelInfo(route.provider, route.model))
+      second = resolvedCapacity(await this.#resolveModelInfo(route.provider, route.model))
     } catch {
       throw new DshV2RouteSnapshotError('ROUTE_CAPACITY_UNAVAILABLE')
     }
@@ -89,6 +105,27 @@ export class DshV2RouteSnapshotAdapter {
       policyVersion: V2_ROUTE_BUDGET_POLICY_VERSION,
       maxInputBytes,
       maxOutputBytes: first.outputTokens * OUTPUT_BYTE_RATIO,
+    }
+  }
+
+  async #resolveModelInfo(
+    provider: string,
+    model: string,
+  ): Promise<Awaited<ReturnType<DshLlmPort['resolveModelInfo']>>> {
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        this.llm.resolveModelInfo(provider, model, controller.signal),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            controller.abort()
+            reject(new DshV2RouteSnapshotError('ROUTE_CAPACITY_UNAVAILABLE'))
+          }, this.#timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
     }
   }
 }

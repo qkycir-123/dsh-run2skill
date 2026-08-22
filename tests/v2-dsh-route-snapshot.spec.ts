@@ -69,4 +69,20 @@ describe('DshV2RouteSnapshotAdapter', () => {
     await expect(new DshV2RouteSnapshotAdapter(drifting).capture('sl_session', [observation(10)]))
       .rejects.toThrow('ROUTE_CAPACITY_CHANGED')
   })
+
+  it('aborts and fails closed when route capacity resolution never settles', async () => {
+    let signal: AbortSignal | undefined
+    const blocked: DshLlmPort = {
+      resolveModelInfo: async (_provider, _model, currentSignal) => {
+        signal = currentSignal
+        return await new Promise<never>(() => undefined)
+      },
+      stream: async function * () { yield* [] },
+    }
+    const adapter = new DshV2RouteSnapshotAdapter(blocked, { internalTimeoutMs: 5 })
+
+    await expect(adapter.capture('sl_session', [observation(10)]))
+      .rejects.toThrow('ROUTE_CAPACITY_UNAVAILABLE')
+    expect(signal?.aborted).toBe(true)
+  })
 })
