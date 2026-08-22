@@ -96,6 +96,11 @@ describe('all-cache Purge', () => {
     expect(v2.proposalLineages.size).toBe(0)
     expect(v2.legacyItems.size).toBe(0)
     expect(v1.global.get().completedPurgeFences?.all?.scope).toBe('ALL')
+    expect(v2.global.get().proposalCatalogLastMutation).toMatchObject({
+      epoch: 1,
+      kind: 'PURGE',
+      ownerId: v1.global.get().completedPurgeFences!.all!.purgeId,
+    })
   })
 
   it('does not retain post-boundary global references to an intent deleted by the purge', async () => {

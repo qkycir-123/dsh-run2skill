@@ -142,6 +142,7 @@ const canonicalCatalogLabels = Object.freeze({
 })
 
 function projectCatalogLabel(kind: 'provider' | 'source', value: string): string {
+  if (new RegExp(`^${kind}-[a-f0-9]{64}$`, 'u').test(value)) return value
   return canonicalCatalogLabels[kind].has(value)
     ? value
     : `${kind}-${sha256Utf8(value)}`
@@ -609,7 +610,7 @@ export class CompleteCatalogRecallWorker {
         continue
       }
       const { content, ...loadedSummary } = parsed.data
-      if (canonicalJson(summaryProjection(loadedSummary)) !== canonicalJson(summary)) {
+      if (canonicalJson(summaryProjection(loadedSummary)) !== canonicalJson(summaryProjection(summary))) {
         result.push({
           candidateId: summary.candidateId, summary: projected,
           classification: classification.classification as 'RELEVANT' | 'POSSIBLE',

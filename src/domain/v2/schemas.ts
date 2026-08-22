@@ -147,6 +147,57 @@ export function deriveProposalCatalogMutationReceiptDigestV2(facts: {
   return sha256Utf8(canonicalJson(facts))
 }
 
+export type ProposalCatalogMutationKindV2 =
+  | 'PROPOSAL'
+  | 'GENERATION_RESULT'
+  | 'BARRIER'
+  | 'LEGACY'
+  | 'PUBLICATION'
+  | 'PURGE'
+
+export interface ProposalCatalogMutationAnchorFactsV2 {
+  readonly ownerId: string
+  readonly kind: ProposalCatalogMutationKindV2
+  readonly inputCatalogEpoch: number
+}
+
+export function deriveProposalCatalogMutationAnchorV2(
+  facts: ProposalCatalogMutationAnchorFactsV2,
+): {
+  readonly epoch: number
+  readonly kind: ProposalCatalogMutationKindV2
+  readonly ownerId: string
+  readonly mutationId: `pcm_${string}`
+  readonly digest: string
+} {
+  const outcomeCatalogEpoch = facts.inputCatalogEpoch + 1
+  const mutationId = deriveProposalCatalogMutationIdV2(facts)
+  return {
+    epoch: outcomeCatalogEpoch,
+    kind: facts.kind,
+    ownerId: facts.ownerId,
+    mutationId,
+    digest: deriveProposalCatalogMutationReceiptDigestV2({
+      mutationId,
+      ownerId: facts.ownerId,
+      kind: facts.kind,
+      outcomeCatalogEpoch,
+    }),
+  }
+}
+
+export function deriveProposalCatalogGenesisAnchorV2(): {
+  readonly epoch: 0
+  readonly kind: 'GENESIS'
+  readonly ownerId: 'run2skill_v2'
+  readonly mutationId: `pcm_${string}`
+  readonly digest: string
+} {
+  const facts = { epoch: 0 as const, kind: 'GENESIS' as const, ownerId: 'run2skill_v2' as const }
+  const mutationId = `pcm_${sha256Utf8(canonicalJson(facts))}` as const
+  return { ...facts, mutationId, digest: sha256Utf8(canonicalJson({ ...facts, mutationId })) }
+}
+
 export const ScopeBindingV2Schema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('PROJECT'),
@@ -2230,6 +2281,27 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
   preparedAt: isoDateTime,
 }).strict()
 
+const ProposalCatalogLastMutationV2Schema = z.object({
+  epoch: safeNonNegativeInteger,
+  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'PUBLICATION', 'PURGE']),
+  ownerId: identity,
+  mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
+  digest: sha256Hex,
+}).strict().superRefine((value, context) => {
+  const expected = value.kind === 'GENESIS'
+    ? deriveProposalCatalogGenesisAnchorV2()
+    : value.epoch === 0
+      ? undefined
+      : deriveProposalCatalogMutationAnchorV2({
+          ownerId: value.ownerId,
+          kind: value.kind,
+          inputCatalogEpoch: value.epoch - 1,
+        })
+  if (expected === undefined || canonicalJson(value) !== canonicalJson(expected)) {
+    context.addIssue({ code: 'custom', message: 'Catalog last mutation anchor does not match its committed receipt' })
+  }
+})
+
 const PurgeScopeBindingV2Schema = z.discriminatedUnion('scope', [
   z.object({ scope: z.literal('ALL') }).strict(),
   z.object({ scope: z.literal('USER'), scopeIdentityDigest: sha256Hex }).strict(),
@@ -2256,6 +2328,7 @@ export const GlobalV2Schema = z.object({
   behaviorSignatureIndex: z.record(sha256Hex, BehaviorSignatureIndexEntryV2Schema),
   proposalGenerationLease: ProposalGenerationLeaseV2Schema.optional(),
   proposalCatalogEpoch: safeNonNegativeInteger,
+  proposalCatalogLastMutation: ProposalCatalogLastMutationV2Schema.default(deriveProposalCatalogGenesisAnchorV2()),
   proposalCatalogMutationJournal: ProposalCatalogMutationJournalV2Schema.optional(),
   purgeJournal: PurgeJournalV2Schema.optional(),
   legacyCompletedPurgeFences: CompletedPurgeFencesV1Schema.optional(),
@@ -2268,6 +2341,9 @@ export const GlobalV2Schema = z.object({
     legacyPendingCandidateCount: safeNonNegativeInteger,
   }).strict().optional(),
 }).strict().superRefine((value, context) => {
+  if (value.proposalCatalogLastMutation.epoch !== value.proposalCatalogEpoch) {
+    context.addIssue({ code: 'custom', path: ['proposalCatalogLastMutation'], message: 'Catalog epoch must match the last mutation anchor' })
+  }
   if ((value.migration.phase === 'COMMITTED') !== (value.activation !== undefined)) {
     context.addIssue({ code: 'custom', path: ['activation'], message: 'Activation must exist exactly when migration is committed' })
   }

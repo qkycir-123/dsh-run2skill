@@ -11,6 +11,7 @@ import { LineageV1Schema } from '../../domain/publication/schemas.js'
 import { deriveLineageId } from '../../domain/publication/schemas.js'
 import {
   deriveLegacyPendingProposalCatalogV2,
+  deriveProposalCatalogMutationAnchorV2,
   GlobalV2Schema,
   LegacyItemV2Schema,
   ProposalLineageV2Schema,
@@ -354,6 +355,13 @@ async function migrateUnderCutover(
   }))
   const observerStartWatermarkDigest = sha256Utf8(canonicalJson(observerStartWatermarks))
   const validatingGlobal = GlobalV2Schema.parse(v2.global.get())
+  const legacyCatalogAnchor = source.counts.activeLegacyProposals > 0
+    ? deriveProposalCatalogMutationAnchorV2({
+        ownerId: activationFenceDigest,
+        kind: 'LEGACY',
+        inputCatalogEpoch: 0,
+      })
+    : validatingGlobal.proposalCatalogLastMutation
   await setGlobal(v2, {
     ...validatingGlobal,
     migration: {
@@ -368,6 +376,7 @@ async function migrateUnderCutover(
       activationFenceDigest,
     },
     proposalCatalogEpoch: source.counts.activeLegacyProposals > 0 ? 1 : 0,
+    proposalCatalogLastMutation: legacyCatalogAnchor,
     sessions,
     activation: {
       committedAt,

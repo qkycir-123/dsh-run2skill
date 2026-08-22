@@ -17,6 +17,7 @@ import { Run2skillGlobalStore } from '../../adapters/dsh-storage/global-store.js
 import { Run2skillV2GlobalStore } from '../../adapters/dsh-storage/v2-global-store.js'
 import type { Run2skillDomain } from '../../adapters/dsh-storage/types.js'
 import type { Run2skillV2Domain } from '../../adapters/dsh-storage/v2-types.js'
+import { deriveProposalCatalogMutationAnchorV2 } from '../../domain/v2/index.js'
 
 interface PurgeDeleteTable {
   get(key: string): unknown
@@ -542,6 +543,7 @@ export class PurgeService {
     if (this.#v2Domain === undefined || this.#v2Global === undefined) throw new Error('Run2Skill v2 storage unavailable')
     const hideBefore = completedPurgeFences.all?.hideBefore
     if (hideBefore === undefined) throw new Error('ALL purge fence missing')
+    const completedAllFence = completedPurgeFences.all!
     const boundary = Date.parse(hideBefore)
     const remainingIntentIds = new Set(this.#v2Domain.table('experience_intents').keys())
     await this.#v2Global.runExclusive(async current => {
@@ -568,15 +570,23 @@ export class PurgeService {
       }))
       const alreadyFinalized = current.legacyCompletedPurgeFences?.all?.purgeId
         === completedPurgeFences.all?.purgeId
+      const nextCatalogEpoch = alreadyFinalized
+        ? current.proposalCatalogEpoch
+        : current.proposalCatalogEpoch + 1
       return {
         value: undefined,
         global: {
           ...stable,
           sessions,
           behaviorSignatureIndex,
-          proposalCatalogEpoch: alreadyFinalized
-            ? current.proposalCatalogEpoch
-            : current.proposalCatalogEpoch + 1,
+          proposalCatalogEpoch: nextCatalogEpoch,
+          proposalCatalogLastMutation: alreadyFinalized
+            ? current.proposalCatalogLastMutation
+            : deriveProposalCatalogMutationAnchorV2({
+                ownerId: completedAllFence.purgeId,
+                kind: 'PURGE',
+                inputCatalogEpoch: current.proposalCatalogEpoch,
+              }),
           legacyCompletedPurgeFences: completedPurgeFences,
         },
       }

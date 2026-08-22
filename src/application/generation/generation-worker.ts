@@ -16,6 +16,7 @@ import {
   deriveGenerationResultReceiptDigestV2,
   deriveNativeProposalLineageIdV2,
   deriveProposalCatalogMutationIdV2,
+  deriveProposalCatalogMutationAnchorV2,
   deriveProposalCatalogMutationReceiptDigestV2,
   ExperienceIntentV2Schema,
   ProposalLineageV2Schema,
@@ -898,6 +899,11 @@ export class GenerationWorker {
         global: {
           ...current,
           proposalCatalogEpoch: result.outcomeCatalogEpoch,
+          proposalCatalogLastMutation: deriveProposalCatalogMutationAnchorV2({
+            ownerId: result.resultId,
+            kind: 'GENERATION_RESULT',
+            inputCatalogEpoch: result.inputCatalogEpoch,
+          }),
           proposalCatalogMutationJournal: undefined,
           proposalGenerationLease: {
             ...lease,
@@ -927,7 +933,18 @@ export class GenerationWorker {
         || journal.kind !== 'BARRIER'
       ) return { value: undefined }
       const { proposalGenerationLease: _lease, proposalCatalogMutationJournal: _journal, ...rest } = current
-      return { value: undefined, global: { ...rest, proposalCatalogEpoch: barrier.outcomeCatalogEpoch } }
+      return {
+        value: undefined,
+        global: {
+          ...rest,
+          proposalCatalogEpoch: barrier.outcomeCatalogEpoch,
+          proposalCatalogLastMutation: deriveProposalCatalogMutationAnchorV2({
+            ownerId: barrier.barrierId,
+            kind: 'BARRIER',
+            inputCatalogEpoch: barrier.inputCatalogEpoch,
+          }),
+        },
+      }
     })
   }
 
@@ -1394,6 +1411,11 @@ export class GenerationWorker {
         global: {
           ...current,
           proposalCatalogEpoch: facts.outcomeCatalogEpoch,
+          proposalCatalogLastMutation: deriveProposalCatalogMutationAnchorV2({
+            ownerId: facts.proposalId,
+            kind: 'PROPOSAL',
+            inputCatalogEpoch: facts.revalidation.catalogEpoch,
+          }),
           proposalCatalogMutationJournal: undefined,
           proposalGenerationLease: { ...lease, state: 'BODY_COMMITTED_INDEX_PENDING' },
         },

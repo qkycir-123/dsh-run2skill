@@ -132,6 +132,10 @@ describe('run2skill_v1 -> run2skill_v2 migration', () => {
         [sessionLifecycleKey]: { nextSeq: 9, observedTailSeq: 8, headerRevision: 'rev-8' },
       },
     })
+    expect(v2.global.get().proposalCatalogLastMutation).toMatchObject({
+      epoch: 1,
+      kind: 'LEGACY',
+    })
     expect([...v1.workItems.entries()]).toEqual(v1Before)
     expect(v1.writeLog).toEqual([])
   })

@@ -306,6 +306,19 @@ async function writeSkill(root: string, name: string, description: string, body:
   ].join('\n'))
 }
 
+async function writeFlatSkill(root: string, name: string, description: string, body: string): Promise<void> {
+  await mkdir(root, { recursive: true })
+  await writeFile(join(root, `${name}.md`), [
+    '---',
+    `name: ${name}`,
+    `description: ${description}`,
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n'))
+}
+
 async function waitUntil<T>(
   read: () => Promise<T>,
   accept: (value: T) => boolean,
@@ -393,6 +406,7 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
     const agentsHome = join(base, 'agents-home')
     await mkdir(join(project, '.git'), { recursive: true })
     await writeSkill(join(project, '.dsh', 'skills'), 'same-skill', 'Project wins', 'Project body v1.')
+    await writeFlatSkill(join(project, '.dsh', 'skills'), 'flat-skill', 'Flat project skill', 'Flat project body.')
     await writeSkill(join(dshHome, 'skills'), 'same-skill', 'User loses', 'User body.')
     await writeSkill(join(dshHome, 'skills'), 'user-only', 'User only', 'User-only body.')
     await writeSkill(join(dshHome, 'skills', '.system'), 'hidden-system', 'Hidden', 'Hidden body.')
@@ -408,6 +422,20 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
     })
     let changes = 0
     mount.ctx.on('skills/change', () => { changes += 1 })
+    mount.ctx.skills.register({
+      name: 'runtime-skill',
+      description: 'Borrowed runtime skill',
+      source: 'runtime',
+      content: 'Runtime body.',
+    })
+    mount.ctx.skills.register({
+      name: 'bundled-provider-skill',
+      description: 'Bundled non-filesystem skill',
+      source: 'bundled',
+      provider: 'plugin-bundle',
+      resourceBase: { kind: 'opaque', description: 'plugin-owned resources' },
+      content: 'Bundled provider body.',
+    })
     try {
       const workspace = await mount.ctx.workspaceRegistry.create(project)
       const canonicalProject = await realpath(project)
@@ -419,27 +447,63 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
       expect(initial.complete).toBe(true)
       expect((await new DshSkillCatalogAdapter(mount.ctx.skills).snapshot({ cwd: workspace.path })).roots)
         .toBeUndefined()
-      expect(initial.skills.map(skill => skill.name)).toEqual(['same-skill', 'user-only'])
+      expect(initial.skills.map(skill => skill.name)).toEqual([
+        'bundled-provider-skill',
+        'flat-skill',
+        'runtime-skill',
+        'same-skill',
+        'user-only',
+      ])
       expect(initial.skills.find(skill => skill.name === 'same-skill')).toMatchObject({
         provider: 'filesystem',
         source: 'project-dsh',
         description: 'Project wins',
+        resourceBase: { kind: 'directory', path: join(workspace.path, '.dsh', 'skills', 'same-skill') },
       })
       expect(initial.skills.some(skill => skill.name === 'hidden-system')).toBe(false)
+      expect(initial.skills.find(skill => skill.name === 'flat-skill')).toMatchObject({
+        provider: 'filesystem',
+        source: 'project-dsh',
+        resourceBase: { kind: 'directory', path: join(workspace.path, '.dsh', 'skills') },
+      })
+      expect(initial.skills.find(skill => skill.name === 'runtime-skill')).toMatchObject({
+        provider: 'runtime',
+        source: 'runtime',
+      })
+      expect(initial.skills.find(skill => skill.name === 'bundled-provider-skill')).toMatchObject({
+        provider: 'plugin-bundle',
+        source: 'bundled',
+        resourceBase: { kind: 'opaque', description: 'plugin-owned resources' },
+      })
 
       const expectedProjectRoot = join(workspace.path, '.dsh', 'skills')
       const expectedUserRoot = join(resolveDshHome(dshHome, {}), 'skills')
       const projectSkill = await mount.ctx.skills.get('same-skill', { cwd: workspace.path })
+      const flatSkill = await mount.ctx.skills.get('flat-skill', { cwd: workspace.path })
+      const runtimeSkill = await mount.ctx.skills.get('runtime-skill', { cwd: workspace.path })
+      const bundledProviderSkill = await mount.ctx.skills.get('bundled-provider-skill', { cwd: workspace.path })
       const userSkill = await mount.ctx.skills.get('user-only', { cwd: workspace.path })
       expect(projectSkill).toMatchObject({
         source: 'project-dsh',
         path: join(expectedProjectRoot, 'same-skill', 'SKILL.md'),
+        resourceBase: { kind: 'directory', path: join(expectedProjectRoot, 'same-skill') },
         content: 'Project body v1.',
       })
       expect(userSkill).toMatchObject({
         source: 'user-dsh',
         path: join(expectedUserRoot, 'user-only', 'SKILL.md'),
         content: 'User-only body.',
+      })
+      expect(flatSkill).toMatchObject({
+        path: join(expectedProjectRoot, 'flat-skill.md'),
+        resourceBase: { kind: 'directory', path: expectedProjectRoot },
+        content: 'Flat project body.',
+      })
+      expect(runtimeSkill).toMatchObject({ provider: 'runtime', source: 'runtime', content: 'Runtime body.' })
+      expect(bundledProviderSkill).toMatchObject({
+        provider: 'plugin-bundle',
+        source: 'bundled',
+        content: 'Bundled provider body.',
       })
       expect(Reflect.has(mount.ctx.skills, 'roots')).toBe(false)
 

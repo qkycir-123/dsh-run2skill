@@ -12,6 +12,7 @@ import {
   deriveCatalogScanPlanDigestV2,
   deriveCoverageBindingDigestV2,
   deriveCoveragePlanDigestV2,
+  deriveProposalCatalogMutationAnchorV2,
   deriveSessionQuiescenceFenceDigestV2,
   deriveTurnObservationContentDigestV2,
 } from '../src/domain/v2/index.js'
@@ -521,6 +522,34 @@ describe('run2skill_v2 storage contract', () => {
     expect(GlobalV2Schema.safeParse({
       ...fixture.global,
       behaviorSignatureIndex: { ['f'.repeat(64)]: entry },
+    }).success).toBe(false)
+  })
+
+  it('binds the Catalog epoch to the last committed mutation receipt', () => {
+    const fixture = createMinimalV2Fixtures()
+    const { proposalCatalogLastMutation: _anchor, ...legacyEmptyGlobal } = fixture.global
+    expect(GlobalV2Schema.parse(legacyEmptyGlobal).proposalCatalogLastMutation)
+      .toEqual(fixture.global.proposalCatalogLastMutation)
+    expect(GlobalV2Schema.safeParse({
+      ...fixture.global,
+      proposalCatalogEpoch: 1,
+    }).success).toBe(false)
+
+    const anchor = deriveProposalCatalogMutationAnchorV2({
+      ownerId: `legacy_${'a'.repeat(64)}`,
+      kind: 'LEGACY',
+      inputCatalogEpoch: 0,
+    })
+    expect(GlobalV2Schema.parse({
+      ...fixture.global,
+      proposalCatalogEpoch: 1,
+      proposalCatalogLastMutation: anchor,
+    }).proposalCatalogLastMutation).toEqual(anchor)
+
+    expect(GlobalV2Schema.safeParse({
+      ...fixture.global,
+      proposalCatalogEpoch: 1,
+      proposalCatalogLastMutation: { ...anchor, digest: 'f'.repeat(64) },
     }).success).toBe(false)
   })
 })

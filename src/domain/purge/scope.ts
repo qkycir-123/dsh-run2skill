@@ -25,7 +25,7 @@ function canonicalPathIdentity(value: string): string {
   return process.platform === 'win32' ? canonical.toLowerCase() : canonical
 }
 
-function deriveProjectScopeIdentityDigest(canonicalWorkspacePath: string): string {
+export function deriveProjectScopeIdentityDigest(canonicalWorkspacePath: string): string {
   return sha256Utf8(canonicalJson({
     scope: 'PROJECT',
     canonicalWorkspacePath: canonicalPathIdentity(canonicalWorkspacePath),
