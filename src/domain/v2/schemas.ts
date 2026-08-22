@@ -504,6 +504,95 @@ export function deriveCatalogScanPlanDigestV2(facts: CatalogScanPlanFactsV2): st
   }))
 }
 
+export interface CoverageBindingFactsV2 {
+  readonly intentId: string
+  readonly coverageBasisRevision: number
+  readonly provider: string
+  readonly model: string
+  readonly policyVersion: string
+  readonly routeMaxInputBytes: number
+  readonly routeMaxOutputBytes: number
+  readonly reserveBytes: number
+  readonly mergeOutputReserveBytes: number
+}
+
+export function deriveCoverageBindingDigestV2(facts: CoverageBindingFactsV2): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
+export interface CoverageCandidateBindingFactsV2 {
+  readonly coverageBindingDigest: string
+  readonly runtimeCatalogDigest: string
+  readonly pendingCatalogDigest: string
+  readonly catalogEpoch: number
+  readonly catalogMutationReceiptDigest: string
+  readonly pageOrdinal: number
+  readonly members: readonly {
+    readonly candidateId: string
+    readonly bodyDigest: string
+    readonly bodyBytes: number
+  }[]
+}
+
+export function deriveCoverageInputDigestV2(facts: CoverageCandidateBindingFactsV2): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
+export interface CoveragePlanFactsV2 {
+  readonly coverageBindingDigest: string
+  readonly runtimeCatalogDigest: string
+  readonly pendingCatalogDigest: string
+  readonly catalogEpoch: number
+  readonly catalogMutationReceiptDigest: string
+  readonly pages: readonly {
+    readonly ordinal: number
+    readonly itemCount: number
+    readonly inputDigest: string
+    readonly membershipDigest: string
+  }[]
+}
+
+export function deriveCoveragePlanDigestV2(facts: CoveragePlanFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    coverageBindingDigest: facts.coverageBindingDigest,
+    catalogs: {
+      runtimeCatalogDigest: facts.runtimeCatalogDigest,
+      pendingCatalogDigest: facts.pendingCatalogDigest,
+      catalogEpoch: facts.catalogEpoch,
+      catalogMutationReceiptDigest: facts.catalogMutationReceiptDigest,
+    },
+    pages: [...facts.pages].sort((left, right) => left.ordinal - right.ordinal),
+  }))
+}
+
+export function deriveCoverageCallIdV2(
+  intentId: string,
+  coveragePlanDigest: string,
+  ordinal: number,
+): `call_${string}` {
+  return `call_${sha256Utf8(canonicalJson({ intentId, coveragePlanDigest, ordinal }))}`
+}
+
+export function deriveCoverageOutputDigestV2(
+  decisions: readonly { readonly candidateId: string; readonly decision: 'UNRELATED' | 'COVERED' | 'PARTIAL' | 'AMBIGUOUS'; readonly reason: string }[],
+): string {
+  return sha256Utf8(canonicalJson({
+    decisions: decisions.map(decision => ({
+      candidateId: decision.candidateId,
+      decision: decision.decision,
+      reason: decision.reason,
+    })).sort((left, right) => left.candidateId.localeCompare(right.candidateId)),
+  }))
+}
+
+export function deriveCoverageMembershipDigestV2(
+  members: readonly { readonly candidateId: string; readonly bodyDigest: string; readonly bodyBytes: number }[],
+): string {
+  return sha256Utf8(canonicalJson({
+    members: [...members].sort((left, right) => left.candidateId.localeCompare(right.candidateId)),
+  }))
+}
+
 export function deriveOwnershipEvidenceDigestV2(evidence: OwnershipEvidenceV2): string {
   return sha256Utf8(canonicalJson(evidence))
 }
@@ -703,8 +792,42 @@ export const ExperienceIntentV2Schema = z.object({
   }).strict(),
   coverage: z.object({
     state: z.enum(['NOT_STARTED', 'ANALYZING', 'COVERED', 'CREATE', 'MERGE', 'NEEDS_ATTENTION']),
+    retryUsed: z.boolean(),
     inputDigest: sha256Hex.optional(),
     targetDigest: sha256Hex.optional(),
+    targetCandidateId: identity.optional(),
+    basisRevision: positiveSafeInteger.optional(),
+    routeProvider: identity.optional(),
+    routeModel: identity.optional(),
+    routeMaxInputBytes: positiveSafeInteger.optional(),
+    routeMaxOutputBytes: positiveSafeInteger.optional(),
+    reserveBytes: safeNonNegativeInteger.optional(),
+    mergeOutputReserveBytes: safeNonNegativeInteger.optional(),
+    policyVersion: identity.optional(),
+    bindingDigest: sha256Hex.optional(),
+    planDigest: sha256Hex.optional(),
+    pages: z.array(z.object({
+      ordinal: positiveSafeInteger,
+      itemCount: positiveSafeInteger,
+      inputDigest: sha256Hex,
+      membershipDigest: sha256Hex,
+    }).strict()).max(32).optional(),
+    candidateBindings: z.array(z.object({
+      ordinal: positiveSafeInteger,
+      candidateId: identity,
+      bodyDigest: sha256Hex,
+      bodyBytes: safeNonNegativeInteger,
+      pageOrdinal: positiveSafeInteger,
+    }).strict()).max(1024).optional(),
+    decisions: z.array(z.object({
+      candidateId: identity,
+      decision: z.enum(['UNRELATED', 'COVERED', 'PARTIAL', 'AMBIGUOUS']),
+      reason: utf8Limited(1024),
+      pageOrdinal: positiveSafeInteger,
+      callId: z.string().regex(/^call_[a-f0-9]{64}$/),
+      inputDigest: sha256Hex,
+      outputDigest: sha256Hex,
+    }).strict()).max(1024).optional(),
     reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
   }).strict(),
   generation: z.object({
@@ -761,7 +884,7 @@ export const ExperienceIntentV2Schema = z.object({
     outcome: z.enum(['RESERVED', 'SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED_OUT', 'OUTCOME_UNKNOWN']),
     outputDigest: sha256Hex.optional(),
     failureCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
-  }).strict()).max(32),
+  }).strict()).max(96),
   reasonReceipts: z.array(z.object({
     revision: positiveSafeInteger,
     reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/),
@@ -1089,7 +1212,168 @@ export const ExperienceIntentV2Schema = z.object({
     || !value.generation.staleRefreshUsed
     || value.recall.selfExclusion.selfExclusionDigest !== deriveRecallSelfExclusionDigestV2(value.recall.selfExclusion)
   )) context.addIssue({ code: 'custom', path: ['recall', 'selfExclusion'], message: 'Self-exclusion is only valid for an exact stale refresh revision' })
-  if (value.coverage.state === 'CREATE' && value.recall.candidates.some(candidate => (
+  const coverage = value.coverage
+  const coveragePlanFields = [
+    coverage.basisRevision,
+    coverage.routeProvider,
+    coverage.routeModel,
+    coverage.routeMaxInputBytes,
+    coverage.routeMaxOutputBytes,
+    coverage.reserveBytes,
+    coverage.mergeOutputReserveBytes,
+    coverage.policyVersion,
+    coverage.bindingDigest,
+    coverage.planDigest,
+    coverage.pages,
+    coverage.candidateBindings,
+    coverage.decisions,
+  ].map(item => item !== undefined)
+  if (coveragePlanFields.some(Boolean) && !coveragePlanFields.every(Boolean)) {
+    context.addIssue({ code: 'custom', path: ['coverage'], message: 'Coverage plan facts must be persisted atomically' })
+  }
+  if (coverage.state === 'NOT_STARTED' && (coverage.retryUsed || Object.keys(coverage).length !== 2)) {
+    context.addIssue({ code: 'custom', path: ['coverage'], message: 'Unstarted coverage cannot retain plan or result facts' })
+  }
+  if (value.status === 'COVERAGE_RETRY_AUTHORIZED' && !coverage.retryUsed) {
+    context.addIssue({ code: 'custom', path: ['coverage', 'retryUsed'], message: 'Coverage retry authorization requires its durable one-shot marker' })
+  }
+  const coverageBindings = coverage.candidateBindings ?? []
+  const coveragePages = coverage.pages ?? []
+  const coverageDecisions = coverage.decisions ?? []
+  const currentCoverageCalls = coverage.basisRevision === undefined
+    ? []
+    : value.stageCalls.filter(call => call.stage === 'COVERAGE' && call.intentRevision === coverage.basisRevision)
+  if (coverage.basisRevision !== undefined) {
+    const expectedBindingDigest = deriveCoverageBindingDigestV2({
+      intentId: value.intentId,
+      coverageBasisRevision: coverage.basisRevision,
+      provider: coverage.routeProvider!,
+      model: coverage.routeModel!,
+      policyVersion: coverage.policyVersion!,
+      routeMaxInputBytes: coverage.routeMaxInputBytes!,
+      routeMaxOutputBytes: coverage.routeMaxOutputBytes!,
+      reserveBytes: coverage.reserveBytes!,
+      mergeOutputReserveBytes: coverage.mergeOutputReserveBytes!,
+    })
+    if (coverage.basisRevision > value.revision || coverage.bindingDigest !== expectedBindingDigest) {
+      context.addIssue({ code: 'custom', path: ['coverage', 'bindingDigest'], message: 'Coverage binding must match an existing Intent revision and exact route' })
+    }
+    const orderedBindings = [...coverageBindings].sort((left, right) => left.ordinal - right.ordinal)
+    const orderedPages = [...coveragePages].sort((left, right) => left.ordinal - right.ordinal)
+    const recalledReadable = value.recall.candidates
+      .filter(candidate => candidate.capability !== 'UNAVAILABLE')
+      .map(candidate => ({ candidateId: candidate.candidateId, bodyDigest: candidate.bodyDigest! }))
+      .sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    const boundReadable = orderedBindings
+      .map(binding => ({ candidateId: binding.candidateId, bodyDigest: binding.bodyDigest }))
+      .sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    if (
+      orderedBindings.some((binding, index) => binding.ordinal !== index + 1)
+      || canonicalJson(boundReadable) !== canonicalJson(recalledReadable)
+      || orderedPages.some((page, index) => {
+        const members = orderedBindings
+          .filter(binding => binding.pageOrdinal === page.ordinal)
+          .map(binding => ({
+            candidateId: binding.candidateId, bodyDigest: binding.bodyDigest, bodyBytes: binding.bodyBytes,
+          }))
+        return page.ordinal !== index + 1
+          || page.itemCount !== members.length
+          || page.membershipDigest !== deriveCoverageMembershipDigestV2(members)
+          || page.inputDigest !== deriveCoverageInputDigestV2({
+            coverageBindingDigest: coverage.bindingDigest!,
+            runtimeCatalogDigest: value.recall.runtimeCatalogDigest!,
+            pendingCatalogDigest: value.recall.pendingCatalogDigest!,
+            catalogEpoch: value.recall.catalogEpoch!,
+            catalogMutationReceiptDigest: value.recall.catalogMutationReceiptDigest!,
+            pageOrdinal: page.ordinal,
+            members,
+          })
+      })
+      || orderedBindings.some(binding => !orderedPages.some(page => page.ordinal === binding.pageOrdinal))
+      || coverage.planDigest !== deriveCoveragePlanDigestV2({
+        coverageBindingDigest: coverage.bindingDigest!,
+        runtimeCatalogDigest: value.recall.runtimeCatalogDigest!,
+        pendingCatalogDigest: value.recall.pendingCatalogDigest!,
+        catalogEpoch: value.recall.catalogEpoch!,
+        catalogMutationReceiptDigest: value.recall.catalogMutationReceiptDigest!,
+        pages: orderedPages,
+      })
+    ) context.addIssue({ code: 'custom', path: ['coverage', 'candidateBindings'], message: 'Coverage plan must bind every exact readable candidate body and Catalog fact' })
+  }
+  const decisionIds = coverageDecisions.map(decision => decision.candidateId)
+  if (new Set(decisionIds).size !== decisionIds.length) {
+    context.addIssue({ code: 'custom', path: ['coverage', 'decisions'], message: 'Coverage decisions must have unique candidate identities' })
+  }
+  for (const [index, decision] of coverageDecisions.entries()) {
+    const binding = coverageBindings.find(item => item.candidateId === decision.candidateId)
+    const call = currentCoverageCalls.find(item => item.callId === decision.callId)
+    if (
+      binding === undefined
+      || call?.outcome !== 'SUCCEEDED'
+      || call.failureCode !== undefined
+      || decision.pageOrdinal !== binding.pageOrdinal
+      || call.ordinal !== binding.pageOrdinal
+      || decision.inputDigest !== coveragePages.find(page => page.ordinal === binding.pageOrdinal)?.inputDigest
+      || call.inputDigest !== decision.inputDigest
+      || call.outputDigest !== decision.outputDigest
+      || decision.callId !== deriveCoverageCallIdV2(value.intentId, coverage.planDigest!, binding.pageOrdinal)
+    ) context.addIssue({
+      code: 'custom', path: ['coverage', 'decisions', index],
+      message: 'Coverage decision must bind one exact successful call and candidate body',
+    })
+  }
+  if (currentCoverageCalls.some(call => {
+    const page = coveragePages.find(item => item.ordinal === call.ordinal)
+    const bindings = coverageBindings.filter(item => item.pageOrdinal === call.ordinal)
+    const matchingDecisions = coverageDecisions.filter(decision => decision.callId === call.callId)
+    return page === undefined
+      || call.provider !== coverage.routeProvider
+      || call.model !== coverage.routeModel
+      || call.policyVersion !== coverage.policyVersion
+      || call.inputDigest !== page.inputDigest
+      || call.callId !== deriveCoverageCallIdV2(value.intentId, coverage.planDigest!, call.ordinal)
+      || (call.outcome === 'SUCCEEDED'
+        ? matchingDecisions.length !== bindings.length
+          || canonicalJson(matchingDecisions.map(decision => decision.candidateId).sort()) !== canonicalJson(bindings.map(binding => binding.candidateId).sort())
+          || call.outputDigest !== deriveCoverageOutputDigestV2(matchingDecisions)
+        : matchingDecisions.length !== 0)
+  }) || new Set(currentCoverageCalls.map(call => call.ordinal)).size !== currentCoverageCalls.length) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Current coverage calls must match unique durable plan pages' })
+  }
+  const terminalCoverage = ['COVERED', 'CREATE', 'MERGE'].includes(coverage.state)
+  if (terminalCoverage && (
+    coverage.planDigest === undefined
+    || coverage.inputDigest !== coverage.planDigest
+    || currentCoverageCalls.length !== coveragePages.length
+    || currentCoverageCalls.some(call => call.outcome !== 'SUCCEEDED' || call.failureCode !== undefined)
+    || coverageDecisions.length !== coverageBindings.length
+  )) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Terminal coverage requires the exact successful full-body decision ledger' })
+  if (coverage.state === 'CREATE' && (
+    coverageDecisions.some(decision => decision.decision !== 'UNRELATED')
+    || coverage.targetCandidateId !== undefined
+  )) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Create authorization requires every full-body candidate to be unrelated' })
+  if (coverage.state === 'MERGE') {
+    const partial = coverageDecisions.filter(decision => decision.decision === 'PARTIAL')
+    const target = value.recall.candidates.find(candidate => candidate.candidateId === coverage.targetCandidateId)
+    const targetBinding = coverageBindings.find(binding => binding.candidateId === coverage.targetCandidateId)
+    const mergeOutputBudget = Math.max(0, coverage.routeMaxOutputBytes! - coverage.mergeOutputReserveBytes!)
+    if (
+      partial.length !== 1
+      || coverageDecisions.some(decision => decision.decision !== 'UNRELATED' && decision.decision !== 'PARTIAL')
+      || partial[0]?.candidateId !== coverage.targetCandidateId
+      || target?.capability !== 'AVAILABLE'
+      || targetBinding === undefined
+      || targetBinding.bodyBytes > mergeOutputBudget
+      || coverage.targetDigest !== target.bodyDigest
+    ) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Merge authorization requires one exact writable partial target' })
+  }
+  if (coverage.state === 'COVERED' && !coverageDecisions.some(decision => (
+    decision.decision === 'COVERED' && decision.candidateId === coverage.targetCandidateId
+  ))) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Covered result requires an exact covering candidate' })
+  if (coverage.state === 'COVERED' && coverage.retryUsed) {
+    context.addIssue({ code: 'custom', path: ['coverage'], message: 'A repeated covered result after the one-shot retry requires attention' })
+  }
+  if (coverage.state === 'CREATE' && value.recall.candidates.some(candidate => (
     candidate.classification !== 'UNRELATED' && candidate.capability === 'UNAVAILABLE'
   ))) context.addIssue({ code: 'custom', path: ['coverage'], message: 'Create authorization cannot use absence proof with unavailable relevant candidates' })
   const generation = value.generation
@@ -1406,7 +1690,11 @@ export const ExperienceIntentV2Schema = z.object({
   )) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Complete recall requires the exact successful Catalog scan ledger' })
   }
-  if (['COVERED', 'CREATE', 'MERGE'].includes(value.coverage.state) && callsFor('COVERAGE').length === 0) {
+  if (
+    ['COVERED', 'CREATE', 'MERGE'].includes(value.coverage.state)
+    && callsFor('COVERAGE').length === 0
+    && !(value.coverage.state === 'CREATE' && value.recall.candidates.length === 0)
+  ) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Terminal coverage requires a durable coverage call ledger' })
   }
   if (value.generation.state === 'PROPOSAL_READY') {

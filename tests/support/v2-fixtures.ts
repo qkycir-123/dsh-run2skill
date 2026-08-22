@@ -10,6 +10,8 @@ import {
   deriveCatalogScanMembershipDigestV2,
   deriveCatalogScanOutputDigestV2,
   deriveCatalogScanPlanDigestV2,
+  deriveCoverageBindingDigestV2,
+  deriveCoveragePlanDigestV2,
   deriveNativeProposalLineageIdV2,
   deriveSessionBatchIdV2,
   deriveRecallSelfExclusionDigestV2,
@@ -144,7 +146,7 @@ export function createMinimalV2Fixtures() {
       summaryScanComplete: false,
       candidates: [],
     },
-    coverage: { state: 'NOT_STARTED' as const },
+    coverage: { state: 'NOT_STARTED' as const, retryUsed: false },
     generation: {
       state: 'NOT_STARTED' as const,
       userRetryUsed: false,
@@ -281,6 +283,25 @@ export function createMinimalV2Fixtures() {
     pages: [{ ordinal: 1, inputDigest: '1'.repeat(64), membershipDigest: catalogScanMembershipDigest }],
   })
   const catalogScanCallId = deriveCatalogScanCallIdV2(experienceIntent.intentId, catalogScanPlanDigest, 1)
+  const coverageBindingDigest = deriveCoverageBindingDigestV2({
+    intentId: experienceIntent.intentId,
+    coverageBasisRevision: 4,
+    provider: 'deepseek-official',
+    model: 'deepseek-chat',
+    policyVersion: 'coverage-v1',
+    routeMaxInputBytes: 32 * 1024,
+    routeMaxOutputBytes: 8 * 1024,
+    reserveBytes: 8 * 1024,
+    mergeOutputReserveBytes: 2 * 1024,
+  })
+  const coveragePlanDigest = deriveCoveragePlanDigestV2({
+    coverageBindingDigest,
+    runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
+    pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+    catalogEpoch: sealedResult.inputCatalogEpoch,
+    catalogMutationReceiptDigest: 'c'.repeat(64),
+    pages: [],
+  })
   const proposalReadyIntent = {
     ...experienceIntent,
     revision: 4,
@@ -334,7 +355,25 @@ export function createMinimalV2Fixtures() {
       }],
       candidates: [],
     },
-    coverage: { state: 'CREATE' as const, inputDigest: 'b'.repeat(64), targetDigest: sealedResult.targetDigest },
+    coverage: {
+      state: 'CREATE' as const,
+      retryUsed: false,
+      inputDigest: coveragePlanDigest,
+      targetDigest: sealedResult.targetDigest,
+      basisRevision: 4,
+      routeProvider: 'deepseek-official',
+      routeModel: 'deepseek-chat',
+      routeMaxInputBytes: 32 * 1024,
+      routeMaxOutputBytes: 8 * 1024,
+      reserveBytes: 8 * 1024,
+      mergeOutputReserveBytes: 2 * 1024,
+      policyVersion: 'coverage-v1',
+      bindingDigest: coverageBindingDigest,
+      planDigest: coveragePlanDigest,
+      pages: [],
+      candidateBindings: [],
+      decisions: [],
+    },
     generation: {
       state: 'PROPOSAL_READY' as const,
       action: 'CREATE' as const,
@@ -387,18 +426,6 @@ export function createMinimalV2Fixtures() {
         provider: 'deepseek-official',
         model: 'deepseek-chat',
         policyVersion: 'catalog-scan-v1',
-        outcome: 'SUCCEEDED' as const,
-      },
-      {
-        stage: 'COVERAGE' as const,
-        intentRevision: 1,
-        callId: `call_${'2'.repeat(64)}`,
-        ordinal: 1,
-        inputDigest: '3'.repeat(64),
-        outputDigest: '4'.repeat(64),
-        provider: 'deepseek-official',
-        model: 'deepseek-chat',
-        policyVersion: 'coverage-v1',
         outcome: 'SUCCEEDED' as const,
       },
       {
@@ -495,7 +522,7 @@ export function createMinimalV2Fixtures() {
         selfExclusionDigest: deriveRecallSelfExclusionDigestV2(staleSelfExclusion),
       },
     },
-    coverage: { state: 'NOT_STARTED' as const },
+    coverage: { state: 'NOT_STARTED' as const, retryUsed: false },
     generation: {
       state: 'NOT_STARTED' as const,
       userRetryUsed: false,
