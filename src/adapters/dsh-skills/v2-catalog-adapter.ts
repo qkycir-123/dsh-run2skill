@@ -40,6 +40,10 @@ const runtimeDefinitionSchema = runtimeSummarySchema.safeExtend({ content: z.str
 
 type RuntimeSummary = z.infer<typeof runtimeSummarySchema>
 
+type OwnershipFileRead =
+  | { readonly status: 'MATCH'; readonly bodyDigest: string }
+  | { readonly status: 'NO_MATCH' | 'UNAVAILABLE' }
+
 interface OwnershipCatalogPolicy {
   readonly maxBodyBytes: number
   readonly maxTotalBytes: number
@@ -127,6 +131,11 @@ function canonicalPath(value: string): string {
   const api = pathApi(value)
   const normalized = api.resolve(value)
   return api === win32 ? normalized.toLowerCase() : normalized
+}
+
+function fileAbsent(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
 }
 
 function stockRuntimeIdentity(
@@ -464,13 +473,25 @@ export class DshV2CatalogAdapter<TView extends object> {
       // Agent writes are filesystem-observable. Other providers remain covered by
       // the stable Runtime digest and cannot be granted file-write ownership.
       if (candidate.raw.provider !== 'filesystem') continue
-      const target = candidate.raw.path
-        ?? (candidate.raw.resourceBase?.kind === 'directory'
-          ? pathApi(candidate.raw.resourceBase.path).join(candidate.raw.resourceBase.path, 'SKILL.md')
-          : undefined)
-      if (target === undefined) return unavailable
-      const bodyDigest = await this.#readOwnershipBodyDigest(target, candidate.raw.name, observeBytes)
-      if (bodyDigest === undefined) return unavailable
+      const targets = candidate.raw.path === undefined
+        ? candidate.raw.resourceBase?.kind === 'directory'
+          ? [
+              pathApi(candidate.raw.resourceBase.path).join(candidate.raw.resourceBase.path, 'SKILL.md'),
+              pathApi(candidate.raw.resourceBase.path).join(candidate.raw.resourceBase.path, `${candidate.raw.name}.md`),
+            ]
+          : []
+        : [candidate.raw.path]
+      const uniqueTargets = [...new Map(targets.map(target => [canonicalPath(target), target])).values()]
+      let exact: { readonly target: string; readonly bodyDigest: string } | undefined
+      for (const target of uniqueTargets) {
+        const read = await this.#readOwnershipFile(target, candidate.raw.name, observeBytes)
+        if (read.status === 'UNAVAILABLE') return unavailable
+        if (read.status === 'MATCH') {
+          if (exact !== undefined) return unavailable
+          exact = { target, bodyDigest: read.bodyDigest }
+        }
+      }
+      if (exact === undefined) return unavailable
       candidates.push({
         candidateId: candidate.summary.candidateId,
         name: candidate.summary.name,
@@ -478,35 +499,35 @@ export class DshV2CatalogAdapter<TView extends object> {
         source: ownershipCatalogLabel('source', candidate.summary.source),
         scope: candidate.summary.scope,
         writable: candidate.summary.writable,
-        targetPathDigest: sha256Utf8(canonicalJson({ path: canonicalPath(target) })),
-        bodyDigest,
+        targetPathDigest: sha256Utf8(canonicalJson({ path: canonicalPath(exact.target) })),
+        bodyDigest: exact.bodyDigest,
       })
     }
     candidates.sort((left, right) => left.candidateId.localeCompare(right.candidateId))
     return { complete: true, runtimeCatalogDigest: runtime.digest, candidates }
   }
 
-  async #readOwnershipBodyDigest(
+  async #readOwnershipFile(
     target: string,
     expectedName: string,
     observeBytes: (bytes: number) => boolean,
-  ): Promise<string | undefined> {
+  ): Promise<OwnershipFileRead> {
     const chunks: Buffer[] = []
     let candidateBytes = 0
     try {
       for await (const chunk of this.#openOwnershipFile(target)) {
         const bytes = Buffer.from(chunk)
-        if (bytes.byteLength > this.#ownershipPolicy.maxBodyBytes - candidateBytes) return undefined
-        if (!observeBytes(bytes.byteLength)) return undefined
+        if (bytes.byteLength > this.#ownershipPolicy.maxBodyBytes - candidateBytes) return { status: 'UNAVAILABLE' }
+        if (!observeBytes(bytes.byteLength)) return { status: 'UNAVAILABLE' }
         candidateBytes += bytes.byteLength
         chunks.push(bytes)
       }
-    } catch {
-      return undefined
+    } catch (error) {
+      return { status: fileAbsent(error) ? 'NO_MATCH' : 'UNAVAILABLE' }
     }
     const parsed = parseDshSkillFileForOwnership(Buffer.concat(chunks, candidateBytes).toString('utf8'))
-    if (parsed === undefined || parsed.name !== expectedName) return undefined
-    return sha256Utf8(parsed.body)
+    if (parsed === undefined || parsed.name !== expectedName) return { status: 'NO_MATCH' }
+    return { status: 'MATCH', bodyDigest: sha256Utf8(parsed.body) }
   }
 
   async #read(

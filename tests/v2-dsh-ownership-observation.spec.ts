@@ -13,7 +13,8 @@ import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-dom
 const header: DshSessionHeader = { version: 1, id: 'session-v2', createdAt: 100, cwd: 'D:\\repo' }
 const skillPath = 'D:\\repo\\.dsh\\skills\\fixture-workflow\\SKILL.md'
 const exactSkillBody = [
-  '# Fixture workflow', '', 'Observe', '', 'Verify', '', 'Do not skip verification',
+  '# Fixture workflow', '', 'Apply the fixture workflow.', '',
+  'Observe', '', 'Verify', '', 'Do not skip verification',
 ].join('\n')
 const exactSkillBytes = [
   '---', 'name: fixture-workflow', 'description: Apply the fixture workflow.', '---', '',
@@ -170,6 +171,41 @@ describe('real DSH Agent-first ownership observation adapter', () => {
         bodyDigest: created.bodyDigest, writeAttribution: 'AGENT_WRITE_SUCCEEDED', intentBinding: 'MATCH',
       }],
     })
+  })
+
+  it('does not bind an unrelated body when the Intent contract appears only in frontmatter', async () => {
+    const fixture = createMinimalV2Fixtures()
+    const metadataOnly = [
+      fixture.experienceIntent.applicabilitySummary,
+      ...fixture.experienceIntent.keySteps,
+      ...fixture.experienceIntent.prohibitions,
+    ].join(' ')
+    const raw = [
+      '---', 'name: fixture-workflow', 'description: Apply an unrelated workflow.',
+      `metadata: ${metadataOnly}`, '---', '', '# Unrelated placeholder', '',
+    ].join('\n')
+    const created = candidate('# Unrelated placeholder')
+    const observed = harness({
+      baselineCandidates: [], endCandidates: [created],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-1', name: 'write',
+          arguments: JSON.stringify({ file_path: skillPath, content: raw }),
+        }),
+        toolResult(4, 'call-1'),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      changedCandidates: [{
+        bodyDigest: created.bodyDigest,
+        writeAttribution: 'AGENT_WRITE_SUCCEEDED',
+        intentBinding: 'NO_MATCH',
+      }],
+    })
+    await expect(decideWithRealAdapter(observed)).resolves.not.toMatchObject({ status: 'RESOLVED_BY_AGENT' })
   })
 
   it('drives the real Agent-first coordinator to one owner without a second model channel', async () => {

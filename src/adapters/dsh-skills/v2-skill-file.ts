@@ -1,5 +1,3 @@
-import { sha256Utf8 } from '../../domain/observe/hashing.js'
-
 export interface ParsedDshSkillFile {
   readonly name: string
   readonly body: string
@@ -20,13 +18,9 @@ export function parseDshSkillFileForOwnership(raw: string): ParsedDshSkillFile |
     .map(line => line.replace(/\r$/u, ''))
     .filter(line => /^name\s*:/u.test(line))
   if (nameLines.length !== 1) return undefined
-  const name = /^name:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*$/u.exec(nameLines[0]!)?.[1]
+  const nameMatch = /^name:\s*(?:([a-z0-9]+(?:-[a-z0-9]+)*)|"([a-z0-9]+(?:-[a-z0-9]+)*)"|'([a-z0-9]+(?:-[a-z0-9]+)*)')\s*$/u
+    .exec(nameLines[0]!)
+  const name = nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3]
   if (name === undefined) return undefined
   return { name, body: lines.slice(closing + 1).join('\n').trim() }
-}
-
-/** Mirrors the stock DSH filesystem provider's frontmatter boundary and body trim. */
-export function deriveDshSkillReadbackBodyDigest(raw: string): string | undefined {
-  const parsed = parseDshSkillFileForOwnership(raw)
-  return parsed === undefined ? undefined : sha256Utf8(parsed.body)
 }

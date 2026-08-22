@@ -54,6 +54,13 @@ function openText(value: string): () => AsyncIterable<Uint8Array> {
   return async function* () { yield Buffer.from(value, 'utf8') }
 }
 
+function openBundleText(value: string): (path: string) => AsyncIterable<Uint8Array> {
+  return path => {
+    if (/(?:^|[\\/])skill\.md$/iu.test(path)) return openText(value)()
+    throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+  }
+}
+
 describe('DSH v2 Runtime and Pending Catalog adapter', () => {
   it('exposes one stable Runtime-only manifest for the pre-Turn ownership baseline', async () => {
     const { domain, fixture } = await seed()
@@ -140,7 +147,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         get: async () => { throw new Error('ownership capture must not call registry.get') },
       },
       resolveView: () => view,
-      internalOpenOwnershipFile: openText(rawSkill(exactSkillBody)),
+      internalOpenOwnershipFile: openBundleText(rawSkill(exactSkillBody)),
       resolveStockWritableRoot: () => ({
         scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
         canonicalRootPath: 'D:\\repo\\.dsh\\skills',
@@ -157,6 +164,37 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     })
     expect(observed.candidates[0]?.targetPathDigest).toMatch(/^[a-f0-9]{64}$/u)
     expect(JSON.stringify(observed)).not.toContain('D:\\repo')
+  })
+
+  it('resolves a flat filesystem winner through bounded layout discovery', async () => {
+    const { domain, fixture } = await seed()
+    const flat = {
+      ...runtimeSkill,
+      name: 'flat-workflow',
+      resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills' },
+    }
+    const opened: string[] = []
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [flat] }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: path => {
+        opened.push(path)
+        if (path.toLowerCase().endsWith('flat-workflow.md')) {
+          return openText(rawSkill('# Flat workflow', flat.name))()
+        }
+        throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      },
+    })
+
+    const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)
+    expect(observed).toMatchObject({
+      complete: true,
+      candidates: [{ name: flat.name, bodyDigest: sha256Utf8('# Flat workflow') }],
+    })
+    expect(opened.some(path => path.toLowerCase().endsWith('flat-workflow.md'))).toBe(true)
   })
 
   it('fails closed when an exact candidate body changes during ownership capture', async () => {
@@ -197,6 +235,25 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       .resolves.toMatchObject({ complete: false, candidates: [] })
   })
 
+  it('accepts one simple quoted DSH Skill name during bounded ownership parsing', async () => {
+    const { domain, fixture } = await seed()
+    const quoted = rawSkill('# Quoted name').replace(
+      `name: ${runtimeSkill.name}`,
+      `name: "${runtimeSkill.name}"`,
+    )
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: openBundleText(quoted),
+    })
+
+    await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: true, candidates: [{ bodyDigest: sha256Utf8('# Quoted name') }] })
+  })
+
   it('does not load bodies from non-filesystem providers during ownership capture', async () => {
     const { domain, fixture } = await seed()
     const borrowed = {
@@ -229,7 +286,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         get: async () => { throw new Error('ownership capture must not call registry.get') },
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
-      internalOpenOwnershipFile: openText(rawSkill('# Third-party Skill')),
+      internalOpenOwnershipFile: openBundleText(rawSkill('# Third-party Skill')),
     })
 
     const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)

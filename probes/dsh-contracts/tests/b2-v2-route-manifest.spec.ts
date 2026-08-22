@@ -30,6 +30,13 @@ async function writeSkill(root: string, name: string, description: string): Prom
   ].join('\n'), 'utf8')
 }
 
+async function writeFlatSkill(root: string, name: string, description: string): Promise<void> {
+  await mkdir(root, { recursive: true })
+  await writeFile(join(root, `${name}.md`), [
+    '---', `name: ${name}`, `description: ${description}`, '---', '', `# ${name}`, '',
+  ].join('\n'), 'utf8')
+}
+
 async function waitForSkill(
   registry: Context['skills'],
   name: string,
@@ -56,6 +63,7 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
     const bundled = join(base, 'bundled')
     await mkdir(join(project, '.git'), { recursive: true })
     await writeSkill(join(project, '.dsh', 'skills'), 'same-skill', 'Project winner')
+    await writeFlatSkill(join(project, '.dsh', 'skills'), 'flat-probe', 'Flat project winner')
     await writeSkill(join(dshHome, 'skills'), 'user-only', 'User Skill')
     await writeSkill(custom, 'custom-only', 'Custom Skill')
     await writeSkill(bundled, 'bundled-only', 'Bundled Skill')
@@ -123,9 +131,13 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       })
       const before = await manifest.capture('sl_probe')
       expect(before.complete).toBe(true)
-      expect(before.ownershipCandidates).toHaveLength(4)
+      expect(before.ownershipCandidates).toHaveLength(5)
       expect(before.ownershipCandidates?.find(candidate => candidate.name === 'same-skill')).toMatchObject({
         provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: true,
+      })
+      expect(before.ownershipCandidates?.find(candidate => candidate.name === 'flat-probe')).toMatchObject({
+        provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: false,
+        bodyDigest: sha256Utf8('# flat-probe'),
       })
       expect(before.ownershipCandidates?.every(candidate => /^[a-f0-9]{64}$/u.test(candidate.bodyDigest))).toBe(true)
       expect(before.ownershipCandidates?.some(candidate => candidate.targetPathDigest !== undefined)).toBe(true)

@@ -4,7 +4,7 @@ import type { SessionPersistencePort, DshSessionEvent, DshSessionHeader } from '
 import type { OwnershipObservationPort } from '../../application/ownership/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
-import { deriveDshSkillReadbackBodyDigest } from './v2-skill-file.js'
+import { parseDshSkillFileForOwnership } from './v2-skill-file.js'
 import type { ExperienceIntentV2, OwnershipEvidenceV2, SessionBatchV2 } from '../../domain/v2/index.js'
 
 type OwnershipCandidate = NonNullable<SessionBatchV2['batchManifestBaseline']['ownershipCandidates']>[number]
@@ -75,7 +75,7 @@ export interface DshV2OwnershipObservationAdapterOptions {
 
 interface ParsedWrite {
   readonly targetPathDigest?: string
-  readonly content?: string
+  readonly readbackBody?: string
   readonly readbackBodyDigest?: string
   readonly failed: boolean
   readonly skillMarker: boolean
@@ -173,13 +173,12 @@ function directWrite(
       ? args.file_text
       : undefined
   if (content !== undefined && typeof content !== 'string') return undefined
-  const readbackBodyDigest = typeof content === 'string'
-    ? deriveDshSkillReadbackBodyDigest(content)
-    : undefined
+  const readback = typeof content === 'string' ? parseDshSkillFileForOwnership(content) : undefined
   return {
     targetPathDigest: deriveOwnershipTargetPathDigest(path, cwd),
-    ...(typeof content === 'string' ? { content } : {}),
-    ...(readbackBodyDigest === undefined ? {} : { readbackBodyDigest }),
+    ...(readback === undefined
+      ? {}
+      : { readbackBody: readback.body, readbackBodyDigest: sha256Utf8(readback.body) }),
     failed,
     skillMarker: SKILL_MARKER.test(path) || (typeof content === 'string' && /(?:^|\n)name:\s*[a-z0-9-]+/iu.test(content)),
   }
@@ -358,9 +357,10 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         const writeAttribution = successful.length === 1
           ? 'AGENT_WRITE_SUCCEEDED' as const
           : 'UNKNOWN' as const
-        const intentBinding = exactWrite?.content !== undefined && containsIntentContract(exactWrite.content, input.intent)
+        const intentBinding = exactWrite?.readbackBody !== undefined
+          && containsIntentContract(exactWrite.readbackBody, input.intent)
           ? 'MATCH' as const
-          : exactWrite?.content !== undefined
+          : exactWrite?.readbackBody !== undefined
             ? 'NO_MATCH' as const
             : 'UNKNOWN' as const
         return {
