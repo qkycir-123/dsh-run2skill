@@ -5,6 +5,11 @@ import { derivePublicationTargetIdentityDigest, materializeLineage } from '../..
 import {
   deriveExperienceIntentIdV2,
   deriveBehaviorSignatureV2,
+  deriveCatalogScanBindingDigestV2,
+  deriveCatalogScanCallIdV2,
+  deriveCatalogScanMembershipDigestV2,
+  deriveCatalogScanOutputDigestV2,
+  deriveCatalogScanPlanDigestV2,
   deriveNativeProposalLineageIdV2,
   deriveSessionBatchIdV2,
   deriveRecallSelfExclusionDigestV2,
@@ -253,8 +258,32 @@ export function createMinimalV2Fixtures() {
   }
   const ownershipEvidenceDigest = deriveOwnershipEvidenceDigestV2(ownershipEvidence)
   const ownershipReasonCode = 'NO_AGENT_SKILL_ACTIVITY'
+  const catalogScanBindingDigest = deriveCatalogScanBindingDigestV2({
+    intentId: experienceIntent.intentId,
+    scanBasisRevision: 2,
+    provider: 'deepseek-official',
+    model: 'deepseek-chat',
+    policyVersion: 'catalog-scan-v1',
+  })
+  const catalogScanOutputDigest = deriveCatalogScanOutputDigestV2([{
+    candidateId: 'fixture-unrelated', classification: 'UNRELATED',
+  }])
+  const catalogScanMembershipDigest = deriveCatalogScanMembershipDigestV2([{
+    candidateId: 'fixture-unrelated', summaryDigest: 'f'.repeat(64),
+  }])
+  const catalogScanPlanDigest = deriveCatalogScanPlanDigestV2({
+    policyVersion: 'catalog-scan-v1',
+    runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
+    pendingCatalogDigest: sealedResult.pendingCatalogDigest,
+    catalogEpoch: sealedResult.inputCatalogEpoch,
+    catalogMutationReceiptDigest: 'c'.repeat(64),
+    scanBindingDigest: catalogScanBindingDigest,
+    pages: [{ ordinal: 1, inputDigest: '1'.repeat(64), membershipDigest: catalogScanMembershipDigest }],
+  })
+  const catalogScanCallId = deriveCatalogScanCallIdV2(experienceIntent.intentId, catalogScanPlanDigest, 1)
   const proposalReadyIntent = {
     ...experienceIntent,
+    revision: 4,
     status: 'PROPOSAL_READY' as const,
     ownership: {
       state: 'RUN2SKILL_OWNED' as const,
@@ -283,6 +312,26 @@ export function createMinimalV2Fixtures() {
       summaryScanComplete: true,
       catalogEpoch: sealedResult.inputCatalogEpoch,
       catalogMutationReceiptDigest: 'c'.repeat(64),
+      scanBasisRevision: 2,
+      scanRouteProvider: 'deepseek-official',
+      scanRouteModel: 'deepseek-chat',
+      scanPolicyVersion: 'catalog-scan-v1',
+      scanBindingDigest: catalogScanBindingDigest,
+      scanPlanDigest: catalogScanPlanDigest,
+      scanPageCount: 1,
+      scanSummaryCount: 1,
+      scanPages: [{
+        ordinal: 1, itemCount: 1, inputDigest: '1'.repeat(64), membershipDigest: catalogScanMembershipDigest,
+      }],
+      summaryClassifications: [{
+        candidateId: 'fixture-unrelated',
+        summaryDigest: 'f'.repeat(64),
+        classification: 'UNRELATED' as const,
+        pageOrdinal: 1,
+        callId: catalogScanCallId,
+        inputDigest: '1'.repeat(64),
+        outputDigest: catalogScanOutputDigest,
+      }],
       candidates: [],
     },
     coverage: { state: 'CREATE' as const, inputDigest: 'b'.repeat(64), targetDigest: sealedResult.targetDigest },
@@ -329,11 +378,12 @@ export function createMinimalV2Fixtures() {
     stageCalls: [
       {
         stage: 'CATALOG_SCAN' as const,
-        intentRevision: 1,
-        callId: `call_${'1'.repeat(64)}`,
+        intentRevision: 3,
+        callId: catalogScanCallId,
         ordinal: 1,
+        itemCount: 1,
         inputDigest: '1'.repeat(64),
-        outputDigest: '2'.repeat(64),
+        outputDigest: catalogScanOutputDigest,
         provider: 'deepseek-official',
         model: 'deepseek-chat',
         policyVersion: 'catalog-scan-v1',
@@ -433,7 +483,7 @@ export function createMinimalV2Fixtures() {
   }
   const staleRefreshIntent = {
     ...staleIntentBase,
-    revision: 2,
+    revision: 5,
     status: 'RECALLING' as const,
     recall: {
       state: 'SCANNING' as const,
