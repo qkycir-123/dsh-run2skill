@@ -1096,7 +1096,7 @@ export class GenerationWorker {
     return { result, revalidation, proposalId, lineageId, outcomeCatalogEpoch, mutationId, mutationReceiptDigest }
   }
 
-  #buildProposalLineage(intent: ExperienceIntentV2) {
+  #buildProposalLineage(intent: ExperienceIntentV2, ownerIntentRevision = intent.revision) {
     const facts = this.#proposalMutationFacts(intent)
     if (facts === undefined) return undefined
     return ProposalLineageV2Schema.parse({
@@ -1108,13 +1108,13 @@ export class GenerationWorker {
       state: 'ACTIVE_PROPOSAL',
       behaviorSignature: intent.behaviorSignature,
       ownerIntentId: intent.intentId,
-      ownerIntentRevision: intent.revision,
+      ownerIntentRevision,
       currentProposalRevision: 1,
       proposalRevisions: [{
         revision: 1,
         proposalId: facts.proposalId,
         ownerIntentId: intent.intentId,
-        ownerIntentRevision: intent.revision,
+        ownerIntentRevision,
         action: facts.result.action,
         body: facts.result.body,
         runtimeCatalogDigest: facts.revalidation.runtimeCatalogDigest,
@@ -1185,7 +1185,10 @@ export class GenerationWorker {
       return
     }
     const parsed = ProposalLineageV2Schema.safeParse(existing)
-    const expected = this.#buildProposalLineage(intent)
+    const expected = this.#buildProposalLineage(
+      intent,
+      intent.generation.state === 'PROPOSAL_BODY_COMMITTED' ? intent.revision - 1 : intent.revision,
+    )
     const exactProposal = parsed.success
       && expected !== undefined
       && canonicalJson(parsed.data) === canonicalJson(expected)
@@ -1368,7 +1371,9 @@ export class GenerationWorker {
       || revision.runtimeCatalogDigest !== revalidation.runtimeCatalogDigest
       || revision.pendingCatalogDigest !== revalidation.pendingCatalogDigest
       || revision.generationResultReceiptDigest !== result.receiptDigest
+      || revision.catalogMutationReceiptDigest !== this.#proposalMutationFacts(intent)?.mutationReceiptDigest
       || revision.catalogEpoch !== revalidation.catalogEpoch + 1
+      || revision.targetIdentityDigest !== result.targetDigest
       || revision.state !== 'ACTIVE_PROPOSAL'
     ) return
     const key = deriveBehaviorSignatureIndexKeyV2(intent.persistenceScope, intent.behaviorSignature)
@@ -1380,6 +1385,7 @@ export class GenerationWorker {
         || lease.state !== 'ACTIVE_COMPLETE'
         || lease.completionReceiptDigest !== completion.digest
         || current.proposalCatalogMutationJournal !== undefined
+        || current.proposalCatalogEpoch !== revalidation.catalogEpoch + 1
         || indexed?.ownerIntentId !== intentId
         || indexed.ownerRevision !== intent.revision
         || indexed.state !== 'ACTIVE'
