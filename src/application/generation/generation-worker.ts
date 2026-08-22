@@ -89,6 +89,10 @@ export interface GenerationCatalogPort {
       readonly receiptDigest: string
     } | undefined
   }): Promise<GenerationCatalogSnapshot>
+  runtimeSnapshot(input: {
+    readonly batch: SessionBatchV2
+    readonly intent: ExperienceIntentV2
+  }): Promise<{ readonly complete: boolean; readonly runtimeCatalogDigest: string }>
   read(input: {
     readonly candidateId: string
     readonly batch: SessionBatchV2
@@ -534,6 +538,13 @@ export class GenerationWorker {
     } catch {
       return undefined
     }
+  }
+
+  async #safeRuntimeSnapshot(
+    batch: SessionBatchV2,
+    intent: ExperienceIntentV2,
+  ): Promise<{ readonly complete: boolean; readonly runtimeCatalogDigest: string } | undefined> {
+    try { return await this.#catalog.runtimeSnapshot({ batch, intent }) } catch { return undefined }
   }
 
   #modelInput(intent: ExperienceIntentV2, batch: SessionBatchV2, baseSkill?: string) {
@@ -1137,11 +1148,24 @@ export class GenerationWorker {
     const facts = this.#proposalMutationFacts(intent)
     const lineage = this.#buildProposalLineage(intent)
     if (facts === undefined || lineage === undefined) return
+    const batchValue = this.#batches.get(intent.batchId)
+    const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
+    if (!batch?.success) {
+      await this.#markStaleResult(intentId, leaseId)
+      return
+    }
+    const boundarySnapshot = await this.#safePostResultSnapshot(batch.data, intent)
+    if (!this.#snapshotMatchesRevalidation(boundarySnapshot, intent, leaseId)) {
+      await this.#markStaleResult(intentId, leaseId)
+      return
+    }
     const prepared = await this.#global.runExclusive(async current => {
       const lease = current.proposalGenerationLease
+      const proposalAuthorizationReceipt = intent.generation.receipts.find(receipt => receipt.kind === 'PROPOSAL_AUTHORIZED')
       if (
         lease?.leaseId !== leaseId
         || lease.state !== 'PROPOSAL_COMMIT_AUTHORIZED'
+        || lease.proposalAuthorizationReceiptDigest !== proposalAuthorizationReceipt?.digest
         || current.proposalCatalogEpoch !== facts.revalidation.catalogEpoch
         || current.proposalCatalogMutationJournal !== undefined
         || current.purgeJournal !== undefined
@@ -1163,6 +1187,12 @@ export class GenerationWorker {
     })
     if (!prepared) return
 
+    const runtimeBeforeBody = await this.#safeRuntimeSnapshot(batch.data, intent)
+    if (!this.#runtimeMatchesRevalidation(runtimeBeforeBody, intent)) {
+      await this.#rollbackPreparedProposal(intent, lineage, facts.mutationId)
+      return
+    }
+
     const existing = this.#lineages.get(facts.lineageId)
     if (existing === undefined) await this.#lineages.put(facts.lineageId, lineage)
     else if (canonicalJson(ProposalLineageV2Schema.parse(existing)) !== canonicalJson(lineage)) {
@@ -1170,9 +1200,53 @@ export class GenerationWorker {
       await this.#markStaleResult(intentId, leaseId)
       return
     }
+    const runtimeAfterBody = await this.#safeRuntimeSnapshot(batch.data, intent)
+    if (!this.#runtimeMatchesRevalidation(runtimeAfterBody, intent)) {
+      await this.#rollbackPreparedProposal(intent, lineage, facts.mutationId)
+      return
+    }
     await this.#markProposalBodyCommitted(intentId, leaseId, facts)
     intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
     await this.#finalizeProposalBody(intent, facts)
+  }
+
+  #snapshotMatchesRevalidation(
+    snapshot: GenerationCatalogSnapshot | undefined,
+    intent: ExperienceIntentV2,
+    leaseId: string,
+  ): boolean {
+    const revalidation = intent.generation.revalidationAuthorization
+    return snapshot !== undefined
+      && revalidation !== undefined
+      && snapshot.complete
+      && snapshot.runtimeCatalogDigest === revalidation.runtimeCatalogDigest
+      && snapshot.pendingCatalogDigest === revalidation.pendingCatalogDigest
+      && snapshot.externalPendingDigest === revalidation.externalPendingDigest
+      && snapshot.catalogEpoch === revalidation.catalogEpoch
+      && snapshot.catalogMutationReceiptDigest === revalidation.catalogMutationReceiptDigest
+      && intent.generation.leaseId === leaseId
+  }
+
+  #runtimeMatchesRevalidation(
+    snapshot: { readonly complete: boolean; readonly runtimeCatalogDigest: string } | undefined,
+    intent: ExperienceIntentV2,
+  ): boolean {
+    return snapshot !== undefined
+      && snapshot.complete
+      && snapshot.runtimeCatalogDigest === intent.generation.revalidationAuthorization?.runtimeCatalogDigest
+  }
+
+  async #rollbackPreparedProposal(
+    intent: ExperienceIntentV2,
+    expectedLineage: z.infer<typeof ProposalLineageV2Schema>,
+    mutationId: string,
+  ): Promise<void> {
+    const stored = ProposalLineageV2Schema.safeParse(this.#lineages.get(expectedLineage.lineageId))
+    if (stored.success && canonicalJson(stored.data) === canonicalJson(expectedLineage)) {
+      await this.#lineages.delete(expectedLineage.lineageId)
+    }
+    await this.#abandonProposalJournal(mutationId)
+    await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
   }
 
   async #recoverPreparedProposal(intent: ExperienceIntentV2, mutationId: string): Promise<void> {
@@ -1195,6 +1269,13 @@ export class GenerationWorker {
     if (!exactProposal) {
       await this.#abandonProposalJournal(mutationId)
       await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
+      return
+    }
+    const batchValue = this.#batches.get(intent.batchId)
+    const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
+    const runtime = batch?.success ? await this.#safeRuntimeSnapshot(batch.data, intent) : undefined
+    if (!this.#runtimeMatchesRevalidation(runtime, intent)) {
+      await this.#rollbackPreparedProposal(intent, expected!, mutationId)
       return
     }
     await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)

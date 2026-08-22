@@ -99,11 +99,18 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
   }
   let reads = 0
   const snapshotExclusions: Array<Parameters<GenerationCatalogPort['snapshot']>[0]['exclude']> = []
+  let snapshotHook: ((input: Parameters<GenerationCatalogPort['snapshot']>[0], ordinal: number) => void) | undefined
   const catalog: GenerationCatalogPort = {
     snapshot: async input => {
       snapshotExclusions.push(input.exclude)
-      return generationSnapshot
+      const captured = generationSnapshot
+      snapshotHook?.(input, snapshotExclusions.length)
+      return captured
     },
+    runtimeSnapshot: async () => ({
+      complete: generationSnapshot.complete,
+      runtimeCatalogDigest: generationSnapshot.runtimeCatalogDigest,
+    }),
     read: async input => {
       reads += 1
       return recallCatalog.read(input)
@@ -118,6 +125,7 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
     get reads() { return reads },
     snapshotExclusions,
     setGenerationSnapshot(next: typeof generationSnapshot) { generationSnapshot = next },
+    setSnapshotHook(next: typeof snapshotHook) { snapshotHook = next },
   }
 }
 
@@ -366,6 +374,35 @@ describe('v2 generation lease worker', () => {
     expect(Object.values(seeded.domain.global.get().behaviorSignatureIndex)).toEqual([
       expect.objectContaining({ ownerIntentId: seeded.intentId, state: 'RESERVED' }),
     ])
+  })
+
+  it('rechecks both Catalogs at the body mutation boundary and rejects a late Runtime change', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    const { result } = await exposeSealedResultForRevalidation(seeded)
+    let excludedSnapshots = 0
+    seeded.setSnapshotHook(input => {
+      if (input.exclude?.kind !== 'GENERATION_RESULT' || ++excludedSnapshots !== 2) return
+      seeded.setGenerationSnapshot({
+        complete: true,
+        runtimeCatalogDigest: '9'.repeat(64),
+        pendingCatalogDigest: 'e'.repeat(64),
+        externalPendingDigest: result.externalPendingDigest,
+        catalogEpoch: result.outcomeCatalogEpoch,
+        catalogMutationReceiptDigest: result.mutationReceiptDigest,
+      })
+    })
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
   })
 
   it('re-reads the exact MERGE target after generation and rejects a changed body', async () => {
