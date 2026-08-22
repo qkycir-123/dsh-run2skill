@@ -324,11 +324,23 @@ export function deriveSessionBatchIdV2(facts: SessionBatchIdentityFactsV2): `bat
   }))}`
 }
 
+export const OwnershipCatalogCandidateV2Schema = z.object({
+  candidateId: identity,
+  name: z.string().min(1).max(128),
+  provider: identity,
+  source: identity,
+  scope: PersistenceScopeV2Schema,
+  writable: z.boolean(),
+  targetPathDigest: sha256Hex.optional(),
+  bodyDigest: sha256Hex,
+}).strict()
+
 const BatchManifestBaselineV2Schema = z.object({
   observedAt: isoDateTime,
   rootManifestDigest: sha256Hex,
   runtimeCatalogDigest: sha256Hex,
   complete: z.boolean(),
+  ownershipCandidates: z.array(OwnershipCatalogCandidateV2Schema).max(1024).optional(),
 }).strict()
 
 const BatchManifestEndObservationV2Schema = z.discriminatedUnion('state', [

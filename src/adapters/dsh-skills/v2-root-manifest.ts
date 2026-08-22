@@ -94,6 +94,20 @@ export interface DshV2RuntimeCatalogManifestPort {
     readonly complete: boolean
     readonly runtimeCatalogDigest: string
   }>
+  observeOwnershipCatalog?(sessionLifecycleKey: string): Promise<{
+    readonly complete: boolean
+    readonly runtimeCatalogDigest: string
+    readonly candidates: readonly {
+      readonly candidateId: string
+      readonly name: string
+      readonly provider: string
+      readonly source: string
+      readonly scope: 'PROJECT' | 'USER'
+      readonly writable: boolean
+      readonly targetPathDigest?: string
+      readonly bodyDigest: string
+    }[]
+  }>
 }
 
 export interface DshV2RootManifestAdapterOptions {
@@ -307,10 +321,21 @@ export class DshV2RootManifestAdapter {
       const session = this.options.resolveSession(sessionLifecycleKey)
       if (session === undefined) return unavailable
       const first = await this.#rootManifest(session.cwd, session.configuration, budget)
-      const runtime = await withBudgetDeadline(
-        this.options.runtimeCatalog.observeRuntimeCatalog(sessionLifecycleKey),
-        budget,
-      )
+      let runtime: Awaited<ReturnType<DshV2RuntimeCatalogManifestPort['observeRuntimeCatalog']>>
+      let ownershipCandidates: SessionBatchV2['batchManifestBaseline']['ownershipCandidates']
+      if (this.options.runtimeCatalog.observeOwnershipCatalog === undefined) {
+        runtime = await withBudgetDeadline(
+          this.options.runtimeCatalog.observeRuntimeCatalog(sessionLifecycleKey),
+          budget,
+        )
+      } else {
+        const detailed = await withBudgetDeadline(
+          this.options.runtimeCatalog.observeOwnershipCatalog(sessionLifecycleKey),
+          budget,
+        )
+        runtime = detailed
+        ownershipCandidates = [...detailed.candidates]
+      }
       const second = await this.#rootManifest(session.cwd, session.configuration, budget)
       if (
         first === undefined
@@ -319,7 +344,13 @@ export class DshV2RootManifestAdapter {
         || !runtime.complete
         || !validDigest(runtime.runtimeCatalogDigest)
       ) return { ...unavailable, runtimeCatalogDigest: validDigest(runtime.runtimeCatalogDigest) ? runtime.runtimeCatalogDigest : EMPTY_DIGEST }
-      return { observedAt, rootManifestDigest: first, runtimeCatalogDigest: runtime.runtimeCatalogDigest, complete: true }
+      return {
+        observedAt,
+        rootManifestDigest: first,
+        runtimeCatalogDigest: runtime.runtimeCatalogDigest,
+        complete: true,
+        ...(ownershipCandidates === undefined ? {} : { ownershipCandidates }),
+      }
     } catch {
       return unavailable
     }
