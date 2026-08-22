@@ -148,6 +148,15 @@ describe('all-cache Purge', () => {
       },
     })
 
+    await expect(service.confirm(preview.previewId, preview.digest, { scope: 'ALL' }))
+      .rejects.toEqual(expect.objectContaining({ code: 'PURGE_BUSY' }))
+    const blocked = v2.global.get()
+    const {
+      proposalGenerationLease: _lease,
+      proposalCatalogMutationJournal: _mutation,
+      ...unblocked
+    } = blocked
+    await v2.global.set(unblocked)
     const receipt = await service.confirm(preview.previewId, preview.digest, { scope: 'ALL' })
 
     expect(receipt.state).toBe('COMPLETED')
@@ -155,5 +164,56 @@ describe('all-cache Purge', () => {
     expect(v2.global.get().behaviorSignatureIndex).toEqual({})
     expect(v2.global.get().proposalGenerationLease).toBeUndefined()
     expect(v2.global.get().proposalCatalogMutationJournal).toBeUndefined()
+  })
+
+  it('does not overwrite an active generation lease with a stale ALL-purge snapshot', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const v2 = createMemoryRun2skillV2Domain()
+    const fixtures = createMinimalV2Fixtures()
+    v2.experienceIntents.set(fixtures.experienceIntent.intentId, fixtures.experienceIntent)
+    const service = new PurgeService(v1, { resolve: vi.fn() }, { now: () => NOW, v2Domain: v2 })
+    const preview = await service.preview('ALL')
+    const current = v2.global.get()
+    await v2.global.set({
+      ...current,
+      proposalGenerationLease: {
+        schemaVersion: 1,
+        leaseId: `lease_${'a'.repeat(64)}`,
+        ownerIntentId: fixtures.experienceIntent.intentId,
+        ownerRevision: fixtures.experienceIntent.revision,
+        generationRevision: fixtures.experienceIntent.revision,
+        action: 'CREATE',
+        inputDigest: 'b'.repeat(64),
+        externalPendingDigest: 'c'.repeat(64),
+        catalogEpoch: current.proposalCatalogEpoch,
+        acquiredAt: new Date(NOW).toISOString(),
+        state: 'NOT_CALLED',
+      },
+    })
+
+    await expect(service.confirm(preview.previewId, preview.digest, { scope: 'ALL' }))
+      .rejects.toEqual(expect.objectContaining({ code: 'PURGE_BUSY' }))
+    expect(v2.global.get().proposalGenerationLease).toMatchObject({ state: 'NOT_CALLED' })
+  })
+
+  it('clears an orphan v2 purge fence when no durable v1 purge exists', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const v2 = createMemoryRun2skillV2Domain()
+    await v2.global.set({
+      ...v2.global.get(),
+      purgeJournal: {
+        schemaVersion: 1,
+        purgeId: `purge_${'a'.repeat(64)}`,
+        scopeBinding: { scope: 'ALL' },
+        hideBefore: new Date(NOW).toISOString(),
+        phase: 'QUIESCED',
+        updatedAt: new Date(NOW).toISOString(),
+      },
+    })
+    const service = new PurgeService(v1, { resolve: vi.fn() }, { now: () => NOW, v2Domain: v2 })
+
+    await expect(service.recover()).resolves.toBeUndefined()
+
+    expect(v2.global.get().purgeJournal).toBeUndefined()
   })
 })

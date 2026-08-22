@@ -14,6 +14,7 @@ import {
   type PurgeScopeBindingV1,
 } from '../../domain/purge/index.js'
 import { Run2skillGlobalStore } from '../../adapters/dsh-storage/global-store.js'
+import { Run2skillV2GlobalStore } from '../../adapters/dsh-storage/v2-global-store.js'
 import type { Run2skillDomain } from '../../adapters/dsh-storage/types.js'
 import type { Run2skillV2Domain } from '../../adapters/dsh-storage/v2-types.js'
 
@@ -202,6 +203,7 @@ export class PurgeService {
   readonly #beforeDeleteAll
   readonly #assertDeletionReady
   readonly #v2Domain
+  readonly #v2Global
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
@@ -222,6 +224,7 @@ export class PurgeService {
     this.#beforeDeleteAll = options.beforeDeleteAll ?? (() => {})
     this.#assertDeletionReady = options.assertDeletionReady ?? (() => {})
     this.#v2Domain = options.v2Domain
+    this.#v2Global = options.v2Domain === undefined ? undefined : Run2skillV2GlobalStore.for(options.v2Domain)
   }
 
   async preview(scope: 'ALL' | 'PROJECT' | 'USER', workspaceId?: string): Promise<PurgePreviewV1> {
@@ -336,11 +339,13 @@ export class PurgeService {
       this.#lastReceipt = undefined
       let receipt: PurgeReceiptV1
       try {
+        await this.#beginV2Purge(journal)
         await this.#writeJournal(journal)
         await this.#onHidden(journal)
         receipt = await this.#runToCompletion()
       } catch (error) {
         if (error instanceof PurgeError) throw error
+        if (this.#global.get().purgeJournal === undefined) await this.#clearOrphanV2Purge(journal.purgeId)
         await this.#recordFailure('PURGE_STORAGE_UNAVAILABLE')
         throw new PurgeError('PURGE_STORAGE_UNAVAILABLE')
       }
@@ -369,7 +374,12 @@ export class PurgeService {
 
   recover(): Promise<PurgeReceiptV1 | undefined> {
     return this.#serialize(async () => {
-      if (this.#global.get().purgeJournal === undefined) return undefined
+      const journal = this.#global.get().purgeJournal
+      if (journal === undefined) {
+        await this.#clearOrphanV2Purge()
+        return undefined
+      }
+      await this.#beginV2Purge(journal)
       this.#lastReceipt = undefined
       return await this.#runToCompletion()
     })
@@ -381,6 +391,7 @@ export class PurgeService {
       if (journal === undefined || journal.purgeId !== purgeId) {
         throw new PurgeError('PURGE_PREVIEW_STALE')
       }
+      await this.#beginV2Purge(journal)
       this.#lastReceipt = undefined
       await this.#writeJournal({ ...journal, lastError: undefined })
       return await this.#runToCompletion()
@@ -528,57 +539,88 @@ export class PurgeService {
   }
 
   async #finalizeV2(completedPurgeFences: NonNullable<ReturnType<typeof upsertCompletedPurgeFence>>): Promise<void> {
-    if (this.#v2Domain === undefined) throw new Error('Run2Skill v2 storage unavailable')
-    const current = this.#v2Domain.global.get()
-    const {
-      proposalGenerationLease: _proposalGenerationLease,
-      proposalCatalogMutationJournal: _proposalCatalogMutationJournal,
-      purgeJournal: _purgeJournal,
-      ...stable
-    } = current
+    if (this.#v2Domain === undefined || this.#v2Global === undefined) throw new Error('Run2Skill v2 storage unavailable')
     const hideBefore = completedPurgeFences.all?.hideBefore
     if (hideBefore === undefined) throw new Error('ALL purge fence missing')
     const boundary = Date.parse(hideBefore)
-    const remainingOwnerIds = new Set([
-      ...this.#v2Domain.table('turn_observations').keys(),
-      ...this.#v2Domain.table('session_batches').keys(),
-      ...this.#v2Domain.table('experience_intents').keys(),
-      ...this.#v2Domain.table('proposal_lineages').keys(),
-      ...this.#v2Domain.table('legacy_items').keys(),
-    ])
     const remainingIntentIds = new Set(this.#v2Domain.table('experience_intents').keys())
-    const behaviorSignatureIndex = Object.fromEntries(Object.entries(current.behaviorSignatureIndex)
-      .filter(([, entry]) => Date.parse(entry.updatedAt) > boundary && remainingIntentIds.has(entry.ownerIntentId)))
-    const sessions = Object.fromEntries(Object.entries(current.sessions).map(([key, session]) => {
+    await this.#v2Global.runExclusive(async current => {
+      const activePurge = current.purgeJournal
+      if (activePurge?.purgeId !== completedPurgeFences.all?.purgeId) throw new Error('V2_PURGE_JOURNAL_MISMATCH')
+      if (current.proposalGenerationLease !== undefined || current.proposalCatalogMutationJournal !== undefined) {
+        throw new Error('V2_PURGE_GENERATION_BUSY')
+      }
       const {
-        activeBatchId: _activeBatchId,
-        batchManifestBaseline: _batchManifestBaseline,
-        ...cursor
-      } = session
-      return [key, { ...cursor, openExperienceCarry: [] }]
-    }))
-    const proposalGenerationLease = current.proposalGenerationLease !== undefined
-      && Date.parse(current.proposalGenerationLease.acquiredAt) > boundary
-      && remainingIntentIds.has(current.proposalGenerationLease.ownerIntentId)
-      ? current.proposalGenerationLease
-      : undefined
-    const proposalCatalogMutationJournal = current.proposalCatalogMutationJournal !== undefined
-      && Date.parse(current.proposalCatalogMutationJournal.preparedAt) > boundary
-      && remainingOwnerIds.has(current.proposalCatalogMutationJournal.ownerId)
-      ? current.proposalCatalogMutationJournal
-      : undefined
-    const alreadyFinalized = current.legacyCompletedPurgeFences?.all?.purgeId
-      === completedPurgeFences.all?.purgeId
-    await this.#v2Domain.global.set({
-      ...stable,
-      sessions,
-      behaviorSignatureIndex,
-      ...(proposalGenerationLease === undefined ? {} : { proposalGenerationLease }),
-      ...(proposalCatalogMutationJournal === undefined ? {} : { proposalCatalogMutationJournal }),
-      proposalCatalogEpoch: alreadyFinalized
-        ? current.proposalCatalogEpoch
-        : current.proposalCatalogEpoch + 1,
-      legacyCompletedPurgeFences: completedPurgeFences,
+        proposalGenerationLease: _proposalGenerationLease,
+        proposalCatalogMutationJournal: _proposalCatalogMutationJournal,
+        purgeJournal: _purgeJournal,
+        ...stable
+      } = current
+      const behaviorSignatureIndex = Object.fromEntries(Object.entries(current.behaviorSignatureIndex)
+        .filter(([, entry]) => Date.parse(entry.updatedAt) > boundary && remainingIntentIds.has(entry.ownerIntentId)))
+      const sessions = Object.fromEntries(Object.entries(current.sessions).map(([key, session]) => {
+        const {
+          activeBatchId: _activeBatchId,
+          batchManifestBaseline: _batchManifestBaseline,
+          ...cursor
+        } = session
+        return [key, { ...cursor, openExperienceCarry: [] }]
+      }))
+      const alreadyFinalized = current.legacyCompletedPurgeFences?.all?.purgeId
+        === completedPurgeFences.all?.purgeId
+      return {
+        value: undefined,
+        global: {
+          ...stable,
+          sessions,
+          behaviorSignatureIndex,
+          proposalCatalogEpoch: alreadyFinalized
+            ? current.proposalCatalogEpoch
+            : current.proposalCatalogEpoch + 1,
+          legacyCompletedPurgeFences: completedPurgeFences,
+        },
+      }
+    })
+  }
+
+  async #beginV2Purge(journal: PurgeJournalV1): Promise<void> {
+    if (journal.scopeBinding.scope !== 'ALL') return
+    if (this.#v2Global === undefined) throw new PurgeError('PURGE_STORAGE_UNAVAILABLE')
+    const accepted = await this.#v2Global.runExclusive(async current => {
+      if (current.purgeJournal !== undefined) {
+        return { value: current.purgeJournal.purgeId === journal.purgeId }
+      }
+      if (current.proposalGenerationLease !== undefined || current.proposalCatalogMutationJournal !== undefined) {
+        return { value: false }
+      }
+      const updatedAt = new Date(this.#now()).toISOString()
+      return {
+        value: true,
+        global: {
+          ...current,
+          purgeJournal: {
+            schemaVersion: 1,
+            purgeId: journal.purgeId,
+            scopeBinding: { scope: 'ALL' },
+            hideBefore: journal.hideBefore,
+            phase: 'QUIESCED',
+            updatedAt,
+          },
+        },
+      }
+    })
+    if (!accepted) throw new PurgeError('PURGE_BUSY')
+  }
+
+  async #clearOrphanV2Purge(expectedPurgeId?: string): Promise<void> {
+    if (this.#v2Global === undefined) return
+    await this.#v2Global.runExclusive(async current => {
+      if (
+        current.purgeJournal === undefined
+        || (expectedPurgeId !== undefined && current.purgeJournal.purgeId !== expectedPurgeId)
+      ) return { value: undefined }
+      const { purgeJournal: _purgeJournal, ...rest } = current
+      return { value: undefined, global: rest }
     })
   }
 
