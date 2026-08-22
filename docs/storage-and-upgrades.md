@@ -12,6 +12,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 - 等待分析、审核或恢复的工作状态；
 - 技能草稿、审核结果和保存结果；
 - 已发布 Skill 的版本关联信息；
+- 最近 7 天成功创建或更新 Skill 所需的最小活动元数据；
 - 数据清理的恢复进度和已完成边界。
 
 它不会把完整 Session 复制进自己的 Storage，也不会保存 Provider 密钥。已经发布的 `SKILL.md` 属于 DSH 原生 Skill，不是 run2skill Storage 的一部分。
@@ -28,7 +29,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 | Global / WorkItem / Lineage schema | `schemaVersion: 1` |
 | 终止诊断 sidecar | `run2skill_learning_diagnostics_v1`，Domain version `1` |
 
-从已发布的 `0.1.1-alpha` 进入 `0.2.0` 不修改主 Domain、WorkItem schema 或诊断 sidecar，现有数据无需迁移。
+从已发布的 `0.1.1-alpha` 进入 `0.2.0` 不修改主 Domain version、WorkItem schema 或诊断 sidecar。Global 增加可选、版本化且不含正文和路径的最近活动索引；旧数据可以直接打开，无需迁移，升级后新发生的成功沉淀才会进入该索引。
 
 #84 完成后，新的 SessionBatch 学习主链改用独立 `run2skill_v2` Domain version `1`，而不是原地修改 `run2skill_v1`：
 

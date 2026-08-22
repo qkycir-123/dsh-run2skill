@@ -40,4 +40,9 @@ describe('run2skill_v1 domain contract', () => {
     expect(run2skillDomainSpec.tables.work_items.valueSchema.safeParse({ ...validWorkItem, schemaVersion: 999 }).success).toBe(false)
     expect(run2skillDomainSpec.tables.lineages.valueSchema.safeParse({ ...validLineage, schemaVersion: 999 }).success).toBe(false)
   })
+
+  it('opens the pre-activity Global shape without a migration', () => {
+    const { recentSkillActivity: _activity, ...legacy } = run2skillDomainSpec.global.initial
+    expect(run2skillDomainSpec.global.schema.safeParse(legacy).success).toBe(true)
+  })
 })

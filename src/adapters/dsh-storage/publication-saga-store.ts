@@ -13,6 +13,7 @@ import {
 } from '../../domain/review/index.js'
 import type { Run2skillDomain } from './types.js'
 import { PurgeVisibility } from './purge-visibility.js'
+import { RecentSkillActivityStore } from './recent-skill-activity-store.js'
 
 export type PublicationSagaStoreErrorCode =
   | 'PUBLICATION_WORK_ITEM_NOT_FOUND'
@@ -46,6 +47,7 @@ export class PublicationSagaStore {
   readonly #lineages
   readonly #now
   readonly #visibility
+  readonly #activities
   #tail: Promise<void> = Promise.resolve()
 
   constructor(
@@ -57,6 +59,7 @@ export class PublicationSagaStore {
     this.#lineages = domain.table('lineages')
     this.#now = now ?? (() => new Date().toISOString())
     this.#visibility = visibility
+    this.#activities = new RecentSkillActivityStore(domain, visibility)
   }
 
   get(workItemId: string): CaptureWorkItemV1 | undefined {
@@ -180,25 +183,42 @@ export class PublicationSagaStore {
   }
 
   complete(workItemId: string): Promise<CaptureWorkItemV1> {
-    return this.#updateLatest(workItemId, current => {
+    return this.#serialize(async () => {
+      const current = this.#required(workItemId)
       const publication = this.#publishing(current)
-      if (!publication.journal.some(event => (
+      const lineageCommitted = publication.journal.find(event => (
         event.attemptId === publication.activeAttemptId && event.stage === 'LINEAGE_COMMITTED'
-      ))) throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
-      return {
-        ...current,
-        processingState: 'TERMINAL',
-        review: {
-          ...current.review!,
-          publicationOutcome: 'PUBLISHED',
-          failure: undefined,
-        },
-        publication: appendPublicationJournalEvent(publication, {
-          stage: 'OUTCOME_COMMITTED',
-          occurredAt: this.#now(),
-          observedHash: current.review!.proposal.skillBytesDigest,
-        }),
+      ))
+      if (lineageCommitted === undefined) throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
+      // The activity time is an attempt-local durable fact, so same-attempt recovery does not
+      // depend on whether the bounded derived index had room for its staged record.
+      const occurredAt = lineageCommitted.occurredAt
+      let activityOccurredAt = occurredAt
+      try {
+        activityOccurredAt = (await this.#activities.stagePublished(current, occurredAt)).occurredAt
+      } catch {
+        // Recent Activity is a derived convenience index and cannot decide the authoritative publication outcome.
       }
+      return await this.#updateNow(workItemId, latest => {
+        const latestPublication = this.#publishing(latest)
+        if (!latestPublication.journal.some(event => (
+          event.attemptId === latestPublication.activeAttemptId && event.stage === 'LINEAGE_COMMITTED'
+        ))) throw new PublicationSagaStoreError('INVALID_PUBLICATION_STATE')
+        return {
+          ...latest,
+          processingState: 'TERMINAL',
+          review: {
+            ...latest.review!,
+            publicationOutcome: 'PUBLISHED',
+            failure: undefined,
+          },
+          publication: appendPublicationJournalEvent(latestPublication, {
+            stage: 'OUTCOME_COMMITTED',
+            occurredAt: activityOccurredAt,
+            observedHash: latest.review!.proposal.skillBytesDigest,
+          }),
+        }
+      }, activityOccurredAt)
     })
   }
 
@@ -330,6 +350,7 @@ export class PublicationSagaStore {
   async #updateNow(
     workItemId: string,
     transform: (current: CaptureWorkItemV1) => CaptureWorkItemV1 | undefined,
+    updatedAt: string = this.#now(),
   ): Promise<CaptureWorkItemV1> {
     const snapshot = this.#required(workItemId)
     const next = transform(snapshot)
@@ -341,7 +362,7 @@ export class PublicationSagaStore {
       return CaptureWorkItemV1Schema.parse({
         ...next,
         revision: current.revision + 1,
-        updatedAt: this.#now(),
+        updatedAt,
       })
     })
     return updated

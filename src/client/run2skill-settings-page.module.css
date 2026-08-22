@@ -58,12 +58,31 @@
 }
 
 .attentionList,
-.proposalList {
+.proposalList,
+.activityList {
   display: grid;
   gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.activityItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.activitySummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .proposalLayout {
@@ -156,5 +175,10 @@
 
   .sectionBody {
     padding: 8px 18px 20px;
+  }
+
+  .activityItem {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

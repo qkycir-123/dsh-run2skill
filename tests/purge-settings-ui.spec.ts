@@ -127,10 +127,13 @@ describe('Purge native settings UI', () => {
   })
 
   it('previews and confirms only the immutable server preview reference', async () => {
+    const completion = Promise.withResolvers<unknown>()
     const call = vi.fn(async (endpoint: string) => {
       if (endpoint === 'purge/status') return { ok: true, value: { apiVersion: 1, state: 'IDLE' } }
       if (endpoint === 'purge/preview') return { ok: true, value: PROJECT_PREVIEW }
-      return {
+      return await completion.promise
+    })
+    const completed = {
         ok: true,
         value: {
           apiVersion: 1,
@@ -140,7 +143,6 @@ describe('Purge native settings UI', () => {
           deletedLineages: 2,
         },
       }
-    })
     const controller = new PurgeSettingsController(call, () => 'workspace-a', environment())
 
     controller.start()
@@ -152,7 +154,11 @@ describe('Purge native settings UI', () => {
       { apiVersion: 1, scope: 'PROJECT', workspaceId: 'workspace-a' },
       expect.any(AbortSignal),
     )
-    await controller.confirm()
+    const confirming = controller.confirm()
+    await waitFor(() => { expect(controller.snapshot().mutationPending).toBe(true) })
+    expect(controller.snapshot().hostDataEpoch).toBe(1)
+    completion.resolve(completed)
+    await confirming
     expect(call).toHaveBeenCalledWith(
       'purge/confirm',
       {
@@ -167,6 +173,7 @@ describe('Purge native settings UI', () => {
     expect(controller.snapshot()).toMatchObject({
       mutationPending: false,
       announcement: 'PROJECT Run2Skill 数据清理完成：3 条待处理数据，2 条 Skill 关联记录。',
+      hostDataEpoch: 2,
     })
     expect(controller.snapshot().preview).toBeUndefined()
     controller.dispose()

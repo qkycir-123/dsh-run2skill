@@ -7,6 +7,7 @@ import {
   Run2skillAttentionToast,
   AttentionSettingsSummary,
   LearningFailureSection,
+  RecentSkillActivitySection,
   RejectProposalModal,
   Run2skillSettingsPage,
   actionableProposalItems,
@@ -109,6 +110,7 @@ describe('run2skill native settings surface', () => {
           },
         })),
         callReview: review,
+        callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [] } })),
       }),
     ))
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -122,6 +124,258 @@ describe('run2skill native settings surface', () => {
     })
     purge.dispose()
     automatic.dispose()
+  })
+
+  it('loads recent activity only while expanded and shows scope only to disambiguate', async () => {
+    const call = vi.fn(async () => ({
+      ok: true,
+      value: {
+        apiVersion: 1,
+        visibilityRevision: `visibility_${'a'.repeat(64)}`,
+        items: [
+          {
+            activityId: `activity_${'a'.repeat(64)}`,
+            skillName: 'shared-skill',
+            operation: 'UPDATED',
+            scope: 'PROJECT',
+            occurredAt: '2026-08-22T11:00:00.000Z',
+          },
+          {
+            activityId: `activity_${'b'.repeat(64)}`,
+            skillName: 'shared-skill',
+            operation: 'CREATED',
+            scope: 'USER',
+            occurredAt: '2026-08-22T10:00:00.000Z',
+          },
+          {
+            activityId: `activity_${'c'.repeat(64)}`,
+            skillName: 'project-only',
+            operation: 'CREATED',
+            scope: 'PROJECT',
+            occurredAt: '2026-08-22T09:00:00.000Z',
+          },
+        ],
+      },
+    }))
+    const rendered = render(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: false, scopeGeneration: 1,
+    }))
+    expect(call).not.toHaveBeenCalled()
+    expect(screen.getByText('展示最近沉淀的 Skill')).toBeTruthy()
+
+    rendered.rerender(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1,
+    }))
+    await screen.findByText('project-only')
+    expect(call).toHaveBeenCalledWith({
+      apiVersion: 1,
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-a' },
+    }, expect.any(AbortSignal))
+    expect(call).toHaveBeenCalledWith({
+      apiVersion: 1,
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-a' },
+      expectedVisibilityRevision: `visibility_${'a'.repeat(64)}`,
+    }, expect.any(AbortSignal))
+    expect(screen.getAllByText('创建')).toHaveLength(2)
+    expect(screen.getByText('更新')).toBeTruthy()
+    expect(screen.getByText('项目')).toBeTruthy()
+    expect(screen.getByText('用户')).toBeTruthy()
+    expect(screen.getByText('project-only').closest('li')?.textContent).not.toContain('项目')
+  })
+
+  it('hides the previous scope immediately and ignores its late activity response', async () => {
+    const lateA = deferred<unknown>()
+    const response = (skillName: string, suffix: string) => ({
+      ok: true,
+      value: { apiVersion: 1, visibilityRevision: `visibility_${suffix.repeat(64)}`, items: [{
+        activityId: `activity_${suffix.repeat(64)}`,
+        skillName,
+        operation: 'CREATED',
+        scope: 'PROJECT',
+        occurredAt: '2026-08-22T11:00:00.000Z',
+      }] },
+    })
+    let aUnfencedCalls = 0
+    const call = vi.fn(async payload => {
+      if (payload.currentScope.kind === 'WORKSPACE' && payload.currentScope.workspaceId === 'workspace-a') {
+        if (payload.expectedVisibilityRevision !== undefined) return response('scope-a-loaded', 'a')
+        aUnfencedCalls += 1
+        return aUnfencedCalls === 1 ? response('scope-a-loaded', 'a') : await lateA.promise
+      }
+      return response('scope-b-current', 'b')
+    })
+    const rendered = render(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1, hostDataEpoch: 0,
+    }))
+    await screen.findByText('scope-a-loaded')
+    rendered.rerender(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1, hostDataEpoch: 1,
+    }))
+    rendered.rerender(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-b', call, active: true, scopeGeneration: 2, hostDataEpoch: 1,
+    }))
+    expect(screen.queryByText('scope-a-loaded')).toBeNull()
+    await act(async () => { lateA.resolve(response('scope-a-late', 'c')) })
+    expect(screen.queryByText('scope-a-late')).toBeNull()
+    await screen.findByText('scope-b-current')
+  })
+
+  it('drops a pre-purge response and reloads after the host-data epoch advances', async () => {
+    const beforePurge = deferred<unknown>()
+    const afterPurge = {
+      ok: true,
+      value: { apiVersion: 1, visibilityRevision: `visibility_${'e'.repeat(64)}`, items: [] },
+    }
+    let first = true
+    const call = vi.fn(async () => {
+      if (first) {
+        first = false
+        return await beforePurge.promise
+      }
+      return afterPurge
+    })
+    const rendered = render(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1, hostDataEpoch: 0,
+    }))
+    rendered.rerender(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1, hostDataEpoch: 1,
+    }))
+    await act(async () => { beforePurge.resolve({
+      ok: true,
+      value: { apiVersion: 1, visibilityRevision: `visibility_${'d'.repeat(64)}`, items: [{
+        activityId: `activity_${'d'.repeat(64)}`,
+        skillName: 'purged-skill',
+        operation: 'CREATED',
+        scope: 'PROJECT',
+        occurredAt: '2026-08-22T11:00:00.000Z',
+      }] },
+    }) })
+    expect(screen.queryByText('purged-skill')).toBeNull()
+    await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
+    expect(call).toHaveBeenCalledTimes(4)
+  })
+
+  it('invalidates a final confirmation generated before an external Purge but delivered after it', async () => {
+    const finalConfirmation = deferred<unknown>()
+    const beforePurge = {
+      ok: true,
+      value: { apiVersion: 1, visibilityRevision: `visibility_${'a'.repeat(64)}`, items: [{
+        activityId: `activity_${'d'.repeat(64)}`,
+        skillName: 'externally-purged-skill',
+        operation: 'CREATED',
+        scope: 'PROJECT',
+        occurredAt: '2026-08-22T11:00:00.000Z',
+      }] },
+    }
+    const current = {
+      ok: true,
+      value: { apiVersion: 1, visibilityRevision: `visibility_${'f'.repeat(64)}`, items: [] },
+    }
+    let hostRevision = 'a'
+    let oldBarrierCalls = 0
+    const call = vi.fn(async (payload: { expectedVisibilityRevision?: string }) => {
+      if (payload.expectedVisibilityRevision === undefined) {
+        return hostRevision === 'a' ? beforePurge : current
+      }
+      if (payload.expectedVisibilityRevision === `visibility_${'a'.repeat(64)}`) {
+        oldBarrierCalls += 1
+        if (oldBarrierCalls === 2) return await finalConfirmation.promise
+        if (hostRevision === 'a') return beforePurge
+        return { ok: false, error: { code: 'visibility-stale', message: 'stale', details: {} } }
+      }
+      return current
+    })
+    render(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1, hostDataEpoch: 0,
+      visibilityPollMs: 5,
+    }))
+    await waitFor(() => { expect(call).toHaveBeenCalledTimes(3) })
+    hostRevision = 'f'
+    await act(async () => { finalConfirmation.resolve(beforePurge) })
+    await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
+    expect(screen.queryByText('externally-purged-skill')).toBeNull()
+    expect(call).toHaveBeenCalledTimes(7)
+    expect(call.mock.calls[1]?.[0]).toMatchObject({
+      expectedVisibilityRevision: `visibility_${'a'.repeat(64)}`,
+    })
+    expect(call.mock.calls[3]?.[0]).toMatchObject({
+      expectedVisibilityRevision: `visibility_${'a'.repeat(64)}`,
+    })
+    expect(call.mock.calls[5]?.[0]).toMatchObject({
+      expectedVisibilityRevision: `visibility_${'f'.repeat(64)}`,
+    })
+  })
+
+  it('invalidates already rendered activity when the Host Purge revision changes', async () => {
+    const response = (revision: string, includeItem: boolean) => ({
+      ok: true,
+      value: {
+        apiVersion: 1,
+        visibilityRevision: `visibility_${revision.repeat(64)}`,
+        items: includeItem ? [{
+          activityId: `activity_${'e'.repeat(64)}`,
+          skillName: 'visible-before-external-purge',
+          operation: 'CREATED',
+          scope: 'PROJECT',
+          occurredAt: '2026-08-22T11:00:00.000Z',
+        }] : [],
+      },
+    })
+    let hostRevision = 'a'
+    const call = vi.fn(async (payload: { expectedVisibilityRevision?: string }) => {
+      const currentRevision = `visibility_${hostRevision.repeat(64)}`
+      if (
+        payload.expectedVisibilityRevision !== undefined
+        && payload.expectedVisibilityRevision !== currentRevision
+      ) return { ok: false, error: { code: 'visibility-stale', message: 'stale', details: {} } }
+      return response(hostRevision, hostRevision === 'a')
+    })
+    render(createElement(RecentSkillActivitySection, {
+      workspaceId: 'workspace-a',
+      call,
+      active: true,
+      scopeGeneration: 1,
+      hostDataEpoch: 0,
+      visibilityPollMs: 5,
+    }))
+    await screen.findByText('visible-before-external-purge')
+    hostRevision = 'f'
+    await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
+    expect(screen.queryByText('visible-before-external-purge')).toBeNull()
+  })
+
+  it('remounts activity on reopen so a collapsed pre-Purge READY state cannot flash again', async () => {
+    const response = (revision: string, includeItem: boolean) => ({
+      ok: true,
+      value: {
+        apiVersion: 1,
+        visibilityRevision: `visibility_${revision.repeat(64)}`,
+        items: includeItem ? [{
+          activityId: `activity_${'b'.repeat(64)}`,
+          skillName: 'collapsed-before-purge',
+          operation: 'CREATED',
+          scope: 'PROJECT',
+          occurredAt: '2026-08-22T11:00:00.000Z',
+        }] : [],
+      },
+    })
+    let hostRevision = 'a'
+    const call = vi.fn(async () => response(hostRevision, hostRevision === 'a'))
+    const element = (active: boolean) => createElement(RecentSkillActivitySection, {
+      key: JSON.stringify(['workspace-a', 1, 0, active]),
+      workspaceId: 'workspace-a',
+      call,
+      active,
+      scopeGeneration: 1,
+      hostDataEpoch: 0,
+    })
+    const rendered = render(element(true))
+    await screen.findByText('collapsed-before-purge')
+    rendered.rerender(element(false))
+    hostRevision = 'f'
+    rendered.rerender(element(true))
+    expect(screen.queryByText('collapsed-before-purge')).toBeNull()
+    await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
   })
 
   it('registers one independent settings.plugins.tab and a header lifecycle mount with no persistent DOM', () => {
@@ -254,6 +508,7 @@ describe('run2skill native settings surface', () => {
         },
       })),
       callReview: review,
+      callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [] } })),
     }))
     await waitFor(() => expect(page.container.textContent).toContain('Run2Skill'))
     await new Promise(resolve => setTimeout(resolve, 0))

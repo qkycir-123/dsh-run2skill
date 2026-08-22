@@ -72,12 +72,19 @@ describe('PublicationSagaStore', () => {
     domain.writeLog.length = 0
     await store.commitLineage(approved.workItemId)
     const completed = await store.complete(approved.workItemId)
-    expect(domain.writeLog).toEqual(['work_items', 'work_items'])
+    expect(domain.writeLog).toEqual(['work_items', 'global', 'work_items'])
     expect(completed).toMatchObject({
       processingState: 'TERMINAL',
       review: { reviewDecision: 'APPROVED', publicationOutcome: 'PUBLISHED' },
     })
     expect(domain.lineages.get(lineage.lineageId)).toEqual(lineage)
+    expect(domain.global.get().recentSkillActivity?.items).toEqual([
+      expect.objectContaining({
+        skillName: proposal.name,
+        operation: 'CREATED',
+        scope: 'PROJECT',
+      }),
+    ])
   })
 
   it('opens a bounded new attempt only for retryable PUBLISH_FAILED with the same immutable ref', async () => {
