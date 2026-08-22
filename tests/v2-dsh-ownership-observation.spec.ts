@@ -21,10 +21,10 @@ const exactSkillBytes = [
   exactSkillBody, '',
 ].join('\n')
 
-function candidate(body = exactSkillBody) {
+function candidate(body = exactSkillBody, scope: 'PROJECT' | 'USER' = 'PROJECT') {
   return {
     candidateId: 'candidate-fixture', name: 'fixture-workflow', provider: 'filesystem', source: 'project-dsh',
-    scope: 'PROJECT' as const, writable: true,
+    scope, writable: true,
     targetPathDigest: deriveOwnershipTargetPathDigest(skillPath, header.cwd),
     bodyDigest: sha256Utf8(body),
   }
@@ -170,6 +170,53 @@ describe('real DSH Agent-first ownership observation adapter', () => {
         candidateId: created.candidateId, exactReadbackComplete: true,
         bodyDigest: created.bodyDigest, writeAttribution: 'AGENT_WRITE_SUCCEEDED', intentBinding: 'MATCH',
       }],
+    })
+  })
+
+  it('does not bind a matching body saved to a different persistence scope', async () => {
+    const userCandidate = { ...candidate(exactSkillBody, 'USER'), candidateId: 'candidate-user' }
+    const observed = harness({
+      baselineCandidates: [], endCandidates: [userCandidate],
+      between: [
+        event('tool/call', 3, { turn: 2, step: 1, callId: 'call-1', name: 'write', arguments: JSON.stringify({ file_path: skillPath, content: exactSkillBytes }) }),
+        toolResult(4, 'call-1'),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      agentActivity: 'WRITE_SUCCEEDED',
+      changedCandidates: [{
+        candidateId: userCandidate.candidateId,
+        scope: 'USER', writeAttribution: 'AGENT_WRITE_SUCCEEDED', intentBinding: 'NO_MATCH',
+      }],
+    })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_WRITE_NOT_BOUND' },
+    })
+  })
+
+  it.each([
+    ['successful write followed by failed write', false],
+    ['failed write followed by successful write', true],
+  ])('fails closed on %s to the same Skill', async (_label, failedFirst) => {
+    const firstFailed = failedFirst === true
+    const observed = harness({
+      baselineCandidates: [], endCandidates: [candidate()],
+      between: [
+        event('tool/call', 2, { turn: 2, step: 1, callId: 'call-1', name: 'write', arguments: JSON.stringify({ file_path: skillPath, content: exactSkillBytes }) }),
+        toolResult(3, 'call-1', firstFailed),
+        event('tool/call', 4, { turn: 2, step: 1, callId: 'call-2', name: 'write', arguments: JSON.stringify({ file_path: skillPath, content: exactSkillBytes }) }),
+        toolResult(5, 'call-2', !firstFailed),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ agentActivity: 'WRITE_FAILED' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_WRITE_FAILED' },
     })
   })
 

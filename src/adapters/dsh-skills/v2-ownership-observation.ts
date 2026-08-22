@@ -293,6 +293,7 @@ function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefine
     activity = 'AMBIGUOUS'
     unattributedBodyEvidence = true
   }
+  if (writes.some(write => write.skillMarker && write.failed)) activity = 'WRITE_FAILED'
   return { complete: true, activity, writes, unattributedBodyEvidence }
 }
 
@@ -377,12 +378,13 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         const writeAttribution = successful.length === 1
           ? 'AGENT_WRITE_SUCCEEDED' as const
           : 'UNKNOWN' as const
-        const intentBinding = exactWrite?.readbackBody !== undefined
-          && containsIntentContract(exactWrite.readbackBody, input.intent)
-          ? 'MATCH' as const
-          : exactWrite?.readbackBody !== undefined
-            ? 'NO_MATCH' as const
-            : 'UNKNOWN' as const
+        const exactWriteBody = exactWrite?.readbackBody
+        const intentBinding = exactWriteBody === undefined
+          ? 'UNKNOWN' as const
+          : current?.scope === input.intent.persistenceScope
+            && containsIntentContract(exactWriteBody, input.intent)
+            ? 'MATCH' as const
+            : 'NO_MATCH' as const
         return {
           candidateId: facts.candidateId,
           provider: facts.provider,
