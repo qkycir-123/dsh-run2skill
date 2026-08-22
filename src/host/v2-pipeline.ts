@@ -31,6 +31,11 @@ export interface DshV2PipelineRuntimeOptions {
   readonly catalog: DshV2PipelineCatalogPorts
   readonly onError?: (error: unknown) => void
   readonly now?: () => number
+  /** @internal Deterministic clock adapter for Host assembly tests. */
+  readonly internalTimer?: {
+    readonly set: (callback: () => void, delay: number) => unknown
+    readonly clear: (handle: unknown) => void
+  }
 }
 
 /**
@@ -94,7 +99,13 @@ export class DshV2PipelineRuntime {
       batchScheduler,
       stages,
       recoveryOrder: [generation, detector, ownership, recall, coverage],
+      nextWakeAt: () => quiescence.nextEligibleAt(),
       ...(options.onError === undefined ? {} : { onError: options.onError }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.internalTimer === undefined ? {} : {
+        setTimer: options.internalTimer.set,
+        clearTimer: options.internalTimer.clear,
+      }),
     })
     wakePipeline = () => { this.#runtime.wake() }
   }

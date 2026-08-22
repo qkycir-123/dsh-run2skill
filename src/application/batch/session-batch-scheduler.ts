@@ -21,6 +21,7 @@ export class SessionBatchScheduler {
   readonly #onIdleBatchFrozen
   #timer: unknown
   #tail: Promise<void> = Promise.resolve()
+  #startAttempt: Promise<void> | undefined
   #started = false
   #disposed = false
 
@@ -35,10 +36,18 @@ export class SessionBatchScheduler {
   async start(): Promise<void> {
     if (this.#disposed) throw new Error('SessionBatchScheduler is disposed')
     if (this.#started) return await this.settle()
-    this.#started = true
-    return await this.#enqueue(async () => {
+    if (this.#startAttempt !== undefined) return await this.#startAttempt
+    const attempt = this.#enqueue(async () => {
       await this.#coordinator.recover(this.#now())
     })
+    this.#startAttempt = attempt
+    try {
+      await attempt
+      this.#started = true
+      this.#schedule()
+    } finally {
+      if (this.#startAttempt === attempt) this.#startAttempt = undefined
+    }
   }
 
   async prepareSessionWindow(sessionLifecycleKey: string): Promise<void> {

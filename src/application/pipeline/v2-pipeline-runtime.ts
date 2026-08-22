@@ -1,5 +1,7 @@
 import type { TurnObservationV2 } from '../../domain/v2/index.js'
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
 export interface V2PipelineBatchScheduler {
   start(): Promise<void>
   prepareSessionWindow(sessionLifecycleKey: string): Promise<void>
@@ -20,6 +22,10 @@ export interface Run2skillV2PipelineRuntimeOptions {
   readonly recoveryOrder: readonly V2PipelineStageWorker[]
   readonly maxTransitionsPerDrain?: number
   readonly onError?: (error: unknown) => void
+  readonly nextWakeAt?: () => number | undefined
+  readonly now?: () => number
+  readonly setTimer?: (callback: () => void, delay: number) => unknown
+  readonly clearTimer?: (handle: unknown) => void
 }
 
 /**
@@ -32,7 +38,12 @@ export class Run2skillV2PipelineRuntime {
   readonly #recoveryOrder: readonly V2PipelineStageWorker[]
   readonly #maxTransitionsPerDrain: number
   readonly #onError: (error: unknown) => void
+  readonly #nextWakeAt: () => number | undefined
+  readonly #now: () => number
+  readonly #setTimer: (callback: () => void, delay: number) => unknown
+  readonly #clearTimer: (handle: unknown) => void
   #tail: Promise<void> = Promise.resolve()
+  #timer: unknown
   #startAttempt: Promise<void> | undefined
   #disposeAttempt: Promise<void> | undefined
   #started = false
@@ -44,6 +55,10 @@ export class Run2skillV2PipelineRuntime {
     this.#recoveryOrder = options.recoveryOrder
     this.#maxTransitionsPerDrain = options.maxTransitionsPerDrain ?? 256
     this.#onError = options.onError ?? (() => undefined)
+    this.#nextWakeAt = options.nextWakeAt ?? (() => undefined)
+    this.#now = options.now ?? Date.now
+    this.#setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
+    this.#clearTimer = options.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
     if (!Number.isSafeInteger(this.#maxTransitionsPerDrain) || this.#maxTransitionsPerDrain < 1) {
       throw new TypeError('Invalid v2 pipeline drain limit')
     }
@@ -68,6 +83,7 @@ export class Run2skillV2PipelineRuntime {
     try {
       await attempt
       this.#started = true
+      this.#schedule()
     } finally {
       if (this.#startAttempt === attempt) this.#startAttempt = undefined
     }
@@ -107,6 +123,7 @@ export class Run2skillV2PipelineRuntime {
     if (this.#disposeAttempt !== undefined) return await this.#disposeAttempt
     const attempt = (async () => {
       this.#disposed = true
+      this.#cancelTimer()
       await this.settle()
       await this.#batchScheduler.dispose()
     })()
@@ -130,14 +147,50 @@ export class Run2skillV2PipelineRuntime {
 
   #enqueue(operation: () => Promise<void>): Promise<void> {
     const result = this.#tail.catch(() => undefined).then(operation)
-    this.#tail = result.catch((error: unknown) => {
-      try {
-        this.#onError(error)
-      } catch {
-        // A diagnostic callback cannot poison the durable execution tail.
-      }
-    })
+    this.#tail = result.then(
+      () => { this.#schedule() },
+      (error: unknown) => {
+        this.#reportError(error)
+        this.#schedule()
+      },
+    )
     return result
+  }
+
+  #schedule(): void {
+    this.#cancelTimer()
+    if (!this.#started || this.#disposed) return
+    let deadline: number | undefined
+    try {
+      deadline = this.#nextWakeAt()
+    } catch (error) {
+      this.#reportError(error)
+      return
+    }
+    if (deadline === undefined || !Number.isFinite(deadline)) return
+    const now = this.#now()
+    // A due intent was already attempted by the preceding drain. Retrying it
+    // immediately would spin when the external activity observation is incomplete.
+    if (deadline <= now) return
+    const delay = Math.min(MAX_TIMER_DELAY_MS, deadline - now)
+    this.#timer = this.#setTimer(() => {
+      this.#timer = undefined
+      this.wake()
+    }, delay)
+  }
+
+  #cancelTimer(): void {
+    if (this.#timer === undefined) return
+    this.#clearTimer(this.#timer)
+    this.#timer = undefined
+  }
+
+  #reportError(error: unknown): void {
+    try {
+      this.#onError(error)
+    } catch {
+      // A diagnostic callback cannot poison the durable execution tail.
+    }
   }
 
   #assertOpen(): void {
