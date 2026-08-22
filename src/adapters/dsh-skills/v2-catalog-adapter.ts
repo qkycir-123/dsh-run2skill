@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs'
+import { opendir } from 'node:fs/promises'
 import { posix, win32 } from 'node:path'
 import { z } from 'zod'
 import type { Run2skillV2Domain } from '../dsh-storage/v2-types.js'
@@ -41,17 +42,33 @@ const runtimeDefinitionSchema = runtimeSummarySchema.safeExtend({ content: z.str
 type RuntimeSummary = z.infer<typeof runtimeSummarySchema>
 
 type OwnershipFileRead =
-  | { readonly status: 'MATCH'; readonly bodyDigest: string }
+  | { readonly status: 'READ'; readonly name: string; readonly bodyDigest: string }
   | { readonly status: 'NO_MATCH' | 'UNAVAILABLE' }
+
+interface OwnershipLocatedFile {
+  readonly target: string
+  readonly bodyDigest: string
+}
+
+type OwnershipDirectoryIndex = ReadonlyMap<string, OwnershipLocatedFile | null>
+
+interface OwnershipDirectoryEntry {
+  readonly name: string
+  readonly kind: 'file' | 'directory' | 'symbolic-link' | 'other'
+}
 
 interface OwnershipCatalogPolicy {
   readonly maxBodyBytes: number
   readonly maxTotalBytes: number
+  readonly maxDirectoryEntries: number
+  readonly maxCandidateFiles: number
 }
 
 const DEFAULT_OWNERSHIP_CATALOG_POLICY: OwnershipCatalogPolicy = Object.freeze({
   maxBodyBytes: 32 * 1024 * 1024,
   maxTotalBytes: 128 * 1024 * 1024,
+  maxDirectoryEntries: 16_384,
+  maxCandidateFiles: 4_096,
 })
 
 export interface V2RuntimeCatalogIdentity {
@@ -83,6 +100,8 @@ export interface DshV2CatalogAdapterOptions<TView extends object> {
   readonly internalOwnershipPolicy?: Partial<OwnershipCatalogPolicy>
   /** @internal Allows deterministic bounded-stream tests; Host wiring reads the discovered file directly. */
   readonly internalOpenOwnershipFile?: (path: string) => AsyncIterable<Uint8Array>
+  /** @internal Allows deterministic bounded layout discovery tests. */
+  readonly internalOpenOwnershipDirectory?: (path: string) => AsyncIterable<OwnershipDirectoryEntry>
 }
 
 interface RuntimeCandidate {
@@ -136,6 +155,26 @@ function canonicalPath(value: string): string {
 function fileAbsent(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error
     && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+}
+
+async function* openOwnershipDirectory(path: string): AsyncIterable<OwnershipDirectoryEntry> {
+  const directory = await opendir(path)
+  try {
+    while (true) {
+      const entry = await directory.read()
+      if (entry === null) return
+      const kind = entry.isFile()
+        ? 'file'
+        : entry.isDirectory()
+          ? 'directory'
+          : entry.isSymbolicLink()
+            ? 'symbolic-link'
+            : 'other'
+      yield { name: entry.name, kind }
+    }
+  } finally {
+    await directory.close().catch(() => undefined)
+  }
 }
 
 function stockRuntimeIdentity(
@@ -221,6 +260,7 @@ export class DshV2CatalogAdapter<TView extends object> {
   readonly #resolveRuntimeIdentity: NonNullable<DshV2CatalogAdapterOptions<TView>['resolveRuntimeIdentity']>
   readonly #ownershipPolicy: OwnershipCatalogPolicy
   readonly #openOwnershipFile: (path: string) => AsyncIterable<Uint8Array>
+  readonly #openOwnershipDirectory: (path: string) => AsyncIterable<OwnershipDirectoryEntry>
 
   constructor(domain: Run2skillV2Domain, options: DshV2CatalogAdapterOptions<TView>) {
     this.#domain = domain
@@ -229,6 +269,7 @@ export class DshV2CatalogAdapter<TView extends object> {
     this.#ownershipPolicy = { ...DEFAULT_OWNERSHIP_CATALOG_POLICY, ...options.internalOwnershipPolicy }
     this.#openOwnershipFile = options.internalOpenOwnershipFile
       ?? (path => createReadStream(path, { highWaterMark: 64 * 1024 }))
+    this.#openOwnershipDirectory = options.internalOpenOwnershipDirectory ?? openOwnershipDirectory
     if (!Object.values(this.#ownershipPolicy).every(value => Number.isSafeInteger(value) && value > 0)) {
       throw new TypeError('Invalid ownership Catalog policy')
     }
@@ -280,14 +321,22 @@ export class DshV2CatalogAdapter<TView extends object> {
     const view = this.#resolveView(sessionLifecycleKey)
     if (view === undefined) return unavailable
     let totalBytes = 0
+    let directoryEntries = 0
+    let candidateFiles = 0
     const observeBytes = (bytes: number): boolean => {
       if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
       totalBytes += bytes
       return true
     }
-    const first = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBytes)
+    const observeDirectoryEntry = (): boolean => ++directoryEntries <= this.#ownershipPolicy.maxDirectoryEntries
+    const observeCandidateFile = (): boolean => ++candidateFiles <= this.#ownershipPolicy.maxCandidateFiles
+    const first = await this.#ownershipRuntime(
+      view, sessionLifecycleKey, observeBytes, observeDirectoryEntry, observeCandidateFile,
+    )
     if (!first.complete) return unavailable
-    const second = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBytes)
+    const second = await this.#ownershipRuntime(
+      view, sessionLifecycleKey, observeBytes, observeDirectoryEntry, observeCandidateFile,
+    )
     if (!second.complete || canonicalJson(first) !== canonicalJson(second)) return unavailable
     return {
       complete: true,
@@ -451,6 +500,8 @@ export class DshV2CatalogAdapter<TView extends object> {
     view: TView,
     sessionLifecycleKey: string,
     observeBytes: (bytes: number) => boolean,
+    observeDirectoryEntry: () => boolean,
+    observeCandidateFile: () => boolean,
   ): Promise<{
     readonly complete: boolean
     readonly runtimeCatalogDigest: string
@@ -469,28 +520,27 @@ export class DshV2CatalogAdapter<TView extends object> {
     const runtime = await this.#runtime(view, sessionLifecycleKey)
     if (!runtime.complete) return unavailable
     const candidates = []
+    const fileReads = new Map<string, Promise<OwnershipFileRead>>()
+    const directoryIndexes = new Map<string, Promise<OwnershipDirectoryIndex | undefined>>()
     for (const candidate of runtime.candidates) {
       // Agent writes are filesystem-observable. Other providers remain covered by
       // the stable Runtime digest and cannot be granted file-write ownership.
       if (candidate.raw.provider !== 'filesystem') continue
-      const targets = candidate.raw.path === undefined
+      const exact = candidate.raw.path === undefined
         ? candidate.raw.resourceBase?.kind === 'directory'
-          ? [
-              pathApi(candidate.raw.resourceBase.path).join(candidate.raw.resourceBase.path, 'SKILL.md'),
-              pathApi(candidate.raw.resourceBase.path).join(candidate.raw.resourceBase.path, `${candidate.raw.name}.md`),
-            ]
-          : []
-        : [candidate.raw.path]
-      const uniqueTargets = [...new Map(targets.map(target => [canonicalPath(target), target])).values()]
-      let exact: { readonly target: string; readonly bodyDigest: string } | undefined
-      for (const target of uniqueTargets) {
-        const read = await this.#readOwnershipFile(target, candidate.raw.name, observeBytes)
-        if (read.status === 'UNAVAILABLE') return unavailable
-        if (read.status === 'MATCH') {
-          if (exact !== undefined) return unavailable
-          exact = { target, bodyDigest: read.bodyDigest }
-        }
-      }
+          ? await this.#discoverOwnershipFile(
+              candidate.raw.resourceBase.path,
+              candidate.raw.name,
+              observeBytes,
+              observeDirectoryEntry,
+              observeCandidateFile,
+              fileReads,
+              directoryIndexes,
+            )
+          : undefined
+        : await this.#readExactOwnershipFile(
+            candidate.raw.path, candidate.raw.name, observeBytes, observeCandidateFile, fileReads,
+          )
       if (exact === undefined) return unavailable
       candidates.push({
         candidateId: candidate.summary.candidateId,
@@ -509,7 +559,22 @@ export class DshV2CatalogAdapter<TView extends object> {
 
   async #readOwnershipFile(
     target: string,
-    expectedName: string,
+    observeBytes: (bytes: number) => boolean,
+    observeCandidateFile: () => boolean,
+    cache: Map<string, Promise<OwnershipFileRead>>,
+  ): Promise<OwnershipFileRead> {
+    const key = canonicalPath(target)
+    const cached = cache.get(key)
+    if (cached !== undefined) return cached
+    const pending = observeCandidateFile()
+      ? this.#readOwnershipFileUncached(target, observeBytes)
+      : Promise.resolve({ status: 'UNAVAILABLE' as const })
+    cache.set(key, pending)
+    return pending
+  }
+
+  async #readOwnershipFileUncached(
+    target: string,
     observeBytes: (bytes: number) => boolean,
   ): Promise<OwnershipFileRead> {
     const chunks: Buffer[] = []
@@ -526,8 +591,91 @@ export class DshV2CatalogAdapter<TView extends object> {
       return { status: fileAbsent(error) ? 'NO_MATCH' : 'UNAVAILABLE' }
     }
     const parsed = parseDshSkillFileForOwnership(Buffer.concat(chunks, candidateBytes).toString('utf8'))
-    if (parsed === undefined || parsed.name !== expectedName) return { status: 'NO_MATCH' }
-    return { status: 'MATCH', bodyDigest: sha256Utf8(parsed.body) }
+    if (parsed === undefined) return { status: 'NO_MATCH' }
+    return { status: 'READ', name: parsed.name, bodyDigest: sha256Utf8(parsed.body) }
+  }
+
+  async #readExactOwnershipFile(
+    target: string,
+    expectedName: string,
+    observeBytes: (bytes: number) => boolean,
+    observeCandidateFile: () => boolean,
+    fileReads: Map<string, Promise<OwnershipFileRead>>,
+  ): Promise<OwnershipLocatedFile | undefined> {
+    const read = await this.#readOwnershipFile(target, observeBytes, observeCandidateFile, fileReads)
+    return read.status === 'READ' && read.name === expectedName
+      ? { target, bodyDigest: read.bodyDigest }
+      : undefined
+  }
+
+  async #discoverOwnershipFile(
+    directory: string,
+    expectedName: string,
+    observeBytes: (bytes: number) => boolean,
+    observeDirectoryEntry: () => boolean,
+    observeCandidateFile: () => boolean,
+    fileReads: Map<string, Promise<OwnershipFileRead>>,
+    directoryIndexes: Map<string, Promise<OwnershipDirectoryIndex | undefined>>,
+  ): Promise<OwnershipLocatedFile | undefined> {
+    const api = pathApi(directory)
+    const bundleTarget = api.join(directory, 'SKILL.md')
+    const bundle = await this.#readOwnershipFile(bundleTarget, observeBytes, observeCandidateFile, fileReads)
+    if (bundle.status === 'UNAVAILABLE') return undefined
+    if (bundle.status === 'READ' && bundle.name === expectedName) {
+      return { target: bundleTarget, bodyDigest: bundle.bodyDigest }
+    }
+
+    const key = canonicalPath(directory)
+    let pending = directoryIndexes.get(key)
+    if (pending === undefined) {
+      pending = this.#indexOwnershipDirectory(
+        directory,
+        bundleTarget,
+        observeBytes,
+        observeDirectoryEntry,
+        observeCandidateFile,
+        fileReads,
+      )
+      directoryIndexes.set(key, pending)
+    }
+    const index = await pending
+    const exact = index?.get(expectedName)
+    return exact === null ? undefined : exact
+  }
+
+  async #indexOwnershipDirectory(
+    directory: string,
+    bundleTarget: string,
+    observeBytes: (bytes: number) => boolean,
+    observeDirectoryEntry: () => boolean,
+    observeCandidateFile: () => boolean,
+    fileReads: Map<string, Promise<OwnershipFileRead>>,
+  ): Promise<OwnershipDirectoryIndex | undefined> {
+    const api = pathApi(directory)
+    const index = new Map<string, OwnershipLocatedFile | null>()
+    try {
+      for await (const entry of this.#openOwnershipDirectory(directory)) {
+        if (!observeDirectoryEntry()) return undefined
+        if (
+          (entry.kind !== 'file' && entry.kind !== 'symbolic-link')
+          || !entry.name.endsWith('.md')
+          || api.basename(entry.name) !== entry.name
+        ) continue
+        const target = api.join(directory, entry.name)
+        if (canonicalPath(target) === canonicalPath(bundleTarget)) continue
+        const read = await this.#readOwnershipFile(target, observeBytes, observeCandidateFile, fileReads)
+        if (read.status === 'UNAVAILABLE') return undefined
+        if (read.status === 'READ') {
+          index.set(
+            read.name,
+            index.has(read.name) ? null : { target, bodyDigest: read.bodyDigest },
+          )
+        }
+      }
+    } catch {
+      return undefined
+    }
+    return index
   }
 
   async #read(

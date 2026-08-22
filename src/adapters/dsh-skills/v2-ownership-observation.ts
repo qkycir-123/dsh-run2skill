@@ -63,6 +63,7 @@ const SUPPORTED_TURN_EVENTS = new Set([
   'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
   'request/context', 'session/end-seed',
 ])
+const MAX_ASSISTANT_EVIDENCE_BYTES = 32 * 1024 * 1024
 
 export interface DshV2OwnershipObservationAdapterOptions {
   readonly persistence: SessionPersistencePort
@@ -184,19 +185,28 @@ function directWrite(
   }
 }
 
-function hasCompleteSkillBody(value: string): boolean {
-  const frontmatter = /(?:^|\n)---\r?\n([\s\S]{1,4096}?)\r?\n---(?:\r?\n|$)/gu
-  for (const match of value.matchAll(frontmatter)) {
-    const header = match[1]!
+function skillBodyEvidence(value: string): 'COMPLETE' | 'NONE' | 'AMBIGUOUS' {
+  const lines = value.split('\n')
+  let sawOpening = false
+  for (let opening = 0; opening < lines.length; opening += 1) {
+    if (lines[opening]!.replace(/\r$/u, '') !== '---') continue
+    sawOpening = true
+    const closing = lines.findIndex(
+      (line, index) => index > opening && line.replace(/\r$/u, '') === '---',
+    )
+    if (closing < 0) return 'AMBIGUOUS'
+    const header = lines.slice(opening + 1, closing).join('\n')
+    const body = lines.slice(closing + 1).join('\n')
+      .replace(/^\s*```(?:markdown|md)?\s*$/gimu, '')
+      .trim()
     if (
-      !/^name:\s*[^\s#][^\r\n]*$/imu.test(header)
-      || !/^description:\s*[^\s#][^\r\n]*$/imu.test(header)
-    ) continue
-    const bodyStart = (match.index ?? 0) + match[0].length
-    const body = value.slice(bodyStart).replace(/^\s*```(?:markdown|md)?\s*$/gimu, '').trim()
-    if (body.length > 0) return true
+      /^name:\s*[^\s#][^\r\n]*$/imu.test(header)
+      && /^description:\s*[^\s#][^\r\n]*$/imu.test(header)
+      && body.length > 0
+    ) return 'COMPLETE'
+    opening = closing
   }
-  return false
+  return sawOpening ? 'AMBIGUOUS' : 'NONE'
 }
 
 function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefined): ToolEvidence {
@@ -211,16 +221,26 @@ function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefine
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
       }
       const text: string[] = []
+      let textBytes = 0
       for (const block of parsed.data.message.content) {
         if (typeof block !== 'object' || block === null || !('type' in block) || block.type !== 'text') continue
         const parsedText = textContentSchema.safeParse(block)
         if (!parsedText.success) {
           return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
         }
+        const blockBytes = Buffer.byteLength(parsedText.data.text, 'utf8')
+        if (blockBytes > MAX_ASSISTANT_EVIDENCE_BYTES - textBytes) {
+          return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+        }
+        textBytes += blockBytes
         text.push(parsedText.data.text)
       }
-      if (hasCompleteSkillBody(text.join('\n'))) {
+      const bodyEvidence = skillBodyEvidence(text.join('\n'))
+      if (bodyEvidence === 'COMPLETE') {
         activity = 'BODY_GENERATED'
+      } else if (bodyEvidence === 'AMBIGUOUS') {
+        activity = 'AMBIGUOUS'
+        unattributedBodyEvidence = true
       }
     } else if (event.type === 'tool/call') {
       const parsed = toolCallSchema.safeParse(event.data)

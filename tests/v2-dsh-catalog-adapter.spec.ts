@@ -166,7 +166,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect(JSON.stringify(observed)).not.toContain('D:\\repo')
   })
 
-  it('resolves a flat filesystem winner through bounded layout discovery', async () => {
+  it('resolves a renamed flat filesystem winner through bounded layout discovery', async () => {
     const { domain, fixture } = await seed()
     const flat = {
       ...runtimeSkill,
@@ -182,10 +182,13 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       resolveView: () => ({ cwd: 'D:\\repo' }),
       internalOpenOwnershipFile: path => {
         opened.push(path)
-        if (path.toLowerCase().endsWith('flat-workflow.md')) {
+        if (path.toLowerCase().endsWith('legacy-filename.md')) {
           return openText(rawSkill('# Flat workflow', flat.name))()
         }
         throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      },
+      internalOpenOwnershipDirectory: async function* () {
+        yield { name: 'legacy-filename.md', kind: 'file' }
       },
     })
 
@@ -194,7 +197,41 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       complete: true,
       candidates: [{ name: flat.name, bodyDigest: sha256Utf8('# Flat workflow') }],
     })
-    expect(opened.some(path => path.toLowerCase().endsWith('flat-workflow.md'))).toBe(true)
+    expect(opened.some(path => path.toLowerCase().endsWith('legacy-filename.md'))).toBe(true)
+  })
+
+  it('scans one shared flat resource base only once per stability pass', async () => {
+    const { domain, fixture } = await seed()
+    const root = 'D:\\repo\\.dsh\\skills'
+    const flatSkills = ['first-workflow', 'second-workflow'].map(name => ({
+      ...runtimeSkill, name, resourceBase: { kind: 'directory' as const, path: root },
+    }))
+    let directoryReads = 0
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: flatSkills }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: path => {
+        const name = path.toLowerCase().endsWith('legacy-first.md')
+          ? 'first-workflow'
+          : path.toLowerCase().endsWith('legacy-second.md')
+            ? 'second-workflow'
+            : undefined
+        if (name !== undefined) return openText(rawSkill(`# ${name}`, name))()
+        throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      },
+      internalOpenOwnershipDirectory: async function* () {
+        directoryReads += 1
+        yield { name: 'legacy-first.md', kind: 'file' }
+        yield { name: 'legacy-second.md', kind: 'file' }
+      },
+    })
+
+    await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: true, candidates: [{}, {}] })
+    expect(directoryReads).toBe(2)
   })
 
   it('fails closed when an exact candidate body changes during ownership capture', async () => {

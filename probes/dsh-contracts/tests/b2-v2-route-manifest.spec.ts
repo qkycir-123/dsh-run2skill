@@ -30,9 +30,9 @@ async function writeSkill(root: string, name: string, description: string): Prom
   ].join('\n'), 'utf8')
 }
 
-async function writeFlatSkill(root: string, name: string, description: string): Promise<void> {
+async function writeFlatSkill(root: string, name: string, description: string, fileName = name): Promise<void> {
   await mkdir(root, { recursive: true })
-  await writeFile(join(root, `${name}.md`), [
+  await writeFile(join(root, `${fileName}.md`), [
     '---', `name: ${name}`, `description: ${description}`, '---', '', `# ${name}`, '',
   ].join('\n'), 'utf8')
 }
@@ -63,7 +63,9 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
     const bundled = join(base, 'bundled')
     await mkdir(join(project, '.git'), { recursive: true })
     await writeSkill(join(project, '.dsh', 'skills'), 'same-skill', 'Project winner')
-    await writeFlatSkill(join(project, '.dsh', 'skills'), 'flat-probe', 'Flat project winner')
+    await writeFlatSkill(
+      join(project, '.dsh', 'skills'), 'flat-probe', 'Renamed flat project winner', 'legacy-filename',
+    )
     await writeSkill(join(dshHome, 'skills'), 'user-only', 'User Skill')
     await writeSkill(custom, 'custom-only', 'Custom Skill')
     await writeSkill(bundled, 'bundled-only', 'Bundled Skill')

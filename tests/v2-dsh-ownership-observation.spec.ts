@@ -208,6 +208,27 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     await expect(decideWithRealAdapter(observed)).resolves.not.toMatchObject({ status: 'RESOLVED_BY_AGENT' })
   })
 
+  it('fails closed when Agent emits a complete Skill with frontmatter larger than 4 KiB', async () => {
+    const largeSkill = [
+      '---', 'name: large-metadata-workflow', 'description: A complete generated Skill.',
+      `metadata: ${'x'.repeat(4_200)}`, '---', '', exactSkillBody, '',
+    ].join('\n')
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [event('assistant/message', 3, {
+        turn: 2, step: 1,
+        message: {
+          role: 'assistant', source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+          content: [{ type: 'text', text: largeSkill }],
+        },
+      })],
+    })
+
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_BODY_GENERATED' },
+    })
+  })
+
   it('drives the real Agent-first coordinator to one owner without a second model channel', async () => {
     const ordinary = harness({
       baselineCandidates: [candidate()], endCandidates: [candidate()],
