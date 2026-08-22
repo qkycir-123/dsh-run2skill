@@ -21,6 +21,7 @@ import {
   deriveOwnershipInputDigestV2,
   deriveOwnershipEvidenceDigestV2,
   deriveOwnershipReceiptDigestV2,
+  deriveSessionQuiescenceFenceDigestV2,
 } from '../../src/domain/v2/index.js'
 import { createInitialGlobalV2 } from '../../src/adapters/dsh-storage/v2-domain.js'
 import {
@@ -139,6 +140,24 @@ export function createMinimalV2Fixtures() {
     }],
     evidenceDigests: intentFacts.evidenceDigests,
     completeness: { status: 'COMPLETE' as const, blockers: [] },
+    quiescence: {
+      state: 'SATISFIED' as const,
+      batchLastTurnEndSeq: sessionBatch.lastTurnEndSeq,
+      requiredIdleMs: 30 * 60_000,
+      observedThroughTurnEndSeq: sessionBatch.lastTurnEndSeq,
+      detectedThroughTurnEndSeq: sessionBatch.lastTurnEndSeq,
+      activityRevision: 'fixture-process:1',
+      satisfiedAt: now,
+      fenceDigest: deriveSessionQuiescenceFenceDigestV2({
+        intentId: deriveExperienceIntentIdV2(intentFacts),
+        batchId: sessionBatch.batchId,
+        sessionLifecycleKey,
+        batchLastTurnEndSeq: sessionBatch.lastTurnEndSeq,
+        observedThroughTurnEndSeq: sessionBatch.lastTurnEndSeq,
+        detectedThroughTurnEndSeq: sessionBatch.lastTurnEndSeq,
+        activityRevision: 'fixture-process:1',
+      }),
+    },
     ownership: { state: 'NOT_STARTED' as const },
     recall: {
       state: 'NOT_STARTED' as const,

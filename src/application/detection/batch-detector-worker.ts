@@ -9,6 +9,7 @@ import {
   TurnObservationV2Schema,
   deriveExperienceIntentIdV2,
   deriveBehaviorSignatureV2,
+  RUN2SKILL_V2_LIMITS,
   type ExperienceIntentV2,
   type SessionBatchV2,
   type TurnObservationV2,
@@ -387,6 +388,11 @@ export class BatchDetectorWorker {
       evidenceRefs,
       evidenceDigests,
       completeness: output.completeness,
+      quiescence: {
+        state: 'WAITING',
+        batchLastTurnEndSeq: claimed.batch.lastTurnEndSeq,
+        requiredIdleMs: RUN2SKILL_V2_LIMITS.sessionIdleMs,
+      },
       ownership: { state: 'NOT_STARTED' },
       recall: { state: 'NOT_STARTED', complete: false, summaryScanComplete: false, candidates: [] },
       coverage: { state: 'NOT_STARTED', retryUsed: false },
@@ -460,7 +466,7 @@ export class BatchDetectorWorker {
         return ExperienceIntentV2Schema.parse({
           ...current,
           revision: current.revision + 1,
-          status: 'READY',
+          status: 'WAITING_FOR_QUIESCENCE',
           updatedAt: this.#isoNow(),
         })
       })

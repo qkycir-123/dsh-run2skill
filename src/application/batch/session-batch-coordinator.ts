@@ -9,10 +9,11 @@ import {
   type GlobalV2,
   type SessionBatchV2,
   type TurnObservationV2,
+  RUN2SKILL_V2_LIMITS,
 } from '../../domain/v2/index.js'
 
 export const SESSION_BATCH_COMPLETE_TURN_THRESHOLD = 5
-export const SESSION_BATCH_IDLE_MS = 30 * 60_000
+export const SESSION_BATCH_IDLE_MS = RUN2SKILL_V2_LIMITS.sessionIdleMs
 export const SESSION_BATCH_DETECTOR_POLICY_VERSION = 'batch-detector-v1'
 
 const TERMINAL_BATCH_STATES = new Set<SessionBatchV2['state']>([
