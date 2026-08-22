@@ -23,6 +23,7 @@ export interface DshLiveAgentProjection {
   readonly id: string
   readonly status: 'idle' | 'running'
   readonly session: DshLiveSessionProjection
+  whenIdle(): Promise<void>
 }
 
 export interface DshLiveAgentRegistryPort {
@@ -39,6 +40,15 @@ export interface DshSessionActivityObservation {
   readonly complete: boolean
   readonly activeAgent: boolean
   readonly activityRevision: string
+  readonly durableLatestTurnEndSeq: number
+  readonly durableOpenTurn: boolean
+}
+
+interface LiveSample {
+  readonly live: DshLiveSessionProjection | undefined
+  readonly liveCoordinates: string
+  readonly agent: DshLiveAgentProjection | undefined
+  readonly agentStatus: 'idle' | 'running' | 'absent'
 }
 
 function lifecycleKey(header: DshSessionHeader): string | undefined {
@@ -69,11 +79,39 @@ function sameSessionPrefix(
   return canonicalJson(eventCoordinates(live)) === canonicalJson(eventCoordinates(durable))
 }
 
+function durableTurnState(events: readonly DshSessionEvent[]): {
+  readonly latestTurnEndSeq: number
+  readonly openTurn: boolean
+} | undefined {
+  let openTurn = false
+  let latestTurnEndSeq: number | undefined
+  for (const event of events) {
+    if (event.type === 'turn/start') {
+      if (openTurn) return undefined
+      openTurn = true
+    } else if (event.type === 'turn/end') {
+      if (!openTurn) return undefined
+      openTurn = false
+      latestTurnEndSeq = event.seq
+    }
+  }
+  return latestTurnEndSeq === undefined ? undefined : { latestTurnEndSeq, openTurn }
+}
+
+function sameLiveSample(left: LiveSample, right: LiveSample): boolean {
+  return left.live === right.live
+    && left.liveCoordinates === right.liveCoordinates
+    && left.agent === right.agent
+    && left.agentStatus === right.agentStatus
+}
+
 function unavailable(sessionLifecycleKey: string): DshSessionActivityObservation {
   return {
     complete: false,
     activeAgent: false,
     activityRevision: sha256Utf8(canonicalJson({ contract: 'dsh-session-activity-v1', sessionLifecycleKey, unavailable: true })),
+    durableLatestTurnEndSeq: 0,
+    durableOpenTurn: true,
   }
 }
 
@@ -107,21 +145,14 @@ export class DshSessionActivityAdapter {
         || lifecycleKey(log.header) !== sessionLifecycleKey
         || canonicalJson(log.header) !== canonicalJson(before.header)
       ) return failed
+      const turnState = durableTurnState(log.events)
+      if (turnState === undefined) return failed
 
-      const live = this.#sessions.get(before.header.id)
-      if (live !== undefined && (
-        lifecycleKey(live.header) !== sessionLifecycleKey
-        || !sameSessionPrefix(live.events, log.events)
-      )) return failed
-
-      const agent = this.#agents.get(before.header.id)
-      if (agent !== undefined && (
-        live === undefined
-        || agent.id !== before.header.id
-        || agent.session !== live
-        || lifecycleKey(agent.session.header) !== sessionLifecycleKey
-        || (agent.status !== 'idle' && agent.status !== 'running')
-      )) return failed
+      const initialLive = this.#sampleLive(before.header.id, sessionLifecycleKey, log.events)
+      if (initialLive === undefined) return failed
+      if (initialLive.agent?.status === 'idle') await initialLive.agent.whenIdle()
+      const settledLive = this.#sampleLive(before.header.id, sessionLifecycleKey, log.events)
+      if (settledLive === undefined || !sameLiveSample(initialLive, settledLive)) return failed
 
       const afterRead = await this.#reader.listSnapshots()
       if (afterRead.status !== 'AVAILABLE') return failed
@@ -132,21 +163,55 @@ export class DshSessionActivityAdapter {
         || canonicalJson(after.header) !== canonicalJson(before.header)
       ) return failed
 
-      const activeAgent = agent?.status === 'running'
+      const finalLive = this.#sampleLive(before.header.id, sessionLifecycleKey, log.events)
+      if (finalLive === undefined || !sameLiveSample(settledLive, finalLive)) return failed
+
+      const activeAgent = finalLive.agentStatus === 'running'
       return {
         complete: true,
         activeAgent,
+        durableLatestTurnEndSeq: turnState.latestTurnEndSeq,
+        durableOpenTurn: turnState.openTurn,
         activityRevision: sha256Utf8(canonicalJson({
           contract: 'dsh-session-activity-v1',
           sessionLifecycleKey,
           persistenceRevision: before.revision,
           durableEventCoordinates: eventCoordinates(log.events),
-          live: live !== undefined,
-          agentStatus: agent?.status ?? 'absent',
+          durableLatestTurnEndSeq: turnState.latestTurnEndSeq,
+          durableOpenTurn: turnState.openTurn,
+          live: finalLive.live !== undefined,
+          agentStatus: finalLive.agentStatus,
         })),
       }
     } catch {
       return failed
+    }
+  }
+
+  #sampleLive(
+    sessionId: string,
+    sessionLifecycleKey: string,
+    durableEvents: readonly DshSessionEvent[],
+  ): LiveSample | undefined {
+    const live = this.#sessions.get(sessionId)
+    if (live !== undefined && (
+      lifecycleKey(live.header) !== sessionLifecycleKey
+      || !sameSessionPrefix(live.events, durableEvents)
+    )) return undefined
+    const agent = this.#agents.get(sessionId)
+    if (agent !== undefined && (
+      live === undefined
+      || agent.id !== sessionId
+      || agent.session !== live
+      || lifecycleKey(agent.session.header) !== sessionLifecycleKey
+      || (agent.status !== 'idle' && agent.status !== 'running')
+      || typeof agent.whenIdle !== 'function'
+    )) return undefined
+    return {
+      live,
+      liveCoordinates: canonicalJson(eventCoordinates(live?.events ?? [])),
+      agent,
+      agentStatus: agent?.status ?? 'absent',
     }
   }
 }

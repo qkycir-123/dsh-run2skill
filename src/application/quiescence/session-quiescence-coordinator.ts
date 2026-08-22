@@ -11,6 +11,8 @@ const activityObservationSchema = z.object({
   complete: z.boolean(),
   activeAgent: z.boolean(),
   activityRevision: z.string().min(1).max(256),
+  durableLatestTurnEndSeq: z.number().int().nonnegative().safe(),
+  durableOpenTurn: z.boolean(),
 }).strict()
 
 export interface SessionActivityObservationPort {
@@ -76,7 +78,12 @@ export class SessionQuiescenceCoordinator {
     const afterActivity = this.#cursor(intent.sessionLifecycleKey)
     if (afterActivity === undefined) return 'INCOMPLETE'
     if (!this.#sameCursorFence(cursor, afterActivity)) return 'STALE'
-    return activity.activeAgent || activity.activityRevision !== fence.activityRevision ? 'STALE' : 'VALID'
+    return activity.activeAgent
+      || activity.durableOpenTurn
+      || activity.durableLatestTurnEndSeq !== cursor.observedThroughTurnEndSeq
+      || activity.activityRevision !== fence.activityRevision
+      ? 'STALE'
+      : 'VALID'
   }
 
   async #tryRelease(intent: ExperienceIntentV2): Promise<boolean> {
@@ -102,7 +109,13 @@ export class SessionQuiescenceCoordinator {
       if (!Number.isFinite(lastActivity) || this.#now() < lastActivity + intent.quiescence.requiredIdleMs) return false
     }
     const activity = await this.#observe(intent.sessionLifecycleKey)
-    if (activity === undefined || !activity.complete || activity.activeAgent) return false
+    if (
+      activity === undefined
+      || !activity.complete
+      || activity.activeAgent
+      || activity.durableOpenTurn
+      || activity.durableLatestTurnEndSeq !== cursor.observedThroughTurnEndSeq
+    ) return false
     const afterActivity = this.#cursor(intent.sessionLifecycleKey)
     if (afterActivity === undefined || !this.#sameCursorFence(cursor, afterActivity)) return false
     const satisfiedAt = this.#isoNow()

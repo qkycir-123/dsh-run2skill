@@ -52,7 +52,12 @@ describe('B2 v2 quiescence activity on real DSH Session services', () => {
       session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
       await ctx.sessions.flush(session)
       const advanced = await adapter.observe(sessionLifecycleKey)
-      expect(advanced).toMatchObject({ complete: true, activeAgent: false })
+      expect(advanced).toMatchObject({
+        complete: true,
+        activeAgent: false,
+        durableLatestTurnEndSeq: 3,
+        durableOpenTurn: false,
+      })
       expect(advanced.activityRevision).not.toBe(stable.activityRevision)
     } finally {
       await persistenceFiber.dispose()

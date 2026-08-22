@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DshSessionActivityAdapter } from '../src/adapters/dsh-session/v2-session-activity.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import type {
@@ -27,20 +27,25 @@ function harness(options: {
   readonly status?: 'idle' | 'running'
   readonly liveEvents?: readonly DshSessionEvent[]
   readonly snapshots?: readonly SessionPersistenceSnapshot[][]
+  readonly onSnapshotRead?: (ordinal: number, liveEvents: DshSessionEvent[]) => void
+  readonly whenIdle?: () => Promise<void>
 } = {}) {
   let snapshotRead = 0
+  const liveEvents = [...(options.liveEvents ?? events)]
   const live = {
     header,
-    events: options.liveEvents ?? events,
+    events: liveEvents,
   }
   const agent = {
     id: header.id,
     status: options.status ?? 'idle',
     session: live,
+    whenIdle: options.whenIdle ?? (async () => {}),
   }
   return new DshSessionActivityAdapter({
     persistence: {
       async listSnapshots() {
+        options.onSnapshotRead?.(snapshotRead + 1, liveEvents)
         const configured = options.snapshots ?? [[{ header, revision: 'jsonl:2' }]]
         return configured[Math.min(snapshotRead++, configured.length - 1)]!
       },
@@ -53,14 +58,21 @@ function harness(options: {
 
 describe('real DSH Session activity adapter', () => {
   it('returns a stable complete idle observation for the exact durable lifecycle', async () => {
-    const adapter = harness()
+    const whenIdle = vi.fn(async () => {})
+    const adapter = harness({ whenIdle })
 
     const first = await adapter.observe(lifecycleKey)
     const second = await adapter.observe(lifecycleKey)
 
-    expect(first).toMatchObject({ complete: true, activeAgent: false })
+    expect(first).toMatchObject({
+      complete: true,
+      activeAgent: false,
+      durableLatestTurnEndSeq: 1,
+      durableOpenTurn: false,
+    })
     expect(first.activityRevision).toMatch(/^[a-f0-9]{64}$/)
     expect(second).toEqual(first)
+    expect(whenIdle).toHaveBeenCalledTimes(2)
   })
 
   it('reports the exact live Agent running state in the activity revision', async () => {
@@ -95,6 +107,20 @@ describe('real DSH Session activity adapter', () => {
       complete: false,
       activeAgent: false,
     })
+  })
+
+  it('fails closed when live activity changes during the final persistence sample', async () => {
+    const adapter = harness({
+      onSnapshotRead(ordinal, liveEvents) {
+        if (ordinal !== 2) return
+        liveEvents.push(
+          { type: 'turn/start', seq: 2, time: 1_725_000_003_000, data: { turn: 1 } },
+          { type: 'turn/end', seq: 3, time: 1_725_000_004_000, data: { turn: 1 } },
+        )
+      },
+    })
+
+    await expect(adapter.observe(lifecycleKey)).resolves.toMatchObject({ complete: false })
   })
 
   it('fails closed when the lifecycle cannot be resolved uniquely', async () => {
