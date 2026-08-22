@@ -81,6 +81,7 @@ describe('Automatic Learning native settings card', () => {
             hideBefore: '2026-08-21T00:00:00.000Z',
             workItemCount: 0,
             lineageCount: 0,
+            derivedRecordCount: 0,
             blockedOrUnprovenCount: 0,
             willDelete: [
               { kind: 'WORK_ITEMS', count: 0 },

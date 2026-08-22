@@ -64,7 +64,7 @@ v2 migration journal 提交前可直接回到旧版本，因为 v1 未被改写�
 
 ## 数据清理与卸载
 
-设置页中的缓存清理会按当前实现支持的范围删除 Run2Skill 派生中间数据。v2 启用后，Purge visibility 必须同时覆盖 v1 legacy 视图、v2 所有表、行为签名索引、全局 Proposal generation lease 和 migration copy；Purge 完成前还必须从可见 authoritative rows 重建 PendingProposalCatalog，证明已清 Proposal 不再出现且没有 dangling index/lease。它不会删除 DSH 的原始会话记录、已发布的原生 Skill，或无法证明属于所选范围的数据。
+设置页中的“清理所有缓存”会删除本机全部 Run2Skill 派生中间数据。Purge visibility 同时覆盖 v1 legacy 视图、独立诊断 sidecar、v2 所有派生表、行为签名索引、全局 Proposal generation lease 和 migration copy；完成前必须证明已清 Proposal 不再出现且没有 dangling index/lease。它不会删除 DSH 的原始会话记录、已发布的原生 Skill、Provider/Agent 设置或其他 DSH 设置。
 
 卸载插件默认保留 `run2skill_v1`、已启用时的 `run2skill_v2`、`run2skill_learning_diagnostics_v1` 数据和所有已发布 Skill。如果你希望删除 Run2Skill 派生数据，请在插件仍然安装时先执行数据清理，再卸载：
 

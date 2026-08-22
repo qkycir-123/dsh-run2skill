@@ -27,6 +27,11 @@ export interface Run2skillStorageContext {
     open(spec:
       | typeof import('./domain.js').run2skillDomainSpec
       | typeof import('./learning-diagnostic-domain.js').learningDiagnosticDomainSpec
-    ): Promise<Run2skillDomain | import('./learning-diagnostic-domain.js').LearningDiagnosticDomain>
+      | typeof import('./v2-domain.js').run2skillV2DomainSpec
+    ): Promise<
+      | Run2skillDomain
+      | import('./learning-diagnostic-domain.js').LearningDiagnosticDomain
+      | import('./v2-types.js').Run2skillV2Domain
+    >
   }
 }

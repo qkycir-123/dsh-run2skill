@@ -1756,6 +1756,7 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
 }).strict()
 
 const PurgeScopeBindingV2Schema = z.discriminatedUnion('scope', [
+  z.object({ scope: z.literal('ALL') }).strict(),
   z.object({ scope: z.literal('USER'), scopeIdentityDigest: sha256Hex }).strict(),
   z.object({
     scope: z.literal('PROJECT'),

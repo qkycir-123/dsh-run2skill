@@ -156,6 +156,20 @@ describe('LearningDiagnosticStore', () => {
     expect(sidecar.healthChecks.size).toBe(0)
   })
 
+  it('serializes concurrent readiness probes and recovers a residual sentinel', async () => {
+    const main = createMemoryRun2skillDomain()
+    const sidecar = createMemoryLearningDiagnosticDomain()
+    const store = new LearningDiagnosticStore(main, sidecar)
+    sidecar.healthChecks.set('purge-readiness', { schemaVersion: 1, generation: 41 })
+
+    await expect(Promise.all([
+      store.verifyReady(),
+      store.verifyReady(),
+      store.verifyReady(),
+    ])).resolves.toEqual([undefined, undefined, undefined])
+    expect(sidecar.healthChecks.size).toBe(0)
+  })
+
   it('fails readiness with terminal-table backend loss and can reverify before retrying deletion', async () => {
     const main = createMemoryRun2skillDomain()
     const sidecar = createMemoryLearningDiagnosticDomain()

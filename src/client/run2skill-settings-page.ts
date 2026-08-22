@@ -810,11 +810,12 @@ export function Run2skillSettingsPage(props: {
       ), createElement(Pill, null, '有界记录')),
     disclosure('automatic', '自动学习', createElement(IconSettingsOutline16),
       createElement(AutomaticLearningSection, { controller: props.controller })),
-    disclosure('data', '数据管理', createElement(IconTrashOutline16),
+    disclosure('purge', '缓存清理', createElement(IconTrashOutline16),
       createElement('div', { className: css.sectionBody },
         createElement(PurgeSettingsSection, {
           controller: props.purgeController,
-          active: hostTab.visible && open.has('data'),
+          active: hostTab.visible && open.has('purge'),
+          onCompleted: () => { setAttentionRefresh(value => value + 1) },
         }),
       )),
   )

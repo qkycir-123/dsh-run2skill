@@ -7,7 +7,8 @@ import {
   TurnObservationV2Schema,
   type GlobalV2,
 } from '../../domain/v2/index.js'
-import type { Run2skillV2Domain, Run2skillV2StorageContext } from './v2-types.js'
+import type { Run2skillV2Domain } from './v2-types.js'
+import type { Run2skillStorageContext } from './types.js'
 
 export const RUN2SKILL_V2_SCHEMA_CONTRACT = Object.freeze({
   domainName: 'run2skill_v2',
@@ -52,7 +53,7 @@ export const run2skillV2DomainSpec = {
   },
 } as const
 
-export async function openRun2skillV2Domain(context: Run2skillV2StorageContext): Promise<Run2skillV2Domain> {
+export async function openRun2skillV2Domain(context: Run2skillStorageContext): Promise<Run2skillV2Domain> {
   const domain = await context.storageDomain.open(run2skillV2DomainSpec)
   if (domain.name !== run2skillV2DomainSpec.name) throw new Error('run2skill v2 domain name mismatch')
   return domain

@@ -24,6 +24,8 @@ import { DurableCaptureStore } from '../src/adapters/dsh-storage/durable-capture
 import { HostMutationGate } from '../src/application/host-mutation-gate.js'
 import { makeLearningResult } from './support/learning-fixture.js'
 import { deriveExperienceId, deriveLearningProposalId } from '../src/domain/learn/index.js'
+import { LearningDiagnosticStore } from '../src/adapters/dsh-storage/learning-diagnostic-store.js'
+import { createMemoryLearningDiagnosticDomain } from './support/memory-learning-diagnostic-domain.js'
 
 const NOW = Date.parse('2026-08-21T00:00:00.000Z')
 const PROJECT = join(process.cwd(), '.probe-work', 'purge-saga-project')
@@ -338,6 +340,52 @@ describe('recoverable Purge saga', () => {
       state: 'COMPLETED',
       deletedLineages: 1,
       deletedWorkItems: 1,
+    })
+  })
+
+  it('allows concurrent previews and preview plus confirm without readiness sentinel interference', async () => {
+    const { domain } = populatedDomain()
+    const diagnostics = new LearningDiagnosticStore(domain, createMemoryLearningDiagnosticDomain())
+    const service = new PurgeService(domain, resolver, {
+      now: () => NOW,
+      assertDeletionReady: async () => await diagnostics.verifyReady(),
+    })
+
+    await expect(Promise.all([
+      service.preview('PROJECT', binding.workspaceId),
+      service.preview('PROJECT', binding.workspaceId),
+    ])).resolves.toHaveLength(2)
+
+    const preview = await service.preview('PROJECT', binding.workspaceId)
+    await expect(Promise.all([
+      service.preview('PROJECT', binding.workspaceId),
+      service.confirm(preview.previewId, preview.digest),
+    ])).resolves.toHaveLength(2)
+  })
+
+  it.each([
+    ['lineage', 'failGlobalWriteAfterNextLineageDelete', 'deletedLineages'],
+    ['work item', 'failGlobalWriteAfterNextWorkItemDelete', 'deletedWorkItems'],
+  ] as const)('keeps exact receipt counts after a crash between %s deletion and journal count persistence', async (
+    _kind,
+    failAfterDelete,
+    receiptField,
+  ) => {
+    const { domain } = populatedDomain()
+    domain[failAfterDelete]()
+    const first = new PurgeService(domain, resolver, { now: () => NOW })
+    const preview = await first.preview('PROJECT', binding.workspaceId)
+
+    await expect(first.confirm(preview.previewId, preview.digest))
+      .rejects.toMatchObject({ code: 'PURGE_STORAGE_UNAVAILABLE' })
+
+    const restarted = new PurgeService(domain, resolver, { now: () => NOW + 1 })
+    const receipt = await restarted.recover()
+    expect(receipt).toMatchObject({
+      state: 'COMPLETED',
+      deletedWorkItems: 1,
+      deletedLineages: 1,
+      [receiptField]: 1,
     })
   })
 

@@ -14,10 +14,12 @@ const purgeId = z.string().regex(/^purge_[a-f0-9]{64}$/)
 const digest = z.string().regex(/^[a-f0-9]{64}$/)
 const workspaceId = z.string().min(1).max(256)
 const previewRequest = z.discriminatedUnion('scope', [
+  z.object({ apiVersion: z.literal(1), scope: z.literal('ALL') }).strict(),
   z.object({ apiVersion: z.literal(1), scope: z.literal('PROJECT'), workspaceId }).strict(),
   z.object({ apiVersion: z.literal(1), scope: z.literal('USER') }).strict(),
 ])
 const confirmRequest = z.discriminatedUnion('scope', [
+  z.object({ apiVersion: z.literal(1), scope: z.literal('ALL'), previewId, digest }).strict(),
   z.object({ apiVersion: z.literal(1), scope: z.literal('PROJECT'), workspaceId, previewId, digest }).strict(),
   z.object({ apiVersion: z.literal(1), scope: z.literal('USER'), previewId, digest }).strict(),
 ])
@@ -30,12 +32,14 @@ const previewResponse = z.object({
   digest,
   expiresAt: z.string().datetime({ offset: true }),
   scopeBinding: z.discriminatedUnion('scope', [
+    z.object({ scope: z.literal('ALL') }).strict(),
     z.object({ scope: z.literal('PROJECT'), workspaceId }).strict(),
     z.object({ scope: z.literal('USER') }).strict(),
   ]),
   hideBefore: z.string().datetime({ offset: true }),
   workItemCount: count,
   lineageCount: count,
+  derivedRecordCount: count,
   blockedOrUnprovenCount: count,
   willDelete: z.array(z.object({ kind: z.enum(['WORK_ITEMS', 'LINEAGES']), count }).strict()).length(2),
   willKeep: z.array(z.object({
@@ -124,7 +128,7 @@ export function createPurgeRpcHandler(
             ...preview,
             scopeBinding: preview.scopeBinding.scope === 'PROJECT'
               ? { scope: 'PROJECT', workspaceId: preview.scopeBinding.workspaceId }
-              : { scope: 'USER' },
+              : { scope: preview.scopeBinding.scope },
           }),
         }
       }
@@ -137,7 +141,7 @@ export function createPurgeRpcHandler(
             request.digest,
             request.scope === 'PROJECT'
               ? { scope: 'PROJECT', workspaceId: request.workspaceId }
-              : { scope: 'USER' },
+              : { scope: request.scope },
           ))),
         }
       }

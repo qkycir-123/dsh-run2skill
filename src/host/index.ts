@@ -34,6 +34,8 @@ import { CurrentScopeAuthorizer } from '../adapters/dsh-connection/current-scope
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
+import { openRun2skillV2Domain } from '../adapters/dsh-storage/v2-domain.js'
+import type { Run2skillV2Domain } from '../adapters/dsh-storage/v2-types.js'
 import { DshWorkspaceBindingResolver, type DshWorkspaceRegistryPort } from '../adapters/dsh-workspace/binding.js'
 import { BoundedGapScanner } from '../application/capture/bounded-gap-scanner.js'
 import { DurableCaptureCoordinator } from '../application/capture/durable-capture-coordinator.js'
@@ -238,6 +240,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     const domain = await openRun2skillDomain(this.context)
     let diagnosticDomain: LearningDiagnosticDomain | undefined
     let diagnosticStore: LearningDiagnosticStore | undefined
+    let v2Domain: Run2skillV2Domain | undefined
     this.currentDomain = domain
     try {
       try {
@@ -264,6 +267,11 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         diagnosticDomain = undefined
         diagnosticStore = undefined
         this.currentDiagnosticStore = undefined
+      }
+      try {
+        v2Domain = await openRun2skillV2Domain(this.context)
+      } catch {
+        v2Domain = undefined
       }
       const checkpoint = new WriteBehindCheckpoint(domain, {
         runMutation: operation => this.mutationGate.run(operation),
@@ -445,6 +453,7 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       }
       const purgeDiagnostics = diagnosticStore
       const purgeService = new PurgeService(domain, scopeResolver, {
+        ...(v2Domain === undefined ? {} : { v2Domain }),
         assertDeletionReady: async () => {
           if (purgeDiagnostics === undefined) {
             throw new Error('Learning diagnostic sidecar unavailable')
@@ -453,7 +462,10 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
         },
         ...(purgeDiagnostics === undefined
           ? {}
-          : { beforeDeleteWorkItem: async (id: string) => await purgeDiagnostics.deleteWorkItemWithinMutation(id) }),
+          : {
+              beforeDeleteWorkItem: async (id: string) => await purgeDiagnostics.deleteWorkItemWithinMutation(id),
+              beforeDeleteAll: async () => await purgeDiagnostics.deleteAllWithinMutation(),
+            }),
         onHidden: () => {
           scheduler.abortMatching(item => !visibility.workItemVisible(item))
           scheduler.wake()
@@ -566,9 +578,13 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
               await scheduler.dispose()
             } finally {
               try {
-                await diagnosticDomain?.close()
+                await v2Domain?.close()
               } finally {
-                await domain.close()
+                try {
+                  await diagnosticDomain?.close()
+                } finally {
+                  await domain.close()
+                }
               }
             }
           }
@@ -590,9 +606,13 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
       if (this.currentDomain === domain) this.currentDomain = undefined
       this.currentCurationWake = undefined
       try {
-        await diagnosticDomain?.close()
+        await v2Domain?.close()
       } finally {
-        await domain.close()
+        try {
+          await diagnosticDomain?.close()
+        } finally {
+          await domain.close()
+        }
       }
       throw error
     }

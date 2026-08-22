@@ -526,13 +526,13 @@ CREATE 发布为 `r1`；MERGE 形成下一 Revision。首次 MERGE 普通 Existi
 v0.2 的模型策略固定为 `inherit-session`，不提供模型选择器。配置变更从下一个 Stage claim 生效，已开始的 Stage 使用启动时配置快照。
 
 **REQ-CFG-003**
-用户必须能按当前 PROJECT 或整个 USER scope 清除 run2skill 自有数据，包括 Experience、过滤后的 Evidence、pending、Proposal、Revision metadata 及相关审计/使用记录。
+设置页只提供一个“缓存清理”入口和一个“清理所有缓存”操作。它清除本机所有 Run2Skill 派生中间数据，包括 WorkItem、Observation/Batch/Intent、过滤后的 Evidence、pending Proposal、Lineage metadata、失败与非敏感诊断记录和派生索引；不向用户暴露 PROJECT/USER 等内部清理作用域。
 
 **REQ-CFG-004**
 Purge 确认必须明确区分：
 
 - 将删除：run2skill 自有数据；
-- 不会删除：DSH Session Log 和已发布的原生 Skill。
+- 不会删除：DSH Session Log、已发布的原生 Skill，以及 Provider、Agent 或其他 DSH 设置。
 
 用户发起 Purge 后，已清除数据不得继续出现在正常产品界面。
 
