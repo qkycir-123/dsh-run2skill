@@ -57,6 +57,7 @@ const SAFE_TOOLS = new Set([
 ])
 const SHELL_TOOLS = new Set(['bash', 'pwsh', 'terminal_open', 'terminal_send'])
 const DIRECT_FILE_TOOLS = new Set(['write', 'edit', 'str_replace_editor'])
+const STR_REPLACE_EDITOR_WRITE_COMMANDS = new Set(['create', 'str_replace', 'insert'])
 const SKILL_MARKER = /(?:SKILL\.md|[\\/]\.(?:dsh|agents)[\\/]skills[\\/]|[\\/]skills[\\/])/iu
 const SUPPORTED_TURN_EVENTS = new Set([
   'turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'assistant/chunk',
@@ -283,6 +284,13 @@ function analyzeTools(
     const failed = resultFailed(result)
     if (SAFE_TOOLS.has(call.name)) continue
     if (DIRECT_FILE_TOOLS.has(call.name)) {
+      if (call.name === 'str_replace_editor') {
+        const args = parseJsonObject(call.arguments)
+        if (args?.command === 'view') continue
+        if (typeof args?.command !== 'string' || !STR_REPLACE_EDITOR_WRITE_COMMANDS.has(args.command)) {
+          return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+        }
+      }
       const parsedWrite = directWrite(call.name, call.arguments, failed, cwd)
       if (parsedWrite === undefined) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }

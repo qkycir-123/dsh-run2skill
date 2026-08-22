@@ -277,6 +277,26 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
   })
 
+  it('treats str_replace_editor view of an existing Skill as read-only', async () => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-view', name: 'str_replace_editor',
+          arguments: JSON.stringify({ command: 'view', path: skillPath }),
+        }),
+        toolResult(4, 'call-view'),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [] })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'RUN2SKILL_OWNED', ownership: { reasonCode: 'NO_AGENT_SKILL_ACTIVITY' },
+    })
+  })
+
   it('does not bind an unrelated body when the Intent contract appears only in frontmatter', async () => {
     const fixture = createMinimalV2Fixtures()
     const metadataOnly = [
