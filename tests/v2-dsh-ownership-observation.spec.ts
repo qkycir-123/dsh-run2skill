@@ -210,6 +210,23 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
   })
 
+  it('fails closed when dynamic Shell state could hide a same-content Skill rewrite', async () => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-1', name: 'pwsh',
+          arguments: JSON.stringify({ command: 'Set-Content $target $body' }),
+        }),
+        toolResult(4, 'call-1'),
+      ],
+    })
+
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_ACTIVITY_AMBIGUOUS' },
+    })
+  })
+
   it('does not invoke the second generation channel after the Agent already emitted a complete Skill body', async () => {
     const { adapter, batch, intent } = harness({
       between: [event('assistant/message', 3, {

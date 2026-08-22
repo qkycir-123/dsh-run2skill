@@ -4,6 +4,7 @@ import type { SessionPersistencePort, DshSessionEvent, DshSessionHeader } from '
 import type { OwnershipObservationPort } from '../../application/ownership/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
+import { deriveDshSkillReadbackBodyDigest } from './v2-skill-file.js'
 import type { ExperienceIntentV2, OwnershipEvidenceV2, SessionBatchV2 } from '../../domain/v2/index.js'
 
 type OwnershipCandidate = NonNullable<SessionBatchV2['batchManifestBaseline']['ownershipCandidates']>[number]
@@ -99,24 +100,6 @@ function canonicalPath(value: string, cwd?: string): string {
 
 export function deriveOwnershipTargetPathDigest(path: string, cwd?: string): string {
   return sha256Utf8(canonicalJson({ path: canonicalPath(path, cwd) }))
-}
-
-/** Mirrors the stock DSH filesystem provider's frontmatter boundary and body trim. */
-export function deriveDshSkillReadbackBodyDigest(raw: string): string | undefined {
-  const firstLineEnd = raw.indexOf('\n')
-  if (firstLineEnd < 0 || raw.slice(0, firstLineEnd).replace(/\r$/u, '') !== '---') return undefined
-  let lineStart = firstLineEnd + 1
-  while (lineStart <= raw.length) {
-    const nextNewline = raw.indexOf('\n', lineStart)
-    const lineEnd = nextNewline < 0 ? raw.length : nextNewline
-    if (raw.slice(lineStart, lineEnd).replace(/\r$/u, '') === '---') {
-      const bodyStart = nextNewline < 0 ? raw.length : nextNewline + 1
-      return sha256Utf8(raw.slice(bodyStart).trim())
-    }
-    if (nextNewline < 0) return undefined
-    lineStart = nextNewline + 1
-  }
-  return undefined
 }
 
 function sameHeader(left: DshSessionHeader, right: DshSessionHeader): boolean {
@@ -282,8 +265,10 @@ function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefine
     if (SHELL_TOOLS.has(call.name)) {
       if (SKILL_MARKER.test(call.arguments)) {
         activity = 'BODY_GENERATED'
-        unattributedBodyEvidence = true
+      } else {
+        activity = 'AMBIGUOUS'
       }
+      unattributedBodyEvidence = true
       continue
     }
     activity = 'AMBIGUOUS'

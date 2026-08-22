@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { z } from 'zod'
 import type { Run2skillV2Domain } from '../dsh-storage/v2-types.js'
@@ -8,6 +9,7 @@ import { deriveRecallCandidateId, type CompleteRecallCatalogPort, type RecallCat
 import type { GenerationCatalogPort, GenerationCatalogSnapshot } from '../../application/generation/index.js'
 import type { ExperienceIntentV2, SessionBatchV2 } from '../../domain/v2/index.js'
 import type { DshSkillRegistryPort } from './skill-catalog.js'
+import { parseDshSkillFileForOwnership } from './v2-skill-file.js'
 
 const identity = z.string().min(1).max(256)
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/)
@@ -39,12 +41,12 @@ const runtimeDefinitionSchema = runtimeSummarySchema.safeExtend({ content: z.str
 type RuntimeSummary = z.infer<typeof runtimeSummarySchema>
 
 interface OwnershipCatalogPolicy {
-  readonly maxBodyCodeUnits: number
+  readonly maxBodyBytes: number
   readonly maxTotalBytes: number
 }
 
 const DEFAULT_OWNERSHIP_CATALOG_POLICY: OwnershipCatalogPolicy = Object.freeze({
-  maxBodyCodeUnits: 32 * 1024 * 1024,
+  maxBodyBytes: 32 * 1024 * 1024,
   maxTotalBytes: 128 * 1024 * 1024,
 })
 
@@ -75,6 +77,8 @@ export interface DshV2CatalogAdapterOptions<TView extends object> {
   ) => V2RuntimeCatalogIdentity | undefined
   /** @internal Allows deterministic boundary tests; Host wiring uses the frozen default policy. */
   readonly internalOwnershipPolicy?: Partial<OwnershipCatalogPolicy>
+  /** @internal Allows deterministic bounded-stream tests; Host wiring reads the discovered file directly. */
+  readonly internalOpenOwnershipFile?: (path: string) => AsyncIterable<Uint8Array>
 }
 
 interface RuntimeCandidate {
@@ -207,12 +211,15 @@ export class DshV2CatalogAdapter<TView extends object> {
   readonly #resolveView: DshV2CatalogAdapterOptions<TView>['resolveView']
   readonly #resolveRuntimeIdentity: NonNullable<DshV2CatalogAdapterOptions<TView>['resolveRuntimeIdentity']>
   readonly #ownershipPolicy: OwnershipCatalogPolicy
+  readonly #openOwnershipFile: (path: string) => AsyncIterable<Uint8Array>
 
   constructor(domain: Run2skillV2Domain, options: DshV2CatalogAdapterOptions<TView>) {
     this.#domain = domain
     this.#registry = options.registry
     this.#resolveView = options.resolveView
     this.#ownershipPolicy = { ...DEFAULT_OWNERSHIP_CATALOG_POLICY, ...options.internalOwnershipPolicy }
+    this.#openOwnershipFile = options.internalOpenOwnershipFile
+      ?? (path => createReadStream(path, { highWaterMark: 64 * 1024 }))
     if (!Object.values(this.#ownershipPolicy).every(value => Number.isSafeInteger(value) && value > 0)) {
       throw new TypeError('Invalid ownership Catalog policy')
     }
@@ -264,16 +271,14 @@ export class DshV2CatalogAdapter<TView extends object> {
     const view = this.#resolveView(sessionLifecycleKey)
     if (view === undefined) return unavailable
     let totalBytes = 0
-    const observeBody = (content: string): boolean => {
-      if (content.length > this.#ownershipPolicy.maxBodyCodeUnits) return false
-      const bytes = Buffer.byteLength(content, 'utf8')
+    const observeBytes = (bytes: number): boolean => {
       if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
       totalBytes += bytes
       return true
     }
-    const first = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBody)
+    const first = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBytes)
     if (!first.complete) return unavailable
-    const second = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBody)
+    const second = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBytes)
     if (!second.complete || canonicalJson(first) !== canonicalJson(second)) return unavailable
     return {
       complete: true,
@@ -436,7 +441,7 @@ export class DshV2CatalogAdapter<TView extends object> {
   async #ownershipRuntime(
     view: TView,
     sessionLifecycleKey: string,
-    observeBody: (content: string) => boolean,
+    observeBytes: (bytes: number) => boolean,
   ): Promise<{
     readonly complete: boolean
     readonly runtimeCatalogDigest: string
@@ -456,39 +461,16 @@ export class DshV2CatalogAdapter<TView extends object> {
     if (!runtime.complete) return unavailable
     const candidates = []
     for (const candidate of runtime.candidates) {
-      let raw: unknown
-      try {
-        raw = await this.#registry.get(candidate.raw.name, view)
-      } catch {
-        return unavailable
-      }
-      const definition = runtimeDefinitionSchema.safeParse(raw)
-      if (!definition.success) return unavailable
-      const runtimeIdentity = this.#resolveRuntimeIdentity(
-        definition.data,
-        view,
-        { sessionLifecycleKey },
-      )
-      if (runtimeIdentity === undefined) return unavailable
-      const loadedSummary: RecallCatalogSummary = {
-        candidateId: deriveRecallCandidateId({
-          provider: definition.data.provider,
-          source: definition.data.source,
-          scope: runtimeIdentity.scope,
-          name: definition.data.name,
-          rootIdentityDigest: runtimeIdentity.rootIdentityDigest,
-        }),
-        name: definition.data.name,
-        description: definition.data.description,
-        ...(definition.data.whenToUse === undefined ? {} : { whenToUse: definition.data.whenToUse }),
-        provider: definition.data.provider,
-        source: definition.data.source,
-        scope: runtimeIdentity.scope,
-        writable: runtimeIdentity.writable,
-        rootIdentityDigest: runtimeIdentity.rootIdentityDigest,
-      }
-      if (canonicalJson(loadedSummary) !== canonicalJson(candidate.summary)) return unavailable
-      if (!observeBody(definition.data.content)) return unavailable
+      // Agent writes are filesystem-observable. Other providers remain covered by
+      // the stable Runtime digest and cannot be granted file-write ownership.
+      if (candidate.raw.provider !== 'filesystem') continue
+      const target = candidate.raw.path
+        ?? (candidate.raw.resourceBase?.kind === 'directory'
+          ? pathApi(candidate.raw.resourceBase.path).join(candidate.raw.resourceBase.path, 'SKILL.md')
+          : undefined)
+      if (target === undefined) return unavailable
+      const bodyDigest = await this.#readOwnershipBodyDigest(target, candidate.raw.name, observeBytes)
+      if (bodyDigest === undefined) return unavailable
       candidates.push({
         candidateId: candidate.summary.candidateId,
         name: candidate.summary.name,
@@ -496,14 +478,35 @@ export class DshV2CatalogAdapter<TView extends object> {
         source: ownershipCatalogLabel('source', candidate.summary.source),
         scope: candidate.summary.scope,
         writable: candidate.summary.writable,
-        ...(definition.data.path === undefined
-          ? {}
-          : { targetPathDigest: sha256Utf8(canonicalJson({ path: canonicalPath(definition.data.path) })) }),
-        bodyDigest: sha256Utf8(definition.data.content),
+        targetPathDigest: sha256Utf8(canonicalJson({ path: canonicalPath(target) })),
+        bodyDigest,
       })
     }
     candidates.sort((left, right) => left.candidateId.localeCompare(right.candidateId))
     return { complete: true, runtimeCatalogDigest: runtime.digest, candidates }
+  }
+
+  async #readOwnershipBodyDigest(
+    target: string,
+    expectedName: string,
+    observeBytes: (bytes: number) => boolean,
+  ): Promise<string | undefined> {
+    const chunks: Buffer[] = []
+    let candidateBytes = 0
+    try {
+      for await (const chunk of this.#openOwnershipFile(target)) {
+        const bytes = Buffer.from(chunk)
+        if (bytes.byteLength > this.#ownershipPolicy.maxBodyBytes - candidateBytes) return undefined
+        if (!observeBytes(bytes.byteLength)) return undefined
+        candidateBytes += bytes.byteLength
+        chunks.push(bytes)
+      }
+    } catch {
+      return undefined
+    }
+    const parsed = parseDshSkillFileForOwnership(Buffer.concat(chunks, candidateBytes).toString('utf8'))
+    if (parsed === undefined || parsed.name !== expectedName) return undefined
+    return sha256Utf8(parsed.body)
   }
 
   async #read(

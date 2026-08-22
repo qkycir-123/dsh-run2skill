@@ -46,6 +46,14 @@ const runtimeSkill = {
   resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills\\existing-workflow' },
 }
 
+function rawSkill(body: string, name = runtimeSkill.name): string {
+  return ['---', `name: ${name}`, 'description: A bounded fixture Skill.', '---', '', body, ''].join('\n')
+}
+
+function openText(value: string): () => AsyncIterable<Uint8Array> {
+  return async function* () { yield Buffer.from(value, 'utf8') }
+}
+
 describe('DSH v2 Runtime and Pending Catalog adapter', () => {
   it('exposes one stable Runtime-only manifest for the pre-Turn ownership baseline', async () => {
     const { domain, fixture } = await seed()
@@ -129,13 +137,10 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     const adapter = new DshV2CatalogAdapter(domain, {
       registry: {
         snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
-        get: async () => ({
-          ...runtimeSkill,
-          path: `${runtimeSkill.resourceBase.path}\\SKILL.md`,
-          content: exactSkillBody,
-        }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
       },
       resolveView: () => view,
+      internalOpenOwnershipFile: openText(rawSkill(exactSkillBody)),
       resolveStockWritableRoot: () => ({
         scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
         canonicalRootPath: 'D:\\repo\\.dsh\\skills',
@@ -160,13 +165,10 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     const adapter = new DshV2CatalogAdapter(domain, {
       registry: {
         snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
-        get: async () => ({
-          ...runtimeSkill,
-          path: `${runtimeSkill.resourceBase.path}\\SKILL.md`,
-          content: reads++ === 0 ? '# First body' : '# Changed body',
-        }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: () => openText(rawSkill(reads++ === 0 ? '# First body' : '# Changed body'))(),
     })
 
     await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)).resolves.toEqual({
@@ -176,49 +178,89 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     })
   })
 
+  it('fails closed when bounded file frontmatter cannot prove the discovered Skill name', async () => {
+    const { domain, fixture } = await seed()
+    const ambiguous = [
+      '---', `name: ${runtimeSkill.name}`, 'name: "different-workflow"',
+      'description: Ambiguous fixture.', '---', '', '# Body', '',
+    ].join('\n')
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: openText(ambiguous),
+    })
+
+    await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: false, candidates: [] })
+  })
+
+  it('does not load bodies from non-filesystem providers during ownership capture', async () => {
+    const { domain, fixture } = await seed()
+    const borrowed = {
+      name: 'borrowed-workflow', description: 'A runtime-provided workflow.',
+      provider: 'runtime', source: 'runtime',
+    }
+    let getCalls = 0
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [borrowed] }),
+        get: async () => { getCalls += 1; throw new Error('ownership capture must not call registry.get') },
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+    })
+
+    await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: true, candidates: [] })
+    expect(getCalls).toBe(0)
+  })
+
   it('redacts non-canonical provider and source labels before persisting an ownership baseline', async () => {
     const { domain, fixture } = await seed()
     const sensitive = {
       ...runtimeSkill,
-      provider: 'C:\\sensitive\\provider',
       source: 'D:\\client\\skill-source',
-      resourceBase: { kind: 'opaque' as const, description: 'third-party resources' },
     }
     const adapter = new DshV2CatalogAdapter(domain, {
       registry: {
         snapshot: async () => ({ complete: true, skills: [sensitive] }),
-        get: async () => ({ ...sensitive, content: '# Third-party Skill' }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: openText(rawSkill('# Third-party Skill')),
     })
 
     const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)
     expect(observed.complete).toBe(true)
     expect(observed.candidates[0]).toMatchObject({
-      provider: expect.stringMatching(/^opaque-provider-[a-f0-9]{64}$/u),
+      provider: 'filesystem',
       source: expect.stringMatching(/^opaque-source-[a-f0-9]{64}$/u),
     })
-    expect(JSON.stringify(observed)).not.toContain('C:\\sensitive')
     expect(JSON.stringify(observed)).not.toContain('D:\\client')
   })
 
   it('fails closed when ownership body reads exceed the bounded candidate or total budget', async () => {
     const { domain, fixture } = await seed()
-    const makeAdapter = (content: string, maxBodyCodeUnits: number, maxTotalBytes: number) => new DshV2CatalogAdapter(domain, {
+    let getCalls = 0
+    const makeAdapter = (content: string, maxBodyBytes: number, maxTotalBytes: number) => new DshV2CatalogAdapter(domain, {
       registry: {
         snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
-        get: async () => ({ ...runtimeSkill, content }),
+        get: async () => { getCalls += 1; throw new Error('ownership capture must not call registry.get') },
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
-      internalOwnershipPolicy: { maxBodyCodeUnits, maxTotalBytes },
+      internalOpenOwnershipFile: openText(rawSkill(content)),
+      internalOwnershipPolicy: { maxBodyBytes, maxTotalBytes },
     })
 
     await expect(makeAdapter('x'.repeat(1_025), 1_024, 10_000)
       .observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
       .resolves.toMatchObject({ complete: false, candidates: [] })
-    await expect(makeAdapter('x'.repeat(800), 1_024, 1_500)
+    await expect(makeAdapter('x'.repeat(600), 1_024, 1_200)
       .observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
       .resolves.toMatchObject({ complete: false, candidates: [] })
+    expect(getCalls).toBe(0)
   })
 
   it('keeps every public DSH winner readable while granting writes only to canonical DSH bundles', async () => {
