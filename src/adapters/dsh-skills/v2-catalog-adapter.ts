@@ -49,6 +49,7 @@ export interface DshV2CatalogAdapterOptions<TView extends object> {
   readonly resolveRuntimeIdentity?: (
     summary: RuntimeSummary,
     view: TView,
+    context: { readonly sessionLifecycleKey: string },
   ) => V2RuntimeCatalogIdentity | undefined
 }
 
@@ -89,26 +90,52 @@ function canonicalPath(value: string): string {
   return api === win32 ? normalized.toLowerCase() : normalized
 }
 
-function stockRuntimeIdentity(summary: RuntimeSummary): V2RuntimeCatalogIdentity | undefined {
-  if (summary.provider !== 'filesystem' || summary.resourceBase?.kind !== 'directory') return undefined
-  const api = pathApi(summary.resourceBase.path)
-  if (api.basename(summary.resourceBase.path).toLowerCase() !== summary.name.toLowerCase()) return undefined
-  const scope = summary.source === 'project-dsh' || summary.source === 'project-agents'
+function stockRuntimeIdentity(
+  summary: RuntimeSummary,
+  sessionLifecycleKey: string,
+): V2RuntimeCatalogIdentity {
+  const scope = summary.source === 'project-dsh' || summary.source === 'project-agents' || summary.source === 'runtime'
     ? 'PROJECT'
-    : summary.source === 'user-dsh' || summary.source === 'user-agents' || summary.source === 'bundled'
+    : summary.source === 'user-dsh'
+        || summary.source === 'user-agents'
+        || summary.source === 'bundled'
+        || summary.source === 'custom'
       ? 'USER'
-      : undefined
-  if (scope === undefined) return undefined
-  const root = canonicalPath(api.dirname(summary.resourceBase.path))
+      : 'PROJECT'
+  const filesystemBase = summary.provider === 'filesystem' && summary.resourceBase?.kind === 'directory'
+    ? canonicalPath(summary.resourceBase.path)
+    : undefined
+  const canonicalBundle = filesystemBase !== undefined
+    && pathApi(filesystemBase).basename(filesystemBase).toLowerCase() === summary.name.toLowerCase()
+  if (canonicalBundle) {
+    return {
+      scope,
+      writable: summary.source === 'project-dsh' || summary.source === 'user-dsh',
+      rootIdentityDigest: sha256Utf8(canonicalJson({
+        contract: 'dsh-public-skill-resource-base-v1',
+        provider: summary.provider,
+        source: summary.source,
+        scope,
+        root: canonicalPath(pathApi(filesystemBase).dirname(filesystemBase)),
+      })),
+    }
+  }
+  const resourceIdentity = summary.resourceBase?.kind === 'directory'
+    ? { kind: 'directory', path: canonicalPath(summary.resourceBase.path) }
+    : summary.resourceBase
   return {
     scope,
-    writable: summary.source === 'project-dsh' || summary.source === 'user-dsh',
+    writable: false,
     rootIdentityDigest: sha256Utf8(canonicalJson({
-      contract: 'dsh-public-skill-resource-base-v1',
+      contract: 'dsh-public-skill-winner-v2',
       provider: summary.provider,
       source: summary.source,
       scope,
-      root,
+      resourceIdentity: resourceIdentity ?? {
+        kind: 'exact-session-view',
+        sessionLifecycleKey,
+      },
+      layout: 'READ_ONLY',
     })),
   }
 }
@@ -144,7 +171,8 @@ export class DshV2CatalogAdapter<TView extends object> {
     this.#domain = domain
     this.#registry = options.registry
     this.#resolveView = options.resolveView
-    this.#resolveRuntimeIdentity = options.resolveRuntimeIdentity ?? ((summary) => stockRuntimeIdentity(summary))
+    this.#resolveRuntimeIdentity = options.resolveRuntimeIdentity
+      ?? ((summary, _view, context) => stockRuntimeIdentity(summary, context.sessionLifecycleKey))
     this.recall = {
       snapshot: async input => this.#recallSnapshot(input.batch, input.intent),
       read: async input => this.#read(input.candidateId, input.batch, input.intent),
@@ -193,9 +221,9 @@ export class DshV2CatalogAdapter<TView extends object> {
     if (view === undefined || intent.sessionLifecycleKey !== batch.sessionLifecycleKey) {
       return this.#incomplete()
     }
-    const firstRuntime = await this.#runtime(view)
+    const firstRuntime = await this.#runtime(view, batch.sessionLifecycleKey)
     const pending = derivePendingProposalCatalogV2(this.#domain, intent)
-    const secondRuntime = await this.#runtime(view)
+    const secondRuntime = await this.#runtime(view, batch.sessionLifecycleKey)
     if (
       !firstRuntime.complete
       || !secondRuntime.complete
@@ -261,7 +289,7 @@ export class DshV2CatalogAdapter<TView extends object> {
     }
   }
 
-  async #runtime(view: TView): Promise<{
+  async #runtime(view: TView, sessionLifecycleKey: string): Promise<{
     readonly complete: boolean
     readonly digest: string
     readonly candidates: readonly RuntimeCandidate[]
@@ -277,7 +305,7 @@ export class DshV2CatalogAdapter<TView extends object> {
     const candidates: RuntimeCandidate[] = []
     const ids = new Set<string>()
     for (const rawSummary of parsed.data.skills) {
-      const runtimeIdentity = this.#resolveRuntimeIdentity(rawSummary, view)
+      const runtimeIdentity = this.#resolveRuntimeIdentity(rawSummary, view, { sessionLifecycleKey })
       if (runtimeIdentity === undefined || !sha256Hex.safeParse(runtimeIdentity.rootIdentityDigest).success) {
         return { complete: false, digest: EMPTY_DIGEST, candidates: [] }
       }
@@ -329,7 +357,11 @@ export class DshV2CatalogAdapter<TView extends object> {
       }
       const definition = runtimeDefinitionSchema.safeParse(raw)
       if (!definition.success) return undefined
-      const runtimeIdentity = this.#resolveRuntimeIdentity(definition.data, view)
+      const runtimeIdentity = this.#resolveRuntimeIdentity(
+        definition.data,
+        view,
+        { sessionLifecycleKey: batch.sessionLifecycleKey },
+      )
       if (runtimeIdentity === undefined) return undefined
       const loadedId = deriveRecallCandidateId({
         provider: definition.data.provider,

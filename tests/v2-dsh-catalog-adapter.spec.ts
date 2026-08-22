@@ -69,6 +69,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     const generation = await adapter.generation.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })
     expect(recall.complete).toBe(true)
     expect(recall.summaries).toHaveLength(1)
+    expect(recall.summaries[0]).toMatchObject({ scope: 'PROJECT', writable: true })
     expect(JSON.stringify(recall.summaries)).not.toContain('D:\\repo')
     expect(generation).toMatchObject({
       complete: true,
@@ -85,6 +86,95 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     })
     expect(loaded?.content).toBe('# Existing workflow')
     expect(seenViews.every(item => item === view)).toBe(true)
+  })
+
+  it('keeps every public DSH winner readable while granting writes only to canonical DSH bundles', async () => {
+    const { domain, fixture, sessionBatch } = await seed()
+    const view = { cwd: 'D:\\repo', scope: { id: 'agent' }, signal: new AbortController().signal }
+    const winners = [
+      {
+        ...runtimeSkill,
+        name: 'flat-workflow',
+        description: 'A flat Markdown workflow.',
+        resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills' },
+      },
+      {
+        ...runtimeSkill,
+        name: 'renamed-workflow',
+        description: 'A directory bundle whose folder differs from its declared name.',
+        resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills\\legacy-folder' },
+      },
+      {
+        name: 'runtime-workflow',
+        description: 'A borrowed runtime workflow.',
+        provider: 'runtime',
+        source: 'runtime',
+      },
+      {
+        name: 'bundled-workflow',
+        description: 'A bundled provider workflow.',
+        provider: 'plugin-bundle',
+        source: 'bundled',
+        resourceBase: { kind: 'opaque' as const, description: 'plugin-owned resources' },
+      },
+    ]
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: winners }),
+        get: async name => {
+          const winner = winners.find(item => item.name === name)
+          return winner === undefined ? undefined : { ...winner, content: `# ${name}` }
+        },
+      },
+      resolveView: () => view,
+    })
+
+    const snapshot = await adapter.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })
+    expect(snapshot.complete).toBe(true)
+    expect(snapshot.summaries.map(item => [item.name, item.scope, item.writable]).sort()).toEqual([
+      ['bundled-workflow', 'USER', false],
+      ['flat-workflow', 'PROJECT', false],
+      ['renamed-workflow', 'PROJECT', false],
+      ['runtime-workflow', 'PROJECT', false],
+    ])
+    expect(JSON.stringify(snapshot.summaries)).not.toContain('D:\\repo')
+    for (const summary of snapshot.summaries) {
+      await expect(adapter.recall.read({
+        candidateId: summary.candidateId,
+        batch: sessionBatch,
+        intent: fixture.experienceIntent,
+      })).resolves.toMatchObject({ content: `# ${summary.name}` })
+    }
+  })
+
+  it('fails a read when a public winner changes provider resource identity between snapshot and get', async () => {
+    const { domain, fixture, sessionBatch } = await seed()
+    const view = { cwd: 'D:\\repo', scope: {}, signal: new AbortController().signal }
+    const bundled = {
+      name: 'bundled-workflow',
+      description: 'A bundled provider workflow.',
+      provider: 'plugin-bundle',
+      source: 'bundled',
+      resourceBase: { kind: 'url' as const, url: 'https://example.invalid/v1/' },
+    }
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [bundled] }),
+        get: async () => ({
+          ...bundled,
+          resourceBase: { kind: 'url' as const, url: 'https://example.invalid/v2/' },
+          content: '# Drifted bundle',
+        }),
+      },
+      resolveView: () => view,
+    })
+    const snapshot = await adapter.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })
+    expect(snapshot.complete).toBe(true)
+    await expect(adapter.recall.read({
+      candidateId: snapshot.summaries[0]!.candidateId,
+      batch: sessionBatch,
+      intent: fixture.experienceIntent,
+    })).resolves.toBeUndefined()
   })
 
   it('keeps the full Pending digest while exactly excluding its own sealed result externally', async () => {
@@ -127,7 +217,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect(recall.pendingCatalogDigest).not.toBe(sha256Utf8(canonicalJson([])))
   })
 
-  it('fails closed on incomplete DSH discovery, unsupported winner identity, or winner drift during get', async () => {
+  it('fails closed on incomplete DSH discovery, invalid custom identity, or winner drift during get', async () => {
     const { domain, fixture, sessionBatch } = await seed()
     const view = { cwd: 'D:\\repo', scope: {}, signal: new AbortController().signal }
     const incomplete = new DshV2CatalogAdapter(domain, {
@@ -137,7 +227,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect((await incomplete.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })).complete)
       .toBe(false)
 
-    const unsupported = new DshV2CatalogAdapter(domain, {
+    const invalidCustomIdentity = new DshV2CatalogAdapter(domain, {
       registry: {
         snapshot: async () => ({
           complete: true,
@@ -146,8 +236,9 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         get: async () => undefined,
       },
       resolveView: () => view,
+      resolveRuntimeIdentity: () => ({ scope: 'PROJECT', writable: false, rootIdentityDigest: 'invalid' }),
     })
-    expect((await unsupported.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })).complete)
+    expect((await invalidCustomIdentity.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })).complete)
       .toBe(false)
 
     let drifted = false
