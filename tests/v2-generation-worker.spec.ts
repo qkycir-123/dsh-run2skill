@@ -107,10 +107,11 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
       snapshotHook?.(input, snapshotExclusions.length)
       return captured
     },
-    runtimeSnapshot: async () => ({
-      complete: generationSnapshot.complete,
-      runtimeCatalogDigest: generationSnapshot.runtimeCatalogDigest,
-    }),
+    commitWithRuntimeCatalogGuard: async input => {
+      if (!generationSnapshot.complete) return 'INCOMPLETE'
+      if (generationSnapshot.runtimeCatalogDigest !== input.expectedRuntimeCatalogDigest) return 'STALE'
+      return await input.commit() ? 'COMMITTED' : 'REJECTED'
+    },
     read: async input => {
       reads += 1
       return recallCatalog.read(input)
@@ -398,6 +399,33 @@ describe('v2 generation lease worker', () => {
     await worker.runOnce()
 
     expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
+  it('fails closed when the adapter cannot provide an atomic Runtime Catalog guard', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    let commitInvoked = false
+    const catalog: GenerationCatalogPort = {
+      ...seeded.catalog,
+      commitWithRuntimeCatalogGuard: async input => {
+        void input
+        commitInvoked = false
+        return 'INCOMPLETE'
+      },
+    }
+    const worker = new GenerationWorker(seeded.domain, { catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(commitInvoked).toBe(false)
     expect(seeded.domain.proposalLineages.size).toBe(0)
     expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
       status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },

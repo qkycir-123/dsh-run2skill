@@ -89,10 +89,17 @@ export interface GenerationCatalogPort {
       readonly receiptDigest: string
     } | undefined
   }): Promise<GenerationCatalogSnapshot>
-  runtimeSnapshot(input: {
+  /**
+   * Atomically validates the complete Runtime Catalog digest and prevents Runtime Skill membership
+   * mutations until commit returns. Implementations without a real revision CAS or shared lock must
+   * return INCOMPLETE instead of approximating the guard with before/after reads.
+   */
+  commitWithRuntimeCatalogGuard(input: {
     readonly batch: SessionBatchV2
     readonly intent: ExperienceIntentV2
-  }): Promise<{ readonly complete: boolean; readonly runtimeCatalogDigest: string }>
+    readonly expectedRuntimeCatalogDigest: string
+    readonly commit: () => Promise<boolean>
+  }): Promise<'COMMITTED' | 'STALE' | 'INCOMPLETE' | 'REJECTED'>
   read(input: {
     readonly candidateId: string
     readonly batch: SessionBatchV2
@@ -540,12 +547,6 @@ export class GenerationWorker {
     }
   }
 
-  async #safeRuntimeSnapshot(
-    batch: SessionBatchV2,
-    intent: ExperienceIntentV2,
-  ): Promise<{ readonly complete: boolean; readonly runtimeCatalogDigest: string } | undefined> {
-    try { return await this.#catalog.runtimeSnapshot({ batch, intent }) } catch { return undefined }
-  }
 
   #modelInput(intent: ExperienceIntentV2, batch: SessionBatchV2, baseSkill?: string) {
     return {
@@ -1186,28 +1187,7 @@ export class GenerationWorker {
       }
     })
     if (!prepared) return
-
-    const runtimeBeforeBody = await this.#safeRuntimeSnapshot(batch.data, intent)
-    if (!this.#runtimeMatchesRevalidation(runtimeBeforeBody, intent)) {
-      await this.#rollbackPreparedProposal(intent, lineage, facts.mutationId)
-      return
-    }
-
-    const existing = this.#lineages.get(facts.lineageId)
-    if (existing === undefined) await this.#lineages.put(facts.lineageId, lineage)
-    else if (canonicalJson(ProposalLineageV2Schema.parse(existing)) !== canonicalJson(lineage)) {
-      await this.#abandonProposalJournal(facts.mutationId)
-      await this.#markStaleResult(intentId, leaseId)
-      return
-    }
-    const runtimeAfterBody = await this.#safeRuntimeSnapshot(batch.data, intent)
-    if (!this.#runtimeMatchesRevalidation(runtimeAfterBody, intent)) {
-      await this.#rollbackPreparedProposal(intent, lineage, facts.mutationId)
-      return
-    }
-    await this.#markProposalBodyCommitted(intentId, leaseId, facts)
-    intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
-    await this.#finalizeProposalBody(intent, facts)
+    await this.#commitPreparedProposalUnderRuntimeGuard(intent, batch.data, lineage, facts)
   }
 
   #snapshotMatchesRevalidation(
@@ -1227,13 +1207,38 @@ export class GenerationWorker {
       && intent.generation.leaseId === leaseId
   }
 
-  #runtimeMatchesRevalidation(
-    snapshot: { readonly complete: boolean; readonly runtimeCatalogDigest: string } | undefined,
+  async #commitPreparedProposalUnderRuntimeGuard(
     intent: ExperienceIntentV2,
-  ): boolean {
-    return snapshot !== undefined
-      && snapshot.complete
-      && snapshot.runtimeCatalogDigest === intent.generation.revalidationAuthorization?.runtimeCatalogDigest
+    batch: SessionBatchV2,
+    expectedLineage: z.infer<typeof ProposalLineageV2Schema>,
+    facts: ProposalMutationFacts,
+  ): Promise<void> {
+    let outcome: 'COMMITTED' | 'STALE' | 'INCOMPLETE' | 'REJECTED'
+    try {
+      outcome = await this.#catalog.commitWithRuntimeCatalogGuard({
+        batch,
+        intent,
+        expectedRuntimeCatalogDigest: facts.revalidation.runtimeCatalogDigest,
+        commit: async () => {
+          const existing = this.#lineages.get(facts.lineageId)
+          if (existing === undefined) await this.#lineages.put(facts.lineageId, expectedLineage)
+          else {
+            const parsed = ProposalLineageV2Schema.safeParse(existing)
+            if (!parsed.success || canonicalJson(parsed.data) !== canonicalJson(expectedLineage)) return false
+          }
+          if (!await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)) return false
+          return this.#finalizeProposalBody(
+            ExperienceIntentV2Schema.parse(this.#intents.get(intent.intentId)),
+            facts,
+          )
+        },
+      })
+    } catch {
+      outcome = 'INCOMPLETE'
+    }
+    if (outcome !== 'COMMITTED') {
+      await this.#rollbackPreparedProposal(intent, expectedLineage, facts.mutationId)
+    }
   }
 
   async #rollbackPreparedProposal(
@@ -1273,27 +1278,27 @@ export class GenerationWorker {
     }
     const batchValue = this.#batches.get(intent.batchId)
     const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
-    const runtime = batch?.success ? await this.#safeRuntimeSnapshot(batch.data, intent) : undefined
-    if (!this.#runtimeMatchesRevalidation(runtime, intent)) {
+    if (!batch?.success) {
       await this.#rollbackPreparedProposal(intent, expected!, mutationId)
       return
     }
-    await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)
-    await this.#finalizeProposalBody(
-      ExperienceIntentV2Schema.parse(this.#intents.get(intent.intentId)),
-      facts,
-    )
+    await this.#commitPreparedProposalUnderRuntimeGuard(intent, batch.data, expected!, facts)
   }
 
   async #markProposalBodyCommitted(
     intentId: string,
     leaseId: string,
     facts: ProposalMutationFacts,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    let committed = false
     await this.#intents.update(intentId, current => {
       const intent = ExperienceIntentV2Schema.parse(current)
-      if (intent.generation.state === 'PROPOSAL_BODY_COMMITTED') return intent
+      if (intent.generation.state === 'PROPOSAL_BODY_COMMITTED') {
+        committed = true
+        return intent
+      }
       if (intent.generation.state !== 'PROPOSAL_COMMIT_AUTHORIZED' || intent.generation.leaseId !== leaseId) return intent
+      committed = true
       const recordedAt = this.#isoNow()
       return ExperienceIntentV2Schema.parse({
         ...intent,
@@ -1315,14 +1320,15 @@ export class GenerationWorker {
         updatedAt: recordedAt,
       })
     })
+    return committed
   }
 
   async #finalizeProposalBody(
     intent: ExperienceIntentV2,
     facts: ProposalMutationFacts,
-  ): Promise<void> {
-    if (intent.generation.state !== 'PROPOSAL_BODY_COMMITTED') return
-    await this.#global.runExclusive(async current => {
+  ): Promise<boolean> {
+    if (intent.generation.state !== 'PROPOSAL_BODY_COMMITTED') return false
+    return this.#global.runExclusive(async current => {
       const lease = current.proposalGenerationLease
       const journal = current.proposalCatalogMutationJournal
       if (
@@ -1333,9 +1339,9 @@ export class GenerationWorker {
         || journal?.mutationId !== facts.mutationId
         || journal.ownerId !== facts.proposalId
         || journal.kind !== 'PROPOSAL'
-      ) return { value: undefined }
+      ) return { value: false }
       return {
-        value: undefined,
+        value: true,
         global: {
           ...current,
           proposalCatalogEpoch: facts.outcomeCatalogEpoch,
