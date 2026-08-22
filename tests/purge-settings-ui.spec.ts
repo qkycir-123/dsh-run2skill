@@ -24,6 +24,7 @@ const PROJECT_PREVIEW = {
   hideBefore: '2026-08-21T00:00:00.000Z',
   workItemCount: 3,
   lineageCount: 2,
+  derivedRecordCount: 0,
   blockedOrUnprovenCount: 1,
   willDelete: [
     { kind: 'WORK_ITEMS' as const, count: 3 },
@@ -41,6 +42,19 @@ const USER_PREVIEW = {
   ...PROJECT_PREVIEW,
   previewId: `purv_${'e'.repeat(64)}`,
   scopeBinding: { scope: 'USER' as const },
+}
+
+const ALL_PREVIEW = {
+  ...PROJECT_PREVIEW,
+  previewId: `purv_${'c'.repeat(64)}`,
+  scopeBinding: { scope: 'ALL' as const },
+  derivedRecordCount: 5,
+  blockedOrUnprovenCount: 0,
+  willKeep: [
+    { reason: 'KEEP_NEW' as const, count: 0 },
+    { reason: 'KEEP_SCOPE' as const, count: 0 },
+    { reason: 'KEEP_UNPROVEN' as const, count: 0 },
+  ],
 }
 
 function settingsScope() {
@@ -440,10 +454,10 @@ describe('Purge native settings UI', () => {
     expect(poll.timerCount()).toBe(0)
   })
 
-  it('uses the native modal with exact boundaries, focus trap, Escape, restoration, and live completion', async () => {
+  it('shows one cache-cleanup action and uses the native modal with exact preservation boundaries', async () => {
     const call = vi.fn(async (endpoint: string) => {
       if (endpoint === 'purge/status') return { ok: true, value: { apiVersion: 1, state: 'IDLE' } }
-      if (endpoint === 'purge/preview') return { ok: true, value: PROJECT_PREVIEW }
+      if (endpoint === 'purge/preview') return { ok: true, value: ALL_PREVIEW }
       return {
         ok: true,
         value: {
@@ -470,13 +484,18 @@ describe('Purge native settings UI', () => {
     })))
 
     fireEvent.click(screen.getByRole('button', { name: /Run2Skill/ }))
-    const projectButton = screen.getByRole('button', { name: '预览并清理当前 PROJECT 数据' })
-    fireEvent.click(projectButton)
-    const dialog = await screen.findByRole('dialog', { name: '确认清理 PROJECT Run2Skill 数据？' })
+    expect(screen.getByRole('heading', { name: '缓存清理' })).toBeTruthy()
+    expect(screen.getByText('清理 Run2Skill 自己产生的中间缓存数据')).toBeTruthy()
+    const purgeButton = screen.getByRole('button', { name: '清理所有缓存' })
+    expect(screen.queryByRole('button', { name: /PROJECT/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /USER/ })).toBeNull()
+    fireEvent.click(purgeButton)
+    expect(call).toHaveBeenCalledWith('purge/preview', { apiVersion: 1, scope: 'ALL' }, expect.any(AbortSignal))
+    const dialog = await screen.findByRole('dialog', { name: '确认清理所有缓存？' })
     expect(dialog.textContent).toContain('3 条待处理数据')
     expect(dialog.textContent).toContain('2 条 Skill 关联记录')
-    expect(dialog.textContent).toContain('1 条无法证明作用域的数据将保留')
-    expect(dialog.textContent).toContain('删除 Run2Skill 保存的技能草稿、经过筛选的学习材料、待处理记录、版本信息和相关运行记录')
+    expect(dialog.textContent).toContain('5 条其他中间缓存')
+    expect(dialog.textContent).toContain('删除 Run2Skill 产生的中间缓存、待处理技能草稿、失败与非敏感诊断记录')
     expect(dialog.textContent).toContain('保留 DSH 的原始会话记录')
     expect(dialog.textContent).not.toContain('Lineage')
     expect(dialog.textContent).toContain('保留所有已发布的原生 Skill')
@@ -485,16 +504,16 @@ describe('Purge native settings UI', () => {
     fireEvent.keyDown(dialog, { key: 'Tab', ['shift' + 'Key']: true })
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '确认清理' }))
     fireEvent.keyDown(dialog, { key: 'Escape' })
-    await waitFor(() => { expect(screen.queryByRole('dialog', { name: '确认清理 PROJECT Run2Skill 数据？' })).toBeNull() })
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: '确认清理所有缓存？' })).toBeNull() })
     expect(outerEscape).not.toHaveBeenCalled()
-    expect(document.activeElement).toBe(projectButton)
+    expect(document.activeElement).toBe(purgeButton)
 
-    fireEvent.click(projectButton)
+    fireEvent.click(purgeButton)
     fireEvent.click(await screen.findByRole('button', { name: '确认清理' }))
     await waitFor(() => {
       expect(screen.getByRole('status', { name: '数据清理状态播报' }).textContent).toContain('清理完成')
     })
-    expect(screen.queryByRole('dialog', { name: '确认清理 PROJECT Run2Skill 数据？' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '确认清理所有缓存？' })).toBeNull()
     purge.dispose()
     settings.dispose()
   })

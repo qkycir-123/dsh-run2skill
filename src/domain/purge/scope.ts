@@ -4,6 +4,7 @@ import type { CaptureWorkItemV1 } from '../observe/schemas.js'
 import { sha256Utf8 } from '../observe/hashing.js'
 import type { LineageV1 } from '../publication/index.js'
 import type {
+  CompletedAllPurgeFenceV1,
   CompletedProjectPurgeFenceV1,
   CompletedPurgeFencesV1,
   CompletedUserPurgeFenceV1,
@@ -64,6 +65,7 @@ export function classifyWorkItemForPurge(
   hideBefore: string,
 ): PurgeClassification {
   if (afterBoundary(item.createdAt, hideBefore)) return 'KEEP_NEW'
+  if (binding.scope === 'ALL') return 'DELETE'
   const learnedScope = item.learning?.proposal?.persistenceScope
   if (binding.scope === 'USER') {
     if (learnedScope === undefined) return 'KEEP_UNPROVEN'
@@ -88,6 +90,7 @@ export function classifyLineageForPurge(
   const firstCommit = lineage.revisions[0]?.committedAt
   if (firstCommit === undefined) return 'KEEP_UNPROVEN'
   if (afterBoundary(firstCommit, hideBefore)) return 'KEEP_NEW'
+  if (binding.scope === 'ALL') return 'DELETE'
   if (lineage.scope !== binding.scope) return 'KEEP_SCOPE'
   if (binding.scope === 'USER') return 'DELETE'
   if (lineage.provider !== 'filesystem' || lineage.source !== 'project-dsh') return 'KEEP_UNPROVEN'
@@ -100,6 +103,7 @@ export function completedFencesHideWorkItem(
   fences: CompletedPurgeFencesV1 | undefined,
 ): boolean {
   if (fences === undefined) return false
+  if (fences.all !== undefined && !afterBoundary(item.createdAt, fences.all.hideBefore)) return true
   const learnedScope = item.learning?.proposal?.persistenceScope
   if (
     learnedScope === 'USER'
@@ -119,6 +123,7 @@ export function completedFencesHideLineage(
   if (fences === undefined) return false
   const firstCommit = lineage.revisions[0]?.committedAt
   if (firstCommit === undefined) return false
+  if (fences.all !== undefined && !afterBoundary(firstCommit, fences.all.hideBefore)) return true
   if (lineage.scope === 'USER') {
     return fences.user !== undefined && !afterBoundary(firstCommit, fences.user.hideBefore)
   }
@@ -131,7 +136,7 @@ export function canUpsertCompletedPurgeFence(
   fences: CompletedPurgeFencesV1 | undefined,
   binding: PurgeScopeBindingV1,
 ): boolean {
-  if (binding.scope === 'USER') return true
+  if (binding.scope === 'USER' || binding.scope === 'ALL') return true
   const projects = fences?.projects ?? {}
   const scopeIdentityDigest = deriveProjectPurgeScopeIdentityDigest(binding)
   return projects[scopeIdentityDigest] !== undefined
@@ -144,6 +149,19 @@ export function upsertCompletedPurgeFence(
   completedAt: string,
 ): CompletedPurgeFencesV1 {
   const current: CompletedPurgeFencesV1 = fences ?? { schemaVersion: 1, projects: {} }
+  if (journal.scopeBinding.scope === 'ALL') {
+    const next: CompletedAllPurgeFenceV1 = {
+      schemaVersion: 1,
+      scope: 'ALL',
+      purgeId: journal.purgeId,
+      completedAt,
+      hideBefore: journal.hideBefore,
+    }
+    return current.all !== undefined
+      && Date.parse(current.all.hideBefore) > Date.parse(next.hideBefore)
+      ? current
+      : { ...current, all: next }
+  }
   if (journal.scopeBinding.scope === 'USER') {
     const next: CompletedUserPurgeFenceV1 = {
       schemaVersion: 1,

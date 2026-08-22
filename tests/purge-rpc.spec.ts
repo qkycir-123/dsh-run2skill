@@ -7,6 +7,7 @@ import {
   type ProjectPurgeScopeBindingV1,
 } from '../src/domain/purge/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 
 const project = join(process.cwd(), '.probe-work', 'purge-rpc')
 const binding: ProjectPurgeScopeBindingV1 = {
@@ -21,6 +22,24 @@ const binding: ProjectPurgeScopeBindingV1 = {
 }
 
 describe('Purge RPC v1', () => {
+  it('accepts the path-free ALL preview and confirm contract', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const resolve = vi.fn(async () => binding)
+    const handler = createPurgeRpcHandler(new PurgeService(domain, { resolve }, {
+      v2Domain: createMemoryRun2skillV2Domain(),
+    }))
+    const signal = new AbortController().signal
+
+    const preview = await handler('purge/preview', { apiVersion: 1, scope: 'ALL' }, signal)
+    expect(preview).toMatchObject({ ok: true, value: { scopeBinding: { scope: 'ALL' } } })
+    if (!preview.ok) throw new Error('preview failed')
+    const value = preview.value as { previewId: string; digest: string }
+    await expect(handler('purge/confirm', {
+      apiVersion: 1, scope: 'ALL', previewId: value.previewId, digest: value.digest,
+    }, signal)).resolves.toMatchObject({ ok: true, value: { state: 'COMPLETED' } })
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
   it('accepts USER preview without workspaceId and rejects one supplied by clients', async () => {
     const domain = createMemoryRun2skillDomain()
     const resolve = vi.fn(async (scope: 'PROJECT' | 'USER', _workspaceId?: string) => scope === 'USER'

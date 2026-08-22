@@ -57,6 +57,7 @@ export class LearningDiagnosticStore {
   readonly #table
   readonly #health
   readonly #runMutation
+  #readinessTail: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly main: Run2skillDomain,
@@ -131,6 +132,10 @@ export class LearningDiagnosticStore {
     }
   }
 
+  async deleteAllWithinMutation(): Promise<void> {
+    for (const key of this.#table.keys()) await this.#table.delete(key)
+  }
+
   cleanupOrphans(): Promise<{ readonly deleted: number }> {
     return this.#runMutation(async () => {
       let deleted = 0
@@ -142,20 +147,24 @@ export class LearningDiagnosticStore {
     })
   }
 
-  async verifyReady(): Promise<void> {
-    const key = 'purge-readiness'
-    const current = this.#health.get(key)
-    const generation = current === undefined || current.generation === Number.MAX_SAFE_INTEGER
-      ? 0
-      : current.generation + 1
-    const expected = LearningDiagnosticHealthV1Schema.parse({ schemaVersion: 1, generation })
-    await this.#health.put(key, expected)
-    const observed = this.#health.get(key)
-    if (observed?.schemaVersion !== expected.schemaVersion || observed.generation !== expected.generation) {
-      throw new Error('Learning diagnostic readiness readback mismatch')
-    }
-    if (!await this.#health.delete(key)) {
-      throw new Error('Learning diagnostic readiness cleanup failed')
-    }
+  verifyReady(): Promise<void> {
+    const result = this.#readinessTail.then(async () => {
+      const key = 'purge-readiness'
+      const current = this.#health.get(key)
+      const generation = current === undefined || current.generation === Number.MAX_SAFE_INTEGER
+        ? 0
+        : current.generation + 1
+      const expected = LearningDiagnosticHealthV1Schema.parse({ schemaVersion: 1, generation })
+      await this.#health.put(key, expected)
+      const observed = this.#health.get(key)
+      if (observed?.schemaVersion !== expected.schemaVersion || observed.generation !== expected.generation) {
+        throw new Error('Learning diagnostic readiness readback mismatch')
+      }
+      if (!await this.#health.delete(key)) {
+        throw new Error('Learning diagnostic readiness cleanup failed')
+      }
+    })
+    this.#readinessTail = result.then(() => {}, () => {})
+    return result
   }
 }

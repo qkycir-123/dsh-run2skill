@@ -14,7 +14,7 @@ import { dshWebArgs, dshWebHelp, supportsNoOpen } from './web-args.mjs'
 
 const [cloneArg, candidateArg, workArg, uiFixtureArg, mode] = process.argv.slice(2)
 if (!cloneArg || !candidateArg || !workArg || !uiFixtureArg) {
-  throw new Error('usage: node candidate-probe.mjs <built-dsh-clone> <candidate-root> <work-root> <ui-fixture> [--web-only]')
+  throw new Error('usage: node candidate-probe.mjs <built-dsh-clone> <candidate-root> <work-root> <ui-fixture> [--web-only|--purge-ui-only]')
 }
 
 const clone = resolve(cloneArg)
@@ -35,6 +35,7 @@ const uiFixture = JSON.parse(await readFile(resolve(uiFixtureArg), 'utf8'))
 assert.equal(uiFixture.kind, 'run2skill-controlled-web-probe-fixture-v1')
 const retainedSkill = '---\nname: retained-skill\ndescription: retained lifecycle fixture\n---\n\nretained\n'
 const webOnly = mode === '--web-only'
+const purgeUiOnly = mode === '--purge-ui-only'
 
 await mkdir(workspace, { recursive: true })
 await mkdir(join(home, 'skills', 'retained-skill'), { recursive: true })
@@ -318,11 +319,13 @@ async function observe(present, expectedAutomaticLearning) {
         await deferSetup.click()
         await setupDialog.waitFor({ state: 'detached', timeout: 15_000 })
       }
-      await page.getByRole('button', { name: /^(?:New session|新.*会话)$/ }).last().click()
-      await page.locator('textarea').last().fill('run2skill controlled UI probe draft')
-      uiPhase = 'review'
-      await page.locator('textarea').last().press('Enter')
-      await page.getByText(/run2skill 有 1 项需要处理/u).waitFor({ timeout: 15_000 })
+      if (!purgeUiOnly) {
+        await page.getByRole('button', { name: /^(?:New session|新.*会话)$/ }).last().click()
+        await page.locator('textarea').last().fill('run2skill controlled UI probe draft')
+        uiPhase = 'review'
+        await page.locator('textarea').last().press('Enter')
+        await page.getByText(/run2skill 有 1 项需要处理/u).waitFor({ timeout: 15_000 })
+      }
       await page.getByRole('button', { name: /^(Settings|设置)$/ }).click()
       const dialog = page.getByRole('dialog', { name: /^(Settings|设置)$/ })
       await dialog.getByRole('button', { name: /^(Plugins|插件)$/ }).click()
@@ -330,45 +333,73 @@ async function observe(present, expectedAutomaticLearning) {
       const surface = dialog.locator('[data-run2skill-settings-page]')
       await surface.waitFor({ timeout: 10_000 })
       assert.equal(await page.locator('[data-run2skill-status], [data-run2skill-proposal-trigger]').count(), 0)
-      const detailResponsePromise = page.waitForResponse(response => {
-        if (!response.url().includes('/run2skill/')) return false
-        try { return response.request().postDataJSON()?.method === 'proposals/get' } catch { return false }
-      })
-      await surface.getByRole('button', { name: /CREATE · generated-file-hygiene/u }).click()
-      const detailResponse = await detailResponsePromise
-      const detailPayload = await detailResponse.json()
-      const detailWire = JSON.stringify(detailPayload?.result)
-      assert.equal(detailPayload?.result?.ok, true)
-      assert.doesNotMatch(
-        detailWire,
-        /canonicalPath|declaredRootPath|bundlePath|skillFilePath|flatSkillFilePath|"path"|[A-Za-z]:\\/u,
-        'Proposal detail network DTO leaked an absolute or target path',
-      )
-      console.log('CP_INS_A6_DETAIL_NETWORK_PRIVACY=PASS')
-      await surface.getByRole('button', { name: '批准并发布' }).waitFor({ timeout: 10_000 })
-      assert.equal((await surface.innerText()).includes('D:\\workspace'), false)
-      await surface.getByRole('button', { name: '批准并发布' }).click()
-      const retryPublication = surface.getByRole('button', { name: '重试发布' })
-      await retryPublication.waitFor({ timeout: 10_000 })
-      assert.match(await surface.innerText(), /发布失败，可重试/u)
-      await retryPublication.click()
-      await retryPublication.waitFor({ state: 'detached', timeout: 10_000 })
-      await surface.getByText('0 项可操作事项').waitFor({ timeout: 10_000 })
-      console.log('CP_INS_A6_ACTIONABLE_UI=PASS')
+      if (!purgeUiOnly) {
+        const detailResponsePromise = page.waitForResponse(response => {
+          if (!response.url().includes('/run2skill/')) return false
+          try { return response.request().postDataJSON()?.method === 'proposals/get' } catch { return false }
+        })
+        await surface.getByRole('button', { name: /CREATE · generated-file-hygiene/u }).click()
+        const detailResponse = await detailResponsePromise
+        const detailPayload = await detailResponse.json()
+        const detailWire = JSON.stringify(detailPayload?.result)
+        assert.equal(detailPayload?.result?.ok, true)
+        assert.doesNotMatch(
+          detailWire,
+          /canonicalPath|declaredRootPath|bundlePath|skillFilePath|flatSkillFilePath|"path"|[A-Za-z]:\\/u,
+          'Proposal detail network DTO leaked an absolute or target path',
+        )
+        console.log('CP_INS_A6_DETAIL_NETWORK_PRIVACY=PASS')
+        await surface.getByRole('button', { name: '批准并发布' }).waitFor({ timeout: 10_000 })
+        assert.equal((await surface.innerText()).includes('D:\\workspace'), false)
+        await surface.getByRole('button', { name: '批准并发布' }).click()
+        const retryPublication = surface.getByRole('button', { name: '重试发布' })
+        await retryPublication.waitFor({ timeout: 10_000 })
+        assert.match(await surface.innerText(), /发布失败，可重试/u)
+        await retryPublication.click()
+        await retryPublication.waitFor({ state: 'detached', timeout: 10_000 })
+        await surface.getByText('0 项可操作事项').waitFor({ timeout: 10_000 })
+        console.log('CP_INS_A6_ACTIONABLE_UI=PASS')
+      }
       await surface.getByRole('button', { name: '自动学习' }).click()
       const toggle = surface.getByRole('button', { name: /自动学习已(?:开启|关闭)/u })
       assert.equal(await toggle.getAttribute('aria-pressed'), String(expectedAutomaticLearning))
-      await surface.getByRole('button', { name: '数据管理' }).click()
-      const userPurge = surface.getByRole('button', { name: '预览并清理 USER 数据' })
-      await userPurge.click()
-      const purgeDialog = page.getByRole('dialog', { name: '确认清理 USER run2skill 数据？' })
+      await surface.getByRole('button', { name: '缓存清理' }).click()
+      await surface.getByText('清理 Run2Skill 自己产生的中间缓存数据').waitFor({ timeout: 10_000 })
+      const purgeAll = surface.getByRole('button', { name: '清理所有缓存' })
+      assert.equal(await surface.getByRole('button', { name: /PROJECT|USER/u }).count(), 0)
+      await purgeAll.click()
+      const purgeDialog = page.getByRole('dialog', { name: '确认清理所有缓存？' })
       await purgeDialog.waitFor({ timeout: 10_000 })
-      assert.match(await purgeDialog.innerText(), /保留 DSH Session Log/u)
+      assert.match(await purgeDialog.innerText(), /保留 DSH 的原始会话记录/u)
       assert.match(await purgeDialog.innerText(), /保留所有已发布的原生 Skill/u)
       await page.keyboard.press('Escape')
       await purgeDialog.waitFor({ state: 'detached', timeout: 10_000 })
-      assert.equal(await userPurge.evaluate(element => element === document.activeElement), true)
-      if (expectedAutomaticLearning) {
+      assert.equal(await purgeAll.evaluate(element => element === document.activeElement), true)
+      console.log('CP_D3_PURGE_UI=PASS')
+      if (purgeUiOnly) {
+        const settingsBeforePurge = await readFile(join(home, 'settings.yaml'), 'utf8')
+        const sessionRoot = join(home, 'sessions')
+        const sessionFiles = (await readdir(sessionRoot, { recursive: true }))
+          .filter(path => path.endsWith('session.jsonl.zstd'))
+        assert.ok(sessionFiles.length > 0, 'controlled Purge probe did not create a DSH Session Log')
+        const sessionBytesBefore = await Promise.all(sessionFiles.map(async path => [
+          path,
+          await readFile(join(sessionRoot, path)),
+        ]))
+        await purgeAll.click()
+        const confirmDialog = page.getByRole('dialog', { name: '确认清理所有缓存？' })
+        await confirmDialog.getByRole('button', { name: '确认清理' }).click()
+        await confirmDialog.waitFor({ state: 'detached', timeout: 15_000 })
+        await surface.getByRole('status', { name: '数据清理状态播报' })
+          .getByText(/清理完成/u).waitFor({ timeout: 15_000 })
+        assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
+        assert.equal(await readFile(join(home, 'settings.yaml'), 'utf8'), settingsBeforePurge)
+        for (const [path, bytes] of sessionBytesBefore) {
+          assert.deepEqual(await readFile(join(sessionRoot, path)), bytes)
+        }
+        console.log('CP_D3_PURGE_CONFIRM=PASS')
+      }
+      if (!purgeUiOnly && expectedAutomaticLearning) {
         const mutation = page.waitForResponse(response => response.url().endsWith('/api/settings.mutate'))
         await toggle.click()
         const mutationBody = await (await mutation).json()
@@ -395,8 +426,8 @@ assert.ok((await manifest()).dsh.profile.bundles.includes(packageName))
 assert.ok((await dsh(['--profile', 'web', '--dump-config'])).stdout.includes('id: run2skill'))
 await observe(true, true)
 
-if (webOnly) {
-  console.log('CP_D3_WEB=PASS')
+if (webOnly || purgeUiOnly) {
+  console.log(purgeUiOnly ? 'CP_D3_PURGE_UI_ONLY=PASS' : 'CP_D3_WEB=PASS')
 } else {
   console.log('CP_INS_A6_STAGE=disable')
   await writeFile(patchPath, '- id: run2skill\n  disabled: true\n')

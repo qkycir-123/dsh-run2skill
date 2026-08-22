@@ -20,10 +20,12 @@ export const ProjectPurgeScopeBindingV1Schema = z.object({
 }).strict()
 
 export const UserPurgeScopeBindingV1Schema = z.object({ scope: z.literal('USER') }).strict()
+export const AllPurgeScopeBindingV1Schema = z.object({ scope: z.literal('ALL') }).strict()
 
 export const PurgeScopeBindingV1Schema = z.discriminatedUnion('scope', [
   ProjectPurgeScopeBindingV1Schema,
   UserPurgeScopeBindingV1Schema,
+  AllPurgeScopeBindingV1Schema,
 ])
 
 export const PurgePhaseV1Schema = z.enum([
@@ -43,6 +45,8 @@ export const PurgeJournalV1Schema = z.object({
   phase: PurgePhaseV1Schema,
   deletedWorkItems: safeNonNegativeInteger,
   deletedLineages: safeNonNegativeInteger,
+  targetWorkItems: safeNonNegativeInteger.optional(),
+  targetLineages: safeNonNegativeInteger.optional(),
   lastError: z.object({
     code: z.string().regex(/^[A-Z0-9_]+$/),
     occurredAt: isoDateTime,
@@ -58,6 +62,10 @@ const CompletedPurgeFenceFactsV1Schema = z.object({
 
 export const CompletedUserPurgeFenceV1Schema = CompletedPurgeFenceFactsV1Schema.extend({
   scope: z.literal('USER'),
+}).strict()
+
+export const CompletedAllPurgeFenceV1Schema = CompletedPurgeFenceFactsV1Schema.extend({
+  scope: z.literal('ALL'),
 }).strict()
 
 export const CompletedProjectPurgeFenceV1Schema = CompletedPurgeFenceFactsV1Schema.extend({
@@ -86,15 +94,18 @@ const CompletedProjectPurgeFenceMapV1Schema = z.record(
 
 export const CompletedPurgeFencesV1Schema = z.object({
   schemaVersion: z.literal(1),
+  all: CompletedAllPurgeFenceV1Schema.optional(),
   user: CompletedUserPurgeFenceV1Schema.optional(),
   projects: CompletedProjectPurgeFenceMapV1Schema,
 }).strict()
 
 export type ProjectPurgeScopeBindingV1 = z.infer<typeof ProjectPurgeScopeBindingV1Schema>
 export type UserPurgeScopeBindingV1 = z.infer<typeof UserPurgeScopeBindingV1Schema>
+export type AllPurgeScopeBindingV1 = z.infer<typeof AllPurgeScopeBindingV1Schema>
 export type PurgeScopeBindingV1 = z.infer<typeof PurgeScopeBindingV1Schema>
 export type PurgePhaseV1 = z.infer<typeof PurgePhaseV1Schema>
 export type PurgeJournalV1 = z.infer<typeof PurgeJournalV1Schema>
 export type CompletedUserPurgeFenceV1 = z.infer<typeof CompletedUserPurgeFenceV1Schema>
+export type CompletedAllPurgeFenceV1 = z.infer<typeof CompletedAllPurgeFenceV1Schema>
 export type CompletedProjectPurgeFenceV1 = z.infer<typeof CompletedProjectPurgeFenceV1Schema>
 export type CompletedPurgeFencesV1 = z.infer<typeof CompletedPurgeFencesV1Schema>

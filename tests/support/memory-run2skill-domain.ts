@@ -15,6 +15,8 @@ export function createMemoryRun2skillDomain(options: {
   failNextWorkItemWrites(count: number): void
   failNextWorkItemDeletes(count: number): void
   failNextLineageDeletes(count: number): void
+  failGlobalWriteAfterNextWorkItemDelete(): void
+  failGlobalWriteAfterNextLineageDelete(): void
 } {
   const workItems = new Map<string, CaptureWorkItemV1>()
   const lineages = new Map<string, LineageV1>()
@@ -25,6 +27,8 @@ export function createMemoryRun2skillDomain(options: {
   let remainingLineageFailures = options.failLineageWrites ?? 0
   let remainingWorkItemDeleteFailures = 0
   let remainingLineageDeleteFailures = 0
+  let failGlobalAfterWorkItemDelete = false
+  let failGlobalAfterLineageDelete = false
   const workItemTable = {
     get: (key: string) => workItems.get(key),
     entries: () => [...workItems.entries()][Symbol.iterator](),
@@ -44,7 +48,13 @@ export function createMemoryRun2skillDomain(options: {
         throw new Error('synthetic work item delete failure')
       }
       const deleted = workItems.delete(key)
-      if (deleted) writeLog.push('delete:work_items')
+      if (deleted) {
+        writeLog.push('delete:work_items')
+        if (failGlobalAfterWorkItemDelete) {
+          failGlobalAfterWorkItemDelete = false
+          remainingGlobalFailures += 1
+        }
+      }
       return deleted
     },
     update: async (key: string, transform: (current: CaptureWorkItemV1) => CaptureWorkItemV1) => {
@@ -79,7 +89,13 @@ export function createMemoryRun2skillDomain(options: {
         throw new Error('synthetic lineage delete failure')
       }
       const deleted = lineages.delete(key)
-      if (deleted) writeLog.push('delete:lineages')
+      if (deleted) {
+        writeLog.push('delete:lineages')
+        if (failGlobalAfterLineageDelete) {
+          failGlobalAfterLineageDelete = false
+          remainingGlobalFailures += 1
+        }
+      }
       return deleted
     },
     update: async (key: string, transform: (current: LineageV1) => LineageV1) => {
@@ -109,6 +125,8 @@ export function createMemoryRun2skillDomain(options: {
     failNextWorkItemWrites(count) { remainingWorkItemFailures += count },
     failNextWorkItemDeletes(count) { remainingWorkItemDeleteFailures += count },
     failNextLineageDeletes(count) { remainingLineageDeleteFailures += count },
+    failGlobalWriteAfterNextWorkItemDelete() { failGlobalAfterWorkItemDelete = true },
+    failGlobalWriteAfterNextLineageDelete() { failGlobalAfterLineageDelete = true },
     global: {
       get: () => structuredClone(global),
       set: async (value: GlobalV1) => {

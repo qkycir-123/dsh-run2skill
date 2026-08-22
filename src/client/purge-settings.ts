@@ -27,6 +27,7 @@ const projectBinding = z.object({
   workspaceId: z.string().min(1).max(256),
 }).strict()
 const scopeBinding = z.discriminatedUnion('scope', [
+  z.object({ scope: z.literal('ALL') }).strict(),
   projectBinding,
   z.object({ scope: z.literal('USER') }).strict(),
 ])
@@ -39,6 +40,7 @@ const previewSchema = z.object({
   hideBefore: isoDateTime,
   workItemCount: count,
   lineageCount: count,
+  derivedRecordCount: count,
   blockedOrUnprovenCount: count,
   willDelete: z.array(z.object({ kind: z.enum(['WORK_ITEMS', 'LINEAGES']), count }).strict()).length(2),
   willKeep: z.array(z.object({
@@ -83,7 +85,7 @@ const errorSchema = z.object({
 export type PurgePreview = z.infer<typeof previewSchema>
 export type PurgeReceipt = z.infer<typeof receiptSchema>
 export type PurgeStatus = z.infer<typeof statusSchema>
-export type PurgeScope = 'PROJECT' | 'USER'
+export type PurgeScope = 'ALL' | 'PROJECT' | 'USER'
 
 interface PurgeClientError {
   readonly code: string
@@ -151,12 +153,14 @@ function parseValue<T>(schema: z.ZodType<T>, response: unknown): T {
 }
 
 function completionAnnouncement(scope: PurgeScope | undefined, receipt: PurgeReceipt): string {
-  const subject = scope === undefined ? 'Run2Skill 数据' : `${scope} Run2Skill 数据`
+  const subject = scope === 'ALL' ? 'Run2Skill 缓存' : scope === undefined ? 'Run2Skill 数据' : `${scope} Run2Skill 数据`
   return `${subject}清理完成：${String(receipt.deletedWorkItems)} 条待处理数据，${String(receipt.deletedLineages)} 条 Skill 关联记录。`
 }
 
 function polledCompletionAnnouncement(scope: PurgeScope | undefined): string {
-  return `${scope === undefined ? '' : `${scope} `}Run2Skill 数据清理完成。`
+  return scope === 'ALL'
+    ? 'Run2Skill 缓存清理完成。'
+    : `${scope === undefined ? '' : `${scope} `}Run2Skill 数据清理完成。`
 }
 
 function errorAnnouncement(error: PurgeClientError, durableBoundary = false): string {
@@ -167,7 +171,7 @@ function errorAnnouncement(error: PurgeClientError, durableBoundary = false): st
   if (error.code === 'PURGE_ALREADY_RUNNING') return '已有一项数据清理正在运行，请等待完成。'
   if (error.code === 'PURGE_SCOPE_UNAVAILABLE') return '当前作用域无法可靠确认，未执行清理。'
   if (error.code === 'PURGE_INCOMPATIBLE') return '当前数据版本不兼容，未执行清理。'
-  if (error.code === 'PURGE_FENCE_LIMIT') return 'PROJECT 清理保护记录已达上限，未执行清理。'
+  if (error.code === 'PURGE_FENCE_LIMIT') return '缓存清理保护记录已达上限，未执行清理。'
   return durableBoundary
     ? '数据清理未完成；已建立的清理边界继续隐藏，可重试。'
     : '数据清理暂不可用；未确认已建立清理边界，请稍后重试。'
@@ -525,16 +529,13 @@ const phaseCopy: Record<Exclude<PurgeStatus, { state: 'IDLE' }>['phase'], string
 }
 
 function PreviewSummary({ preview }: { readonly preview: PurgePreview }): ReactElement {
-  const keep = Object.fromEntries(preview.willKeep.map(item => [item.reason, item.count]))
   return createElement('dl', null,
     createElement('dt', null, '将删除'),
-    createElement('dd', null, `${String(preview.workItemCount)} 条待处理数据；${String(preview.lineageCount)} 条 Skill 关联记录`),
-    createElement('dt', null, '将保留'),
     createElement('dd', null,
-      `${String(keep.KEEP_NEW ?? 0)} 条边界后新数据；${String(keep.KEEP_SCOPE ?? 0)} 条其他作用域数据`,
+      `${String(preview.workItemCount)} 条待处理数据；${String(preview.lineageCount)} 条 Skill 关联记录；${String(preview.derivedRecordCount)} 条其他中间缓存`,
     ),
-    createElement('dt', null, '无法证明'),
-    createElement('dd', null, `${String(preview.blockedOrUnprovenCount)} 条无法证明作用域的数据将保留`),
+    createElement('dt', null, '将保留'),
+    createElement('dd', null, '已发布 Skill、DSH 原始会话记录和非 Run2Skill 设置'),
     createElement('dt', null, '正在保存的技能草稿'),
     createElement('dd', null, `${String(preview.busyPublicationCount)} 份；存在时不会开始清理`),
   )
@@ -583,8 +584,8 @@ function PurgeConfirmationDialog(props: {
   if (preview === undefined || scope === undefined) return null
   return createElement(Modal, {
     open: true,
-    title: `确认清理 ${scope} Run2Skill 数据？`,
-    description: '此操作只清理本次预览边界内的 Run2Skill 数据，不会卸载插件。',
+    title: scope === 'ALL' ? '确认清理所有缓存？' : `确认清理 ${scope} Run2Skill 数据？`,
+    description: '此操作只清理 Run2Skill 自己产生的中间缓存数据，不会卸载插件。',
     closeLabel: '关闭清理确认框',
     onClose: () => { props.controller.cancelPreview() },
     footer: createElement('div', { className: css.actions },
@@ -621,7 +622,7 @@ function PurgeConfirmationDialog(props: {
     },
       createElement('ul', null,
         createElement('li', null,
-          '删除 Run2Skill 保存的技能草稿、经过筛选的学习材料、待处理记录、版本信息和相关运行记录。',
+          '删除 Run2Skill 产生的中间缓存、待处理技能草稿、失败与非敏感诊断记录。',
         ),
         createElement('li', null, '保留 DSH 的原始会话记录。'),
         createElement('li', null, '保留所有已发布的原生 Skill。'),
@@ -634,6 +635,7 @@ function PurgeConfirmationDialog(props: {
 export function PurgeSettingsSection(props: {
   readonly controller: PurgeSettingsController
   readonly active?: boolean
+  readonly onCompleted?: () => void
 }): ReactElement {
   const surfaceActive = props.active ?? true
   useEffect(() => {
@@ -649,14 +651,20 @@ export function PurgeSettingsSection(props: {
     props.controller.snapshot,
     props.controller.snapshot,
   )
+  const lastCompletion = useRef('')
+  useEffect(() => {
+    if (!state.announcement.includes('清理完成') || state.announcement === lastCompletion.current) return
+    lastCompletion.current = state.announcement
+    props.onCompleted?.()
+  }, [props.onCompleted, state.announcement])
   const restoreRef = useMemo(() => ({ current: null as HTMLButtonElement | null }), [])
   const active = state.status?.state === 'IN_PROGRESS' ? state.status : undefined
   const activeReceipt = state.inProgressReceipt?.state === 'IN_PROGRESS' ? state.inProgressReceipt : undefined
   const activePhase = active?.phase ?? activeReceipt?.phase ?? (activeReceipt === undefined ? undefined : 'HIDING')
   const disabled = state.previewPending || state.mutationPending || active !== undefined || activeReceipt !== undefined
   return createElement('section', { 'aria-labelledby': 'run2skill-purge-heading' },
-    createElement('h3', { id: 'run2skill-purge-heading' }, '清理 Run2Skill 数据'),
-    createElement('p', null, '清理只影响 Run2Skill 保存的数据；不会删除 DSH 的原始会话记录或已发布 Skill。'),
+    createElement('h3', { id: 'run2skill-purge-heading' }, '缓存清理'),
+    createElement('p', null, '清理 Run2Skill 自己产生的中间缓存数据'),
     createElement('div', { className: css.actions },
     createElement(Button, {
       variant: 'outline',
@@ -664,18 +672,9 @@ export function PurgeSettingsSection(props: {
       disabled,
       onClick: (event) => {
         restoreRef.current = event.currentTarget
-        void props.controller.preview('PROJECT')
+        void props.controller.preview('ALL')
       },
-    }, '预览并清理当前 PROJECT 数据'),
-    createElement(Button, {
-      variant: 'outline',
-      icon: createElement(IconTrashOutline16),
-      disabled,
-      onClick: (event) => {
-        restoreRef.current = event.currentTarget
-        void props.controller.preview('USER')
-      },
-    }, '预览并清理 USER 数据')),
+    }, '清理所有缓存')),
     state.statusPhase === 'LOADING' ? createElement('p', { role: 'status' }, '正在读取数据清理状态…') : null,
     state.statusPhase === 'UNAVAILABLE' ? createElement('p', { role: 'alert' }, '数据清理状态暂不可用') : null,
     state.statusPhase === 'STALE' ? createElement('p', { role: 'status' }, '数据清理状态可能已过期') : null,

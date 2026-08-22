@@ -112,6 +112,8 @@ describe('run2skill native settings surface', () => {
       }),
     ))
     await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByText('缓存清理')).toBeTruthy()
+    expect(screen.queryByText('数据管理')).toBeNull()
     expect(review).not.toHaveBeenCalled()
 
     rendered.container.firstElementChild!.removeAttribute('hidden')

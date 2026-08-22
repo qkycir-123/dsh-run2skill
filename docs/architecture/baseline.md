@@ -474,16 +474,18 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 
 Purge 是持久 saga：
 
-1. global 写入 purgeId、scope binding 和 hideBefore epoch；
+1. global 写入 purgeId、`ALL` binding、hideBefore epoch 和本次 v1 目标计数；
 2. UI 和所有 worker 立即应用 visibility/quiesce fence，命中数据不再对普通流程可见；
 3. 若命中当前 generation owner，尚无 call slot 时直接清除未消费 reservation/lease；已有 call slot 时只运行受限 outcome reconciliation，按 durable call ledger 提交且只提交 sealed result 或 unresolved barrier；该步骤不调用模型、不写 Proposal body，也不等待普通 generation worker；
 4. outcome durable 后扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，清理对应 GenerationResult/barrier、BehaviorSignatureIndex/ProposalGenerationLease，并保持 v1 legacy 视图不可见；
 5. 从 purge-visible authoritative rows 重建 PendingProposalCatalog，校验无正常可见 Proposal、dangling index/lease 或其他残留；
-6. 在同一次 authoritative global update 中 upsert durable completed fence 并清除 journal。
+6. 将同一 path-free `ALL` completed fence 写入 v2 legacy fence 投影，再在 authoritative v1 global update 中 upsert fence 并清除 journal。
 
-RPC scope contract 与作用域身份一致：PROJECT preview 必须携带当前有效 `workspaceId`，由 Host 重新解析 canonical workspace/root facts；USER preview 只绑定 effective DSH Home，请求不依赖也不接受 `workspaceId`。`status`、`confirm` 与 `retry` 只使用各自的 journal/immutable preview 标识，不携带 workspace identity。
+设置页只调用 `ALL` preview/confirm，不接受 `workspaceId`，也不向用户暴露 PROJECT/USER 内部术语。旧 PROJECT/USER RPC 继续作为兼容接口存在，但不再是常驻产品入口；`status` 与 `retry` 只使用 journal 标识。
 
-崩溃后继续同一 purgeId。active journal 与 durable completed fences 共同定义所有 create/update/claim/query 的 visibility：`createdAt/first committedAt <= hideBefore` 的匹配旧事实在 runtime/进程重启后仍不能重新进入，边界后的新事实仍允许。USER fence 为单例；PROJECT fence 以 canonical workspace path 的平台规范化身份 digest 为确定性 key，同 scope 只保留最大 `hideBefore`。
+崩溃后继续同一 purgeId。active journal 与 durable completed fences 共同定义所有 create/update/claim/query 的 visibility：`createdAt/first committedAt <= hideBefore` 的匹配旧事实在 runtime/进程重启后仍不能重新进入，边界后的新事实仍允许。`ALL` fence 为单例并覆盖全部 Run2Skill 派生记录；旧 USER/PROJECT fences 仅为兼容已有数据保留。
+
+每次新建 journal 固化 `targetWorkItems` 与 `targetLineages`。最终 receipt 使用该 durable 目标计数，因此即使进程在物理删除完成、进度计数写回之前终止，恢复后也不会少报。旧 journal 缺少目标字段时继续按既有累计计数恢复。
 
 PROJECT completed fences 固定最多 1024 个且不得淘汰。达到上限时已有 scope 可更新，新 PROJECT 必须在 preview/confirm 写 journal 前以 `PURGE_FENCE_LIMIT` fail closed。任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/迁移门。
 
@@ -768,7 +770,7 @@ CP-PUB-001 已在 Windows 与 WSL/Linux 验证上述 hard-link no-replace、外�
 | proposals/retry | ProposalRef | 新状态或新 ProposalRef |
 | ownership/resolve | workItemId + expectedRevision + actionId + decision | `RUN2SKILL_OWNED`、重新观察后的 `RESOLVED_BY_AGENT` 或 `HANDLED_BY_USER` receipt |
 | coverage/confirm-discard | ProposalRef | DISCARDED |
-| purge/preview | PROJECT：scope + workspaceId；USER：仅 scope | 将删/不删摘要 |
+| purge/preview | `scope=ALL` | 将删/不删摘要 |
 | purge/confirm | previewId + digest | purge receipt |
 
 `automaticLearning` 通过 DSH 原生 `settings.describe/update/mutate` 读写；run2skill 只注册 namespace、schema、默认值和运行时 watch，不复制 Settings transport 或 persistence。
