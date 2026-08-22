@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SessionBatchCoordinator, SessionBatchScheduler } from '../src/application/batch/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
@@ -67,11 +67,13 @@ describe('v2 SessionBatch scheduler', () => {
           maxOutputBytes: 8 * 1024,
       }),
     })
+    const onIdleBatchFrozen = vi.fn()
     const scheduler = new SessionBatchScheduler({
       coordinator,
       now: () => now,
       setTimer: timer.set,
       clearTimer: timer.clear,
+      onIdleBatchFrozen,
     })
     await scheduler.start()
     await scheduler.prepareSessionWindow(createMinimalV2Fixtures().turnObservation.sessionLifecycleKey)
@@ -81,6 +83,7 @@ describe('v2 SessionBatch scheduler', () => {
     timer.fire()
     await scheduler.settle()
     expect(domain.sessionBatches.size).toBe(1)
+    expect(onIdleBatchFrozen).toHaveBeenCalledOnce()
     scheduler.wake()
     await scheduler.settle()
     expect(domain.sessionBatches.size).toBe(1)

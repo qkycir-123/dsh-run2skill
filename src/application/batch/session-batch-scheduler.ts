@@ -5,6 +5,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 export interface SessionBatchSchedulerOptions {
   readonly coordinator: SessionBatchCoordinator
+  readonly onIdleBatchFrozen?: () => void
   readonly now?: () => number
   readonly setTimer?: (callback: () => void, delay: number) => unknown
   readonly clearTimer?: (handle: unknown) => void
@@ -17,6 +18,7 @@ export class SessionBatchScheduler {
   readonly #now
   readonly #setTimer
   readonly #clearTimer
+  readonly #onIdleBatchFrozen
   #timer: unknown
   #tail: Promise<void> = Promise.resolve()
   #started = false
@@ -27,6 +29,7 @@ export class SessionBatchScheduler {
     this.#now = options.now ?? Date.now
     this.#setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.#clearTimer = options.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
+    this.#onIdleBatchFrozen = options.onIdleBatchFrozen ?? (() => undefined)
   }
 
   async start(): Promise<void> {
@@ -57,7 +60,7 @@ export class SessionBatchScheduler {
   wake(): void {
     if (!this.#started || this.#disposed) return
     void this.#enqueue(async () => {
-      await this.#coordinator.flushIdle(this.#now())
+      if ((await this.#coordinator.flushIdle(this.#now())).length > 0) this.#onIdleBatchFrozen()
     })
   }
 
