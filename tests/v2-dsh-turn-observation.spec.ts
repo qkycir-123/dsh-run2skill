@@ -90,6 +90,26 @@ function insertTurnEvent(
   return events
 }
 
+function withRoutePrefix(
+  inserted: Omit<DshSessionEvent, 'seq' | 'time'> & { readonly ignorable?: true },
+): { readonly events: DshSessionEvent[]; readonly turnEndSeq: number } {
+  const events = completeTurn('普通请求').filter(event => event.type !== 'request/header')
+  events.unshift(
+    {
+      type: 'request/header',
+      seq: 0,
+      time: 0,
+      data: { header: { config: { provider: 'prefix-provider', model: 'prefix-model' } }, reason: 'initial' },
+    },
+    { ...inserted, seq: 0, time: 0 } as DshSessionEvent,
+  )
+  events.forEach((event, seq) => {
+    ;(event as { seq: number; time: number }).seq = seq
+    ;(event as { seq: number; time: number }).time = 1_000 + seq
+  })
+  return { events, turnEndSeq: events.find(event => event.type === 'turn/end')!.seq }
+}
+
 const workspace = {
   resolve: vi.fn(async () => ({
     status: 'BOUND' as const,
@@ -312,6 +332,48 @@ describe('DSH TurnObservationV2 projection', () => {
     const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
 
     const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation.completeness).toBe('COMPLETE')
+  })
+
+  it('refuses a required unknown event in the Session prefix before inheriting an older route', async () => {
+    const { events, turnEndSeq } = withRoutePrefix({
+      type: 'plugin/required-route-state', data: { routeChanged: true },
+    })
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result).toMatchObject({
+      status: 'UNAVAILABLE', healthCode: 'OBSERVATION_PROJECTION_UNAVAILABLE',
+    })
+  })
+
+  it('may inherit a prefix route across an explicitly ignorable unknown event', async () => {
+    const { events, turnEndSeq } = withRoutePrefix({
+      type: 'plugin/optional-route-card', data: { presentation: true }, ignorable: true,
+    })
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation.routeObservation).toEqual({
+      provider: 'prefix-provider', model: 'prefix-model', complete: true,
+    })
+  })
+
+  it('does not let a required unknown event after turn/end affect the completed Turn', async () => {
+    const events = completeTurn('普通请求')
+    events.push({
+      type: 'plugin/future-required-state',
+      seq: 9,
+      time: 1_009,
+      data: { future: true },
+    })
+
+    const result = await projectDshTurnObservationV2(header, events, 8, workspace)
 
     expect(result.status).toBe('OBSERVED')
     if (result.status !== 'OBSERVED') throw new Error('expected an observation')

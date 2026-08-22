@@ -386,10 +386,11 @@ export async function projectDshTurnObservationV2(
   const observed = base.observation
   const observedAt = new Date(observed.turnEndTime)
   if (!Number.isFinite(observedAt.getTime())) return unavailable(header, turnEndSeq)
-  const turnEvents = sessionEvents.filter(event => (
+  const observedPrefix = sessionEvents.filter(event => event.seq <= observed.turnEndSeq)
+  if (hasUnsupportedRequiredEvent(observedPrefix)) return unavailable(header, turnEndSeq)
+  const turnEvents = observedPrefix.filter(event => (
     event.seq >= observed.turnStartSeq && event.seq <= observed.turnEndSeq
   ))
-  if (hasUnsupportedRequiredEvent(turnEvents)) return unavailable(header, turnEndSeq)
   const direct = projectDirectEvidence(
     observed.directUserMessages,
     directUserContentIsTextOnly(turnEvents),
