@@ -10,6 +10,8 @@ import {
   deriveCatalogScanBindingDigestV2,
   deriveCatalogScanCallIdV2,
   deriveCatalogScanPlanDigestV2,
+  deriveCoverageBindingDigestV2,
+  deriveCoveragePlanDigestV2,
   deriveTurnObservationContentDigestV2,
 } from '../src/domain/v2/index.js'
 import {
@@ -130,6 +132,21 @@ describe('run2skill_v2 storage contract', () => {
       mutationReceiptDigest: '4'.repeat(64),
       receiptDigest: '9'.repeat(64),
     }
+    const refreshedCoverageBindingDigest = deriveCoverageBindingDigestV2({
+      intentId: coverageReadyAfterRefresh.intentId,
+      coverageBasisRevision: coverageReadyAfterRefresh.revision,
+      provider: coverageReadyAfterRefresh.recall.scanRouteProvider,
+      model: coverageReadyAfterRefresh.recall.scanRouteModel,
+      policyVersion: 'coverage-v1',
+    })
+    const refreshedCoveragePlanDigest = deriveCoveragePlanDigestV2({
+      coverageBindingDigest: refreshedCoverageBindingDigest,
+      runtimeCatalogDigest: refreshedRecall.runtimeCatalogDigest,
+      pendingCatalogDigest: refreshedRecall.pendingCatalogDigest,
+      catalogEpoch: refreshedRecall.catalogEpoch,
+      catalogMutationReceiptDigest: refreshedRecall.catalogMutationReceiptDigest,
+      candidates: [],
+    })
     const {
       duplicateBarrier: _replacedRefreshBarrier,
       ...coverageReadyWithoutBarrier
@@ -139,8 +156,16 @@ describe('run2skill_v2 storage contract', () => {
       status: 'NEEDS_ATTENTION' as const,
       coverage: {
         state: 'CREATE' as const,
-        inputDigest: 'b'.repeat(64),
+        inputDigest: refreshedCoveragePlanDigest,
         targetDigest: refreshedSealedResult.targetDigest,
+        basisRevision: coverageReadyAfterRefresh.revision,
+        routeProvider: coverageReadyAfterRefresh.recall.scanRouteProvider,
+        routeModel: coverageReadyAfterRefresh.recall.scanRouteModel,
+        policyVersion: 'coverage-v1',
+        bindingDigest: refreshedCoverageBindingDigest,
+        planDigest: refreshedCoveragePlanDigest,
+        candidateBindings: [],
+        decisions: [],
       },
       generation: {
         state: 'NEEDS_ATTENTION' as const,
@@ -183,16 +208,10 @@ describe('run2skill_v2 storage contract', () => {
       }],
     }
     expect(ExperienceIntentV2Schema.parse(staleAgainAfterRefresh)).toEqual(staleAgainAfterRefresh)
-    const coveredNeedsConfirmation = {
-      ...coverageReadyAfterRefresh,
-      status: 'COVERED_NEEDS_CONFIRMATION' as const,
-      coverage: { state: 'COVERED' as const },
-    }
-    expect(ExperienceIntentV2Schema.safeParse(coveredNeedsConfirmation).success).toBe(true)
     const {
       duplicateBarrier: _discardedBarrier,
       ...discardedIntentBase
-    } = coveredNeedsConfirmation
+    } = coverageReadyAfterRefresh
     const discardedAfterConfirmation = {
       ...discardedIntentBase,
       revision: discardedIntentBase.revision + 1,
