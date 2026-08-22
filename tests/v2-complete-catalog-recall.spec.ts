@@ -9,6 +9,7 @@ import {
 import {
   deriveCatalogScanBindingDigestV2,
   deriveCatalogScanCallIdV2,
+  deriveCatalogScanMembershipDigestV2,
   deriveCatalogScanPlanDigestV2,
   ExperienceIntentV2Schema,
   SessionBatchV2Schema,
@@ -264,11 +265,11 @@ describe('v2 complete Catalog recall', () => {
     const model = classifier(async input => ({
       classifications: input.summaries.map(candidate => ({
         candidateId: candidate.candidateId,
-        classification: 'UNRELATED' as const,
+        classification: 'RELEVANT' as const,
       })),
     }))
     await new CompleteCatalogRecallWorker(domain, {
-      catalog: catalog(snapshot([item])), classifier: model,
+      catalog: catalog(snapshot([item]), new Map([[item.candidateId, '# relevant body']])), classifier: model,
     }).runOnce()
     const recalled = domain.experienceIntents.get(intent.intentId)!
 
@@ -287,17 +288,28 @@ describe('v2 complete Catalog recall', () => {
       ...recalled,
       recall: {
         ...recalled.recall,
-        summaryClassifications: recalled.recall.summaryClassifications?.map(classification => ({
-          ...classification, classification: 'RELEVANT',
+        candidates: recalled.recall.candidates.map(candidate => ({
+          ...candidate, candidateId: 'different-candidate',
         })),
-        candidates: [{
-          candidateId: item.candidateId,
-          summary: {
-            name: item.name, description: item.description, whenToUse: item.whenToUse,
-            provider: item.provider, source: item.source, scope: item.scope, writable: item.writable,
-          },
-          classification: 'RELEVANT', capability: 'AVAILABLE', bodyDigest: '8'.repeat(64),
-        }],
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...recalled,
+      recall: {
+        ...recalled.recall,
+        summaryClassifications: recalled.recall.summaryClassifications?.map(classification => ({
+          ...classification, summaryDigest: '0'.repeat(64),
+        })),
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...recalled,
+      recall: {
+        ...recalled.recall,
+        summaryClassifications: recalled.recall.summaryClassifications?.map(classification => ({
+          ...classification, classification: 'UNRELATED',
+        })),
+        candidates: [],
       },
     }).success).toBe(false)
   })
@@ -397,11 +409,14 @@ describe('v2 complete Catalog recall', () => {
       intentId: intent.intentId, scanBasisRevision,
       provider: 'deepseek-official', model: 'deepseek-chat', policyVersion: 'catalog-scan-v1',
     })
+    const membershipDigest = deriveCatalogScanMembershipDigestV2([{
+      candidateId: item.candidateId, summaryDigest: '7'.repeat(64),
+    }])
     const scanPlanDigest = deriveCatalogScanPlanDigestV2({
       policyVersion: 'catalog-scan-v1',
       runtimeCatalogDigest: '1'.repeat(64), pendingCatalogDigest: '2'.repeat(64),
       catalogEpoch: 4, catalogMutationReceiptDigest: '3'.repeat(64), scanBindingDigest,
-      pages: [{ ordinal: 1, inputDigest: '6'.repeat(64) }],
+      pages: [{ ordinal: 1, inputDigest: '6'.repeat(64), membershipDigest }],
     })
     await domain.table('experience_intents').put(intent.intentId, ExperienceIntentV2Schema.parse({
       ...intent,
@@ -415,7 +430,7 @@ describe('v2 complete Catalog recall', () => {
         scanPolicyVersion: 'catalog-scan-v1',
         scanBindingDigest,
         scanPlanDigest, scanPageCount: 1, scanSummaryCount: 1,
-        scanPages: [{ ordinal: 1, itemCount: 1, inputDigest: '6'.repeat(64) }],
+        scanPages: [{ ordinal: 1, itemCount: 1, inputDigest: '6'.repeat(64), membershipDigest }],
         summaryClassifications: [],
       },
       stageCalls: [{

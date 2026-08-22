@@ -7,6 +7,7 @@ import {
   deriveBehaviorSignatureV2,
   deriveCatalogScanBindingDigestV2,
   deriveCatalogScanCallIdV2,
+  deriveCatalogScanMembershipDigestV2,
   deriveCatalogScanOutputDigestV2,
   deriveCatalogScanPlanDigestV2,
   deriveNativeProposalLineageIdV2,
@@ -267,6 +268,9 @@ export function createMinimalV2Fixtures() {
   const catalogScanOutputDigest = deriveCatalogScanOutputDigestV2([{
     candidateId: 'fixture-unrelated', classification: 'UNRELATED',
   }])
+  const catalogScanMembershipDigest = deriveCatalogScanMembershipDigestV2([{
+    candidateId: 'fixture-unrelated', summaryDigest: 'f'.repeat(64),
+  }])
   const catalogScanPlanDigest = deriveCatalogScanPlanDigestV2({
     policyVersion: 'catalog-scan-v1',
     runtimeCatalogDigest: sealedResult.runtimeCatalogDigest,
@@ -274,7 +278,7 @@ export function createMinimalV2Fixtures() {
     catalogEpoch: sealedResult.inputCatalogEpoch,
     catalogMutationReceiptDigest: 'c'.repeat(64),
     scanBindingDigest: catalogScanBindingDigest,
-    pages: [{ ordinal: 1, inputDigest: '1'.repeat(64) }],
+    pages: [{ ordinal: 1, inputDigest: '1'.repeat(64), membershipDigest: catalogScanMembershipDigest }],
   })
   const catalogScanCallId = deriveCatalogScanCallIdV2(experienceIntent.intentId, catalogScanPlanDigest, 1)
   const proposalReadyIntent = {
@@ -316,7 +320,9 @@ export function createMinimalV2Fixtures() {
       scanPlanDigest: catalogScanPlanDigest,
       scanPageCount: 1,
       scanSummaryCount: 1,
-      scanPages: [{ ordinal: 1, itemCount: 1, inputDigest: '1'.repeat(64) }],
+      scanPages: [{
+        ordinal: 1, itemCount: 1, inputDigest: '1'.repeat(64), membershipDigest: catalogScanMembershipDigest,
+      }],
       summaryClassifications: [{
         candidateId: 'fixture-unrelated',
         summaryDigest: 'f'.repeat(64),

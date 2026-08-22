@@ -6,6 +6,7 @@ import { preprocessPersistentText } from '../../domain/observe/redaction.js'
 import {
   deriveCatalogScanBindingDigestV2,
   deriveCatalogScanCallIdV2,
+  deriveCatalogScanMembershipDigestV2,
   deriveCatalogScanOutputDigestV2,
   deriveCatalogScanPlanDigestV2,
   ExperienceIntentV2Schema,
@@ -123,6 +124,7 @@ export interface CompleteCatalogRecallOptions {
 interface ScanPage {
   readonly ordinal: number
   readonly inputDigest: string
+  readonly membershipDigest: string
   readonly summaries: readonly RecallCatalogSummary[]
 }
 
@@ -398,6 +400,9 @@ export class CompleteCatalogRecallWorker {
       return {
         ordinal,
         summaries: items,
+        membershipDigest: deriveCatalogScanMembershipDigestV2(items.map(item => ({
+          candidateId: item.candidateId, summaryDigest: summaryDigest(item),
+        }))),
         inputDigest: sha256Utf8(canonicalJson({
           intent: this.#intentProjection(intent),
           route: batch.routeSnapshot,
@@ -415,7 +420,9 @@ export class CompleteCatalogRecallWorker {
         policyVersion: this.#policy.policyVersion,
         ...this.#catalogFacts(snapshot),
         scanBindingDigest,
-        pages: pages.map(item => ({ ordinal: item.ordinal, inputDigest: item.inputDigest })),
+        pages: pages.map(item => ({
+          ordinal: item.ordinal, inputDigest: item.inputDigest, membershipDigest: item.membershipDigest,
+        })),
       }),
     }
   }
@@ -454,7 +461,8 @@ export class CompleteCatalogRecallWorker {
           scanPageCount: plan.pages.length,
           scanSummaryCount: plan.pages.reduce((total, page) => total + page.summaries.length, 0),
           scanPages: plan.pages.map(page => ({
-            ordinal: page.ordinal, itemCount: page.summaries.length, inputDigest: page.inputDigest,
+            ordinal: page.ordinal, itemCount: page.summaries.length,
+            inputDigest: page.inputDigest, membershipDigest: page.membershipDigest,
           })),
           summaryClassifications: [],
         },

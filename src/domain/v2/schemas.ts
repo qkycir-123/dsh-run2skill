@@ -466,6 +466,16 @@ export function deriveCatalogScanOutputDigestV2(
   }))
 }
 
+export function deriveCatalogScanMembershipDigestV2(
+  members: readonly { readonly candidateId: string; readonly summaryDigest: string }[],
+): string {
+  return sha256Utf8(canonicalJson({
+    members: members
+      .map(item => ({ candidateId: item.candidateId, summaryDigest: item.summaryDigest }))
+      .sort((left, right) => left.candidateId.localeCompare(right.candidateId)),
+  }))
+}
+
 export interface CatalogScanPlanFactsV2 {
   readonly policyVersion: string
   readonly runtimeCatalogDigest: string
@@ -473,7 +483,11 @@ export interface CatalogScanPlanFactsV2 {
   readonly catalogEpoch: number
   readonly catalogMutationReceiptDigest: string
   readonly scanBindingDigest: string
-  readonly pages: readonly { readonly ordinal: number; readonly inputDigest: string }[]
+  readonly pages: readonly {
+    readonly ordinal: number
+    readonly inputDigest: string
+    readonly membershipDigest: string
+  }[]
 }
 
 export function deriveCatalogScanPlanDigestV2(facts: CatalogScanPlanFactsV2): string {
@@ -649,6 +663,7 @@ export const ExperienceIntentV2Schema = z.object({
       ordinal: positiveSafeInteger,
       itemCount: positiveSafeInteger,
       inputDigest: sha256Hex,
+      membershipDigest: sha256Hex,
     }).strict()).max(32).optional(),
     summaryClassifications: z.array(z.object({
       candidateId: identity,
@@ -1042,7 +1057,9 @@ export const ExperienceIntentV2Schema = z.object({
       catalogEpoch: value.recall.catalogEpoch,
       catalogMutationReceiptDigest: value.recall.catalogMutationReceiptDigest,
       scanBindingDigest: value.recall.scanBindingDigest,
-      pages: orderedPages.map(page => ({ ordinal: page.ordinal, inputDigest: page.inputDigest })),
+      pages: orderedPages.map(page => ({
+        ordinal: page.ordinal, inputDigest: page.inputDigest, membershipDigest: page.membershipDigest,
+      })),
     })
     if (
       orderedPages.length !== value.recall.scanPageCount
@@ -1357,6 +1374,7 @@ export const ExperienceIntentV2Schema = z.object({
   }
   for (const call of currentCatalogScanCalls) {
     const pageClassifications = summaryClassifications.filter(item => item.callId === call.callId)
+    const page = scanPages.find(item => item.ordinal === call.ordinal)
     const sealedSuccess = call.outcome === 'SUCCEEDED' && call.failureCode === undefined
     if (sealedSuccess ? pageClassifications.length !== call.itemCount : pageClassifications.length !== 0) {
       context.addIssue({ code: 'custom', path: ['recall', 'summaryClassifications'], message: 'Every current Catalog page summary must be classified exactly once' })
@@ -1364,7 +1382,21 @@ export const ExperienceIntentV2Schema = z.object({
     if (sealedSuccess && call.outputDigest !== deriveCatalogScanOutputDigestV2(pageClassifications)) {
       context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Catalog scan output digest must seal the exact canonical classifications' })
     }
+    if (sealedSuccess && page?.membershipDigest !== deriveCatalogScanMembershipDigestV2(pageClassifications)) {
+      context.addIssue({ code: 'custom', path: ['recall', 'summaryClassifications'], message: 'Catalog classifications must match the exact durable page membership' })
+    }
   }
+  const candidateIds = value.recall.candidates.map(candidate => candidate.candidateId)
+  const relevantIds = summaryClassifications
+    .filter(item => item.classification !== 'UNRELATED')
+    .map(item => item.candidateId)
+  if (new Set(candidateIds).size !== candidateIds.length) {
+    context.addIssue({ code: 'custom', path: ['recall', 'candidates'], message: 'Recall candidates must have unique identities' })
+  }
+  if (
+    value.recall.summaryScanComplete
+    && canonicalJson([...candidateIds].sort()) !== canonicalJson([...relevantIds].sort())
+  ) context.addIssue({ code: 'custom', path: ['recall', 'candidates'], message: 'Recall candidates must exactly match every relevant or possible classification' })
   if (value.recall.state === 'COMPLETE' && (
     currentCatalogScanCalls.length !== value.recall.scanPageCount
     || currentCatalogScanCalls.some(call => call.outcome !== 'SUCCEEDED' || call.failureCode !== undefined)

@@ -74,7 +74,11 @@ describe('run2skill_v2 storage contract', () => {
       catalogEpoch: fixture.staleRefreshIntent.duplicateBarrier.outcomeCatalogEpoch,
       catalogMutationReceiptDigest: fixture.staleRefreshIntent.duplicateBarrier.mutationReceiptDigest,
       scanBindingDigest: refreshedScanBindingDigest,
-      pages: [{ ordinal: 1, inputDigest: fixture.proposalReadyIntent.stageCalls[0]!.inputDigest }],
+      pages: [{
+        ordinal: 1,
+        inputDigest: fixture.proposalReadyIntent.stageCalls[0]!.inputDigest,
+        membershipDigest: fixture.proposalReadyIntent.recall.scanPages[0]!.membershipDigest,
+      }],
     })
     const refreshedScanCallId = deriveCatalogScanCallIdV2(
       fixture.staleRefreshIntent.intentId, refreshedScanPlanDigest, 1,
