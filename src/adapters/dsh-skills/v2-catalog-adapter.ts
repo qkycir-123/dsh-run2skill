@@ -43,9 +43,20 @@ export interface V2RuntimeCatalogIdentity {
   readonly rootIdentityDigest: string
 }
 
+export interface V2StockWritableRootBinding {
+  readonly scope: 'PROJECT' | 'USER'
+  readonly expectedProvider: 'filesystem'
+  readonly expectedSource: 'project-dsh' | 'user-dsh'
+  readonly canonicalRootPath: string
+}
+
 export interface DshV2CatalogAdapterOptions<TView extends object> {
   readonly registry: DshSkillRegistryPort<TView>
   readonly resolveView: (sessionLifecycleKey: string) => TView | undefined
+  readonly resolveStockWritableRoot?: (
+    summary: RuntimeSummary,
+    view: TView,
+  ) => V2StockWritableRootBinding | undefined
   readonly resolveRuntimeIdentity?: (
     summary: RuntimeSummary,
     view: TView,
@@ -93,6 +104,7 @@ function canonicalPath(value: string): string {
 function stockRuntimeIdentity(
   summary: RuntimeSummary,
   sessionLifecycleKey: string,
+  stockWritableRoot: V2StockWritableRootBinding | undefined,
 ): V2RuntimeCatalogIdentity {
   const scope = summary.source === 'project-dsh' || summary.source === 'project-agents' || summary.source === 'runtime'
     ? 'PROJECT'
@@ -102,21 +114,25 @@ function stockRuntimeIdentity(
         || summary.source === 'custom'
       ? 'USER'
       : 'PROJECT'
-  const filesystemBase = summary.provider === 'filesystem' && summary.resourceBase?.kind === 'directory'
-    ? canonicalPath(summary.resourceBase.path)
-    : undefined
-  const canonicalBundle = filesystemBase !== undefined
-    && pathApi(filesystemBase).basename(filesystemBase).toLowerCase() === summary.name.toLowerCase()
-  if (canonicalBundle) {
+  const trustedStockBundle = stockWritableRoot !== undefined
+    && summary.provider === stockWritableRoot.expectedProvider
+    && summary.source === stockWritableRoot.expectedSource
+    && scope === stockWritableRoot.scope
+    && summary.resourceBase?.kind === 'directory'
+    && canonicalPath(summary.resourceBase.path) === canonicalPath(
+      pathApi(stockWritableRoot.canonicalRootPath).join(stockWritableRoot.canonicalRootPath, summary.name),
+    )
+  if (trustedStockBundle) {
+    const root = canonicalPath(stockWritableRoot.canonicalRootPath)
     return {
       scope,
-      writable: summary.source === 'project-dsh' || summary.source === 'user-dsh',
+      writable: true,
       rootIdentityDigest: sha256Utf8(canonicalJson({
         contract: 'dsh-public-skill-resource-base-v1',
         provider: summary.provider,
         source: summary.source,
         scope,
-        root: canonicalPath(pathApi(filesystemBase).dirname(filesystemBase)),
+        root,
       })),
     }
   }
@@ -172,7 +188,11 @@ export class DshV2CatalogAdapter<TView extends object> {
     this.#registry = options.registry
     this.#resolveView = options.resolveView
     this.#resolveRuntimeIdentity = options.resolveRuntimeIdentity
-      ?? ((summary, _view, context) => stockRuntimeIdentity(summary, context.sessionLifecycleKey))
+      ?? ((summary, view, context) => stockRuntimeIdentity(
+        summary,
+        context.sessionLifecycleKey,
+        options.resolveStockWritableRoot?.(summary, view),
+      ))
     this.recall = {
       snapshot: async input => this.#recallSnapshot(input.batch, input.intent),
       read: async input => this.#read(input.candidateId, input.batch, input.intent),

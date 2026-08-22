@@ -63,6 +63,14 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         },
       },
       resolveView: lifecycleKey => lifecycleKey === fixture.experienceIntent.sessionLifecycleKey ? view : undefined,
+      resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+        ? {
+            scope: 'PROJECT',
+            expectedProvider: 'filesystem',
+            expectedSource: 'project-dsh',
+            canonicalRootPath: 'D:\\repo\\.dsh\\skills',
+          }
+        : undefined,
     })
 
     const recall = await adapter.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })
@@ -100,9 +108,27 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       },
       {
         ...runtimeSkill,
+        name: 'skills',
+        description: 'A flat Skill whose name matches the root basename.',
+        resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills' },
+      },
+      {
+        ...runtimeSkill,
         name: 'renamed-workflow',
         description: 'A directory bundle whose folder differs from its declared name.',
         resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills\\legacy-folder' },
+      },
+      {
+        ...runtimeSkill,
+        name: 'windows-case',
+        description: 'A Windows bundle with a case-only folder difference.',
+        resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills\\WINDOWS-CASE' },
+      },
+      {
+        ...runtimeSkill,
+        name: 'posix-case',
+        description: 'A POSIX bundle with a case-only folder difference.',
+        resourceBase: { kind: 'directory' as const, path: '/repo/.dsh/skills/POSIX-CASE' },
       },
       {
         name: 'runtime-workflow',
@@ -127,6 +153,17 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         },
       },
       resolveView: () => view,
+      resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+        ? {
+            scope: 'PROJECT',
+            expectedProvider: 'filesystem',
+            expectedSource: 'project-dsh',
+            canonicalRootPath: summary.resourceBase?.kind === 'directory'
+              && summary.resourceBase.path.startsWith('/')
+              ? '/repo/.dsh/skills'
+              : 'D:\\repo\\.dsh\\skills',
+          }
+        : undefined,
     })
 
     const snapshot = await adapter.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })
@@ -134,8 +171,11 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect(snapshot.summaries.map(item => [item.name, item.scope, item.writable]).sort()).toEqual([
       ['bundled-workflow', 'USER', false],
       ['flat-workflow', 'PROJECT', false],
+      ['posix-case', 'PROJECT', false],
       ['renamed-workflow', 'PROJECT', false],
       ['runtime-workflow', 'PROJECT', false],
+      ['skills', 'PROJECT', false],
+      ['windows-case', 'PROJECT', true],
     ])
     expect(JSON.stringify(snapshot.summaries)).not.toContain('D:\\repo')
     for (const summary of snapshot.summaries) {

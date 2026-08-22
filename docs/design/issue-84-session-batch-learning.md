@@ -360,7 +360,7 @@ Pending 的 `USER` records 在同一 DSH storage domain 内全局可见；`PROJE
 
 全部会改变 PendingProposalCatalog authoritative membership 的操作（Proposal create、GenerationResult/barrier create/resolve、Review/Publication 进入或离开 active、legacy migration、Purge hide/delete）通过同一个 `ProposalCatalogCoordinator` 单写序列，并使用 global `proposalCatalogMutationJournal + proposalCatalogEpoch + proposalCatalogLastMutation`：先 durable PREPARED journal，再改 authoritative row，最后在同一次 global update 中推进 epoch、写入该 epoch 的 mutation receipt anchor 并清 journal。派生 snapshot 必须在 journal 为空时读取 epoch/anchor-before，扫描全部 purge-visible active rows，再验证 epoch/anchor-after 相同；否则 `complete=false`。锚点让 generation 能证明唯一允许的 epoch 变化确由自己的 sealed result/Proposal receipt 引起，而不是根据散落记录猜测。崩溃恢复先按 authoritative body/status 完成或回滚 journal并推进 epoch，完成前所有 CREATE/MERGE 为 0。
 
-Runtime Catalog adapter 只调用 DSH 公开的 `skills.snapshot/get`，并在同一个 exact Agent `{scope, cwd}` view 上做 snapshot-before/get/snapshot-after。DSH `complete=false`、winner identity/resource base 无法证明、前后 digest 漂移或 exact get 的 name/provider/source/root 变化都 fail closed；Catalog summary 仅保留 root identity digest，不持久化或发送本机 path。DSH 不需要暴露内部 revision、CAS 或共享锁。
+Runtime Catalog adapter 只调用 DSH 公开的 `skills.snapshot/get`，并在同一个 exact Agent `{scope, cwd}` view 上做 snapshot-before/get/snapshot-after。DSH `complete=false`、前后 digest 漂移或 exact get 的 name/provider/source/root 变化都 fail closed；合法但无法由 composition-owned stock root contract 证明写入目标的 flat、runtime、bundled 或第三方 winner 仍以稳定 path-free identity 参与去重，但一律标记为只读。只有 exact `resourceBase == trustedRoot/name` 的 stock `project-dsh/user-dsh` directory bundle 才可写，不能用 basename 猜测目录形态。Catalog summary 仅保留 root identity digest，不持久化或发送本机 path。DSH 不需要暴露内部 revision、CAS 或共享锁。
 
 ### 11.1 Proposal generation/commit single-flight
 
