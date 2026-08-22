@@ -21,11 +21,15 @@ const exactSkillBytes = [
   exactSkillBody, '',
 ].join('\n')
 
-function candidate(body = exactSkillBody, scope: 'PROJECT' | 'USER' = 'PROJECT') {
+function candidate(
+  body = exactSkillBody,
+  scope: 'PROJECT' | 'USER' = 'PROJECT',
+  targetPath = skillPath,
+) {
   return {
     candidateId: 'candidate-fixture', name: 'fixture-workflow', provider: 'filesystem', source: 'project-dsh',
     scope, writable: true,
-    targetPathDigest: deriveOwnershipTargetPathDigest(skillPath, header.cwd),
+    targetPathDigest: deriveOwnershipTargetPathDigest(targetPath, header.cwd),
     bodyDigest: sha256Utf8(body),
   }
 }
@@ -217,6 +221,59 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })).resolves.toMatchObject({ agentActivity: 'WRITE_FAILED' })
     await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
       status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_WRITE_FAILED' },
+    })
+  })
+
+  it.each([
+    ['one failed native edit', false],
+    ['a successful write followed by a failed native edit', true],
+  ])('recognizes %s against an effective custom-root Skill', async (_label, includeSuccessfulWrite) => {
+    const customPath = 'D:\\repo\\custom-root\\legacy.md'
+    const customCandidate = {
+      ...candidate(exactSkillBody, 'PROJECT', customPath),
+      candidateId: 'candidate-custom', source: 'custom', writable: false,
+    }
+    const successfulWrite = includeSuccessfulWrite
+      ? [
+          event('tool/call', 2, { turn: 2, step: 1, callId: 'call-write', name: 'write', arguments: JSON.stringify({ file_path: customPath, content: exactSkillBytes }) }),
+          toolResult(3, 'call-write'),
+        ]
+      : []
+    const observed = harness({
+      baselineCandidates: includeSuccessfulWrite ? [] : [customCandidate],
+      endCandidates: [customCandidate],
+      between: [
+        ...successfulWrite,
+        event('tool/call', 4, {
+          turn: 2, step: 1, callId: 'call-edit', name: 'str_replace_editor',
+          arguments: JSON.stringify({ path: customPath, command: 'str_replace', old_str: 'old', new_str: 'new' }),
+        }),
+        toolResult(5, 'call-edit', true),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ agentActivity: 'WRITE_FAILED' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_WRITE_FAILED' },
+    })
+  })
+
+  it('fails closed when a tool result precedes its matching write call', async () => {
+    const observed = harness({
+      baselineCandidates: [], endCandidates: [candidate()],
+      between: [
+        toolResult(2, 'call-1'),
+        event('tool/call', 3, { turn: 2, step: 1, callId: 'call-1', name: 'write', arguments: JSON.stringify({ file_path: skillPath, content: exactSkillBytes }) }),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ toolEvidenceComplete: false, agentActivity: 'AMBIGUOUS' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'TOOL_EVIDENCE_INCOMPLETE' },
     })
   })
 

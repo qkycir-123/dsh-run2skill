@@ -209,9 +209,13 @@ function skillBodyEvidence(value: string): 'COMPLETE' | 'NONE' | 'AMBIGUOUS' {
   return sawOpening ? 'AMBIGUOUS' : 'NONE'
 }
 
-function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefined): ToolEvidence {
-  const calls = new Map<string, z.infer<typeof toolCallSchema>>()
-  const results = new Map<string, z.infer<typeof toolResultSchema>>()
+function analyzeTools(
+  events: readonly DshSessionEvent[],
+  cwd: string | undefined,
+  knownSkillTargetDigests: ReadonlySet<string>,
+): ToolEvidence {
+  const calls = new Map<string, { readonly seq: number; readonly data: z.infer<typeof toolCallSchema> }>()
+  const results = new Map<string, { readonly seq: number; readonly data: z.infer<typeof toolResultSchema> }>()
   let activity: ToolEvidence['activity'] = 'NONE'
   let unattributedBodyEvidence = false
   for (const event of events) {
@@ -247,7 +251,7 @@ function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefine
       if (!parsed.success || calls.has(parsed.data.callId)) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
       }
-      calls.set(parsed.data.callId, parsed.data)
+      calls.set(parsed.data.callId, { seq: event.seq, data: parsed.data })
     } else if (event.type === 'tool/result') {
       const parsed = toolResultSchema.safeParse(event.data)
       if (
@@ -257,7 +261,7 @@ function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefine
       ) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
       }
-      results.set(parsed.data.message.source.callId, parsed.data)
+      results.set(parsed.data.message.source.callId, { seq: event.seq, data: parsed.data })
     }
   }
   if (calls.size !== results.size || [...calls.keys()].some(callId => !results.has(callId))) {
@@ -265,18 +269,29 @@ function analyzeTools(events: readonly DshSessionEvent[], cwd: string | undefine
   }
 
   const writes: ParsedWrite[] = []
-  for (const [callId, call] of calls) {
-    const result = results.get(callId)!
-    if (call.turn !== result.turn || call.step !== result.step) {
+  for (const [callId, observedCall] of calls) {
+    const observedResult = results.get(callId)!
+    const call = observedCall.data
+    const result = observedResult.data
+    if (
+      observedResult.seq <= observedCall.seq
+      || call.turn !== result.turn
+      || call.step !== result.step
+    ) {
       return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
     }
     const failed = resultFailed(result)
     if (SAFE_TOOLS.has(call.name)) continue
     if (DIRECT_FILE_TOOLS.has(call.name)) {
-      const write = directWrite(call.name, call.arguments, failed, cwd)
-      if (write === undefined) {
+      const parsedWrite = directWrite(call.name, call.arguments, failed, cwd)
+      if (parsedWrite === undefined) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
       }
+      const write = !parsedWrite.skillMarker
+        && parsedWrite.targetPathDigest !== undefined
+        && knownSkillTargetDigests.has(parsedWrite.targetPathDigest)
+        ? { ...parsedWrite, skillMarker: true }
+        : parsedWrite
       writes.push(write)
       if (write.skillMarker && activity === 'NONE') activity = failed ? 'WRITE_FAILED' : 'BODY_GENERATED'
       continue
@@ -361,7 +376,11 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         && end.complete
         && baselineCandidates !== undefined
         && endCandidates !== undefined
-      const toolEvidence = analyzeTools(window, session.header.cwd)
+      const knownSkillTargetDigests = new Set(
+        [...(baselineCandidates ?? []), ...(endCandidates ?? [])]
+          .flatMap(candidate => candidate.targetPathDigest === undefined ? [] : [candidate.targetPathDigest]),
+      )
+      const toolEvidence = analyzeTools(window, session.header.cwd, knownSkillTargetDigests)
       const changes = catalogComplete ? changedCandidates(baselineCandidates, endCandidates) : []
       let activity = toolEvidence.activity
       const exactAttributedWrites = new Set<ParsedWrite>()
