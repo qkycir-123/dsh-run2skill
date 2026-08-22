@@ -236,6 +236,9 @@ export const SessionBatchV2Schema = z.object({
   if (value.firstTurnEndSeq > value.lastTurnEndSeq) {
     context.addIssue({ code: 'custom', path: ['lastTurnEndSeq'], message: 'Batch range is reversed' })
   }
+  if (Date.parse(value.batchManifestBaseline.observedAt) > Date.parse(value.createdAt)) {
+    context.addIssue({ code: 'custom', path: ['batchManifestBaseline', 'observedAt'], message: 'Batch baseline cannot be observed after the durable batch freeze' })
+  }
   if (value.batchId !== deriveSessionBatchIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['batchId'], message: 'Batch id does not match facts' })
   }
@@ -360,6 +363,7 @@ export const OwnershipEvidenceV2Schema = z.discriminatedUnion('status', [
     status: z.literal('UNAVAILABLE'),
     reasonCode: z.enum([
       'INTENT_INCOMPLETE', 'BASELINE_INCOMPLETE', 'CLAIM_INPUT_UNAVAILABLE',
+      'BASELINE_TIME_INVALID',
       'OBSERVATION_FAILED', 'OBSERVATION_INVALID', 'OBSERVATION_OUTCOME_UNKNOWN',
     ]),
   }).strict(),

@@ -152,6 +152,25 @@ describe('v2 Agent-first ownership coordinator', () => {
     })
   })
 
+  it('rejects a baseline recorded after the durable batch freeze before observing', async () => {
+    const { domain, batch, intent } = await seedReadyIntent()
+    const invalidBatch = {
+      ...batch,
+      batchManifestBaseline: {
+        ...batch.batchManifestBaseline,
+        observedAt: '2030-01-01T00:00:00.000Z',
+      },
+    }
+    expect(SessionBatchV2Schema.safeParse(invalidBatch).success).toBe(false)
+    await domain.table('session_batches').put(batch.batchId, invalidBatch)
+    const observation = port(observed({ observedAt: '2031-01-01T00:00:00.000Z' }))
+    await new AgentFirstOwnershipCoordinator(domain, { observation }).runOnce()
+    expect(observation.calls).toBe(0)
+    expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'BASELINE_TIME_INVALID' },
+    })
+  })
+
   it('fails closed when exact candidate readback or binding is incomplete', async () => {
     const { domain, intent } = await seedReadyIntent()
     const observation = port(observed({

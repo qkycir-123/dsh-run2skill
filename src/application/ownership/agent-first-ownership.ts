@@ -91,8 +91,8 @@ export class AgentFirstOwnershipCoordinator {
       } else if (intent.ownership.evidence.status === 'OBSERVED') {
         const batchValue = this.#batches.get(intent.batchId)
         if (batchValue !== undefined) {
-          const batch = SessionBatchV2Schema.parse(batchValue)
-          if (this.#evidenceBindingIsValid(intent, batch, intent.ownership.evidence)) {
+          const parsedBatch = SessionBatchV2Schema.safeParse(batchValue)
+          if (parsedBatch.success && this.#evidenceBindingIsValid(intent, parsedBatch.data, intent.ownership.evidence)) {
             await this.#recordEndObservation(intent.batchId, intent.ownership.evidence)
           }
         }
@@ -108,7 +108,18 @@ export class AgentFirstOwnershipCoordinator {
       await this.#finalize(claimed.intentId)
       return
     }
-    const batch = SessionBatchV2Schema.parse(batchValue)
+    if (this.#baselineTimeIsInvalid(batchValue)) {
+      await this.#sealEvidence(claimed, unavailable('BASELINE_TIME_INVALID'))
+      await this.#finalize(claimed.intentId)
+      return
+    }
+    const parsedBatch = SessionBatchV2Schema.safeParse(batchValue)
+    if (!parsedBatch.success) {
+      await this.#sealEvidence(claimed, unavailable('CLAIM_INPUT_UNAVAILABLE'))
+      await this.#finalize(claimed.intentId)
+      return
+    }
+    const batch = parsedBatch.data
     if (claimed.completeness.status !== 'COMPLETE') {
       await this.#sealEvidence(claimed, unavailable('INTENT_INCOMPLETE'))
       await this.#finalize(claimed.intentId)
@@ -213,7 +224,8 @@ export class AgentFirstOwnershipCoordinator {
         throw new Error('Cannot finalize ownership without a sealed claim and evidence')
       }
       const batchValue = this.#batches.get(intent.batchId)
-      const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.parse(batchValue)
+      const parsedBatch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
+      const batch = parsedBatch?.success ? parsedBatch.data : undefined
       const decision = this.#decide(intent, batch, evidence)
       const receiptFacts = {
         intentId: intent.intentId,
@@ -329,7 +341,12 @@ export class AgentFirstOwnershipCoordinator {
       && evidence.inputDigest === expectedInputDigest
       && evidence.observedAfterTurnEndSeq === batch.lastTurnEndSeq
       && Date.parse(evidence.observedAt) >= Date.parse(batch.createdAt)
+      && Date.parse(evidence.observedAt) >= Date.parse(batch.batchManifestBaseline.observedAt)
     )
+  }
+
+  #baselineTimeIsInvalid(batch: SessionBatchV2): boolean {
+    return Date.parse(batch.batchManifestBaseline.observedAt) > Date.parse(batch.createdAt)
   }
 
   #isoNow(): string {
