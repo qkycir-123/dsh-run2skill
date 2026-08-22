@@ -254,4 +254,46 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       await skillsFiber.dispose()
     }
   })
+
+  it('fails ownership closed when a root SKILL.md is shadowed by a same-name flat winner', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'dsh-run2skill-b2-v2-duplicate-flat-'))
+    temporaryDirectories.push(base)
+    const project = join(base, 'project')
+    const dshHome = join(base, 'dsh-home')
+    const agentsHome = join(base, 'agents-home')
+    const skillRoot = join(project, '.dsh', 'skills')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await mkdir(skillRoot, { recursive: true })
+    const skillFile = (body: string) => [
+      '---', 'name: duplicate-skill', 'description: Duplicate fixture.', '---', '', body, '',
+    ].join('\n')
+    await writeFile(join(skillRoot, 'legacy.md'), skillFile('# Runtime winner body'), 'utf8')
+    await writeFile(join(skillRoot, 'SKILL.md'), skillFile('# Shadowed bundle body'), 'utf8')
+
+    const ctx = new Context()
+    const skillsFiber = await ctx.plugin(SkillRegistry)
+    const filesystemFiber = await ctx.plugin(SkillFileSystem, { dshHome, agentsHome, watch: false })
+    try {
+      const view = { cwd: project }
+      const snapshot = await ctx.skills.snapshot(view)
+      expect(snapshot.complete).toBe(true)
+      expect((await ctx.skills.get('duplicate-skill', view))?.content).toBe('# Runtime winner body')
+
+      const runtimeCatalog = new DshV2CatalogAdapter(createMemoryRun2skillV2Domain(), {
+        registry: ctx.skills,
+        resolveView: key => key === 'sl_duplicate' ? view : undefined,
+        resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+          ? {
+              scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+              canonicalRootPath: skillRoot,
+            }
+          : undefined,
+      })
+      await expect(runtimeCatalog.observeOwnershipCatalog('sl_duplicate'))
+        .resolves.toMatchObject({ complete: false, candidates: [] })
+    } finally {
+      await filesystemFiber.dispose()
+      await skillsFiber.dispose()
+    }
+  })
 })

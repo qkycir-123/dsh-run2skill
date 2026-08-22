@@ -617,20 +617,14 @@ export class DshV2CatalogAdapter<TView extends object> {
     fileReads: Map<string, Promise<OwnershipFileRead>>,
     directoryIndexes: Map<string, Promise<OwnershipDirectoryIndex | undefined>>,
   ): Promise<OwnershipLocatedFile | undefined> {
-    const api = pathApi(directory)
-    const bundleTarget = api.join(directory, 'SKILL.md')
-    const bundle = await this.#readOwnershipFile(bundleTarget, observeBytes, observeCandidateFile, fileReads)
-    if (bundle.status === 'UNAVAILABLE') return undefined
-    if (bundle.status === 'READ' && bundle.name === expectedName) {
-      return { target: bundleTarget, bodyDigest: bundle.bodyDigest }
-    }
-
+    // A path-free DSH summary cannot distinguish a bundle directory from a flat
+    // root. Index every direct Markdown candidate before accepting one name so a
+    // shadowed root SKILL.md never masquerades as the Runtime winner.
     const key = canonicalPath(directory)
     let pending = directoryIndexes.get(key)
     if (pending === undefined) {
       pending = this.#indexOwnershipDirectory(
         directory,
-        bundleTarget,
         observeBytes,
         observeDirectoryEntry,
         observeCandidateFile,
@@ -645,7 +639,6 @@ export class DshV2CatalogAdapter<TView extends object> {
 
   async #indexOwnershipDirectory(
     directory: string,
-    bundleTarget: string,
     observeBytes: (bytes: number) => boolean,
     observeDirectoryEntry: () => boolean,
     observeCandidateFile: () => boolean,
@@ -662,7 +655,6 @@ export class DshV2CatalogAdapter<TView extends object> {
           || api.basename(entry.name) !== entry.name
         ) continue
         const target = api.join(directory, entry.name)
-        if (canonicalPath(target) === canonicalPath(bundleTarget)) continue
         const read = await this.#readOwnershipFile(target, observeBytes, observeCandidateFile, fileReads)
         if (read.status === 'UNAVAILABLE') return undefined
         if (read.status === 'READ') {

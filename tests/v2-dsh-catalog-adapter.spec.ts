@@ -61,6 +61,10 @@ function openBundleText(value: string): (path: string) => AsyncIterable<Uint8Arr
   }
 }
 
+async function* openBundleDirectory() {
+  yield { name: 'SKILL.md', kind: 'file' as const }
+}
+
 describe('DSH v2 Runtime and Pending Catalog adapter', () => {
   it('exposes one stable Runtime-only manifest for the pre-Turn ownership baseline', async () => {
     const { domain, fixture } = await seed()
@@ -148,6 +152,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       },
       resolveView: () => view,
       internalOpenOwnershipFile: openBundleText(rawSkill(exactSkillBody)),
+      internalOpenOwnershipDirectory: openBundleDirectory,
       resolveStockWritableRoot: () => ({
         scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
         canonicalRootPath: 'D:\\repo\\.dsh\\skills',
@@ -200,6 +205,38 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect(opened.some(path => path.toLowerCase().endsWith('legacy-filename.md'))).toBe(true)
   })
 
+  it('fails closed when SKILL.md and a flat file declare the same path-free Skill name', async () => {
+    const { domain, fixture } = await seed()
+    const flat = {
+      ...runtimeSkill,
+      name: 'duplicate-workflow',
+      resourceBase: { kind: 'directory' as const, path: 'D:\\repo\\.dsh\\skills' },
+    }
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [flat] }),
+        get: async () => { throw new Error('ownership capture must not call registry.get') },
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOpenOwnershipFile: path => {
+        if (path.toLowerCase().endsWith('skill.md')) {
+          return openText(rawSkill('# Shadowed bundle body', flat.name))()
+        }
+        if (path.toLowerCase().endsWith('legacy.md')) {
+          return openText(rawSkill('# Runtime winner body', flat.name))()
+        }
+        throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      },
+      internalOpenOwnershipDirectory: async function* () {
+        yield { name: 'legacy.md', kind: 'file' }
+        yield { name: 'SKILL.md', kind: 'file' }
+      },
+    })
+
+    await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: false, candidates: [] })
+  })
+
   it('scans one shared flat resource base only once per stability pass', async () => {
     const { domain, fixture } = await seed()
     const root = 'D:\\repo\\.dsh\\skills'
@@ -244,6 +281,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
       internalOpenOwnershipFile: () => openText(rawSkill(reads++ === 0 ? '# First body' : '# Changed body'))(),
+      internalOpenOwnershipDirectory: openBundleDirectory,
     })
 
     await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)).resolves.toEqual({
@@ -266,6 +304,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
       internalOpenOwnershipFile: openText(ambiguous),
+      internalOpenOwnershipDirectory: openBundleDirectory,
     })
 
     await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
@@ -285,6 +324,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
       internalOpenOwnershipFile: openBundleText(quoted),
+      internalOpenOwnershipDirectory: openBundleDirectory,
     })
 
     await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
@@ -324,6 +364,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       },
       resolveView: () => ({ cwd: 'D:\\repo' }),
       internalOpenOwnershipFile: openBundleText(rawSkill('# Third-party Skill')),
+      internalOpenOwnershipDirectory: openBundleDirectory,
     })
 
     const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)
