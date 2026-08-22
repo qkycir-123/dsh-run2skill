@@ -30,6 +30,122 @@ export const RUN2SKILL_V2_LIMITS = Object.freeze({
 
 export const PersistenceScopeV2Schema = z.enum(['PROJECT', 'USER'])
 
+export function deriveCreateTargetDigestV2(facts: {
+  readonly persistenceScope: 'PROJECT' | 'USER'
+  readonly behaviorSignature: string
+}): string {
+  return sha256Utf8(canonicalJson({
+    version: 1,
+    action: 'CREATE',
+    persistenceScope: facts.persistenceScope,
+    behaviorSignature: facts.behaviorSignature,
+  }))
+}
+
+export function deriveGenerationLeaseIdV2(facts: {
+  readonly intentId: string
+  readonly generationRevision: number
+  readonly action: 'CREATE' | 'MERGE'
+  readonly inputDigest: string
+  readonly externalPendingDigest: string
+  readonly catalogEpoch: number
+}): `lease_${string}` {
+  return `lease_${sha256Utf8(canonicalJson(facts))}`
+}
+
+export function deriveGenerationInputDigestV2(facts: {
+  readonly intentId: string
+  readonly generationRevision: number
+  readonly behaviorSignature: string
+  readonly action: 'CREATE' | 'MERGE'
+  readonly coveragePlanDigest: string
+  readonly targetDigest: string
+  readonly runtimeCatalogDigest: string
+  readonly pendingCatalogDigest: string
+  readonly externalPendingDigest: string
+  readonly catalogEpoch: number
+  readonly catalogMutationReceiptDigest: string
+  readonly routeProvider: string
+  readonly routeModel: string
+  readonly policyVersion: string
+}): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
+export function deriveGenerationCallIdV2(leaseId: string, inputDigest: string): `call_${string}` {
+  return `call_${sha256Utf8(canonicalJson({ leaseId, inputDigest }))}`
+}
+
+export function deriveGenerationReceiptDigestV2(facts: {
+  readonly kind: string
+  readonly leaseId: string
+  readonly intentId: string
+  readonly generationRevision: number
+  readonly callId?: string | undefined
+  readonly catalogEpoch?: number | undefined
+  readonly recordedAt: string
+}): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
+export function deriveGenerationResultIdV2(facts: {
+  readonly leaseId: string
+  readonly intentId: string
+  readonly generationRevision: number
+  readonly callId: string
+  readonly action: 'CREATE' | 'MERGE'
+  readonly skillBytesDigest: string
+  readonly inputDigest: string
+}): `result_${string}` {
+  return `result_${sha256Utf8(canonicalJson(facts))}`
+}
+
+export function deriveGenerationResultReceiptDigestV2(facts: {
+  readonly resultId: string
+  readonly mutationReceiptDigest: string
+  readonly outcomeCatalogEpoch: number
+  readonly sealedAt: string
+}): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
+export function deriveGenerationBarrierIdV2(facts: {
+  readonly leaseId: string
+  readonly intentId: string
+  readonly generationRevision: number
+  readonly kind: 'KNOWN_FAILED' | 'RESULT_LOST' | 'OUTCOME_UNKNOWN' | 'STALE_RESULT'
+  readonly inputDigest: string
+  readonly callId?: string | undefined
+}): `barrier_${string}` {
+  return `barrier_${sha256Utf8(canonicalJson(facts))}`
+}
+
+export function deriveGenerationBarrierReceiptDigestV2(facts: {
+  readonly barrierId: string
+  readonly mutationReceiptDigest: string
+  readonly outcomeCatalogEpoch: number
+  readonly recordedAt: string
+}): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
+export function deriveProposalCatalogMutationIdV2(facts: {
+  readonly ownerId: string
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'PUBLICATION' | 'PURGE'
+  readonly inputCatalogEpoch: number
+}): `pcm_${string}` {
+  return `pcm_${sha256Utf8(canonicalJson(facts))}`
+}
+
+export function deriveProposalCatalogMutationReceiptDigestV2(facts: {
+  readonly mutationId: string
+  readonly ownerId: string
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'PUBLICATION' | 'PURGE'
+  readonly outcomeCatalogEpoch: number
+}): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
 export const ScopeBindingV2Schema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('PROJECT'),
@@ -1982,6 +2098,7 @@ const ProposalGenerationLeaseV2Schema = z.object({
   completionReceiptDigest: sha256Hex.optional(),
   state: z.enum([
     'NOT_CALLED',
+    'CALL_RESERVED',
     'KNOWN_FAILED',
     'SUCCEEDED_RESULT_MISSING',
     'RESULT_COMMITTED',
@@ -2004,7 +2121,16 @@ const ProposalGenerationLeaseV2Schema = z.object({
   if (value.generationRevision > value.ownerRevision) {
     context.addIssue({ code: 'custom', path: ['generationRevision'], message: 'Lease generation revision cannot exceed its owner Intent revision' })
   }
-  if (value.state !== 'NOT_CALLED' && (value.callId === undefined || value.callOutcomeReceiptDigest === undefined)) {
+  if (value.state === 'CALL_RESERVED') {
+    if (value.callId === undefined) {
+      context.addIssue({ code: 'custom', path: ['callId'], message: 'Reserved lease requires a durable call identity' })
+    }
+    rejectPresent([
+      'callOutcomeReceiptDigest', 'sealedResultReceiptDigest', 'barrierReceiptDigest',
+      'proposalAuthorizationReceiptDigest', 'completionReceiptDigest',
+    ])
+  }
+  if (!['NOT_CALLED', 'CALL_RESERVED'].includes(value.state) && (value.callId === undefined || value.callOutcomeReceiptDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['callId'], message: 'Called lease requires durable call identity and outcome receipt' })
   }
   if (

@@ -10,6 +10,7 @@ import {
   deriveCoverageMembershipDigestV2,
   deriveCoverageOutputDigestV2,
   deriveCoveragePlanDigestV2,
+  deriveCreateTargetDigestV2,
   ExperienceIntentV2Schema,
   SessionBatchV2Schema,
   type ExperienceIntentV2,
@@ -484,6 +485,9 @@ export class CompleteCoverageWorker {
       const intent = ExperienceIntentV2Schema.parse(current)
       if (intent.status !== 'COVERAGE_ANALYZING') return intent
       const nextRevision = intent.revision + 1
+      const authorizedTargetDigest = action === 'CREATE'
+        ? deriveCreateTargetDigestV2(intent)
+        : targetDigest
       return ExperienceIntentV2Schema.parse({
         ...intent,
         revision: nextRevision,
@@ -493,7 +497,7 @@ export class CompleteCoverageWorker {
           state: action,
           inputDigest,
           ...(targetCandidateId ? { targetCandidateId } : {}),
-          ...(targetDigest ? { targetDigest } : {}),
+          ...(authorizedTargetDigest ? { targetDigest: authorizedTargetDigest } : {}),
         },
         generation: {
           state: 'GENERATION_AUTHORIZED', action, inputDigest, generationRevision: nextRevision,
