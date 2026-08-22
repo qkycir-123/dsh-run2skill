@@ -107,7 +107,7 @@ describe('all-cache Purge', () => {
     const preview = await service.preview('ALL')
 
     const updatedAt = '2026-08-22T13:00:00.000Z'
-    const indexKey = deriveBehaviorSignatureIndexKeyV2(
+    const behaviorIndexId = deriveBehaviorSignatureIndexKeyV2(
       fixtures.experienceIntent.persistenceScope,
       fixtures.experienceIntent.behaviorSignature,
     )
@@ -115,7 +115,7 @@ describe('all-cache Purge', () => {
     await v2.global.set({
       ...current,
       behaviorSignatureIndex: {
-        [indexKey]: {
+        [behaviorIndexId]: {
           schemaVersion: 1,
           persistenceScope: fixtures.experienceIntent.persistenceScope,
           behaviorSignature: fixtures.experienceIntent.behaviorSignature,
