@@ -64,7 +64,7 @@
 
 同一 `observationId` 只允许 identical replay；不同内容写同一 ID 是 identity conflict，进入健康诊断，不能覆盖旧事实。普通 Turn 的该写入不调用 LLM，也不读取 Skill 正文。
 
-`directUserEvidence` 对所有直接用户消息做确定性的脱敏和有界摘录，不以旧版关键词规则作为保留前提；否则没有固定措辞的经验无法进入每 5 Turn 的语义检测。旧版轻量规则只复用于判定 `explicitSaveRequested`，不会替代语义 Detector。`toolOutcomeSummary` 只从同一 Turn 内持久化的 `tool/call` 与配对 `tool/result` 派生工具名、结果状态和内容 digest，绝不复制工具原始输出；配对不完整时 Observation 退化为 metadata-only `INCOMPLETE`。
+`directUserEvidence` 对所有直接用户消息做确定性的脱敏和有界摘录，不以旧版关键词规则作为保留前提；否则没有固定措辞的经验无法进入每 5 Turn 的语义检测。持久证据保留用户引用和 fenced code，旧版会排除引用/code 的轻量规则只复用于判定 `explicitSaveRequested`，不会替代语义 Detector。无法安全表达的直接用户非文本块必须使 Observation 退化为 metadata-only `INCOMPLETE`。`toolOutcomeSummary` 只从同一 Turn 内持久化的 `tool/call` 与配对 `tool/result` 派生工具名、结果状态和内容 digest，绝不复制工具原始输出；配对不完整时同样退化为 `INCOMPLETE`。适配器只允许跳过 DSH 已知事件或 envelope 明确标记 `ignorable: true` 的扩展事件；未知 required event 必须拒绝投影，不能把有损重建标记为完整。
 
 ### 3.2 SessionCursor 与 BatchManifest
 

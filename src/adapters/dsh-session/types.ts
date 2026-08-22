@@ -13,6 +13,7 @@ export interface DshSessionEvent {
   readonly seq: number
   readonly time: number
   readonly data: unknown
+  readonly ignorable?: true
 }
 
 export interface DirectUserCoordinate {

@@ -76,6 +76,20 @@ function completeTurn(userText = '把这个流程保存成 Skill，以后可以�
   ]
 }
 
+function insertTurnEvent(
+  events: DshSessionEvent[],
+  afterType: string,
+  inserted: Omit<DshSessionEvent, 'seq' | 'time'> & { readonly ignorable?: true },
+): DshSessionEvent[] {
+  const index = events.findIndex(event => event.type === afterType) + 1
+  events.splice(index, 0, { ...inserted, seq: 0, time: 0 } as DshSessionEvent)
+  events.forEach((event, seq) => {
+    ;(event as { seq: number; time: number }).seq = seq
+    ;(event as { seq: number; time: number }).time = 1_000 + seq
+  })
+  return events
+}
+
 const workspace = {
   resolve: vi.fn(async () => ({
     status: 'BOUND' as const,
@@ -114,7 +128,7 @@ describe('DSH TurnObservationV2 projection', () => {
       }],
     })
     expect(result.observation.directUserEvidence).toHaveLength(1)
-    expect(result.observation.directUserEvidence[0]?.excerpt).toContain('保存成 skill')
+    expect(result.observation.directUserEvidence[0]?.excerpt).toContain('保存成 Skill')
     expect(result.observation.assistantOutcomeSummary).not.toContain('secret-observation-token')
   })
 
@@ -130,6 +144,57 @@ describe('DSH TurnObservationV2 projection', () => {
     if (result.status !== 'OBSERVED') throw new Error('expected an observation')
     expect(result.observation.explicitSaveRequested).toBe(false)
     expect(result.observation.directUserEvidence[0]?.excerpt).toContain('主从布局')
+  })
+
+  it('preserves blockquotes and fenced code in persistent semantic evidence', async () => {
+    const quoted = [
+      '> 用户确认的长期约束',
+      '```text',
+      '先校验输入，再执行操作，最后验证结果',
+      '```',
+      '请按以上内容实现。',
+    ].join('\n')
+
+    const result = await projectDshTurnObservationV2(header, completeTurn(quoted), 8, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation.completeness).toBe('COMPLETE')
+    expect(result.observation.directUserEvidence[0]?.excerpt).toContain('> 用户确认的长期约束')
+    expect(result.observation.directUserEvidence[0]?.excerpt).toContain('先校验输入,再执行操作')
+  })
+
+  it('fails closed for image-only direct-user content instead of recording complete empty evidence', async () => {
+    const events = completeTurn('')
+    const direct = events.find(event => event.type === 'user/message')!
+    ;(direct.data as Record<string, unknown>)['content'] = [{
+      type: 'image', source: { type: 'url', url: 'https://example.invalid/workflow.png' },
+    }]
+
+    const result = await projectDshTurnObservationV2(header, events, 8, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation).toMatchObject({
+      completeness: 'INCOMPLETE', explicitSaveRequested: false, directUserEvidence: [],
+    })
+  })
+
+  it('fails closed for text plus image even when the text explicitly requests a save', async () => {
+    const events = completeTurn()
+    const direct = events.find(event => event.type === 'user/message')!
+    ;(direct.data as Record<string, unknown>)['content'] = [
+      { type: 'text', text: '把图片里的流程保存成 Skill。' },
+      { type: 'image', source: { type: 'url', url: 'https://example.invalid/workflow.png' } },
+    ]
+
+    const result = await projectDshTurnObservationV2(header, events, 8, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation).toMatchObject({
+      completeness: 'INCOMPLETE', explicitSaveRequested: false, directUserEvidence: [],
+    })
   })
 
   it('inherits the latest valid route before the Turn and ignores events after the boundary', async () => {
@@ -225,6 +290,32 @@ describe('DSH TurnObservationV2 projection', () => {
     expect(result.observation.completeness).toBe('INCOMPLETE')
     expect(result.observation.directUserEvidence).toEqual([])
     expect(result.observation.toolOutcomeSummary[0]?.outcome).toBe('OUTCOME_UNKNOWN')
+  })
+
+  it('refuses to interpret an unknown required DSH event', async () => {
+    const events = insertTurnEvent(completeTurn('普通请求'), 'user/message', {
+      type: 'plugin/required-context', data: { payload: 'new required semantics' },
+    })
+    const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result).toMatchObject({
+      status: 'UNAVAILABLE', healthCode: 'OBSERVATION_PROJECTION_UNAVAILABLE',
+    })
+  })
+
+  it('skips an unknown DSH event only when its envelope explicitly marks it ignorable', async () => {
+    const events = insertTurnEvent(completeTurn('普通请求'), 'user/message', {
+      type: 'plugin/optional-context', data: { payload: 'optional presentation fact' }, ignorable: true,
+    })
+    const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation.completeness).toBe('COMPLETE')
   })
 
   it('does not project a child Session', async () => {

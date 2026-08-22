@@ -1,6 +1,6 @@
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
-import { preprocessSensitiveText } from '../../domain/observe/redaction.js'
+import { preprocessPersistentText } from '../../domain/observe/redaction.js'
 import { analyzeCheapTriggerV1 } from '../../domain/observe/trigger.js'
 import { deriveProjectScopeIdentityDigest } from '../../domain/purge/index.js'
 import {
@@ -18,6 +18,21 @@ const MAX_ASSISTANT_SUMMARY_BYTES = 4 * 1024
 const MAX_EVIDENCE_BYTES = 512
 const MAX_TOOL_SUMMARIES = 32
 const TRUNCATION_MARKER = '\n…\n'
+const SUPPORTED_TURN_EVENT_TYPES = new Set([
+  'turn/start',
+  'turn/end',
+  'step/start',
+  'step/end',
+  'user/message',
+  'assistant/chunk',
+  'assistant/message',
+  'tool/call',
+  'tool/result',
+  'todo/write',
+  'request/header',
+  'request/context',
+  'session/end-seed',
+])
 
 export type DshTurnObservationV2Result =
   | { readonly status: 'OBSERVED'; readonly observation: TurnObservationV2 }
@@ -113,6 +128,7 @@ function textContent(value: unknown): string[] | undefined {
 
 function projectDirectEvidence(
   messages: readonly { readonly messageSeq: number; readonly textBlocks: readonly string[] }[],
+  textOnly: boolean,
 ): ProjectionPart<{
   readonly evidence: TurnObservationV2['directUserEvidence']
   readonly explicitSaveRequested: boolean
@@ -126,11 +142,12 @@ function projectDirectEvidence(
   if (
     analysis.status === 'INCOMPLETE'
     || candidates.length > RUN2SKILL_V2_LIMITS.maxObservationEvidence
+    || !textOnly
   ) return { value: { evidence: [], explicitSaveRequested: false }, complete: false }
 
   try {
     const evidence = candidates.map(candidate => {
-      const processed = preprocessSensitiveText(candidate.text)
+      const processed = preprocessPersistentText(candidate.text)
       const bounded = boundUtf8(processed.text, MAX_EVIDENCE_BYTES)
       return {
         source: 'USER_DIRECT' as const,
@@ -181,7 +198,7 @@ function projectAssistantSummary(
     }
     try {
       latest = boundUtf8(
-        preprocessSensitiveText(texts.join('\n')).text,
+        preprocessPersistentText(texts.join('\n')).text,
         MAX_ASSISTANT_SUMMARY_BYTES,
       ).text
     } catch {
@@ -190,6 +207,26 @@ function projectAssistantSummary(
     }
   }
   return { value: latest, complete }
+}
+
+function directUserContentIsTextOnly(events: readonly DshSessionEvent[]): boolean {
+  for (const event of events) {
+    if (event.type !== 'user/message' || !isRecord(event.data)) continue
+    const source = event.data['source']
+    if (!isRecord(source) || source['kind'] !== 'user') continue
+    const content = event.data['content']
+    if (!Array.isArray(content)) return false
+    for (const block of content) {
+      if (!isRecord(block) || block['type'] !== 'text' || typeof block['text'] !== 'string') return false
+    }
+  }
+  return true
+}
+
+function hasUnsupportedRequiredEvent(events: readonly DshSessionEvent[]): boolean {
+  return events.some(event => (
+    !SUPPORTED_TURN_EVENT_TYPES.has(event.type) && event.ignorable !== true
+  ))
 }
 
 function parseToolCall(event: DshSessionEvent, turn: number): ToolCallFact | undefined {
@@ -352,7 +389,11 @@ export async function projectDshTurnObservationV2(
   const turnEvents = sessionEvents.filter(event => (
     event.seq >= observed.turnStartSeq && event.seq <= observed.turnEndSeq
   ))
-  const direct = projectDirectEvidence(observed.directUserMessages)
+  if (hasUnsupportedRequiredEvent(turnEvents)) return unavailable(header, turnEndSeq)
+  const direct = projectDirectEvidence(
+    observed.directUserMessages,
+    directUserContentIsTextOnly(turnEvents),
+  )
   const assistant = projectAssistantSummary(turnEvents, observed.turn)
   const tools = projectToolSummaries(turnEvents, observed.turn)
   const route = projectRoute(sessionEvents, observed.turnEndSeq)
