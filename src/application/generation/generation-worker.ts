@@ -1185,12 +1185,10 @@ export class GenerationWorker {
       return
     }
     const parsed = ProposalLineageV2Schema.safeParse(existing)
+    const expected = this.#buildProposalLineage(intent)
     const exactProposal = parsed.success
-      && parsed.data.origin === 'RUN2SKILL_V2'
-      && parsed.data.ownerIntentId === intent.intentId
-      && parsed.data.proposalRevisions.at(-1)?.proposalId === facts.proposalId
-      && parsed.data.proposalRevisions.at(-1)?.generationResultReceiptDigest === facts.result.receiptDigest
-      && parsed.data.proposalRevisions.at(-1)?.catalogMutationReceiptDigest === facts.mutationReceiptDigest
+      && expected !== undefined
+      && canonicalJson(parsed.data) === canonicalJson(expected)
     if (!exactProposal) {
       await this.#abandonProposalJournal(mutationId)
       await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
@@ -1347,13 +1345,44 @@ export class GenerationWorker {
     const intent = ExperienceIntentV2Schema.parse(value)
     const completion = intent.generation.receipts.find(item => item.kind === 'INDEX_COMMITTED')
     if (intent.generation.state !== 'PROPOSAL_READY' || completion === undefined) return
+    const result = intent.generation.sealedResult
+    const revalidation = intent.generation.revalidationAuthorization
+    const lineageId = intent.lineageId
+    const proposalId = intent.generation.proposalId
+    if (result === undefined || revalidation === undefined || lineageId === undefined || proposalId === undefined) return
+    const lineage = ProposalLineageV2Schema.safeParse(this.#lineages.get(lineageId))
+    const revision = lineage.success && lineage.data.origin === 'RUN2SKILL_V2'
+      ? lineage.data.proposalRevisions.at(-1)
+      : undefined
+    if (
+      !lineage.success
+      || lineage.data.origin !== 'RUN2SKILL_V2'
+      || lineage.data.state !== 'ACTIVE_PROPOSAL'
+      || lineage.data.ownerIntentId !== intentId
+      || lineage.data.behaviorSignature !== intent.behaviorSignature
+      || lineage.data.persistenceScope !== intent.persistenceScope
+      || lineage.data.lineageId !== lineageId
+      || revision?.proposalId !== proposalId
+      || revision.action !== result.action
+      || canonicalJson(revision.body) !== canonicalJson(result.body)
+      || revision.runtimeCatalogDigest !== revalidation.runtimeCatalogDigest
+      || revision.pendingCatalogDigest !== revalidation.pendingCatalogDigest
+      || revision.generationResultReceiptDigest !== result.receiptDigest
+      || revision.catalogEpoch !== revalidation.catalogEpoch + 1
+      || revision.state !== 'ACTIVE_PROPOSAL'
+    ) return
+    const key = deriveBehaviorSignatureIndexKeyV2(intent.persistenceScope, intent.behaviorSignature)
     await this.#global.runExclusive(async current => {
       const lease = current.proposalGenerationLease
+      const indexed = current.behaviorSignatureIndex[key]
       if (
         lease?.leaseId !== leaseId
         || lease.state !== 'ACTIVE_COMPLETE'
         || lease.completionReceiptDigest !== completion.digest
         || current.proposalCatalogMutationJournal !== undefined
+        || indexed?.ownerIntentId !== intentId
+        || indexed.ownerRevision !== intent.revision
+        || indexed.state !== 'ACTIVE'
       ) return { value: undefined }
       const { proposalGenerationLease: _lease, ...rest } = current
       return { value: undefined, global: rest }
