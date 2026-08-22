@@ -105,6 +105,10 @@ interface GenerationPolicy {
 
 type FailureKind = 'KNOWN_FAILED' | 'RESULT_LOST' | 'OUTCOME_UNKNOWN'
 type ProposalGenerationLease = NonNullable<GlobalV2['proposalGenerationLease']>
+type AcquireOutcome = 'ACQUIRED' | 'BLOCKED' | 'STALE' | 'CONFLICT' | 'HANDLED'
+type LeaseBinding =
+  | { readonly outcome: 'ACQUIRED'; readonly leaseId: string; readonly acquiredAt: string }
+  | { readonly outcome: 'BLOCKED' | 'STALE' | 'CONFLICT' }
 
 export class GenerationWorker {
   readonly #global: Run2skillV2GlobalStore
@@ -131,10 +135,15 @@ export class GenerationWorker {
   }
 
   async runOnce(): Promise<'IDLE' | 'PROCESSED'> {
+    const currentLeaseOwner = this.#global.get().proposalGenerationLease?.ownerIntentId
     const candidate = [...this.#intents.entries()]
       .map(([, value]) => ExperienceIntentV2Schema.parse(value))
       .filter(intent => ['CREATE_AUTHORIZED', 'MERGE_AUTHORIZED'].includes(intent.status))
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.ordinal - right.ordinal)[0]
+      .sort((left, right) => (
+        Number(right.intentId === currentLeaseOwner) - Number(left.intentId === currentLeaseOwner)
+        || left.createdAt.localeCompare(right.createdAt)
+        || left.ordinal - right.ordinal
+      ))[0]
     if (candidate === undefined) return 'IDLE'
     const batchValue = this.#batches.get(candidate.batchId)
     const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
@@ -143,8 +152,10 @@ export class GenerationWorker {
       return 'PROCESSED'
     }
 
-    const acquired = await this.#acquire(candidate, batch.data)
-    if (!acquired) return 'PROCESSED'
+    const acquireOutcome = await this.#acquire(candidate, batch.data)
+    if (acquireOutcome === 'STALE') await this.#preCallAttention(candidate.intentId, 'GENERATION_CATALOG_CHANGED')
+    if (acquireOutcome === 'CONFLICT') await this.#preCallAttention(candidate.intentId, 'GENERATION_DUPLICATE_CONFLICT')
+    if (acquireOutcome !== 'ACQUIRED') return 'PROCESSED'
     const leased = ExperienceIntentV2Schema.parse(this.#intents.get(candidate.intentId))
 
     let snapshot: GenerationCatalogSnapshot
@@ -266,10 +277,24 @@ export class GenerationWorker {
   async recover(): Promise<void> {
     const global = this.#global.get()
     const lease = global.proposalGenerationLease
-    if (lease === undefined) return
+    if (lease === undefined) {
+      await this.#recoverStrandedPreCallIntents()
+      return
+    }
     const value = this.#intents.get(lease.ownerIntentId)
-    if (value === undefined) return
+    if (value === undefined) {
+      if (lease.state === 'NOT_CALLED') await this.#releaseOrphanNotCalled(lease)
+      return
+    }
     const intent = ExperienceIntentV2Schema.parse(value)
+
+    if (lease.state === 'NOT_CALLED' && !(
+      (['CREATE_AUTHORIZED', 'MERGE_AUTHORIZED'].includes(intent.status) && intent.generation.generationRevision === lease.generationRevision)
+      || (intent.generation.state === 'GENERATION_LEASED' && intent.generation.leaseId === lease.leaseId)
+    )) {
+      await this.#releaseOrphanNotCalled(lease, intent)
+      return
+    }
 
     if (global.proposalCatalogMutationJournal !== undefined) {
       if (intent.generation.state === 'RESULT_COMMITTED') {
@@ -301,7 +326,7 @@ export class GenerationWorker {
     }
   }
 
-  async #acquire(intent: ExperienceIntentV2, batch: SessionBatchV2): Promise<boolean> {
+  async #acquire(intent: ExperienceIntentV2, batch: SessionBatchV2): Promise<AcquireOutcome> {
     const targetDigest = intent.coverage.targetDigest
     if (
       targetDigest === undefined
@@ -315,7 +340,7 @@ export class GenerationWorker {
       || intent.coverage.planDigest === undefined
     ) {
       await this.#preCallAttention(intent.intentId, 'GENERATION_INPUT_UNAVAILABLE')
-      return false
+      return 'HANDLED'
     }
     const action = intent.generation.action
     const generationRevision = intent.generation.generationRevision
@@ -350,29 +375,31 @@ export class GenerationWorker {
       catalogEpoch,
     })
     const proposedAcquiredAt = this.#isoNow()
-    const leaseBinding = await this.#global.runExclusive(async current => {
+    const leaseBinding = await this.#global.runExclusive<LeaseBinding>(async current => {
       const existing = current.proposalGenerationLease
       if (existing !== undefined) {
         return {
           value: existing.leaseId === leaseId
             && existing.ownerIntentId === intent.intentId
             && existing.state === 'NOT_CALLED'
+            && current.purgeJournal === undefined
             && current.proposalCatalogMutationJournal === undefined
             && current.proposalCatalogEpoch === existing.catalogEpoch
-            ? { leaseId: existing.leaseId, acquiredAt: existing.acquiredAt }
-            : undefined,
+            ? { outcome: 'ACQUIRED' as const, leaseId: existing.leaseId, acquiredAt: existing.acquiredAt }
+            : { outcome: 'BLOCKED' as const },
         }
       }
-      if (current.proposalCatalogMutationJournal !== undefined || current.proposalCatalogEpoch !== catalogEpoch) {
-        return { value: undefined }
+      if (current.purgeJournal !== undefined || current.proposalCatalogMutationJournal !== undefined) {
+        return { value: { outcome: 'BLOCKED' as const } }
       }
+      if (current.proposalCatalogEpoch !== catalogEpoch) return { value: { outcome: 'STALE' as const } }
       const key = deriveBehaviorSignatureIndexKeyV2(intent.persistenceScope, intent.behaviorSignature)
       const indexed = current.behaviorSignatureIndex[key]
       if (indexed !== undefined && (indexed.ownerIntentId !== intent.intentId || indexed.state !== 'RESERVED')) {
-        return { value: undefined }
+        return { value: { outcome: 'CONFLICT' as const } }
       }
       return {
-        value: { leaseId, acquiredAt: proposedAcquiredAt },
+        value: { outcome: 'ACQUIRED' as const, leaseId, acquiredAt: proposedAcquiredAt },
         global: {
           ...current,
           behaviorSignatureIndex: {
@@ -403,7 +430,7 @@ export class GenerationWorker {
         },
       }
     })
-    if (leaseBinding === undefined) return false
+    if (leaseBinding.outcome !== 'ACQUIRED') return leaseBinding.outcome
 
     let bound = false
     await this.#intents.update(intent.intentId, current => {
@@ -431,7 +458,7 @@ export class GenerationWorker {
         updatedAt: this.#isoNow(),
       })
     })
-    return bound
+    return bound ? 'ACQUIRED' : 'BLOCKED'
   }
 
   #snapshotMatches(snapshot: GenerationCatalogSnapshot, intent: ExperienceIntentV2): boolean {
@@ -444,6 +471,7 @@ export class GenerationWorker {
       && snapshot.catalogMutationReceiptDigest === intent.recall.catalogMutationReceiptDigest
       && global.proposalCatalogEpoch === snapshot.catalogEpoch
       && global.proposalCatalogMutationJournal === undefined
+      && global.purgeJournal === undefined
   }
 
   async #safeSnapshot(batch: SessionBatchV2, intent: ExperienceIntentV2): Promise<GenerationCatalogSnapshot | undefined> {
@@ -469,12 +497,30 @@ export class GenerationWorker {
   }
 
   async #reserveCall(intentId: string, batch: SessionBatchV2, callId: string): Promise<boolean> {
+    const before = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
+    if (before.generation.state !== 'GENERATION_LEASED' || before.generation.leaseId === undefined) return false
+    const leaseId = before.generation.leaseId
+    let markedGlobal = false
+    try {
+      markedGlobal = await this.#global.runExclusive(async current => {
+        const lease = current.proposalGenerationLease
+        if (
+          lease?.leaseId !== leaseId
+          || lease.state !== 'NOT_CALLED'
+          || current.purgeJournal !== undefined
+          || current.proposalCatalogMutationJournal !== undefined
+        ) return { value: false }
+        return { value: true, global: { ...current, proposalGenerationLease: { ...lease, callId, state: 'CALL_RESERVED' } } }
+      })
+    } catch {
+      markedGlobal = false
+    }
+    if (!markedGlobal) return false
+
     let won = false
-    let leaseId = ''
     await this.#intents.update(intentId, current => {
       const intent = ExperienceIntentV2Schema.parse(current)
-      if (intent.generation.state !== 'GENERATION_LEASED' || intent.generation.leaseId === undefined) return intent
-      leaseId = intent.generation.leaseId
+      if (intent.generation.state !== 'GENERATION_LEASED' || intent.generation.leaseId !== leaseId) return intent
       won = true
       const recordedAt = this.#isoNow()
       return ExperienceIntentV2Schema.parse({
@@ -485,36 +531,19 @@ export class GenerationWorker {
           ...intent.generation,
           state: 'GENERATION_CALL_RESERVED',
           receipts: [...intent.generation.receipts, this.#receipt(
-            'CALL_RESERVED', intent, intent.generation.leaseId, recordedAt, callId, intent.generation.catalogEpoch,
+            'CALL_RESERVED', intent, leaseId, recordedAt, callId, intent.generation.catalogEpoch,
           )],
         },
         stageCalls: [...intent.stageCalls, {
-          stage: 'GENERATION',
-          intentRevision: intent.generation.generationRevision!,
-          callId,
-          ordinal: 1,
-          inputDigest: intent.generation.inputDigest!,
-          provider: batch.routeSnapshot.provider,
-          model: batch.routeSnapshot.model,
-          policyVersion: this.#policy.policyVersion,
-          outcome: 'RESERVED',
+          stage: 'GENERATION', intentRevision: intent.generation.generationRevision!, callId, ordinal: 1,
+          inputDigest: intent.generation.inputDigest!, provider: batch.routeSnapshot.provider,
+          model: batch.routeSnapshot.model, policyVersion: this.#policy.policyVersion, outcome: 'RESERVED',
         }],
         updatedAt: recordedAt,
       })
     })
-    if (!won) return false
-    let marked = false
-    try {
-      marked = await this.#global.runExclusive(async current => {
-        const lease = current.proposalGenerationLease
-        if (lease?.leaseId !== leaseId || lease.state !== 'NOT_CALLED') return { value: false }
-        return { value: true, global: { ...current, proposalGenerationLease: { ...lease, callId, state: 'CALL_RESERVED' } } }
-      })
-    } catch {
-      marked = false
-    }
-    if (!marked) await this.#releasePreCall(intentId, 'GENERATION_LEASE_LOST')
-    return marked
+    if (!won) await this.recover()
+    return won
   }
 
   async #terminalCall(
@@ -849,35 +878,80 @@ export class GenerationWorker {
     if (value === undefined) return
     const intent = ExperienceIntentV2Schema.parse(value)
     const leaseId = intent.generation.leaseId
-    await this.#intents.update(intentId, current => {
-      const parsed = ExperienceIntentV2Schema.parse(current)
-      if (!['GENERATION_LEASED', 'GENERATION_AUTHORIZED', 'GENERATION_CALL_RESERVED'].includes(parsed.generation.state)) return parsed
-      const generationRevision = parsed.generation.generationRevision
-      return ExperienceIntentV2Schema.parse({
-        ...parsed,
-        revision: parsed.revision + 1,
-        status: 'NEEDS_ATTENTION',
-        coverage: { ...parsed.coverage, state: 'NEEDS_ATTENTION', reasonCode },
-        generation: { state: 'NOT_STARTED', userRetryUsed: parsed.generation.userRetryUsed, staleRefreshUsed: parsed.generation.staleRefreshUsed, receipts: [] },
-        stageCalls: generationRevision === undefined
-          ? parsed.stageCalls
-          : parsed.stageCalls.filter(call => call.stage !== 'GENERATION' || call.intentRevision !== generationRevision),
-        updatedAt: this.#isoNow(),
-      })
-    })
-    await this.#global.runExclusive(async current => {
-      if (leaseId === undefined || current.proposalGenerationLease?.leaseId !== leaseId) return { value: undefined }
+    const released = await this.#global.runExclusive(async current => {
+      if (leaseId === undefined || current.proposalGenerationLease?.leaseId !== leaseId) return { value: false }
+      if (current.proposalGenerationLease.state !== 'NOT_CALLED') return { value: false }
       const key = deriveBehaviorSignatureIndexKeyV2(intent.persistenceScope, intent.behaviorSignature)
       const { [key]: indexed, ...remainingIndex } = current.behaviorSignatureIndex
       const { proposalGenerationLease: _lease, ...rest } = current
       return {
-        value: undefined,
+        value: true,
         global: {
           ...rest,
           behaviorSignatureIndex: indexed?.ownerIntentId === intentId ? remainingIndex : current.behaviorSignatureIndex,
         },
       }
     })
+    if (released) await this.#resetPreCallIntent(intentId, reasonCode)
+  }
+
+  async #resetPreCallIntent(intentId: string, reasonCode: string): Promise<void> {
+    await this.#intents.update(intentId, current => {
+      const parsed = ExperienceIntentV2Schema.parse(current)
+      if (!['GENERATION_LEASED', 'GENERATION_AUTHORIZED'].includes(parsed.generation.state)) return parsed
+      const generationRevision = parsed.generation.generationRevision
+      return ExperienceIntentV2Schema.parse({
+        ...parsed,
+        revision: parsed.revision + 1,
+        status: 'NEEDS_ATTENTION',
+        coverage: { ...parsed.coverage, state: 'NEEDS_ATTENTION', reasonCode },
+        generation: {
+          state: 'NOT_STARTED', userRetryUsed: parsed.generation.userRetryUsed,
+          staleRefreshUsed: parsed.generation.staleRefreshUsed, receipts: [],
+        },
+        stageCalls: generationRevision === undefined
+          ? parsed.stageCalls
+          : parsed.stageCalls.filter(call => call.stage !== 'GENERATION' || call.intentRevision !== generationRevision),
+        updatedAt: this.#isoNow(),
+      })
+    })
+  }
+
+  async #recoverStrandedPreCallIntents(): Promise<void> {
+    for (const [, value] of this.#intents.entries()) {
+      const intent = ExperienceIntentV2Schema.parse(value)
+      if (intent.generation.state === 'GENERATION_LEASED') {
+        await this.#global.runExclusive(async current => ({
+          value: undefined,
+          global: {
+            ...current,
+            behaviorSignatureIndex: Object.fromEntries(Object.entries(current.behaviorSignatureIndex).filter(([, entry]) => (
+              entry.ownerIntentId !== intent.intentId || entry.state !== 'RESERVED'
+            ))),
+          },
+        }))
+        await this.#resetPreCallIntent(intent.intentId, 'GENERATION_LEASE_LOST')
+      }
+    }
+  }
+
+  async #releaseOrphanNotCalled(lease: ProposalGenerationLease, intent?: ExperienceIntentV2): Promise<void> {
+    await this.#global.runExclusive(async current => {
+      if (
+        current.proposalGenerationLease?.leaseId !== lease.leaseId
+        || current.proposalGenerationLease.state !== 'NOT_CALLED'
+      ) {
+        return { value: undefined }
+      }
+      const behaviorSignatureIndex = Object.fromEntries(Object.entries(current.behaviorSignatureIndex).filter(([, entry]) => (
+        entry.ownerIntentId !== lease.ownerIntentId || entry.state !== 'RESERVED'
+      )))
+      const { proposalGenerationLease: _lease, ...rest } = current
+      return { value: undefined, global: { ...rest, behaviorSignatureIndex } }
+    })
+    if (intent?.generation.state === 'GENERATION_LEASED') {
+      await this.#resetPreCallIntent(intent.intentId, 'GENERATION_LEASE_LOST')
+    }
   }
 
   async #preCallAttention(intentId: string, reasonCode: string): Promise<void> {

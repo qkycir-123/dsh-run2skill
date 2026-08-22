@@ -203,6 +203,45 @@ describe('v2 generation lease worker', () => {
     })
   })
 
+  it('moves a stale authorized Intent out of the queue instead of starving newer work', async () => {
+    const seeded = await seedAuthorized()
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...seeded.domain.global.get(),
+      proposalCatalogEpoch: seeded.domain.global.get().proposalCatalogEpoch + 1,
+    }))
+    const model = generator()
+
+    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+
+    expect(model.calls).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      coverage: { state: 'NEEDS_ATTENTION', reasonCode: 'GENERATION_CATALOG_CHANGED' },
+    })
+  })
+
+  it('does not acquire a generation lease while an ALL purge is active', async () => {
+    const seeded = await seedAuthorized()
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...seeded.domain.global.get(),
+      purgeJournal: {
+        schemaVersion: 1,
+        purgeId: `purge_${'a'.repeat(64)}`,
+        scopeBinding: { scope: 'ALL' },
+        hideBefore: new Date(NOW).toISOString(),
+        phase: 'QUIESCED',
+        updatedAt: new Date(NOW).toISOString(),
+      },
+    }))
+    const model = generator()
+
+    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+
+    expect(model.calls).toBe(0)
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)?.status).toBe('CREATE_AUTHORIZED')
+  })
+
   it('seals safe output, advances one Catalog epoch, and does not create a Proposal body', async () => {
     const seeded = await seedAuthorized()
     const beforeEpoch = seeded.domain.global.get().proposalCatalogEpoch
@@ -342,6 +381,47 @@ describe('v2 generation lease worker', () => {
       generation: { reasonCode: 'GENERATION_OUTCOME_UNKNOWN' },
       duplicateBarrier: { kind: 'OUTCOME_UNKNOWN' },
     })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
+  it('releases an orphan NOT_CALLED lease after its Intent already entered pre-call attention', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    await worker.runOnce()
+    const completed = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    const lease = seeded.domain.global.get().proposalGenerationLease!
+    const attended = ExperienceIntentV2Schema.parse({
+      ...completed,
+      revision: completed.revision + 1,
+      status: 'NEEDS_ATTENTION',
+      coverage: { ...completed.coverage, state: 'NEEDS_ATTENTION', reasonCode: 'GENERATION_CATALOG_CHANGED' },
+      generation: { state: 'NOT_STARTED', userRetryUsed: false, staleRefreshUsed: false, receipts: [] },
+      stageCalls: completed.stageCalls.filter(call => call.stage !== 'GENERATION'),
+      updatedAt: new Date(NOW).toISOString(),
+    })
+    await seeded.domain.table('experience_intents').put(attended.intentId, attended)
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...seeded.domain.global.get(),
+      proposalCatalogEpoch: lease.catalogEpoch,
+      proposalGenerationLease: {
+        schemaVersion: 1,
+        leaseId: lease.leaseId,
+        ownerIntentId: lease.ownerIntentId,
+        ownerRevision: lease.ownerRevision,
+        generationRevision: lease.generationRevision,
+        action: lease.action,
+        inputDigest: lease.inputDigest,
+        externalPendingDigest: lease.externalPendingDigest,
+        catalogEpoch: lease.catalogEpoch,
+        acquiredAt: lease.acquiredAt,
+        state: 'NOT_CALLED',
+      },
+      proposalCatalogMutationJournal: undefined,
+    }))
+
+    await worker.recover()
+
     expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
   })
 
