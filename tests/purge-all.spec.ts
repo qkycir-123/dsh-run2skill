@@ -10,7 +10,11 @@ import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.j
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
-import { SessionBatchV2Schema, deriveTurnObservationIdV2 } from '../src/domain/v2/index.js'
+import {
+  SessionBatchV2Schema,
+  deriveBehaviorSignatureIndexKeyV2,
+  deriveTurnObservationIdV2,
+} from '../src/domain/v2/index.js'
 
 const NOW = Date.parse('2026-08-22T12:00:00.000Z')
 
@@ -92,5 +96,64 @@ describe('all-cache Purge', () => {
     expect(v2.proposalLineages.size).toBe(0)
     expect(v2.legacyItems.size).toBe(0)
     expect(v1.global.get().completedPurgeFences?.all?.scope).toBe('ALL')
+  })
+
+  it('does not retain post-boundary global references to an intent deleted by the purge', async () => {
+    const v1 = createMemoryRun2skillDomain()
+    const v2 = createMemoryRun2skillV2Domain()
+    const fixtures = createMinimalV2Fixtures()
+    v2.experienceIntents.set(fixtures.experienceIntent.intentId, fixtures.experienceIntent)
+    const service = new PurgeService(v1, { resolve: vi.fn() }, { now: () => NOW, v2Domain: v2 })
+    const preview = await service.preview('ALL')
+
+    const updatedAt = '2026-08-22T13:00:00.000Z'
+    const indexKey = deriveBehaviorSignatureIndexKeyV2(
+      fixtures.experienceIntent.persistenceScope,
+      fixtures.experienceIntent.behaviorSignature,
+    )
+    const current = v2.global.get()
+    await v2.global.set({
+      ...current,
+      behaviorSignatureIndex: {
+        [indexKey]: {
+          schemaVersion: 1,
+          persistenceScope: fixtures.experienceIntent.persistenceScope,
+          behaviorSignature: fixtures.experienceIntent.behaviorSignature,
+          ownerIntentId: fixtures.experienceIntent.intentId,
+          ownerRevision: fixtures.experienceIntent.revision,
+          state: 'ACTIVE',
+          updatedAt,
+        },
+      },
+      proposalGenerationLease: {
+        schemaVersion: 1,
+        leaseId: `lease_${'a'.repeat(64)}`,
+        ownerIntentId: fixtures.experienceIntent.intentId,
+        ownerRevision: fixtures.experienceIntent.revision,
+        generationRevision: fixtures.experienceIntent.revision,
+        action: 'CREATE',
+        inputDigest: 'b'.repeat(64),
+        externalPendingDigest: 'c'.repeat(64),
+        catalogEpoch: current.proposalCatalogEpoch,
+        acquiredAt: updatedAt,
+        state: 'NOT_CALLED',
+      },
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId: `pcm_${'d'.repeat(64)}`,
+        ownerId: fixtures.experienceIntent.intentId,
+        kind: 'GENERATION_RESULT',
+        phase: 'PREPARED',
+        preparedAt: updatedAt,
+      },
+    })
+
+    const receipt = await service.confirm(preview.previewId, preview.digest, { scope: 'ALL' })
+
+    expect(receipt.state).toBe('COMPLETED')
+    expect(v2.experienceIntents.get(fixtures.experienceIntent.intentId)).toBeUndefined()
+    expect(v2.global.get().behaviorSignatureIndex).toEqual({})
+    expect(v2.global.get().proposalGenerationLease).toBeUndefined()
+    expect(v2.global.get().proposalCatalogMutationJournal).toBeUndefined()
   })
 })

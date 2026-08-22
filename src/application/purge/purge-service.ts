@@ -539,8 +539,16 @@ export class PurgeService {
     const hideBefore = completedPurgeFences.all?.hideBefore
     if (hideBefore === undefined) throw new Error('ALL purge fence missing')
     const boundary = Date.parse(hideBefore)
+    const remainingOwnerIds = new Set([
+      ...this.#v2Domain.table('turn_observations').keys(),
+      ...this.#v2Domain.table('session_batches').keys(),
+      ...this.#v2Domain.table('experience_intents').keys(),
+      ...this.#v2Domain.table('proposal_lineages').keys(),
+      ...this.#v2Domain.table('legacy_items').keys(),
+    ])
+    const remainingIntentIds = new Set(this.#v2Domain.table('experience_intents').keys())
     const behaviorSignatureIndex = Object.fromEntries(Object.entries(current.behaviorSignatureIndex)
-      .filter(([, entry]) => Date.parse(entry.updatedAt) > boundary))
+      .filter(([, entry]) => Date.parse(entry.updatedAt) > boundary && remainingIntentIds.has(entry.ownerIntentId)))
     const sessions = Object.fromEntries(Object.entries(current.sessions).map(([key, session]) => {
       const {
         activeBatchId: _activeBatchId,
@@ -551,10 +559,12 @@ export class PurgeService {
     }))
     const proposalGenerationLease = current.proposalGenerationLease !== undefined
       && Date.parse(current.proposalGenerationLease.acquiredAt) > boundary
+      && remainingIntentIds.has(current.proposalGenerationLease.ownerIntentId)
       ? current.proposalGenerationLease
       : undefined
     const proposalCatalogMutationJournal = current.proposalCatalogMutationJournal !== undefined
       && Date.parse(current.proposalCatalogMutationJournal.preparedAt) > boundary
+      && remainingOwnerIds.has(current.proposalCatalogMutationJournal.ownerId)
       ? current.proposalCatalogMutationJournal
       : undefined
     const alreadyFinalized = current.legacyCompletedPurgeFences?.all?.purgeId
