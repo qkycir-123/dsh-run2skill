@@ -89,22 +89,15 @@ export interface GenerationCatalogPort {
       readonly receiptDigest: string
     } | undefined
   }): Promise<GenerationCatalogSnapshot>
-  /**
-   * Atomically validates the complete Runtime Catalog digest and prevents Runtime Skill membership
-   * mutations until commit returns. Implementations without a real revision CAS or shared lock must
-   * return INCOMPLETE instead of approximating the guard with before/after reads.
-   */
-  commitWithRuntimeCatalogGuard(input: {
-    readonly batch: SessionBatchV2
-    readonly intent: ExperienceIntentV2
-    readonly expectedRuntimeCatalogDigest: string
-    readonly commit: () => Promise<boolean>
-  }): Promise<'COMMITTED' | 'STALE' | 'INCOMPLETE' | 'REJECTED'>
   read(input: {
     readonly candidateId: string
     readonly batch: SessionBatchV2
     readonly intent: ExperienceIntentV2
   }): Promise<RecallCatalogDefinition | undefined>
+}
+
+export interface GenerationQuiescencePort {
+  validate(intentId: string): Promise<'VALID' | 'STALE' | 'INCOMPLETE'>
 }
 
 export interface SkillGenerator {
@@ -120,6 +113,7 @@ export interface SkillGenerator {
 
 export interface GenerationWorkerOptions {
   readonly catalog: GenerationCatalogPort
+  readonly quiescence: GenerationQuiescencePort
   readonly generator: SkillGenerator
   readonly policy?: Partial<{ readonly reserveBytes: number; readonly policyVersion: string }>
   readonly now?: () => number
@@ -154,6 +148,7 @@ export class GenerationWorker {
   readonly #batches
   readonly #lineages
   readonly #catalog: GenerationCatalogPort
+  readonly #quiescence: GenerationQuiescencePort
   readonly #generator: SkillGenerator
   readonly #policy: GenerationPolicy
   readonly #now: () => number
@@ -164,6 +159,7 @@ export class GenerationWorker {
     this.#batches = domain.table('session_batches')
     this.#lineages = domain.table('proposal_lineages')
     this.#catalog = options.catalog
+    this.#quiescence = options.quiescence
     this.#generator = options.generator
     this.#policy = { ...DEFAULT_POLICY, ...options.policy }
     this.#now = options.now ?? Date.now
@@ -179,6 +175,9 @@ export class GenerationWorker {
     if (currentLease !== undefined && [
       'RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED', 'BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE',
     ].includes(currentLease.state)) {
+      // A PREPARED Proposal journal is either being committed by the current worker or recovered
+      // explicitly at startup. A second live worker must not mistake it for an abandoned crash.
+      if (this.#global.get().proposalCatalogMutationJournal?.kind === 'PROPOSAL') return 'PROCESSED'
       await this.#continueProposalCommit(currentLease)
       return 'PROCESSED'
     }
@@ -257,6 +256,11 @@ export class GenerationWorker {
       await this.#releasePreCall(leased.intentId, 'GENERATION_CATALOG_CHANGED')
       return 'PROCESSED'
     }
+    const preCallFence = await this.#validateQuiescence(leased.intentId)
+    if (preCallFence !== 'VALID') {
+      await this.#releasePreCall(leased.intentId, `SESSION_QUIESCENCE_${preCallFence}`)
+      return 'PROCESSED'
+    }
     const callId = deriveGenerationCallIdV2(leased.generation.leaseId!, leased.generation.inputDigest!)
     if (!await this.#reserveCall(leased.intentId, batch.data, callId)) return 'PROCESSED'
 
@@ -318,6 +322,9 @@ export class GenerationWorker {
     const outputDigest = sha256Utf8(canonicalJson(parsed.data))
     if (!await this.#terminalCall(leased.intentId, callId, 'SUCCEEDED', outputDigest)) return 'PROCESSED'
     await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes)
+    if (await this.#validateQuiescence(leased.intentId) !== 'VALID') {
+      await this.#markStaleResult(leased.intentId, leased.generation.leaseId!)
+    }
     return 'PROCESSED'
   }
 
@@ -960,6 +967,10 @@ export class GenerationWorker {
     }
 
     if (['RESULT_COMMITTED', 'PROPOSAL_COMMIT_AUTHORIZED'].includes(lease.state)) {
+      if (await this.#validateQuiescence(intent.intentId) !== 'VALID') {
+        await this.#markStaleResult(intent.intentId, lease.leaseId)
+        return
+      }
       const batchValue = this.#batches.get(intent.batchId)
       const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
       const snapshot = batch?.success ? await this.#revalidateResult(batch.data, intent, lease) : undefined
@@ -1170,7 +1181,10 @@ export class GenerationWorker {
       return
     }
     const boundarySnapshot = await this.#safePostResultSnapshot(batch.data, intent)
-    if (!this.#snapshotMatchesRevalidation(boundarySnapshot, intent, leaseId)) {
+    if (
+      await this.#validateQuiescence(intentId) !== 'VALID'
+      || !this.#snapshotMatchesRevalidation(boundarySnapshot, intent, leaseId)
+    ) {
       await this.#markStaleResult(intentId, leaseId)
       return
     }
@@ -1201,7 +1215,7 @@ export class GenerationWorker {
       }
     })
     if (!prepared) return
-    await this.#commitPreparedProposalUnderRuntimeGuard(intent, batch.data, lineage, facts)
+    await this.#commitPreparedProposal(intent, lineage, facts)
   }
 
   #snapshotMatchesRevalidation(
@@ -1221,36 +1235,36 @@ export class GenerationWorker {
       && intent.generation.leaseId === leaseId
   }
 
-  async #commitPreparedProposalUnderRuntimeGuard(
+  async #commitPreparedProposal(
     intent: ExperienceIntentV2,
-    batch: SessionBatchV2,
     expectedLineage: z.infer<typeof ProposalLineageV2Schema>,
     facts: ProposalMutationFacts,
   ): Promise<void> {
-    let outcome: 'COMMITTED' | 'STALE' | 'INCOMPLETE' | 'REJECTED'
+    let committed = false
     try {
-      outcome = await this.#catalog.commitWithRuntimeCatalogGuard({
-        batch,
-        intent,
-        expectedRuntimeCatalogDigest: facts.revalidation.runtimeCatalogDigest,
-        commit: async () => {
-          const existing = this.#lineages.get(facts.lineageId)
-          if (existing === undefined) await this.#lineages.put(facts.lineageId, expectedLineage)
-          else {
-            const parsed = ProposalLineageV2Schema.safeParse(existing)
-            if (!parsed.success || canonicalJson(parsed.data) !== canonicalJson(expectedLineage)) return false
-          }
-          if (!await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)) return false
-          return this.#finalizeProposalBody(
-            ExperienceIntentV2Schema.parse(this.#intents.get(intent.intentId)),
-            facts,
-          )
-        },
-      })
+      if (await this.#validateQuiescence(intent.intentId) !== 'VALID') throw new Error('Session quiescence fence is stale')
+      const existing = this.#lineages.get(facts.lineageId)
+      if (existing === undefined) await this.#lineages.put(facts.lineageId, expectedLineage)
+      else {
+        const parsed = ProposalLineageV2Schema.safeParse(existing)
+        if (!parsed.success || canonicalJson(parsed.data) !== canonicalJson(expectedLineage)) {
+          throw new Error('Proposal lineage conflict')
+        }
+      }
+      if (!await this.#markProposalBodyCommitted(intent.intentId, intent.generation.leaseId!, facts)) {
+        throw new Error('Proposal body was not committed')
+      }
+      if (await this.#validateQuiescence(intent.intentId) !== 'VALID') {
+        throw new Error('Session quiescence fence changed during Proposal body commit')
+      }
+      committed = await this.#finalizeProposalBody(
+        ExperienceIntentV2Schema.parse(this.#intents.get(intent.intentId)),
+        facts,
+      )
     } catch {
-      outcome = 'INCOMPLETE'
+      committed = false
     }
-    if (outcome !== 'COMMITTED') {
+    if (!committed) {
       if (this.#proposalBodyCommitIsDurable(intent, expectedLineage, facts)) return
       await this.#rollbackPreparedProposal(intent, expectedLineage, facts.mutationId)
     }
@@ -1317,13 +1331,7 @@ export class GenerationWorker {
       await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
       return
     }
-    const batchValue = this.#batches.get(intent.batchId)
-    const batch = batchValue === undefined ? undefined : SessionBatchV2Schema.safeParse(batchValue)
-    if (!batch?.success) {
-      await this.#rollbackPreparedProposal(intent, expected!, mutationId)
-      return
-    }
-    await this.#commitPreparedProposalUnderRuntimeGuard(intent, batch.data, expected!, facts)
+    await this.#commitPreparedProposal(intent, expected!, facts)
   }
 
   async #markProposalBodyCommitted(
@@ -1394,6 +1402,11 @@ export class GenerationWorker {
   }
 
   async #activateProposal(intentId: string, leaseId: string): Promise<void> {
+    const activationLease = this.#global.get().proposalGenerationLease
+    if (
+      activationLease?.leaseId !== leaseId
+      || !['BODY_COMMITTED_INDEX_PENDING', 'ACTIVE_COMPLETE'].includes(activationLease.state)
+    ) return
     let intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
     let indexReceipt = intent.generation.receipts.find(item => item.kind === 'INDEX_COMMITTED')
     if (intent.generation.state === 'PROPOSAL_BODY_COMMITTED') {
@@ -1609,6 +1622,14 @@ export class GenerationWorker {
       }
     })
     if (released) await this.#resetPreCallIntent(intentId, reasonCode)
+  }
+
+  async #validateQuiescence(intentId: string): Promise<'VALID' | 'STALE' | 'INCOMPLETE'> {
+    try {
+      return await this.#quiescence.validate(intentId)
+    } catch {
+      return 'INCOMPLETE'
+    }
   }
 
   async #resetPreCallIntent(intentId: string, reasonCode: string): Promise<void> {

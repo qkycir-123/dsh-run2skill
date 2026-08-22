@@ -26,6 +26,7 @@ export const RUN2SKILL_V2_LIMITS = Object.freeze({
   maxBatchObservations: 256,
   maxBatchTriggerReasons: 3,
   maxIntentsPerBatch: 3,
+  sessionIdleMs: 30 * 60_000,
 } as const)
 
 export const PersistenceScopeV2Schema = z.enum(['PROJECT', 'USER'])
@@ -739,8 +740,23 @@ export function deriveOwnershipReceiptDigestV2(facts: OwnershipReceiptFactsV2): 
   }))
 }
 
+export interface SessionQuiescenceFenceFactsV2 {
+  readonly intentId: string
+  readonly batchId: string
+  readonly sessionLifecycleKey: string
+  readonly batchLastTurnEndSeq: number
+  readonly observedThroughTurnEndSeq: number
+  readonly detectedThroughTurnEndSeq: number
+  readonly activityRevision: string
+}
+
+export function deriveSessionQuiescenceFenceDigestV2(facts: SessionQuiescenceFenceFactsV2): string {
+  return sha256Utf8(canonicalJson({ contract: 'session-quiescence-v1', ...facts }))
+}
+
 export const ExperienceIntentStatusV2Schema = z.enum([
   'DETECTOR_STAGED',
+  'WAITING_FOR_QUIESCENCE',
   'READY',
   'OWNERSHIP_ARBITRATING',
   'RESOLVED_BY_AGENT',
@@ -835,6 +851,23 @@ export const ExperienceIntentV2Schema = z.object({
     status: z.enum(['COMPLETE', 'INCOMPLETE']),
     blockers: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(8),
   }).strict(),
+  quiescence: z.discriminatedUnion('state', [
+    z.object({
+      state: z.literal('WAITING'),
+      batchLastTurnEndSeq: safeNonNegativeInteger,
+      requiredIdleMs: positiveSafeInteger,
+    }).strict(),
+    z.object({
+      state: z.literal('SATISFIED'),
+      batchLastTurnEndSeq: safeNonNegativeInteger,
+      requiredIdleMs: positiveSafeInteger,
+      observedThroughTurnEndSeq: safeNonNegativeInteger,
+      detectedThroughTurnEndSeq: safeNonNegativeInteger,
+      activityRevision: identity,
+      satisfiedAt: isoDateTime,
+      fenceDigest: sha256Hex,
+    }).strict(),
+  ]),
   ownership: z.object({
     state: z.enum(['NOT_STARTED', 'ARBITRATING', 'RESOLVED_BY_AGENT', 'NEEDS_CONFIRMATION', 'RUN2SKILL_OWNED']),
     claimId: z.string().regex(/^claim_[a-f0-9]{64}$/).optional(),
@@ -1040,7 +1073,11 @@ export const ExperienceIntentV2Schema = z.object({
   }
   switch (value.status) {
     case 'DETECTOR_STAGED':
+    case 'WAITING_FOR_QUIESCENCE':
+      expectStage(value.quiescence.state, 'WAITING', ['quiescence', 'state'])
+      expectStage(value.ownership.state, 'NOT_STARTED', ['ownership', 'state']); noDownstreamWork(); break
     case 'READY':
+      expectStage(value.quiescence.state, 'SATISFIED', ['quiescence', 'state'])
       expectStage(value.ownership.state, 'NOT_STARTED', ['ownership', 'state']); noDownstreamWork(); break
     case 'OWNERSHIP_ARBITRATING':
       expectStage(value.ownership.state, 'ARBITRATING', ['ownership', 'state']); noDownstreamWork(); break
@@ -1118,6 +1155,30 @@ export const ExperienceIntentV2Schema = z.object({
       const unreachable: never = value.status
       void unreachable
     }
+  }
+  if (value.quiescence.batchLastTurnEndSeq < Math.max(...value.evidenceRefs.map(ref => ref.turnEndSeq))) {
+    context.addIssue({ code: 'custom', path: ['quiescence', 'batchLastTurnEndSeq'], message: 'Quiescence fence cannot precede Intent evidence' })
+  }
+  if (value.quiescence.state === 'SATISFIED') {
+    if (
+      value.quiescence.observedThroughTurnEndSeq < value.quiescence.batchLastTurnEndSeq
+      || value.quiescence.detectedThroughTurnEndSeq !== value.quiescence.observedThroughTurnEndSeq
+    ) context.addIssue({ code: 'custom', path: ['quiescence'], message: 'Satisfied quiescence requires a fully detected Session tail' })
+    const expectedFence = deriveSessionQuiescenceFenceDigestV2({
+      intentId: value.intentId,
+      batchId: value.batchId,
+      sessionLifecycleKey: value.sessionLifecycleKey,
+      batchLastTurnEndSeq: value.quiescence.batchLastTurnEndSeq,
+      observedThroughTurnEndSeq: value.quiescence.observedThroughTurnEndSeq,
+      detectedThroughTurnEndSeq: value.quiescence.detectedThroughTurnEndSeq,
+      activityRevision: value.quiescence.activityRevision,
+    })
+    if (value.quiescence.fenceDigest !== expectedFence) {
+      context.addIssue({ code: 'custom', path: ['quiescence', 'fenceDigest'], message: 'Quiescence fence digest does not match exact Session activity facts' })
+    }
+  }
+  if (!['DETECTOR_STAGED', 'WAITING_FOR_QUIESCENCE'].includes(value.status) && value.quiescence.state !== 'SATISFIED') {
+    context.addIssue({ code: 'custom', path: ['quiescence', 'state'], message: 'Ownership and downstream work require a satisfied Session quiescence fence' })
   }
   const ownership = value.ownership
   if (ownership.state === 'NOT_STARTED' && Object.keys(ownership).length !== 1) {

@@ -177,7 +177,7 @@ v0.2 不以“自动进化一切”为目标，也不承诺从所有执行成功
 
 ### 8.1 TurnObservation、SessionBatch 与 ExperienceIntent
 
-`turn/end` 是可靠观察边界，不再是普通自动 Learning LLM 的逐 Turn 决策边界。每个 durable Root/User-facing Turn 只形成脱敏、限长的 `TurnObservation`；每 5 个完整 Turn、空闲 30 分钟或显式保存时冻结 `SessionBatch` 并执行一次批次语义检测；READY 结果形成最多 3 个 `ExperienceIntent`，再分别完成所有权、召回、覆盖判断和内容生成。
+`turn/end` 是可靠观察边界，不再是普通自动 Learning LLM 的逐 Turn 决策边界。每个 durable Root/User-facing Turn 只形成脱敏、限长的 `TurnObservation`；每 5 个完整 Turn 执行一次轻量批次语义检测，READY 只形成最多 3 个 `ExperienceIntent` 并等待会话静默。自动 Intent 在最后活动空闲 30 分钟后，显式保存 Intent 在当前 Turn 完成且没有新 Turn/运行中 Agent 时，才继续所有权、召回、覆盖判断和内容生成。
 
 5 Turn 是检查点，不是强制经验边界。未完成经验可以通过有界 `DEFER` carry 延续，不能无限复制 Session 原文或扩大窗口。
 
@@ -261,14 +261,16 @@ run2skill 的历史记录不得凌驾于当前磁盘 `SKILL.md`。
 ```mermaid
 flowchart TD
     A["Root Session turn/end"] --> B["持久化最小 TurnObservation；LLM=0"]
-    B --> C{"5 Turn / idle 30m / explicit save"}
+    B --> C{"5 Turn / explicit save 检测边界"}
     C -->|未到边界| Z["结束"]
     C -->|到边界| D["冻结 SessionBatch"]
     D --> E{"Batch Detector"}
     E -->|NONE| Z
     E -->|DEFER| F["保留有界 carry，等待下一批"]
-    E -->|READY| G["最多 3 个 ExperienceIntent"]
-    G --> H{"Agent-first 所有权"}
+    E -->|READY| G["最多 3 个 ExperienceIntent；等待静默"]
+    G --> W{"自动 idle 30m；或显式保存 Turn 已结束"}
+    W -->|有新 Turn / Agent 运行| F
+    W -->|水位完整且 Agent 未运行| H{"Agent-first 所有权"}
     H -->|RESOLVED_BY_AGENT| Z
     H -->|NEEDS_CONFIRMATION| N["Action Queue"]
     H -->|RUN2SKILL_OWNED| I["complete Catalog 全量摘要筛选"]
@@ -284,7 +286,7 @@ flowchart TD
     P --> Q["Web Proposal Inbox"]
     Q --> R{"用户决定"}
     R -->|Reject| S["REJECTED，不修改 Skill"]
-    R -->|Approve| T["Core Guards + CAS + 原生写入"]
+    R -->|Approve| T["Catalog 重校验 + 文件 CAS + 原生写入"]
     T --> U["完整 Registry exact readback"]
     U -->|一致| V["PUBLISHED"]
     U -->|失败| N
@@ -298,7 +300,7 @@ flowchart TD
 系统必须以 Root/User-facing Session 的 durable `turn/end` 形成幂等 `TurnObservation`。普通 Turn 结束只做无模型、低成本、可恢复的观察记录，不得逐 Turn 调用额外 Learning Model。
 
 **REQ-OBS-002**
-系统必须在每 5 个完整 Turn、最后活动空闲 30 分钟或显式保存 Turn 完成后冻结确定性 `SessionBatch`。1～4 Turn 且未 idle 时新增模型调用必须为 0。
+系统必须在每 5 个完整 Turn 或显式保存 Turn 完成后冻结确定性 `SessionBatch` 并运行一次 Detector。普通 5-Turn READY 只能持久化 Intent，不得继续 recall、coverage 或 generation；1～4 Turn 且未 idle 时新增模型调用必须为 0。
 
 **REQ-OBS-003**
 Batch Detector 只能输出 `NONE | DEFER | READY`。`NONE` 和 `DEFER` 后 recall、coverage、generation 调用必须为 0；READY 最多形成 3 个 ExperienceIntent。下列信号必须被批次检测覆盖，显式保存不得等待阈值：
@@ -309,7 +311,7 @@ Batch Detector 只能输出 `NONE | DEFER | READY`。`NONE` 和 `DEFER` 后 reca
 - 用户明确描述可复用工作流。
 
 **REQ-OBS-004**
-显式保存请求必须在当前 Turn 完成后立即冻结相关窗口并形成 durable batch。每条请求最终必须且只能得到一个用户可见结果：
+显式保存请求必须在当前 Turn 完成后立即冻结相关窗口并形成 durable batch；只有确认没有新 Turn 且 Agent 未运行时才可立即继续，若新 Turn 已开始则延后。每条请求最终必须且只能得到一个用户可见结果：
 
 - `PENDING_REVIEW` Proposal；
 - `RESOLVED_BY_AGENT`：有效 Skill 已由当前批次 Agent 保存，且 exact catalog readback 与 ExperienceIntent 的目标/行为契约一致；用户可见结果由已有 Agent 回复/工具结果满足，Run2Skill 不额外显示 Toast 或 Proposal；
@@ -335,6 +337,9 @@ Subagent Child Session 不得独立触发学习，但可以作为 Root Session P
 
 **REQ-OBS-010**
 `RESOLVED_BY_AGENT` 只能在以下事实全部成立时提交：batch 内 Agent 写入成功；完整 Effective Catalog 的 winning filesystem Skill 经 `ctx.skills.get()` exact readback 有效；Skill 的显式名称/scope/目标或行为契约与当前 ExperienceIntent 确定性绑定。仅有“唯一 Skill 变化”不构成相关性。失败 write、工具参数或 Agent 输出已包含完整 Skill、Shell 同内容重写、不可归因写入或其他可能已消耗生成通道的迹象都必须进入 `NEEDS_CONFIRMATION`，不得调用后续模型。
+
+**REQ-OBS-011**
+READY Intent 在 Agent-first、recall、coverage 或 generation 前必须取得 durable Session quiescence fence，绑定 batch 尾部、observed/detected 水位和 live activity revision。自动路径要求最后活动空闲 30 分钟；显式保存可免等待，但不能免除“无更新 Turn、无 active batch、Agent 未运行”的重校验。generation 调用前、结果提交后和 Proposal body 提交前 fence 必须仍有效；失效时不得生成 Proposal，已消耗的 generation 结果只能进入 `STALE_RESULT`。
 
 ### 10.2 分阶段模型与成本
 
@@ -452,6 +457,9 @@ Reject 前必须确认，并明确说明：不会修改 Skill、Proposal 将离�
 **REQ-REV-010**
 v0.2 不提供 Approve All、完整 Markdown Editor、inline Scope 切换后直接 Approve 或 Auto Publish。
 
+**REQ-REV-011**
+打开审核和提交 Approve 时，Host 都必须重新取得 complete Runtime/Pending Catalog 并重做 coverage/target binding 校验。若其他 Session、Agent 或外部文件变化已经覆盖该 Intent，Proposal 必须标记为 `covered` 或 `stale` 并退出可发布状态；不得依赖 Proposal 生成时的旧 Catalog，也不得要求 DSH 为 Proposal 提供 Catalog CAS/共享锁。
+
 ### 10.6 发布与回读
 
 **REQ-PUB-001**
@@ -499,6 +507,9 @@ run2skill 只负责 Skill publication，不负责 source-control publication；�
 
 **REQ-PUB-009**
 Proposal/Review/Publication RPC 只允许本机可信浏览器上下文使用，必须复用 DSH browser-trust/reachability fence，限制为 loopback，并在业务 dispatch 前拒绝 cross-origin、非可信 Host 和远程请求。没有明确认证授权层前，不支持远程审批或发布。
+
+**REQ-PUB-010**
+真正写文件前必须再次取得 complete Runtime/Pending Catalog 并验证 Proposal 仍未被覆盖、CREATE expected-absence 或 MERGE Base 仍成立。该检查与 target 文件 CAS 共同 fail closed；外部 Catalog 变化最多使 Proposal 进入 `NEEDS_REFRESH`/`DISCARDED`，不得发布重复 Skill。
 
 ### 10.7 生命周期与手工变更
 

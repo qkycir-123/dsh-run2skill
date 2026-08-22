@@ -158,7 +158,7 @@ processingState 是内部执行状态，不得替代产品状态：
 
 ```text
 SessionBatch: FROZEN -> DETECTION_CLAIMED -> COMMITTED_NONE | COMMITTED_DEFER | COMMITTED_READY | NEEDS_ATTENTION
-ExperienceIntent: READY -> OWNERSHIP_ARBITRATING -> RUN2SKILL_OWNED | RESOLVED_BY_AGENT | NEEDS_CONFIRMATION
+ExperienceIntent: DETECTOR_STAGED -> WAITING_FOR_QUIESCENCE -> READY -> OWNERSHIP_ARBITRATING -> RUN2SKILL_OWNED | RESOLVED_BY_AGENT | NEEDS_CONFIRMATION
 RUN2SKILL_OWNED -> RECALLING -> COVERAGE_ANALYZING -> COVERED | COVERED_NEEDS_CONFIRMATION | CREATE_AUTHORIZED | MERGE_AUTHORIZED | NEEDS_ATTENTION
 CREATE_AUTHORIZED | MERGE_AUTHORIZED -> GENERATING -> READY_FOR_REVIEW | NEEDS_ATTENTION
 READY_FOR_REVIEW -> PUBLISHING -> TERMINAL
@@ -337,13 +337,15 @@ sequenceDiagram
     O->>C: wake cursor scheduler
     alt 未到 5 Turn/idle/explicit
         C-->>S: 结束；LLM=0
-    else 到达批次边界
+    else 到达 5 Turn/idle/explicit 检测边界
         C->>R: CAS freeze deterministic SessionBatch
         C->>D: detect(batchId)
         D->>R: NONE / DEFER / READY intents
         alt NONE / DEFER
             D-->>S: 静默完成
         else READY
+        D->>R: WAITING_FOR_QUIESCENCE
+        C->>R: idle 30m or explicit + no newer Turn + Agent inactive
         D->>A: arbitrate each intent before later LLM
         alt Agent exact Skill 与意图绑定
             A->>R: CAS RESOLVED_BY_AGENT
@@ -380,7 +382,9 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 - 当前无 batch：按 detectedThrough 后的连续观察判断 threshold/idle/explicit；
 - threshold、idle 和 explicit 对相同连续范围派生同一 batchId；
 - 已 claim batch 使用冻结尾部继续，新 Turn 进入下一批；
-- READY Intent 只有 ownership 为 `RUN2SKILL_OWNED` 才进入 recall；
+- 5 Turn 检查点只运行 Detector；READY Intent 先等待 durable Session quiescence fence，自动路径空闲 30 分钟，显式保存可在当前 Turn 后立即重校验；
+- fence 要求 observed/detected 水位相等、无 active batch、无更新 Turn、Agent 未运行且 activity revision 稳定；失效时延后或把已生成结果标为 stale；
+- READY Intent 只有 fence 有效且 ownership 为 `RUN2SKILL_OWNED` 才进入 recall；
 - BehaviorSignatureIndex 处理 exact signature；进程全局 ProposalGenerationLease 串行全部 scope 的 Proposal generation；
 - 队列没有无限内存副本，权威队列来自 Store；
 - 进程全局并发另设固定小上限，避免多 Session 形成模型风暴。
@@ -399,8 +403,8 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 6. 重扫 purge-visible authoritative rows并修复 BehaviorSignatureIndex；
 7. 以受限恢复例外收敛 Publication Journal/PUBLISHING：只按既有 journal、磁盘 hash 与 Registry 事实完成或回滚在途 publication并立即提交 membership receipt，不能发起新的 Publication，也不能因 generation lease 排队；
 8. 刷新 Runtime Catalog并重建 complete PendingProposalCatalog；不完整时保持 generation disabled；Publication receipt 必须进入 epoch/digest；
-9. 穷尽收敛全部残留 ProposalGenerationLease：`NOT_CALLED` 校验后保留给恢复门结束后的同一 owner/revision 首次调用，恢复阶段本身不调用模型；`RESULT_COMMITTED` / `PROPOSAL_COMMIT_AUTHORIZED` 使用当前 Runtime/Pending catalogs 重做排除 self 的写前复核与 CAS；`BODY_COMMITTED_INDEX_PENDING` 修复 index/journal并释放；`ACTIVE_COMPLETE` 校验 completion receipt并释放；失败/unknown 只有 barrier receipt durable 后才释放。停机前授权不能直接复用，Publication receipt 属于 external mutation并使旧 result stale；
-10. 恢复 Session cursor、已冻结 batch、idle deadlines 和 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease；durable 尾部已 idle 30 分钟则走同一 claim 路径；
+9. 穷尽收敛全部残留 ProposalGenerationLease：`NOT_CALLED` 必须先重验 Session quiescence fence，校验后才保留给恢复门结束后的同一 owner/revision 首次调用；恢复阶段本身不调用模型；`RESULT_COMMITTED` / `PROPOSAL_COMMIT_AUTHORIZED` 使用当前 Session fence 与 Runtime/Pending catalogs 重做排除 self 的写前复核；`BODY_COMMITTED_INDEX_PENDING` 修复 index/journal并释放；`ACTIVE_COMPLETE` 校验 completion receipt并释放；失败/unknown 只有 barrier receipt durable 后才释放。停机前授权不能直接复用，Publication receipt 属于 external mutation并使旧 result stale；
+10. 恢复 Session cursor、已冻结 batch、idle deadlines 和 ownership/recall/coverage/generation 的未终态 Intent；generation 必须经过已恢复的全局 lease与新的 quiescence fence；durable 尾部已 idle 30 分钟则走同一重校验路径；
 11. `DETECTION_CLAIMED` 或其他非 generation stage call 已 reserved 但无 terminal record 时标记 `CALL_OUTCOME_UNKNOWN`，不自动重复相同调用；
 12. 运行有界 Session gap scan并幂等补齐 TurnObservation；
 13. 解除启动缓冲并按序处理已接收的实时 `session/event`。
@@ -411,7 +415,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 
 ### 8.5 多 Session 同一 Skill
 
-Proposal 生成前先以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，再以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 PendingProposalCatalog membership mutation（Proposal、sealed result、unresolved barrier、legacy、Purge/终态）经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。唯一 self-exclusion 是 stale refresh revision 按精确 intent/prior revision/barrier receipt 从自身 effective view 排除自己的 refresh barrier，调用仍绑定完整 catalog digest 与 exclusion digest，其他 Intent 始终看见该 barrier。持有 lease 后及模型返回、写 body 前都必须重新取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale 或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；不同 target 的 publication 仍按 canonical target path 串行：
+Proposal 生成前先验证 Session quiescence fence，再以 `(scope, behaviorSignature)` 的 BehaviorSignatureIndex 处理 exact 冲突，并以进程全局唯一的 durable ProposalGenerationLease 串行全部 scope generation。全部 PendingProposalCatalog membership mutation（Proposal、sealed result、unresolved barrier、legacy、Purge/终态）经过 ProposalCatalogCoordinator 的单写序列和 `proposalCatalogMutationJournal + proposalCatalogEpoch` saga；派生 Catalog 仅在 journal 为空且 epoch-before/after 相同才 complete。唯一 self-exclusion 是 stale refresh revision 按精确 intent/prior revision/barrier receipt 从自身 effective view 排除自己的 refresh barrier，调用仍绑定完整 catalog digest 与 exclusion digest，其他 Intent 始终看见该 barrier。持有 lease 后及模型返回、写 body 前都必须重新验证 fence，并取得 Runtime Catalog 与 complete PendingProposalCatalog；digest stale、fence 失效或派生不完整时不得提交 Proposal。Proposal body 先落 authoritative lineage，index 后提交，启动时由 body/journal 对账修复 index/epoch；此过程不要求 DSH Runtime Catalog CAS/共享锁。最后快照后的外部变化允许让草稿 stale，但审核/发布前必须再次读取完整 Catalog；不同 target 的 publication 仍按 canonical target path 串行：
 
 - 每次都重新取得完整 Catalog 和文件事实；
 - 先到者成功后，后到者的 Base/expected-absence 必然失效；

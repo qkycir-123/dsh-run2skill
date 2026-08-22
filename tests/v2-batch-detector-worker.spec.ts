@@ -93,7 +93,12 @@ describe('v2 Batch Detector worker', () => {
     expect(model.calls).toBe(1)
     expect(domain.experienceIntents.size).toBe(1)
     const intent = [...domain.experienceIntents.values()][0]!
-    expect(intent).toMatchObject({ batchId: fixtures.sessionBatch.batchId, status: 'READY', revision: 2 })
+    expect(intent).toMatchObject({
+      batchId: fixtures.sessionBatch.batchId,
+      status: 'WAITING_FOR_QUIESCENCE',
+      revision: 2,
+      quiescence: { state: 'WAITING', batchLastTurnEndSeq: fixtures.sessionBatch.lastTurnEndSeq },
+    })
     expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
       state: 'COMMITTED_READY',
       detector: { result: 'READY', intentIds: [intent.intentId] },

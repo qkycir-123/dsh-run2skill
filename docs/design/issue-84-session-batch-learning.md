@@ -27,20 +27,21 @@
 - 把内部窗口、预算或重试常数暴露为普通用户设置；
 - 改写已发布 Skill 或 DSH Session Log。
 
-现有发布、审核、CAS、exact readback 和 Purge 的安全边界继续有效。`single-owner-skill-save.md` 中 Agent-first、完整事实和 fail-closed 原则继续有效，但其“每个命中 Turn 建立 WorkItem/TurnBaseline”的机制由本设计取代。
+现有发布文件 CAS、审核、exact readback 和 Purge 的安全边界继续有效。Proposal 生成不要求 DSH Runtime Catalog 提供 CAS 或共享锁。`single-owner-skill-save.md` 中 Agent-first、完整事实和 fail-closed 原则继续有效，但其“每个命中 Turn 建立 WorkItem/TurnBaseline”的机制由本设计取代。
 
 ## 2. 设计结论
 
 1. 普通 durable root `turn/end` 只写最小 `TurnObservation`，不做语义判断。
-2. 一个 Session lifecycle 内每 5 个完整 Turn 检测一次；剩余 1～4 Turn 在最后活动 30 分钟后检测；显式保存在当前 Turn 完成后立即检测。
+2. 一个 Session lifecycle 内每 5 个完整 Turn 只做一次轻量检测；READY 只持久化 Intent。自动 Intent 等会话空闲 30 分钟后才进入 Agent-first/recall/coverage/generation；显式保存可在当前 Turn 完成且会话静默时立即继续。
 3. 调度竞争通过同一连续 Turn 范围的确定性 `batchId` 和 durable CAS 收敛；触发原因不是身份的一部分。
 4. Detector 只产出 `NONE | DEFER | READY`，不查 Skill、不生成正文。
-5. 每个 READY Intent 在任何 recall、coverage 或 generation 调用前完成 Agent-first 所有权裁决。
+5. READY Intent 先进入 `WAITING_FOR_QUIESCENCE`。只有 durable Turn 水位无缺口、没有更新 Turn、Agent 未运行且 activity revision 稳定，才取得 Session quiescence fence 并开始 Agent-first。
 6. Catalog 必须 `complete=true`，且每个 summary 都得到确定性或语义分类；未完整扫描时 `CREATE=0`。
 7. 取消单候选 8 KiB 限制。候选正文必须完整读取并以总模型输入预算决定能否参与；不得静默截断。
 8. coverage 只产出 `UNRELATED | COVERED | PARTIAL | AMBIGUOUS`；generation 只接受已证明安全的 CREATE 或唯一 MERGE target。
 9. 以 behavior signature 的全局 single-flight 和唯一 active lineage 避免跨批次、跨 Session 重复 Proposal。
 10. 使用新 `run2skill_v2` Domain；`run2skill_v1` 不原地改写，迁移后只作为 legacy source 和回退证据保留。
+11. Proposal commit 使用“Session quiescence fence + generation 前 Catalog 重校验 + 审核/发布前再次校验 + stale 回退”；不修改 DSH 上游，也不把 Runtime Catalog CAS/共享锁作为前置条件。
 
 ## 3. Durable 模型
 
@@ -123,7 +124,9 @@ Detector 的 READY 结果最多产生 3 个 `ExperienceIntentV2`：
 Intent 状态机：
 
 ```text
-READY
+DETECTOR_STAGED
+  -> WAITING_FOR_QUIESCENCE
+     -> READY
   -> OWNERSHIP_ARBITRATING
      -> RESOLVED_BY_AGENT
      -> NEEDS_CONFIRMATION
@@ -174,20 +177,20 @@ NEEDS_ATTENTION(STALE_RESULT)
 
 ### 4.1 5-Turn threshold
 
-只有 `completeness=COMPLETE` 的 Turn 计入阈值。`detectedThrough` 之后累计第 5 个完整 Turn 时，冻结当前连续范围。INCOMPLETE 观察保留并阻止跨缺口 absence proof；它不被跳过拼成一个看似连续的 batch。
+只有 `completeness=COMPLETE` 的 Turn 计入阈值。`detectedThrough` 之后累计第 5 个完整 Turn 时，冻结当前连续范围并只运行 Detector。READY 只提交 `ExperienceIntent + WAITING_FOR_QUIESCENCE`，不在检查点继续 recall、coverage 或 generation。INCOMPLETE 观察保留并阻止跨缺口 absence proof；它不被跳过拼成一个看似连续的 batch。
 
 ### 4.2 30-minute idle flush
 
 idle deadline 是最后一个 durable TurnObservation 的 `observedAt + 30m`。计时器只负责唤醒，权威判断来自 Store：
 
-1. 到期后读取 cursor revision；
-2. 若新 Turn 已推进 revision 且 batch 尚未 claim，取消旧 deadline 并按新活动时间重算；
-3. 若 batch 已 claim，冻结范围继续，新 Turn 进入下一批；
-4. 启动恢复发现 durable 尾部已空闲超过 30 分钟时立即执行同一 claim 路径。
+1. 到期后读取 cursor、durable observed/detected tail 与 live Agent activity；
+2. 只有水位相等、无 active batch、Agent 未运行且 activity revision 完整时，提交绑定这些事实的 Session quiescence fence；
+3. 若等待期间出现新 Turn、Agent 恢复运行或 activity revision 变化，取消/延后本轮下游处理，并把新证据纳入后续 batch；
+4. 启动恢复发现 durable 尾部已空闲超过 30 分钟时仍执行同一重校验，不能仅凭旧 deadline 继续 generation。
 
 ### 4.3 explicit save
 
-显式“保存为 Skill/记住该流程”等由 TurnObservation 的 direct-user evidence 确定性标记。该标记不直接生成 Skill，只在当前 Turn 完成后立即冻结从 `detectedThrough + 1` 到当前 Turn 的范围。若此前有 DEFER carry，一并作为有界数据输入。显式保存不等待 5 Turn 或 idle，但仍必须经过 detector、所有权、完整 recall 和 coverage。
+显式“保存为 Skill/记住该流程”等由 TurnObservation 的 direct-user evidence 确定性标记。该标记不直接生成 Skill，只在当前 Turn 完成后立即冻结从 `detectedThrough + 1` 到当前 Turn 的范围。若此前有 DEFER carry，一并作为有界数据输入。显式保存不等待 5 Turn 或 30 分钟，但必须先确认没有新 Turn、Agent 未运行并取得同一 Session quiescence fence；否则延后，不能与 Agent 并发生成。之后仍必须经过 detector、所有权、完整 recall 和 coverage。
 
 ### 4.4 single-flight
 
@@ -315,6 +318,7 @@ generation 只接受 Host 已提交的 `CREATE_AUTHORIZED` 或 `MERGE_AUTHORIZED
 - 输出中的 target/path/root/hash 不可信，Host 重新计算；
 - 只允许 1 次主调用；仅格式非法或输出截断且输入/target 未变化时允许 1 次针对性恢复；
 - 恢复调用不能扩大目标、加入新证据或重新做 coverage。
+- 模型调用前和 Proposal body 提交前都必须验证 Session quiescence fence；调用期间 fence 失效时，调用结果只作为 sealed stale result 保留，不创建 Proposal。
 
 大型 Skill 若可完整 coverage 但无法在安全输出预算内生成完整 merge，候选标记 `READABLE_NOT_MERGEABLE` 并进入 Action Queue。
 
@@ -363,13 +367,13 @@ BehaviorSignatureIndex 解决 exact signature 冲突；近义但签名不同或�
 3. 持有 lease 后重新取得 Runtime Skill Catalog 与 PendingProposalCatalog 的 complete snapshot；其 digest 必须与 coverage 授权绑定值一致，否则释放 lease并重新 recall/coverage。lease 同时记录排除当前 owner Intent/GenerationResult/barrier 后的 `externalPendingDigest`；
 4. 只有复核仍允许 CREATE/MERGE 才预留 generation call 并调用模型；call terminal、usage 和非敏感 failure 必须先进入 durable ledger；
 5. call 返回或恢复流程从 durable ledger 判定调用事实后，lease owner 必须通过 Coordinator 提交且只提交一个互斥 outcome membership mutation：成功且 Guard 通过时密封完整 immutable `GenerationResult`（正文、digest、target/base binding、callId）；FAILED/ABORTED/TIMED_OUT、成功但结果无法 durable，或 outcome unknown 时提交 unresolved generation barrier。两者都产生绑定 `leaseId + intentId + generationRevision + callId` 的 mutation receipt；只有 sealed result 写入成功，call 才可进入 `RESULT_COMMITTED`，只有 barrier durable 才可释放失败路径的 lease；
-6. 模型返回后、写 Proposal body 前再次取得两个 complete catalogs。Runtime digest 必须不变，`externalPendingDigest` 必须不变，Pending epoch 的变化必须且只能由第 5 步当前 owner 的单个 sealed-result receipt 解释；任何其他 mutation、缺失/多余 receipt 或 catalog 不完整都不提交 Proposal，并以 reason `STALE_RESULT` 进入 `NEEDS_ATTENTION`；该 reason durable 且 sealed result 已进入 PendingProposalCatalog 后释放全局 lease。复核成功先 durable 提交绑定当前两个 digest/epoch/receipt 的 `PROPOSAL_COMMIT_AUTHORIZED`；Proposal body write 必须以这些值作 CAS；
-7. commit CAS 通过后，把 GenerationResult 幂等复制为 `proposal_lineages` 的 immutable Proposal body，再把 BehaviorSignatureIndex reservation 从 `RESERVED` 提交为 `ACTIVE`，最后写入 lease completion receipt并释放；若在 `RESULT_COMMITTED`、`PROPOSAL_COMMIT_AUTHORIZED` 或 body write 期间崩溃，恢复路径必须重新取得当前 Runtime/Pending catalogs 并执行第 6 步，旧授权不能直接复制 body；
+6. 模型返回后、写 Proposal body 前再次验证 Session quiescence fence，并取得两个 complete catalogs。Runtime digest 必须不变，`externalPendingDigest` 必须不变，Pending epoch 的变化必须且只能由第 5 步当前 owner 的单个 sealed-result receipt 解释；任何其他 mutation、缺失/多余 receipt、会话恢复活动或 catalog 不完整都不提交 Proposal，并以 reason `STALE_RESULT` 进入 `NEEDS_ATTENTION`；
+7. 复核通过后，把 GenerationResult 幂等复制为 `proposal_lineages` 的 immutable Proposal body，再把 BehaviorSignatureIndex reservation 从 `RESERVED` 提交为 `ACTIVE`，最后写入 lease completion receipt并释放。这里依靠插件自己的 journal/epoch/lease 保证唯一 body，不要求锁住 DSH Runtime Catalog；在最后快照后发生的外部 Catalog 变化允许使草稿变 stale，审核/发布桥必须重新读取 Catalog 并阻止其发布。若在 `RESULT_COMMITTED`、`PROPOSAL_COMMIT_AUTHORIZED` 或 body write 期间崩溃，恢复路径必须重新验证 fence 和当前 catalogs，旧授权不能直接复制 body；
 8. GenerationResult 或 Proposal body 一旦 authoritative write 成功，后续 PendingProposalCatalog 立即能看见它，即使 global exact-signature index 尚未提交；全局 lease 阻止第二个 generation 在更早窗口运行；
 9. 启动恢复先扫描 active Proposal bodies、sealed GenerationResults 和 unresolved generation barriers，先收敛唯一 outcome，再完成 active Purge，之后才补齐 body 已存在但 index 非 ACTIVE 的记录并按当前 Catalog 复核 lease；
 10. 任一派生 Catalog 不完整、lease/index/body 对账失败或 revision stale 时，CREATE/MERGE 为 0。
 
-该协议有意在单个 DSH Host 内串行全部 Proposal generation；模型并发收益低于跨 scope 重复 Proposal 风险。publication 继续按 target path 使用自己的 CAS；若 publication 在 generation 期间改变 Runtime Catalog，写前第二次 revalidation 会阻止 stale Proposal commit。
+该协议有意在单个 DSH Host 内串行全部 Proposal generation；模型并发收益低于跨 scope 重复 Proposal 风险。publication 继续按 target path 使用自己的文件 CAS，并在审核/发布前重新校验 Runtime/Pending Catalog。最后一次生成快照之后的外部变化最多让 Proposal 标记为 stale/covered，不允许发布重复 Skill。
 
 ### 11.2 Generation lease 恢复表
 

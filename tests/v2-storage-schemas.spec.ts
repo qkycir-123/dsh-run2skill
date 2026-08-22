@@ -12,6 +12,7 @@ import {
   deriveCatalogScanPlanDigestV2,
   deriveCoverageBindingDigestV2,
   deriveCoveragePlanDigestV2,
+  deriveSessionQuiescenceFenceDigestV2,
   deriveTurnObservationContentDigestV2,
 } from '../src/domain/v2/index.js'
 import {
@@ -238,10 +239,23 @@ describe('run2skill_v2 storage contract', () => {
 
   it('deduplicates an intent across batch replay and DEFER carry', () => {
     const fixture = createMinimalV2Fixtures()
+    const batchId = `batch_${'f'.repeat(64)}`
     const replay = {
       ...fixture.experienceIntent,
-      batchId: `batch_${'f'.repeat(64)}`,
+      batchId,
       ordinal: 3,
+      quiescence: fixture.experienceIntent.quiescence.state === 'SATISFIED' ? {
+        ...fixture.experienceIntent.quiescence,
+        fenceDigest: deriveSessionQuiescenceFenceDigestV2({
+          intentId: fixture.experienceIntent.intentId,
+          batchId,
+          sessionLifecycleKey: fixture.experienceIntent.sessionLifecycleKey,
+          batchLastTurnEndSeq: fixture.experienceIntent.quiescence.batchLastTurnEndSeq,
+          observedThroughTurnEndSeq: fixture.experienceIntent.quiescence.observedThroughTurnEndSeq,
+          detectedThroughTurnEndSeq: fixture.experienceIntent.quiescence.detectedThroughTurnEndSeq,
+          activityRevision: fixture.experienceIntent.quiescence.activityRevision,
+        }),
+      } : fixture.experienceIntent.quiescence,
     }
     expect(ExperienceIntentV2Schema.parse(replay).intentId).toBe(fixture.experienceIntent.intentId)
   })

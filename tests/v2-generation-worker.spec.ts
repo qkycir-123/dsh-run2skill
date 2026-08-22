@@ -107,26 +107,27 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
       snapshotHook?.(input, snapshotExclusions.length)
       return captured
     },
-    commitWithRuntimeCatalogGuard: async input => {
-      if (!generationSnapshot.complete) return 'INCOMPLETE'
-      if (generationSnapshot.runtimeCatalogDigest !== input.expectedRuntimeCatalogDigest) return 'STALE'
-      return await input.commit() ? 'COMMITTED' : 'REJECTED'
-    },
     read: async input => {
       reads += 1
       return recallCatalog.read(input)
     },
   }
+  let quiescenceState: 'VALID' | 'STALE' | 'INCOMPLETE' = 'VALID'
+  let quiescenceHook: (() => typeof quiescenceState) | undefined
+  const quiescence = { validate: async () => quiescenceHook?.() ?? quiescenceState }
   return {
     domain,
     intentId: owned.intentId,
     candidate,
     bodies,
     catalog,
+    quiescence,
     get reads() { return reads },
     snapshotExclusions,
     setGenerationSnapshot(next: typeof generationSnapshot) { generationSnapshot = next },
     setSnapshotHook(next: typeof snapshotHook) { snapshotHook = next },
+    setQuiescence(next: typeof quiescenceState) { quiescenceState = next },
+    setQuiescenceHook(next: typeof quiescenceHook) { quiescenceHook = next },
   }
 }
 
@@ -168,13 +169,20 @@ function generator(overrides: Partial<SkillGenerator> = {}) {
   return value
 }
 
+function generationWorker(
+  seeded: Awaited<ReturnType<typeof seedAuthorized>>,
+  options: Omit<ConstructorParameters<typeof GenerationWorker>[1], 'quiescence'>,
+) {
+  return new GenerationWorker(seeded.domain, { ...options, quiescence: seeded.quiescence })
+}
+
 describe('v2 generation lease worker', () => {
   it('lets concurrent workers make exactly one generation call', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
     await Promise.all([
-      new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce(),
-      new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce(),
+      generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce(),
+      generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce(),
     ])
 
     expect(model.calls).toBe(1)
@@ -207,7 +215,7 @@ describe('v2 generation lease worker', () => {
     }))
     const model = generator()
 
-    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+    await generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
 
     expect(model.calls).toBe(0)
     expect(seeded.domain.experienceIntents.get(seeded.intentId)?.status).toBe('CREATE_AUTHORIZED')
@@ -221,7 +229,7 @@ describe('v2 generation lease worker', () => {
     })
     const model = generator()
 
-    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+    await generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
 
     expect(model.calls).toBe(0)
     expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
@@ -240,7 +248,7 @@ describe('v2 generation lease worker', () => {
     }))
     const model = generator()
 
-    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+    await generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
 
     expect(model.calls).toBe(0)
     expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
@@ -264,7 +272,7 @@ describe('v2 generation lease worker', () => {
     }))
     const model = generator()
 
-    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+    await generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
 
     expect(model.calls).toBe(0)
     expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
@@ -275,7 +283,7 @@ describe('v2 generation lease worker', () => {
     const seeded = await seedAuthorized()
     const beforeEpoch = seeded.domain.global.get().proposalCatalogEpoch
 
-    await new GenerationWorker(seeded.domain, {
+    await generationWorker(seeded, {
       catalog: seeded.catalog,
       generator: generator(),
       now: () => NOW,
@@ -298,7 +306,7 @@ describe('v2 generation lease worker', () => {
   it('revalidates the sealed result and commits exactly one active Proposal', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
 
     await worker.runOnce()
     const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -351,7 +359,7 @@ describe('v2 generation lease worker', () => {
   it('does not commit a Proposal when external Pending Catalog membership changed after generation', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
 
     await worker.runOnce()
     const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -377,10 +385,10 @@ describe('v2 generation lease worker', () => {
     ])
   })
 
-  it('rechecks both Catalogs at the body mutation boundary and rejects a late Runtime change', async () => {
+  it('allows a late Runtime change after the final snapshot to stale the draft at review instead of requiring CAS', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const { result } = await exposeSealedResultForRevalidation(seeded)
     let excludedSnapshots = 0
@@ -399,72 +407,87 @@ describe('v2 generation lease worker', () => {
     await worker.runOnce()
 
     expect(model.calls).toBe(1)
-    expect(seeded.domain.proposalLineages.size).toBe(0)
-    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
-      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
-    })
-    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
-  })
-
-  it('fails closed when the adapter cannot provide an atomic Runtime Catalog guard', async () => {
-    const seeded = await seedAuthorized()
-    const model = generator()
-    let commitInvoked = false
-    const catalog: GenerationCatalogPort = {
-      ...seeded.catalog,
-      commitWithRuntimeCatalogGuard: async input => {
-        void input
-        commitInvoked = false
-        return 'INCOMPLETE'
-      },
-    }
-    const worker = new GenerationWorker(seeded.domain, { catalog, generator: model, now: () => NOW })
-    await worker.runOnce()
-    await exposeSealedResultForRevalidation(seeded)
-
-    await worker.runOnce()
-
-    expect(model.calls).toBe(1)
-    expect(commitInvoked).toBe(false)
-    expect(seeded.domain.proposalLineages.size).toBe(0)
-    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
-      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
-    })
-    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
-  })
-
-  it('keeps a durably finalized body when the Runtime guard throws while releasing its lock', async () => {
-    const seeded = await seedAuthorized()
-    const model = generator()
-    const catalog: GenerationCatalogPort = {
-      ...seeded.catalog,
-      commitWithRuntimeCatalogGuard: async input => {
-        const outcome = await seeded.catalog.commitWithRuntimeCatalogGuard(input)
-        if (outcome === 'COMMITTED') throw new Error('lock release failed after durable commit')
-        return outcome
-      },
-    }
-    const worker = new GenerationWorker(seeded.domain, { catalog, generator: model, now: () => NOW })
-    await worker.runOnce()
-    await exposeSealedResultForRevalidation(seeded)
-
-    await worker.runOnce()
-
-    expect(model.calls).toBe(1)
     expect(seeded.domain.proposalLineages.size).toBe(1)
     expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
       status: 'PROPOSAL_READY', generation: { state: 'PROPOSAL_READY' },
     })
     expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
-    expect(Object.values(seeded.domain.global.get().behaviorSignatureIndex)).toEqual([
-      expect.objectContaining({ ownerIntentId: seeded.intentId, state: 'ACTIVE' }),
-    ])
+  })
+
+  it.each(['STALE', 'INCOMPLETE'] as const)(
+    'does not call the model when the Session quiescence fence is %s',
+    async fenceState => {
+      const seeded = await seedAuthorized()
+      const model = generator()
+      seeded.setQuiescence(fenceState)
+
+      await generationWorker(seeded, {
+        catalog: seeded.catalog, generator: model, now: () => NOW,
+      }).runOnce()
+
+      expect(model.calls).toBe(0)
+      expect(seeded.domain.proposalLineages.size).toBe(0)
+      expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+        status: 'NEEDS_ATTENTION',
+        coverage: { reasonCode: `SESSION_QUIESCENCE_${fenceState}` },
+        generation: { state: 'NOT_STARTED' },
+      })
+      expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+    },
+  )
+
+  it('seals the result as stale without creating a Proposal when the Session resumes during generation', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator({ generate: async () => {
+      seeded.setQuiescence('STALE')
+      return {
+        name: 'generated-workflow',
+        description: 'A reusable generated workflow.',
+        whenToUse: 'Use when the same workflow recurs.',
+        content: '# Generated workflow\n\n1. Observe.\n2. Verify.',
+      }
+    } })
+
+    await generationWorker(seeded, {
+      catalog: seeded.catalog, generator: model, now: () => NOW,
+    }).runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
+  it('rolls back a prepared Proposal body when Session quiescence is lost during the body commit', async () => {
+    const seeded = await seedAuthorized()
+    const model = generator()
+    const worker = generationWorker(seeded, {
+      catalog: seeded.catalog, generator: model, now: () => NOW,
+    })
+    await worker.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+    seeded.setQuiescenceHook(() => {
+      const intent = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+      return intent.generation.state === 'PROPOSAL_BODY_COMMITTED' ? 'STALE' : 'VALID'
+    })
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
   })
 
   it('re-reads the exact MERGE target after generation and rejects a changed body', async () => {
     const seeded = await seedAuthorized('MERGE')
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     await exposeSealedResultForRevalidation(seeded)
     seeded.bodies.set(seeded.candidate.candidateId, '# Changed after generation\n')
@@ -482,12 +505,13 @@ describe('v2 generation lease worker', () => {
   it('never duplicates the Proposal body when commit workers race or replay', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const first = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
-    const second = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const first = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const second = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await first.runOnce()
     await exposeSealedResultForRevalidation(seeded)
 
     await Promise.all([first.runOnce(), second.runOnce()])
+    expect(seeded.domain.proposalLineages.size).toBe(1)
     await Promise.all([first.recover(), second.recover()])
 
     expect(model.calls).toBe(1)
@@ -500,7 +524,7 @@ describe('v2 generation lease worker', () => {
   it('recovers when the Intent authorization was durable but the lease promotion was lost', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     await exposeSealedResultForRevalidation(seeded)
@@ -534,7 +558,7 @@ describe('v2 generation lease worker', () => {
   it('repairs a prepared Proposal mutation from the authoritative body without generating again', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -589,7 +613,7 @@ describe('v2 generation lease worker', () => {
   it('finalizes a prepared Proposal when both body and Intent body receipt were already durable', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -638,10 +662,10 @@ describe('v2 generation lease worker', () => {
     ])
   })
 
-  it('rolls a prepared body-committed crash back to stale attention when the Runtime guard is unavailable', async () => {
+  it('rolls a prepared body-committed crash back to stale attention when Session quiescence is lost', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -676,13 +700,10 @@ describe('v2 generation lease worker', () => {
         preparedAt: new Date(NOW).toISOString(),
       },
     }))
-    const unavailableCatalog: GenerationCatalogPort = {
-      ...seeded.catalog,
-      commitWithRuntimeCatalogGuard: async () => 'INCOMPLETE',
-    }
+    seeded.setQuiescence('STALE')
 
-    await new GenerationWorker(seeded.domain, {
-      catalog: unavailableCatalog, generator: model, now: () => NOW,
+    await generationWorker(seeded, {
+      catalog: seeded.catalog, generator: model, now: () => NOW,
     }).recover()
 
     expect(model.calls).toBe(1)
@@ -708,7 +729,7 @@ describe('v2 generation lease worker', () => {
     for (const keepPreparedJournal of [true, false]) {
       const seeded = await seedAuthorized()
       const model = generator()
-      const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+      const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
       await worker.runOnce()
       const resultGlobal = seeded.domain.global.get()
       const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -763,7 +784,7 @@ describe('v2 generation lease worker', () => {
   it('rejects a schema-valid prepared Proposal body that differs from the sealed result', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     const { result } = await exposeSealedResultForRevalidation(seeded)
@@ -825,7 +846,7 @@ describe('v2 generation lease worker', () => {
   it('keeps ACTIVE_COMPLETE leased when the exact ACTIVE behavior index is missing', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     await exposeSealedResultForRevalidation(seeded)
@@ -858,7 +879,7 @@ describe('v2 generation lease worker', () => {
   it('keeps ACTIVE_COMPLETE leased when immutable target binding was changed', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const resultGlobal = seeded.domain.global.get()
     await exposeSealedResultForRevalidation(seeded)
@@ -915,7 +936,7 @@ describe('v2 generation lease worker', () => {
       },
     ] as const) {
       const seeded = await seedAuthorized()
-      await new GenerationWorker(seeded.domain, {
+      await generationWorker(seeded, {
         catalog: seeded.catalog,
         generator: generator({ generate: testCase.generate }),
         now: () => NOW,
@@ -933,7 +954,7 @@ describe('v2 generation lease worker', () => {
 
   it('rejects a returned body that exceeds the exact route output budget', async () => {
     const seeded = await seedAuthorized()
-    await new GenerationWorker(seeded.domain, {
+    await generationWorker(seeded, {
       catalog: seeded.catalog,
       generator: generator({ generate: async () => ({
         name: 'oversized-workflow',
@@ -964,7 +985,7 @@ describe('v2 generation lease worker', () => {
         name: 'late-workflow', description: 'late', whenToUse: 'late', content: '# Late\n',
       }
     } })
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     const pending = worker.runOnce()
     await didEnter
     await worker.recover()
@@ -993,7 +1014,7 @@ describe('v2 generation lease worker', () => {
       await blocked
       return { name: 'late-workflow', description: 'late', whenToUse: 'late', content: '# Late\n' }
     } })
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     const pending = worker.runOnce()
     await didEnter
     expect(seeded.domain.global.get().proposalGenerationLease?.state).toBe('CALL_RESERVED')
@@ -1015,7 +1036,7 @@ describe('v2 generation lease worker', () => {
   it('releases an orphan NOT_CALLED lease after its Intent already entered pre-call attention', async () => {
     const seeded = await seedAuthorized()
     const model = generator()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW })
     await worker.runOnce()
     const completed = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
     const lease = seeded.domain.global.get().proposalGenerationLease!
@@ -1058,7 +1079,7 @@ describe('v2 generation lease worker', () => {
     seeded.bodies.set(seeded.candidate.candidateId, '# Changed after coverage\n')
     const model = generator()
 
-    await new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
+    await generationWorker(seeded, { catalog: seeded.catalog, generator: model, now: () => NOW }).runOnce()
 
     expect(seeded.reads).toBe(1)
     expect(model.calls).toBe(0)
@@ -1070,7 +1091,7 @@ describe('v2 generation lease worker', () => {
 
   it('finalizes a sealed result when recovery finds the prepared Catalog journal', async () => {
     const seeded = await seedAuthorized()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: generator(), now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: generator(), now: () => NOW })
     await worker.runOnce()
     const intent = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
     const result = intent.generation.sealedResult!
@@ -1116,7 +1137,7 @@ describe('v2 generation lease worker', () => {
 
   it('abandons an uncommitted prepared result and seals RESULT_LOST instead of replaying', async () => {
     const seeded = await seedAuthorized()
-    const worker = new GenerationWorker(seeded.domain, { catalog: seeded.catalog, generator: generator(), now: () => NOW })
+    const worker = generationWorker(seeded, { catalog: seeded.catalog, generator: generator(), now: () => NOW })
     await worker.runOnce()
     const completed = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
     const result = completed.generation.sealedResult!
