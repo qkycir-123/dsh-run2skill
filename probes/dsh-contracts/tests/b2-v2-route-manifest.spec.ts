@@ -8,10 +8,10 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DshV2RouteSnapshotAdapter } from '../src/adapters/dsh-llm/v2-route-snapshot.js'
+import { DshV2CatalogAdapter } from '../src/adapters/dsh-skills/v2-catalog-adapter.js'
 import { DshV2RootManifestAdapter } from '../src/adapters/dsh-skills/v2-root-manifest.js'
-import { canonicalJson } from '../src/domain/learn/identity.js'
-import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import type { TurnObservationV2 } from '../src/domain/v2/index.js'
+import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 
 const temporaryDirectories: string[] = []
 afterEach(async () => {
@@ -74,16 +74,21 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       expect(streamed).toBe(false)
 
       const view = { cwd: project }
-      const runtimeCatalog = {
-        observeRuntimeCatalog: async () => {
-          const first = await ctx.skills.snapshot(view)
-          const second = await ctx.skills.snapshot(view)
-          return {
-            complete: first.complete && second.complete && canonicalJson(first.skills) === canonicalJson(second.skills),
-            runtimeCatalogDigest: sha256Utf8(canonicalJson(first.skills)),
-          }
-        },
-      }
+      const runtimeCatalog = new DshV2CatalogAdapter(createMemoryRun2skillV2Domain(), {
+        registry: ctx.skills,
+        resolveView: key => key === 'sl_probe' ? view : undefined,
+        resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+          ? {
+              scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+              canonicalRootPath: join(project, '.dsh', 'skills'),
+            }
+          : summary.source === 'user-dsh'
+            ? {
+                scope: 'USER', expectedProvider: 'filesystem', expectedSource: 'user-dsh',
+                canonicalRootPath: join(dshHome, 'skills'),
+              }
+            : undefined,
+      })
       const manifest = new DshV2RootManifestAdapter({
         resolveSession: () => ({
           cwd: project,
@@ -99,6 +104,13 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       })
       const before = await manifest.capture('sl_probe')
       expect(before.complete).toBe(true)
+      expect(before.ownershipCandidates).toHaveLength(4)
+      expect(before.ownershipCandidates?.find(candidate => candidate.name === 'same-skill')).toMatchObject({
+        provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: true,
+      })
+      expect(before.ownershipCandidates?.every(candidate => /^[a-f0-9]{64}$/u.test(candidate.bodyDigest))).toBe(true)
+      expect(before.ownershipCandidates?.some(candidate => candidate.targetPathDigest !== undefined)).toBe(true)
+      expect(JSON.stringify(before)).not.toContain(base)
 
       await writeSkill(join(project, '.agents', 'skills'), 'same-skill', 'Shadowed Agent copy')
       const after = await manifest.capture('sl_probe')

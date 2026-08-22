@@ -28,6 +28,7 @@ const runtimeSummarySchema = z.object({
   source: identity,
   provider: identity,
   resourceBase: resourceBaseSchema.optional(),
+  path: z.string().min(1).max(32 * 1024).optional(),
 }).passthrough()
 const runtimeSnapshotSchema = z.object({
   complete: z.boolean(),
@@ -217,6 +218,34 @@ export class DshV2CatalogAdapter<TView extends object> {
     return { complete: true, runtimeCatalogDigest: first.digest }
   }
 
+  async observeOwnershipCatalog(sessionLifecycleKey: string): Promise<{
+    readonly complete: boolean
+    readonly runtimeCatalogDigest: string
+    readonly candidates: readonly {
+      readonly candidateId: string
+      readonly name: string
+      readonly provider: string
+      readonly source: string
+      readonly scope: 'PROJECT' | 'USER'
+      readonly writable: boolean
+      readonly targetPathDigest?: string
+      readonly bodyDigest: string
+    }[]
+  }> {
+    const unavailable = { complete: false, runtimeCatalogDigest: EMPTY_DIGEST, candidates: [] }
+    const view = this.#resolveView(sessionLifecycleKey)
+    if (view === undefined) return unavailable
+    const first = await this.#ownershipRuntime(view, sessionLifecycleKey)
+    if (!first.complete) return unavailable
+    const second = await this.#ownershipRuntime(view, sessionLifecycleKey)
+    if (!second.complete || canonicalJson(first) !== canonicalJson(second)) return unavailable
+    return {
+      complete: true,
+      runtimeCatalogDigest: first.runtimeCatalogDigest,
+      candidates: first.candidates,
+    }
+  }
+
   async #recallSnapshot(batch: SessionBatchV2, intent: ExperienceIntentV2): Promise<RecallCatalogSnapshot> {
     const captured = await this.#capture(batch, intent)
     return {
@@ -366,6 +395,74 @@ export class DshV2CatalogAdapter<TView extends object> {
     }
     candidates.sort((left, right) => left.summary.candidateId.localeCompare(right.summary.candidateId))
     return { complete: true, digest: sha256Utf8(canonicalJson(candidates.map(item => item.summary))), candidates }
+  }
+
+  async #ownershipRuntime(view: TView, sessionLifecycleKey: string): Promise<{
+    readonly complete: boolean
+    readonly runtimeCatalogDigest: string
+    readonly candidates: readonly {
+      readonly candidateId: string
+      readonly name: string
+      readonly provider: string
+      readonly source: string
+      readonly scope: 'PROJECT' | 'USER'
+      readonly writable: boolean
+      readonly targetPathDigest?: string
+      readonly bodyDigest: string
+    }[]
+  }> {
+    const unavailable = { complete: false, runtimeCatalogDigest: EMPTY_DIGEST, candidates: [] }
+    const runtime = await this.#runtime(view, sessionLifecycleKey)
+    if (!runtime.complete) return unavailable
+    const candidates = []
+    for (const candidate of runtime.candidates) {
+      let raw: unknown
+      try {
+        raw = await this.#registry.get(candidate.raw.name, view)
+      } catch {
+        return unavailable
+      }
+      const definition = runtimeDefinitionSchema.safeParse(raw)
+      if (!definition.success) return unavailable
+      const runtimeIdentity = this.#resolveRuntimeIdentity(
+        definition.data,
+        view,
+        { sessionLifecycleKey },
+      )
+      if (runtimeIdentity === undefined) return unavailable
+      const loadedSummary: RecallCatalogSummary = {
+        candidateId: deriveRecallCandidateId({
+          provider: definition.data.provider,
+          source: definition.data.source,
+          scope: runtimeIdentity.scope,
+          name: definition.data.name,
+          rootIdentityDigest: runtimeIdentity.rootIdentityDigest,
+        }),
+        name: definition.data.name,
+        description: definition.data.description,
+        ...(definition.data.whenToUse === undefined ? {} : { whenToUse: definition.data.whenToUse }),
+        provider: definition.data.provider,
+        source: definition.data.source,
+        scope: runtimeIdentity.scope,
+        writable: runtimeIdentity.writable,
+        rootIdentityDigest: runtimeIdentity.rootIdentityDigest,
+      }
+      if (canonicalJson(loadedSummary) !== canonicalJson(candidate.summary)) return unavailable
+      candidates.push({
+        candidateId: candidate.summary.candidateId,
+        name: candidate.summary.name,
+        provider: candidate.summary.provider,
+        source: candidate.summary.source,
+        scope: candidate.summary.scope,
+        writable: candidate.summary.writable,
+        ...(definition.data.path === undefined
+          ? {}
+          : { targetPathDigest: sha256Utf8(canonicalJson({ path: canonicalPath(definition.data.path) })) }),
+        bodyDigest: sha256Utf8(definition.data.content),
+      })
+    }
+    candidates.sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    return { complete: true, runtimeCatalogDigest: runtime.digest, candidates }
   }
 
   async #read(

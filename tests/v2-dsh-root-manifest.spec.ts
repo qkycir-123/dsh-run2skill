@@ -109,6 +109,37 @@ describe('DshV2RootManifestAdapter', () => {
     expect(after.rootManifestDigest).not.toBe(before.rootManifestDigest)
   })
 
+  it('binds a complete path-free ownership candidate manifest into the batch baseline', async () => {
+    const root = await tempRoot()
+    const project = join(root, 'project')
+    await mkdir(join(project, '.git'), { recursive: true })
+    const candidates = [{
+      candidateId: 'candidate-1', name: 'workflow', provider: 'filesystem', source: 'project-dsh',
+      scope: 'PROJECT' as const, writable: true, targetPathDigest: 'b'.repeat(64), bodyDigest: 'c'.repeat(64),
+    }]
+    const adapter = new DshV2RootManifestAdapter({
+      resolveSession: () => ({
+        cwd: project,
+        configuration: {
+          profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true,
+          customSkillDirs: [], configuredDshHome: join(root, 'dsh-home'), configuredAgentsHome: join(root, 'agents-home'),
+        },
+      }),
+      runtimeCatalog: {
+        observeRuntimeCatalog: async () => ({ complete: true, runtimeCatalogDigest: 'a'.repeat(64) }),
+        observeOwnershipCatalog: async () => ({
+          complete: true, runtimeCatalogDigest: 'a'.repeat(64), candidates,
+        }),
+      },
+      environment: {}, homeDirectory: () => join(root, 'home'),
+    })
+
+    await expect(adapter.capture('sl_session')).resolves.toMatchObject({
+      complete: true,
+      ownershipCandidates: candidates,
+    })
+  })
+
   it('fails closed on environment drift, runtime incompleteness, or a mixed root/catalog sample', async () => {
     const root = await tempRoot()
     const project = join(root, 'project')

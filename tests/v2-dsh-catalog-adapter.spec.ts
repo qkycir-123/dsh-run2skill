@@ -119,6 +119,64 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect(seenViews.every(item => item === view)).toBe(true)
   })
 
+  it('captures stable exact bodies and path-free target identities for ownership baselines', async () => {
+    const { domain, fixture } = await seed()
+    const view = { cwd: 'D:\\repo', scope: { id: 'agent' }, signal: new AbortController().signal }
+    const exactSkillBytes = [
+      '---', 'name: existing-workflow', 'description: An existing workflow.', '---',
+      '', '# Existing workflow', '', 'x'.repeat(16 * 1024),
+    ].join('\n')
+    expect(Buffer.byteLength(exactSkillBytes, 'utf8')).toBeGreaterThan(8 * 1024)
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
+        get: async () => ({
+          ...runtimeSkill,
+          path: `${runtimeSkill.resourceBase.path}\\SKILL.md`,
+          content: exactSkillBytes,
+        }),
+      },
+      resolveView: () => view,
+      resolveStockWritableRoot: () => ({
+        scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+        canonicalRootPath: 'D:\\repo\\.dsh\\skills',
+      }),
+    })
+
+    const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)
+    expect(observed.complete).toBe(true)
+    expect(observed.candidates).toHaveLength(1)
+    expect(observed.candidates[0]).toMatchObject({
+      name: runtimeSkill.name,
+      provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: true,
+      bodyDigest: sha256Utf8(exactSkillBytes),
+    })
+    expect(observed.candidates[0]?.targetPathDigest).toMatch(/^[a-f0-9]{64}$/u)
+    expect(JSON.stringify(observed)).not.toContain('D:\\repo')
+  })
+
+  it('fails closed when an exact candidate body changes during ownership capture', async () => {
+    const { domain, fixture } = await seed()
+    let reads = 0
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
+        get: async () => ({
+          ...runtimeSkill,
+          path: `${runtimeSkill.resourceBase.path}\\SKILL.md`,
+          content: reads++ === 0 ? '# First body' : '# Changed body',
+        }),
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+    })
+
+    await expect(adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)).resolves.toEqual({
+      complete: false,
+      runtimeCatalogDigest: sha256Utf8(canonicalJson([])),
+      candidates: [],
+    })
+  })
+
   it('keeps every public DSH winner readable while granting writes only to canonical DSH bundles', async () => {
     const { domain, fixture, sessionBatch } = await seed()
     const view = { cwd: 'D:\\repo', scope: { id: 'agent' }, signal: new AbortController().signal }
