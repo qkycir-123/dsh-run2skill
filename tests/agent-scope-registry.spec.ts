@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ExactAgentScopeRegistry } from '../src/adapters/dsh-skills/index.js'
 import { deriveSessionCwdDigest } from '../src/domain/observe/signal-key.js'
+import { deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import { makeWorkItem } from './support/work-item-fixture.js'
 import { resolve, sep } from 'node:path'
 
@@ -69,5 +70,22 @@ describe('ExactAgentScopeRegistry', () => {
     registry.register(agent('concurrent-session', 400, project))
     expect(registry.resolveUniqueCwd(project)).toEqual({ status: 'UNAVAILABLE' })
     release()
+  })
+
+  it('resolves an exact v2 lifecycle key and invalidates it on release', () => {
+    const registry = new ExactAgentScopeRegistry<object>()
+    const current = agent('session-v2', 500, 'D:\\repo')
+    const release = registry.register(current)
+    const lifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: current.id,
+      sessionCreatedAt: current.session.header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(current.session.header.cwd),
+    })
+
+    expect(registry.resolveLifecycleKey(lifecycleKey)).toMatchObject({
+      status: 'AVAILABLE', agent: current, cwd: 'D:\\repo', lifecycleKey,
+    })
+    release()
+    expect(registry.resolveLifecycleKey(lifecycleKey)).toEqual({ status: 'UNAVAILABLE' })
   })
 })

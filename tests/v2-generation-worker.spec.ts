@@ -8,6 +8,7 @@ import {
 import { CompleteCatalogRecallWorker, deriveRecallCandidateId, type RecallCatalogSnapshot } from '../src/application/recall/index.js'
 import {
   deriveCreateTargetDigestV2,
+  deriveProposalCatalogMutationAnchorV2,
   deriveProposalCatalogMutationIdV2,
   ExperienceIntentV2Schema,
   GlobalV2Schema,
@@ -18,6 +19,14 @@ import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-dom
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
 const NOW = Date.parse('2026-08-22T01:00:00.000Z')
+
+function testCatalogAnchor(epoch: number, ownerId = 'generation-test-catalog') {
+  return deriveProposalCatalogMutationAnchorV2({
+    ownerId,
+    kind: 'LEGACY',
+    inputCatalogEpoch: epoch - 1,
+  })
+}
 
 function summary() {
   const facts = {
@@ -87,7 +96,11 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
   expect(authorized.status).toBe(action === 'CREATE' ? 'CREATE_AUTHORIZED' : 'MERGE_AUTHORIZED')
   expect(authorized.coverage.targetDigest).toMatch(/^[a-f0-9]{64}$/u)
   if (action === 'CREATE') expect(authorized.coverage.targetDigest).toBe(deriveCreateTargetDigestV2(authorized))
-  await domain.global.set(GlobalV2Schema.parse({ ...domain.global.get(), proposalCatalogEpoch: snapshot.catalogEpoch }))
+  await domain.global.set(GlobalV2Schema.parse({
+    ...domain.global.get(),
+    proposalCatalogEpoch: snapshot.catalogEpoch,
+    proposalCatalogLastMutation: testCatalogAnchor(snapshot.catalogEpoch),
+  }))
 
   let generationSnapshot = {
     complete: true,
@@ -245,6 +258,10 @@ describe('v2 generation lease worker', () => {
     await seeded.domain.global.set(GlobalV2Schema.parse({
       ...seeded.domain.global.get(),
       proposalCatalogEpoch: seeded.domain.global.get().proposalCatalogEpoch + 1,
+      proposalCatalogLastMutation: testCatalogAnchor(
+        seeded.domain.global.get().proposalCatalogEpoch + 1,
+        'external-catalog-change',
+      ),
     }))
     const model = generator()
 
@@ -297,6 +314,11 @@ describe('v2 generation lease worker', () => {
     ])
     expect(seeded.domain.global.get()).toMatchObject({
       proposalCatalogEpoch: beforeEpoch + 1,
+      proposalCatalogLastMutation: {
+        kind: 'GENERATION_RESULT',
+        ownerId: intent.generation.sealedResult!.resultId,
+        digest: intent.generation.sealedResult!.mutationReceiptDigest,
+      },
       proposalGenerationLease: { state: 'RESULT_COMMITTED' },
     })
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
@@ -348,7 +370,13 @@ describe('v2 generation lease worker', () => {
       },
     })
     const global = seeded.domain.global.get()
+    if (lineage?.origin !== 'RUN2SKILL_V2') throw new Error('expected native Proposal lineage')
     expect(global.proposalCatalogEpoch).toBe(result.outcomeCatalogEpoch + 1)
+    expect(global.proposalCatalogLastMutation).toMatchObject({
+      kind: 'PROPOSAL',
+      ownerId: lineage.proposalRevisions[0]!.proposalId,
+      digest: lineage.proposalRevisions[0]!.catalogMutationReceiptDigest,
+    })
     expect(global.proposalGenerationLease).toBeUndefined()
     expect(global.proposalCatalogMutationJournal).toBeUndefined()
     expect(Object.values(global.behaviorSignatureIndex)).toEqual([
@@ -1053,6 +1081,7 @@ describe('v2 generation lease worker', () => {
     await seeded.domain.global.set(GlobalV2Schema.parse({
       ...seeded.domain.global.get(),
       proposalCatalogEpoch: lease.catalogEpoch,
+      proposalCatalogLastMutation: testCatalogAnchor(lease.catalogEpoch),
       proposalGenerationLease: {
         schemaVersion: 1,
         leaseId: lease.leaseId,
@@ -1100,6 +1129,7 @@ describe('v2 generation lease worker', () => {
     await seeded.domain.global.set(GlobalV2Schema.parse({
       ...completedGlobal,
       proposalCatalogEpoch: result.inputCatalogEpoch,
+      proposalCatalogLastMutation: testCatalogAnchor(result.inputCatalogEpoch),
       proposalGenerationLease: {
         schemaVersion: 1,
         leaseId: lease.leaseId,
@@ -1159,6 +1189,7 @@ describe('v2 generation lease worker', () => {
     await seeded.domain.global.set(GlobalV2Schema.parse({
       ...completedGlobal,
       proposalCatalogEpoch: result.inputCatalogEpoch,
+      proposalCatalogLastMutation: testCatalogAnchor(result.inputCatalogEpoch),
       proposalGenerationLease: {
         schemaVersion: 1,
         leaseId: lease.leaseId,

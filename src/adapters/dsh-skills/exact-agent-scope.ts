@@ -68,6 +68,13 @@ export class ExactAgentScopeRegistry<TAgent extends object> {
       : { status: 'AVAILABLE', lifecycleKey, ...entry }
   }
 
+  resolveLifecycleKey(lifecycleKey: string): AgentScopeResolution<TAgent> {
+    const entry = this.scopes.get(lifecycleKey)
+    return entry === undefined
+      ? { status: 'UNAVAILABLE' }
+      : { status: 'AVAILABLE', lifecycleKey, ...entry }
+  }
+
   resolveUniqueCwd(cwd: string): AgentScopeResolution<TAgent> {
     const expected = normalize(resolve(cwd))
     const matches = [...this.scopes.entries()].filter(([, entry]) => {

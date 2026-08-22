@@ -424,6 +424,7 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
         provider: 'filesystem',
         source: 'project-dsh',
         description: 'Project wins',
+        resourceBase: { kind: 'directory', path: join(workspace.path, '.dsh', 'skills', 'same-skill') },
       })
       expect(initial.skills.some(skill => skill.name === 'hidden-system')).toBe(false)
 
@@ -434,6 +435,7 @@ describe('CP-SKL-001 and CP-ROOT-001 catalog and root parity', () => {
       expect(projectSkill).toMatchObject({
         source: 'project-dsh',
         path: join(expectedProjectRoot, 'same-skill', 'SKILL.md'),
+        resourceBase: { kind: 'directory', path: join(expectedProjectRoot, 'same-skill') },
         content: 'Project body v1.',
       })
       expect(userSkill).toMatchObject({

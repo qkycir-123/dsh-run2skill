@@ -6,6 +6,7 @@ import {
   SessionBatchV2Schema,
   TurnObservationV2Schema,
   type GlobalV2,
+  deriveProposalCatalogGenesisAnchorV2,
 } from '../../domain/v2/index.js'
 import type { Run2skillV2Domain } from './v2-types.js'
 import type { Run2skillStorageContext } from './types.js'
@@ -34,6 +35,7 @@ export function createInitialGlobalV2(): GlobalV2 {
     sessions: {},
     behaviorSignatureIndex: {},
     proposalCatalogEpoch: 0,
+    proposalCatalogLastMutation: deriveProposalCatalogGenesisAnchorV2(),
   }
 }
 

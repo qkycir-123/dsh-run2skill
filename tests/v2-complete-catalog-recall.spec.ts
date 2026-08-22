@@ -251,6 +251,7 @@ describe('v2 complete Catalog recall', () => {
     expect(recalled).toMatchObject({
       recall: { candidates: [{
         candidateId: item.candidateId,
+        capability: 'READABLE_NOT_MERGEABLE',
         summary: {
           provider: expect.stringMatching(/^provider-[a-f0-9]{64}$/),
           source: expect.stringMatching(/^source-[a-f0-9]{64}$/),
