@@ -10,6 +10,7 @@ export {
   projectDshTurnObservationV2,
   type DshTurnObservationV2Result,
 } from './v2-turn-observation.js'
+export * from './v2-session-activity.js'
 export { deriveSessionCwdDigest } from '../../domain/observe/signal-key.js'
 export type {
   DirectUserCoordinate,

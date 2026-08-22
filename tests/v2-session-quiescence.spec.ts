@@ -14,7 +14,13 @@ import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 const BASE = Date.parse('2026-08-22T00:00:00.000Z')
 const IDLE_MS = 30 * 60 * 1000
 
-function activity(initial = { complete: true, activeAgent: false, activityRevision: 'process-a:4' }) {
+function activity(initial = {
+  complete: true,
+  activeAgent: false,
+  activityRevision: 'process-a:4',
+  durableLatestTurnEndSeq: 8,
+  durableOpenTurn: false,
+}) {
   let current = initial
   const port: SessionActivityObservationPort & { set(value: typeof initial): void } = {
     observe: async () => ({ ...current }),
@@ -106,11 +112,17 @@ describe('v2 Session quiescence fence', () => {
 
   it('does not release while an Agent is active or any newer Turn has appeared', async () => {
     const seeded = await seedWaiting({ explicit: false })
-    const port = activity({ complete: true, activeAgent: true, activityRevision: 'process-a:5' })
+    const port = activity({
+      complete: true, activeAgent: true, activityRevision: 'process-a:5',
+      durableLatestTurnEndSeq: 8, durableOpenTurn: false,
+    })
     const worker = new SessionQuiescenceCoordinator(seeded.domain, { activity: port, now: () => BASE + IDLE_MS })
     expect(await worker.runOnce()).toBe('IDLE')
 
-    port.set({ complete: true, activeAgent: false, activityRevision: 'process-a:6' })
+    port.set({
+      complete: true, activeAgent: false, activityRevision: 'process-a:6',
+      durableLatestTurnEndSeq: 10, durableOpenTurn: false,
+    })
     const global = seeded.domain.global.get()
     await seeded.domain.global.set({
       ...global,
@@ -157,14 +169,20 @@ describe('v2 Session quiescence fence', () => {
     }))
     await expect(worker.validate(ready.intentId)).resolves.toBe('VALID')
 
-    port.set({ complete: true, activeAgent: true, activityRevision: 'process-a:5' })
+    port.set({
+      complete: true, activeAgent: true, activityRevision: 'process-a:5',
+      durableLatestTurnEndSeq: 8, durableOpenTurn: false,
+    })
     await expect(worker.validate(ready.intentId)).resolves.toBe('STALE')
   })
 
   it('fails closed when the live activity observation is incomplete', async () => {
     const seeded = await seedWaiting({ explicit: true })
     const worker = new SessionQuiescenceCoordinator(seeded.domain, {
-      activity: activity({ complete: false, activeAgent: false, activityRevision: 'process-a:4' }),
+      activity: activity({
+        complete: false, activeAgent: false, activityRevision: 'process-a:4',
+        durableLatestTurnEndSeq: 8, durableOpenTurn: false,
+      }),
       now: () => BASE + IDLE_MS,
     })
     expect(await worker.runOnce()).toBe('IDLE')
@@ -198,7 +216,10 @@ describe('v2 Session quiescence fence', () => {
         },
       },
     })
-    observation.resolve({ complete: true, activeAgent: false, activityRevision: 'process-a:4' })
+    observation.resolve({
+      complete: true, activeAgent: false, activityRevision: 'process-a:4',
+      durableLatestTurnEndSeq: seeded.batch.lastTurnEndSeq + 1, durableOpenTurn: false,
+    })
 
     await expect(pending).resolves.toBe('IDLE')
     expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
@@ -235,8 +256,28 @@ describe('v2 Session quiescence fence', () => {
         },
       },
     })
-    observation.resolve({ complete: true, activeAgent: false, activityRevision: 'process-a:4' })
+    observation.resolve({
+      complete: true, activeAgent: false, activityRevision: 'process-a:4',
+      durableLatestTurnEndSeq: seeded.batch.lastTurnEndSeq + 1, durableOpenTurn: false,
+    })
 
     await expect(pending).resolves.toBe('STALE')
+  })
+
+  it.each([
+    { latest: 10, open: false },
+    { latest: 8, open: true },
+  ])('does not release when durable Session facts are ahead or open: %o', async ({ latest, open }) => {
+    const seeded = await seedWaiting({ explicit: true })
+    const worker = new SessionQuiescenceCoordinator(seeded.domain, {
+      activity: activity({
+        complete: true, activeAgent: false, activityRevision: `durable:${latest}:${open}`,
+        durableLatestTurnEndSeq: latest, durableOpenTurn: open,
+      }),
+      now: () => BASE + 1,
+    })
+
+    expect(await worker.runOnce()).toBe('IDLE')
+    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
   })
 })
