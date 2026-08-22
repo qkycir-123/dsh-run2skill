@@ -90,12 +90,18 @@ interface ToolEvidence {
   readonly unattributedBodyEvidence: boolean
 }
 
-function pathApi(value: string): typeof win32 | typeof posix {
-  return /^[a-zA-Z]:[\\/]/u.test(value) || value.includes('\\') ? win32 : posix
+function isWindowsPath(value: string): boolean {
+  return /^[a-zA-Z]:[\\/]/u.test(value) || value.includes('\\')
+}
+
+function pathApi(value: string, cwd?: string): typeof win32 | typeof posix {
+  if (isWindowsPath(value)) return win32
+  if (posix.isAbsolute(value)) return posix
+  return cwd !== undefined && isWindowsPath(cwd) ? win32 : posix
 }
 
 function canonicalPath(value: string, cwd?: string): string {
-  const api = pathApi(value)
+  const api = pathApi(value, cwd)
   const resolved = api.isAbsolute(value) ? api.resolve(value) : api.resolve(cwd ?? '.', value)
   return api === win32 ? resolved.toLowerCase() : resolved
 }
@@ -390,9 +396,28 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
       )
       const toolEvidence = analyzeTools(window, session.header.cwd, knownSkillTargetDigests)
       const changes = catalogComplete ? changedCandidates(baselineCandidates, endCandidates) : []
+      const changedCandidateIds = new Set(changes.map(({ baseline, end: current }) => (
+        current ?? baseline!
+      ).candidateId))
+      const baselineByCandidateId = new Map(
+        (baselineCandidates ?? []).map(candidate => [candidate.candidateId, candidate]),
+      )
+      const stableExactRewrites = catalogComplete
+        ? endCandidates
+            .filter(current => (
+              !changedCandidateIds.has(current.candidateId)
+              && current.targetPathDigest !== undefined
+              && toolEvidence.writes.some(write => (
+                !write.failed
+                && write.targetPathDigest === current.targetPathDigest
+                && write.readbackBodyDigest === current.bodyDigest
+              ))
+            ))
+            .map(current => ({ baseline: baselineByCandidateId.get(current.candidateId), end: current }))
+        : []
       let activity = toolEvidence.activity
       const exactAttributedWrites = new Set<ParsedWrite>()
-      const projected = changes.map(({ baseline, end: current }) => {
+      const projected = [...changes, ...stableExactRewrites].map(({ baseline, end: current }) => {
         const facts = current ?? baseline!
         const matchingWrites = current?.targetPathDigest === undefined
           ? []

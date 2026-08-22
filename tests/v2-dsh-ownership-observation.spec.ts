@@ -177,6 +177,34 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
   })
 
+  it('binds an exact successful same-content rewrite of an existing Skill', async () => {
+    const existing = candidate()
+    const observed = harness({
+      baselineCandidates: [existing], endCandidates: [existing],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-rewrite', name: 'write',
+          arguments: JSON.stringify({ file_path: skillPath, content: exactSkillBytes }),
+        }),
+        toolResult(4, 'call-rewrite'),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      agentActivity: 'WRITE_SUCCEEDED',
+      changedCandidates: [{
+        candidateId: existing.candidateId,
+        writeAttribution: 'AGENT_WRITE_SUCCEEDED', intentBinding: 'MATCH',
+      }],
+    })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'RESOLVED_BY_AGENT',
+      ownership: { reasonCode: 'AGENT_SAVED_MATCHING_SKILL', resolvedCandidateId: existing.candidateId },
+    })
+  })
+
   it('does not bind a matching body saved to a different persistence scope', async () => {
     const userCandidate = { ...candidate(exactSkillBody, 'USER'), candidateId: 'candidate-user' }
     const observed = harness({
@@ -249,6 +277,34 @@ describe('real DSH Agent-first ownership observation adapter', () => {
           arguments: JSON.stringify({ path: customPath, command: 'str_replace', old_str: 'old', new_str: 'new' }),
         }),
         toolResult(5, 'call-edit', true),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ agentActivity: 'WRITE_FAILED' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_WRITE_FAILED' },
+    })
+  })
+
+  it.each([
+    ['edit', { file_path: 'custom-root/legacy.md', old_string: 'old', new_string: 'new' }],
+    ['str_replace_editor', { path: 'custom-root/legacy.md', command: 'str_replace', old_str: 'old', new_str: 'new' }],
+  ])('recognizes a failed %s using a forward-slash path relative to a Windows cwd', async (name, args) => {
+    const customPath = 'D:\\repo\\custom-root\\legacy.md'
+    const customCandidate = {
+      ...candidate(exactSkillBody, 'PROJECT', customPath),
+      candidateId: 'candidate-custom-relative', source: 'custom', writable: false,
+    }
+    const observed = harness({
+      baselineCandidates: [customCandidate], endCandidates: [customCandidate],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-relative', name,
+          arguments: JSON.stringify(args),
+        }),
+        toolResult(4, 'call-relative', true),
       ],
     })
 
