@@ -111,11 +111,11 @@ describe('run2skill_v2 storage contract', () => {
     expect(ExperienceIntentV2Schema.parse({
       ...coverageReadyAfterRefresh,
       status: 'COVERAGE_ANALYZING',
-      coverage: { state: 'ANALYZING' },
+      coverage: { state: 'ANALYZING', retryUsed: coverageReadyAfterRefresh.coverage.retryUsed },
     })).toEqual({
       ...coverageReadyAfterRefresh,
       status: 'COVERAGE_ANALYZING',
-      coverage: { state: 'ANALYZING' },
+      coverage: { state: 'ANALYZING', retryUsed: coverageReadyAfterRefresh.coverage.retryUsed },
     })
     const refreshedLeaseId = `lease_${'a'.repeat(64)}`
     const refreshedCallId = `call_${'b'.repeat(64)}`
@@ -138,6 +138,10 @@ describe('run2skill_v2 storage contract', () => {
       provider: coverageReadyAfterRefresh.recall.scanRouteProvider,
       model: coverageReadyAfterRefresh.recall.scanRouteModel,
       policyVersion: 'coverage-v1',
+      routeMaxInputBytes: fixture.sessionBatch.routeSnapshot.maxInputBytes,
+      routeMaxOutputBytes: fixture.sessionBatch.routeSnapshot.maxOutputBytes,
+      reserveBytes: 8 * 1024,
+      mergeOutputReserveBytes: 2 * 1024,
     })
     const refreshedCoveragePlanDigest = deriveCoveragePlanDigestV2({
       coverageBindingDigest: refreshedCoverageBindingDigest,
@@ -145,7 +149,7 @@ describe('run2skill_v2 storage contract', () => {
       pendingCatalogDigest: refreshedRecall.pendingCatalogDigest,
       catalogEpoch: refreshedRecall.catalogEpoch,
       catalogMutationReceiptDigest: refreshedRecall.catalogMutationReceiptDigest,
-      candidates: [],
+      pages: [],
     })
     const {
       duplicateBarrier: _replacedRefreshBarrier,
@@ -156,14 +160,20 @@ describe('run2skill_v2 storage contract', () => {
       status: 'NEEDS_ATTENTION' as const,
       coverage: {
         state: 'CREATE' as const,
+        retryUsed: coverageReadyAfterRefresh.coverage.retryUsed,
         inputDigest: refreshedCoveragePlanDigest,
         targetDigest: refreshedSealedResult.targetDigest,
         basisRevision: coverageReadyAfterRefresh.revision,
         routeProvider: coverageReadyAfterRefresh.recall.scanRouteProvider,
         routeModel: coverageReadyAfterRefresh.recall.scanRouteModel,
+        routeMaxInputBytes: 32 * 1024,
+        routeMaxOutputBytes: 8 * 1024,
+        reserveBytes: 8 * 1024,
+        mergeOutputReserveBytes: 2 * 1024,
         policyVersion: 'coverage-v1',
         bindingDigest: refreshedCoverageBindingDigest,
         planDigest: refreshedCoveragePlanDigest,
+        pages: [],
         candidateBindings: [],
         decisions: [],
       },

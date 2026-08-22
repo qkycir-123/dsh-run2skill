@@ -52,7 +52,7 @@ async function seedOwnedIntent(maxInputBytes = 32 * 1024) {
     ...fixture.proposalReadyIntent,
     status: 'RUN2SKILL_OWNED',
     recall: { state: 'NOT_STARTED', complete: false, summaryScanComplete: false, candidates: [] },
-    coverage: { state: 'NOT_STARTED' },
+    coverage: { state: 'NOT_STARTED', retryUsed: false },
     generation: { state: 'NOT_STARTED', userRetryUsed: false, staleRefreshUsed: false, receipts: [] },
     stageCalls: [],
   })

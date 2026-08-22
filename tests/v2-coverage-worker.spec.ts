@@ -21,7 +21,7 @@ async function seed(options: { explicit?: boolean; candidateCount?: number; unav
     ...fixture.proposalReadyIntent, revision: 1, explicitSave: options.explicit ?? false,
     status: 'RUN2SKILL_OWNED',
     recall: { state: 'NOT_STARTED', complete: false, summaryScanComplete: false, candidates: [] },
-    coverage: { state: 'NOT_STARTED' },
+    coverage: { state: 'NOT_STARTED', retryUsed: false },
     generation: { state: 'NOT_STARTED', userRetryUsed: false, staleRefreshUsed: false, receipts: [] },
     stageCalls: [], lineageId: undefined,
   })
@@ -146,7 +146,7 @@ describe('v2 complete coverage', () => {
       new CompleteCoverageWorker(seeded.domain, { catalog: seeded.catalog, classifier }).runOnce(),
       new CompleteCoverageWorker(seeded.domain, { catalog: seeded.catalog, classifier }).runOnce(),
     ])
-    expect(classifier.calls).toBe(2)
+    expect(classifier.calls).toBe(1)
     expect(seeded.domain.experienceIntents.get(seeded.intentId)?.status).toBe('CREATE_AUTHORIZED')
   })
 
@@ -255,7 +255,7 @@ describe('v2 complete coverage', () => {
       ...covered,
       revision: covered.revision + 1,
       status: 'COVERAGE_RETRY_AUTHORIZED',
-      coverage: { state: 'ANALYZING' },
+      coverage: { state: 'ANALYZING', retryUsed: true },
     }))
     const classifier = model(() => 'UNRELATED')
     await new CompleteCoverageWorker(seeded.domain, { catalog: seeded.catalog, classifier }).runOnce()
@@ -263,5 +263,111 @@ describe('v2 complete coverage', () => {
     const retried = seeded.domain.experienceIntents.get(seeded.intentId)
     expect(retried).toMatchObject({ status: 'CREATE_AUTHORIZED', coverage: { state: 'CREATE' } })
     expect(retried?.stageCalls.filter(call => call.stage === 'COVERAGE')).toHaveLength(2)
+  })
+
+  it('packs nine small candidates into one safe coverage envelope', async () => {
+    const seeded = await seed({ candidateCount: 9 })
+    const classifier = model(() => 'UNRELATED')
+    await new CompleteCoverageWorker(seeded.domain, {
+      catalog: seeded.catalog, classifier, policy: { maxCalls: 1 },
+    }).runOnce()
+    expect(classifier.calls).toBe(1)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)?.status).toBe('CREATE_AUTHORIZED')
+  })
+
+  it('splits candidates only when their complete bodies cannot share one safe envelope', async () => {
+    const seeded = await seed({ candidateCount: 2, bodyBytes: 14 * 1024 })
+    const classifier = model(() => 'UNRELATED')
+    await new CompleteCoverageWorker(seeded.domain, { catalog: seeded.catalog, classifier }).runOnce()
+    expect(classifier.calls).toBe(2)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'CREATE_AUTHORIZED', coverage: { state: 'CREATE', pages: [{ ordinal: 1 }, { ordinal: 2 }] },
+    })
+  })
+
+  it('revalidates exact bodies after model calls before committing a terminal coverage result', async () => {
+    const seeded = await seed()
+    const classifier: CoverageClassifier = {
+      classify: async input => {
+        seeded.bodies.set(input.candidates[0]!.candidateId, '# changed while the model was running')
+        return { decisions: [{ candidateId: input.candidates[0]!.candidateId, decision: 'UNRELATED', reason: 'stale' }] }
+      },
+    }
+    await new CompleteCoverageWorker(seeded.domain, { catalog: seeded.catalog, classifier }).runOnce()
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', coverage: { state: 'NEEDS_ATTENTION', reasonCode: 'COVERAGE_BODY_CHANGED' },
+      generation: { state: 'NOT_STARTED' },
+    })
+  })
+
+  it('does not authorize MERGE when the unchanged target body cannot fit the generation output budget', async () => {
+    const seeded = await seed({ bodyBytes: 20 * 1024 })
+    await new CompleteCoverageWorker(seeded.domain, {
+      catalog: seeded.catalog, classifier: model(() => 'PARTIAL'),
+    }).runOnce()
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', coverage: { state: 'NEEDS_ATTENTION', reasonCode: 'MERGE_OUTPUT_BUDGET_EXHAUSTED' },
+      generation: { state: 'NOT_STARTED' },
+    })
+  })
+
+  it('routes a second COVERED result after the one allowed explicit retry to attention', async () => {
+    const seeded = await seed({ explicit: true })
+    await new CompleteCoverageWorker(seeded.domain, {
+      catalog: seeded.catalog, classifier: model(() => 'COVERED'),
+    }).runOnce()
+    const covered = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    await seeded.domain.table('experience_intents').put(covered.intentId, ExperienceIntentV2Schema.parse({
+      ...covered,
+      revision: covered.revision + 1,
+      status: 'COVERAGE_RETRY_AUTHORIZED',
+      coverage: { state: 'ANALYZING', retryUsed: true },
+    }))
+    const classifier = model(() => 'COVERED')
+    await new CompleteCoverageWorker(seeded.domain, { catalog: seeded.catalog, classifier }).runOnce()
+    expect(classifier.calls).toBe(1)
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      coverage: { state: 'NEEDS_ATTENTION', retryUsed: true, reasonCode: 'COVERAGE_RETRY_STILL_COVERED' },
+    })
+  })
+
+  it('rejects tampering with grouped page membership, body size, decisions, or call receipts', async () => {
+    const seeded = await seed({ candidateCount: 2 })
+    await new CompleteCoverageWorker(seeded.domain, {
+      catalog: seeded.catalog, classifier: model(() => 'UNRELATED'),
+    }).runOnce()
+    const completed = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...completed,
+      coverage: {
+        ...completed.coverage,
+        pages: completed.coverage.pages?.map((page, index) => index === 0 ? { ...page, itemCount: page.itemCount + 1 } : page),
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...completed,
+      coverage: {
+        ...completed.coverage,
+        candidateBindings: completed.coverage.candidateBindings?.map((binding, index) => index === 0
+          ? { ...binding, bodyBytes: binding.bodyBytes + 1 }
+          : binding),
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...completed,
+      coverage: {
+        ...completed.coverage,
+        decisions: completed.coverage.decisions?.map((decision, index) => index === 0
+          ? { ...decision, reason: `${decision.reason} forged` }
+          : decision),
+      },
+    }).success).toBe(false)
+    expect(ExperienceIntentV2Schema.safeParse({
+      ...completed,
+      stageCalls: completed.stageCalls.map(call => call.stage === 'COVERAGE'
+        ? { ...call, outputDigest: 'f'.repeat(64) }
+        : call),
+    }).success).toBe(false)
   })
 })

@@ -146,7 +146,7 @@ export function createMinimalV2Fixtures() {
       summaryScanComplete: false,
       candidates: [],
     },
-    coverage: { state: 'NOT_STARTED' as const },
+    coverage: { state: 'NOT_STARTED' as const, retryUsed: false },
     generation: {
       state: 'NOT_STARTED' as const,
       userRetryUsed: false,
@@ -289,6 +289,10 @@ export function createMinimalV2Fixtures() {
     provider: 'deepseek-official',
     model: 'deepseek-chat',
     policyVersion: 'coverage-v1',
+    routeMaxInputBytes: 32 * 1024,
+    routeMaxOutputBytes: 8 * 1024,
+    reserveBytes: 8 * 1024,
+    mergeOutputReserveBytes: 2 * 1024,
   })
   const coveragePlanDigest = deriveCoveragePlanDigestV2({
     coverageBindingDigest,
@@ -296,7 +300,7 @@ export function createMinimalV2Fixtures() {
     pendingCatalogDigest: sealedResult.pendingCatalogDigest,
     catalogEpoch: sealedResult.inputCatalogEpoch,
     catalogMutationReceiptDigest: 'c'.repeat(64),
-    candidates: [],
+    pages: [],
   })
   const proposalReadyIntent = {
     ...experienceIntent,
@@ -353,14 +357,20 @@ export function createMinimalV2Fixtures() {
     },
     coverage: {
       state: 'CREATE' as const,
+      retryUsed: false,
       inputDigest: coveragePlanDigest,
       targetDigest: sealedResult.targetDigest,
       basisRevision: 4,
       routeProvider: 'deepseek-official',
       routeModel: 'deepseek-chat',
+      routeMaxInputBytes: 32 * 1024,
+      routeMaxOutputBytes: 8 * 1024,
+      reserveBytes: 8 * 1024,
+      mergeOutputReserveBytes: 2 * 1024,
       policyVersion: 'coverage-v1',
       bindingDigest: coverageBindingDigest,
       planDigest: coveragePlanDigest,
+      pages: [],
       candidateBindings: [],
       decisions: [],
     },
@@ -512,7 +522,7 @@ export function createMinimalV2Fixtures() {
         selfExclusionDigest: deriveRecallSelfExclusionDigestV2(staleSelfExclusion),
       },
     },
-    coverage: { state: 'NOT_STARTED' as const },
+    coverage: { state: 'NOT_STARTED' as const, retryUsed: false },
     generation: {
       state: 'NOT_STARTED' as const,
       userRetryUsed: false,
