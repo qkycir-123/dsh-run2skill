@@ -99,6 +99,7 @@ class PurgeResponseError extends Error {
 }
 
 export interface PurgeSettingsState {
+  readonly hostDataEpoch: number
   readonly statusPhase: 'LOADING' | 'READY' | 'STALE' | 'UNAVAILABLE'
   readonly status?: PurgeStatus | undefined
   readonly inProgressReceipt?: PurgeReceipt | undefined
@@ -178,6 +179,7 @@ function errorAnnouncement(error: PurgeClientError, durableBoundary = false): st
 }
 
 const initialState: PurgeSettingsState = {
+  hostDataEpoch: 0,
   statusPhase: 'LOADING',
   previewPending: false,
   mutationPending: false,
@@ -321,7 +323,13 @@ export class PurgeSettingsController {
       return
     }
     await this.#execute(async signal => {
-      this.#publish({ ...this.#state, mutationPending: true, error: undefined, announcement: '' })
+      this.#publish({
+        ...this.#state,
+        hostDataEpoch: this.#state.hostDataEpoch + 1,
+        mutationPending: true,
+        error: undefined,
+        announcement: '',
+      })
       const receipt = parseValue(receiptSchema, await this.call(
         'purge/confirm',
         scope === 'PROJECT'
@@ -358,7 +366,13 @@ export class PurgeSettingsController {
       || this.#state.mutationPending
     ) return
     await this.#execute(async signal => {
-      this.#publish({ ...this.#state, mutationPending: true, error: undefined, announcement: '正在重试数据清理。' })
+      this.#publish({
+        ...this.#state,
+        hostDataEpoch: this.#state.hostDataEpoch + 1,
+        mutationPending: true,
+        error: undefined,
+        announcement: '正在重试数据清理。',
+      })
       const receipt = parseValue(receiptSchema, await this.call(
         'purge/retry',
         { apiVersion: 1, purgeId: status.purgeId },
@@ -391,6 +405,7 @@ export class PurgeSettingsController {
     if (receipt.state === 'COMPLETED') {
       this.#publish({
         ...this.#state,
+        hostDataEpoch: this.#state.hostDataEpoch + 1,
         statusPhase: 'READY',
         status: { apiVersion: 1, state: 'IDLE' },
         inProgressReceipt: undefined,
@@ -443,8 +458,15 @@ export class PurgeSettingsController {
           this.#state.status?.state === 'IN_PROGRESS'
           || this.#state.inProgressReceipt?.state === 'IN_PROGRESS'
         )
+        const started = status.state === 'IN_PROGRESS'
+          && this.#state.status?.state !== 'IN_PROGRESS'
+          && this.#state.inProgressReceipt?.state !== 'IN_PROGRESS'
+          && !this.#state.mutationPending
         this.#publish({
           ...this.#state,
+          hostDataEpoch: started || completed
+            ? this.#state.hostDataEpoch + 1
+            : this.#state.hostDataEpoch,
           statusPhase: 'READY',
           status,
           inProgressReceipt: status.state === 'IDLE' ? undefined : this.#state.inProgressReceipt,

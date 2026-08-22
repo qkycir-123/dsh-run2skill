@@ -512,6 +512,14 @@ export class PurgeService {
     if (journal.scopeBinding.scope === 'ALL') await this.#finalizeV2(completedPurgeFences)
     await this.#global.update(current => ({
       ...current,
+      recentSkillActivity: current.recentSkillActivity === undefined
+        ? undefined
+        : {
+            ...current.recentSkillActivity,
+            items: current.recentSkillActivity.items.filter(activity => (
+              this.domain.table('work_items').get(activity.workItemId) !== undefined
+            )),
+          },
       completedPurgeFences,
       purgeJournal: undefined,
     }))

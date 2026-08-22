@@ -80,6 +80,183 @@ export type AttentionCall = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
+export type RecentSkillActivityCall = (
+  payload: {
+    readonly apiVersion: 1
+    readonly currentScope:
+      | { readonly kind: 'USER_ONLY'; readonly generation: number }
+      | { readonly kind: 'WORKSPACE'; readonly generation: number; readonly workspaceId: string }
+    readonly expectedVisibilityRevision?: string
+  },
+  signal: AbortSignal,
+) => Promise<unknown>
+
+const recentSkillActivityResultSchema = z.object({
+  ok: z.literal(true),
+  value: z.object({
+    apiVersion: z.literal(1),
+    visibilityRevision: z.string().regex(/^visibility_[a-f0-9]{64}$/),
+    items: z.array(z.object({
+      activityId: z.string().regex(/^activity_[a-f0-9]{64}$/),
+      skillName: z.string().min(1).max(128),
+      operation: z.enum(['CREATED', 'UPDATED']),
+      scope: z.enum(['PROJECT', 'USER']),
+      occurredAt: z.string().datetime({ offset: true }),
+    }).strict()).max(256),
+  }).strict(),
+}).strict()
+
+const recentSkillActivityVisibilityStaleSchema = z.object({
+  ok: z.literal(false),
+  error: z.object({ code: z.literal('visibility-stale') }).passthrough(),
+}).passthrough()
+
+const RECENT_SKILL_ACTIVITY_VISIBILITY_POLL_MS = 2_000
+
+function waitForActivityVisibilityPoll(signal: AbortSignal, delayMs: number): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise(resolve => {
+    const finish = () => {
+      globalThis.clearTimeout(timer)
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+    const timer = globalThis.setTimeout(finish, delayMs)
+    signal.addEventListener('abort', finish, { once: true })
+  })
+}
+
+type RecentSkillActivity = z.infer<typeof recentSkillActivityResultSchema>['value']['items'][number]
+
+function formatActivityTime(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value))
+}
+
+function usefulActivityScope(
+  items: readonly RecentSkillActivity[],
+  selected: RecentSkillActivity,
+): boolean {
+  return items.some(item => item.skillName === selected.skillName && item.scope !== selected.scope)
+}
+
+export function RecentSkillActivitySection(props: {
+  readonly workspaceId?: string
+  readonly call: RecentSkillActivityCall
+  readonly active: boolean
+  readonly scopeGeneration: number
+  readonly hostDataEpoch?: number
+  readonly visibilityPollMs?: number
+}): ReactElement {
+  const scopeIdentity = JSON.stringify([
+    props.workspaceId ?? null,
+    props.scopeGeneration,
+    props.hostDataEpoch ?? 0,
+  ])
+  const [state, setState] = useState<{
+    readonly phase: 'IDLE' | 'LOADING' | 'READY' | 'ERROR'
+    readonly items: readonly RecentSkillActivity[]
+    readonly scopeIdentity?: string
+  }>({ phase: 'IDLE', items: [] })
+  const visibleState = state.scopeIdentity === scopeIdentity ? state : { phase: 'IDLE' as const, items: [] }
+  useEffect(() => {
+    if (!props.active) return
+    const abort = new AbortController()
+    setState({ phase: 'LOADING', items: [], scopeIdentity })
+    void (async () => {
+      const readStable = async () => {
+        let expectedVisibilityRevision: string | undefined
+        let confirmedReads = 0
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const result = await props.call({
+            apiVersion: 1,
+            currentScope: currentScope(props.workspaceId, props.scopeGeneration),
+            ...(expectedVisibilityRevision === undefined ? {} : { expectedVisibilityRevision }),
+          }, abort.signal)
+          if (abort.signal.aborted) return undefined
+          if (recentSkillActivityVisibilityStaleSchema.safeParse(result).success) {
+            expectedVisibilityRevision = undefined
+            confirmedReads = 0
+            continue
+          }
+          const parsed = recentSkillActivityResultSchema.safeParse(result)
+          if (!parsed.success) throw new Error('RECENT_ACTIVITY_UNAVAILABLE')
+          if (parsed.data.value.visibilityRevision === expectedVisibilityRevision) {
+            confirmedReads += 1
+            if (confirmedReads >= 2) return parsed.data.value
+          } else {
+            expectedVisibilityRevision = parsed.data.value.visibilityRevision
+            confirmedReads = 0
+          }
+        }
+        throw new Error('RECENT_ACTIVITY_VISIBILITY_UNSTABLE')
+      }
+      let current = await readStable()
+      if (current === undefined || abort.signal.aborted) return
+      setState({ phase: 'READY', items: current.items, scopeIdentity })
+      while (!abort.signal.aborted) {
+        await waitForActivityVisibilityPoll(
+          abort.signal,
+          props.visibilityPollMs ?? RECENT_SKILL_ACTIVITY_VISIBILITY_POLL_MS,
+        )
+        if (abort.signal.aborted) return
+        const result = await props.call({
+          apiVersion: 1,
+          currentScope: currentScope(props.workspaceId, props.scopeGeneration),
+          expectedVisibilityRevision: current.visibilityRevision,
+        }, abort.signal)
+        if (abort.signal.aborted) return
+        const parsed = recentSkillActivityResultSchema.safeParse(result)
+        if (
+          recentSkillActivityVisibilityStaleSchema.safeParse(result).success
+          || !parsed.success
+          || parsed.data.value.visibilityRevision !== current.visibilityRevision
+        ) {
+          setState({ phase: 'LOADING', items: [], scopeIdentity })
+          current = await readStable()
+          if (current === undefined || abort.signal.aborted) return
+        } else {
+          current = parsed.data.value
+        }
+        setState({ phase: 'READY', items: current.items, scopeIdentity })
+      }
+    })().catch(() => {
+      if (!abort.signal.aborted) setState({ phase: 'ERROR', items: [], scopeIdentity })
+    })
+    return () => { abort.abort() }
+  }, [
+    props.active,
+    props.call,
+    props.hostDataEpoch,
+    props.scopeGeneration,
+    props.visibilityPollMs,
+    props.workspaceId,
+    scopeIdentity,
+  ])
+  return createElement('div', { className: css.sectionBody },
+    createElement('p', { className: css.muted }, '展示最近沉淀的 Skill'),
+    visibleState.phase === 'LOADING' ? createElement('p', { role: 'status' }, '正在读取最近活动…') : null,
+    visibleState.phase === 'ERROR' ? createElement('p', { role: 'alert' }, '最近活动暂不可用。') : null,
+    visibleState.phase === 'READY' && visibleState.items.length === 0
+      ? createElement('p', null, '最近 7 天没有成功沉淀的 Skill。')
+      : null,
+    visibleState.items.length === 0 ? null : createElement('ul', { className: css.activityList },
+      ...visibleState.items.map(item => createElement('li', { className: css.activityItem, key: item.activityId },
+        createElement('div', { className: css.activitySummary },
+          createElement('strong', null, item.skillName),
+          createElement(Pill, null, item.operation === 'CREATED' ? '创建' : '更新'),
+          usefulActivityScope(visibleState.items, item)
+            ? createElement(Pill, null, item.scope === 'PROJECT' ? '项目' : '用户')
+            : null,
+        ),
+        createElement('time', { dateTime: item.occurredAt, className: css.muted }, formatActivityTime(item.occurredAt)),
+      )),
+    ),
+  )
+}
+
 const learningIssueSchema = z.object({
   workItemId: z.string().regex(/^wi_[a-f0-9]{64}$/),
   workItemRevision: z.number().int().safe().positive(),
@@ -722,6 +899,7 @@ export function Run2skillSettingsPage(props: {
   readonly sessionId?: string
   readonly callAttention: AttentionCall
   readonly callReview: ProposalReviewCall
+  readonly callActivity: RecentSkillActivityCall
   readonly useSessions?: <T>(selector: (state: { readonly current?: string }) => T) => T
   readonly useWorkspaces?: <T>(selector: (state: {
     readonly items: readonly { readonly workspaceId: string; readonly sessionIds?: readonly string[] }[]
@@ -737,6 +915,14 @@ export function Run2skillSettingsPage(props: {
   const [attention, setAttention] = useState<AttentionProjection>()
   const [attentionRefresh, setAttentionRefresh] = useState(0)
   const [scopeGeneration, setScopeGeneration] = useState(1)
+  const purgeState = useSyncExternalStore(
+    props.purgeController.subscribe,
+    props.purgeController.snapshot,
+    props.purgeController.snapshot,
+  )
+  const purgeDataChanging = purgeState.mutationPending
+    || purgeState.status?.state === 'IN_PROGRESS'
+    || purgeState.inProgressReceipt?.state === 'IN_PROGRESS'
   useEffect(() => {
     setAttention(undefined)
     setScopeGeneration(value => value + 1)
@@ -786,13 +972,13 @@ export function Run2skillSettingsPage(props: {
         }),
         attention?.actions.some(action => ['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')) === true
           ? createElement(ProposalSettingsSection, {
-          ...(workspaceId === undefined ? {} : { workspaceId }),
-          callReview: props.callReview,
-          active: hostTab.visible && open.has('attention'),
-          actions: attention?.actions ?? [],
-          onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
-          scopeGeneration,
-          })
+              ...(workspaceId === undefined ? {} : { workspaceId }),
+              callReview: props.callReview,
+              active: hostTab.visible && open.has('attention'),
+              actions: attention.actions,
+              onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
+              scopeGeneration,
+            })
           : null,
         createElement(LearningFailureSection, {
           ...(workspaceId === undefined ? {} : { workspaceId }),
@@ -805,9 +991,19 @@ export function Run2skillSettingsPage(props: {
         attentionEmpty ? createElement('p', { className: css.empty }, '暂无') : null,
       )),
     disclosure('activity', '最近活动', createElement(IconSparkle16),
-      createElement('div', { className: css.sectionBody },
-        createElement('p', { className: css.muted }, '当前版本仅展示仍保留的待处理记录；完整历史不在本 Issue 范围内。'),
-      ), createElement(Pill, null, '有界记录')),
+      createElement(RecentSkillActivitySection, {
+        key: JSON.stringify([
+          workspaceId ?? null,
+          scopeGeneration,
+          purgeState.hostDataEpoch,
+          hostTab.visible && open.has('activity') && !purgeDataChanging,
+        ]),
+        ...(workspaceId === undefined ? {} : { workspaceId }),
+        call: props.callActivity,
+        active: hostTab.visible && open.has('activity') && !purgeDataChanging,
+        scopeGeneration,
+        hostDataEpoch: purgeState.hostDataEpoch,
+      }), createElement(Pill, null, '最近 7 天')),
     disclosure('automatic', '自动学习', createElement(IconSettingsOutline16),
       createElement(AutomaticLearningSection, { controller: props.controller })),
     disclosure('purge', '缓存清理', createElement(IconTrashOutline16),
@@ -861,6 +1057,9 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
   const callAttention: AttentionCall = async (payload, signal) => await context.connection.rpc.call(
     RUN2SKILL_RPC_CHANNEL, 'attention', payload, signal,
   )
+  const callActivity: RecentSkillActivityCall = async (payload, signal) => await context.connection.rpc.call(
+    RUN2SKILL_RPC_CHANNEL, 'recent-activity/list', payload, signal,
+  )
   const callPurge: PurgeCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
     RUN2SKILL_RPC_CHANNEL, endpoint, payload, signal,
   )
@@ -888,6 +1087,7 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
       sessionId: currentSessionId(context),
       callAttention,
       callReview,
+      callActivity,
     }),
   }, Run2skillSettingsPage))
 

@@ -254,6 +254,7 @@ export class WriteBehindCheckpoint {
     const {
       purgeJournal: _staleJournal,
       completedPurgeFences: _staleCompletedPurgeFences,
+      recentSkillActivity: _staleRecentSkillActivity,
       ...checkpointState
     } = committed
     return await this.#runMutation(async () => await this.#global.update(current => GlobalV1Schema.parse({
@@ -262,6 +263,9 @@ export class WriteBehindCheckpoint {
         ...(current.completedPurgeFences === undefined
           ? {}
           : { completedPurgeFences: current.completedPurgeFences }),
+        ...(current.recentSkillActivity === undefined
+          ? {}
+          : { recentSkillActivity: current.recentSkillActivity }),
       })))
   }
 }

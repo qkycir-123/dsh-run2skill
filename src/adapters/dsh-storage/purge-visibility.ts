@@ -1,5 +1,7 @@
 import type { CaptureWorkItemV1 } from '../../domain/observe/schemas.js'
+import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import type { LineageV1 } from '../../domain/publication/index.js'
+import { canonicalJson } from '../../domain/learn/identity.js'
 import {
   classifyLineageForPurge,
   classifyWorkItemForPurge,
@@ -11,6 +13,14 @@ import type { Run2skillDomain } from './types.js'
 
 export class PurgeVisibility {
   constructor(private readonly domain: Run2skillDomain) {}
+
+  revision(): `visibility_${string}` {
+    const global = this.domain.global.get()
+    return `visibility_${sha256Utf8(canonicalJson({
+      purgeJournal: global.purgeJournal ?? null,
+      completedPurgeFences: global.completedPurgeFences ?? null,
+    }))}`
+  }
 
   active(): PurgeJournalV1 | undefined {
     return this.domain.global.get().purgeJournal

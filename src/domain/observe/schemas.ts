@@ -24,6 +24,7 @@ import {
   proposalFactsOf,
 } from '../review/index.js'
 import { PublicationStateV1Schema } from '../publication/index.js'
+import { RecentSkillActivityIndexV1Schema } from '../activity/index.js'
 
 const safeNonNegativeInteger = z.number().refine(
   (value) => Number.isSafeInteger(value) && value >= 0,
@@ -427,6 +428,7 @@ export const GlobalV1Schema = z.object({
   }).strict(),
   purgeJournal: PurgeJournalV1Schema.optional(),
   completedPurgeFences: CompletedPurgeFencesV1Schema.optional(),
+  recentSkillActivity: RecentSkillActivityIndexV1Schema.optional(),
 }).strict().superRefine((value, context) => {
   for (const [lifecycleKey, checkpoint] of Object.entries(value.sessions)) {
     if (lifecycleKey !== deriveSessionLifecycleKeyFromFacts(checkpoint)) {
