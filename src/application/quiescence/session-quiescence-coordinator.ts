@@ -58,6 +58,41 @@ export class SessionQuiescenceCoordinator {
     return 'IDLE'
   }
 
+  /** Returns only a future automatic-idle deadline; elapsed deadlines never poll. */
+  nextEligibleAt(now = this.#now()): number | undefined {
+    let earliest: number | undefined
+    for (const [, raw] of this.#intents.entries()) {
+      const parsed = ExperienceIntentV2Schema.safeParse(raw)
+      if (!parsed.success) continue
+      const intent = parsed.data
+      if (
+        intent.status !== 'WAITING_FOR_QUIESCENCE'
+        || intent.quiescence.state !== 'WAITING'
+        || intent.explicitSave
+      ) continue
+      const batch = SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId))
+      if (
+        !batch.success
+        || batch.data.state !== 'COMMITTED_READY'
+        || batch.data.sessionLifecycleKey !== intent.sessionLifecycleKey
+        || batch.data.lastTurnEndSeq !== intent.quiescence.batchLastTurnEndSeq
+      ) continue
+      const cursor = this.#cursor(intent.sessionLifecycleKey)
+      if (
+        cursor === undefined
+        || cursor.activeBatchId !== undefined
+        || cursor.observedThroughTurnEndSeq !== batch.data.lastTurnEndSeq
+        || cursor.observedThroughTurnEndSeq !== cursor.detectedThroughTurnEndSeq
+      ) continue
+      const lastActivity = cursor.lastActivityAt === undefined ? Number.NaN : Date.parse(cursor.lastActivityAt)
+      if (!Number.isFinite(lastActivity)) continue
+      const deadline = lastActivity + intent.quiescence.requiredIdleMs
+      if (deadline <= now) continue
+      earliest = earliest === undefined ? deadline : Math.min(earliest, deadline)
+    }
+    return earliest
+  }
+
   async validate(intentId: string): Promise<FenceValidation> {
     const raw = this.#intents.get(intentId)
     const parsed = ExperienceIntentV2Schema.safeParse(raw)

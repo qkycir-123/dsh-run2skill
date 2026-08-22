@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SessionBatchCoordinator, SessionBatchScheduler } from '../src/application/batch/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
@@ -48,6 +48,23 @@ function scheduledObservation(seq: number, observedAt: number) {
 }
 
 describe('v2 SessionBatch scheduler', () => {
+  it('retries coordinator recovery after a failed start instead of reporting a false success', async () => {
+    let recoveries = 0
+    const coordinator = {
+      recover: async () => {
+        recoveries += 1
+        if (recoveries === 1) throw new Error('synthetic coordinator recovery failure')
+      },
+      nextIdleAt: () => undefined,
+    } as unknown as SessionBatchCoordinator
+    const scheduler = new SessionBatchScheduler({ coordinator })
+
+    await expect(scheduler.start()).rejects.toThrow('synthetic coordinator recovery failure')
+    await expect(scheduler.start()).resolves.toBeUndefined()
+    expect(recoveries).toBe(2)
+    await scheduler.dispose()
+  })
+
   it('arms one durable idle deadline and freezes one authoritative batch', async () => {
     let now = 0
     const timer = new ManualTimer()
@@ -67,11 +84,13 @@ describe('v2 SessionBatch scheduler', () => {
           maxOutputBytes: 8 * 1024,
       }),
     })
+    const onIdleBatchFrozen = vi.fn()
     const scheduler = new SessionBatchScheduler({
       coordinator,
       now: () => now,
       setTimer: timer.set,
       clearTimer: timer.clear,
+      onIdleBatchFrozen,
     })
     await scheduler.start()
     await scheduler.prepareSessionWindow(createMinimalV2Fixtures().turnObservation.sessionLifecycleKey)
@@ -81,6 +100,7 @@ describe('v2 SessionBatch scheduler', () => {
     timer.fire()
     await scheduler.settle()
     expect(domain.sessionBatches.size).toBe(1)
+    expect(onIdleBatchFrozen).toHaveBeenCalledOnce()
     scheduler.wake()
     await scheduler.settle()
     expect(domain.sessionBatches.size).toBe(1)
