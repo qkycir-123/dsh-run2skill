@@ -428,6 +428,14 @@ export function deriveOwnershipClaimIdV2(facts: OwnershipClaimFactsV2): `claim_$
   return `claim_${sha256Utf8(canonicalJson(facts))}`
 }
 
+export function deriveCatalogScanCallIdV2(
+  intentId: string,
+  scanPlanDigest: string,
+  ordinal: number,
+): `call_${string}` {
+  return `call_${sha256Utf8(canonicalJson({ intentId, scanPlanDigest, ordinal }))}`
+}
+
 export function deriveOwnershipEvidenceDigestV2(evidence: OwnershipEvidenceV2): string {
   return sha256Utf8(canonicalJson(evidence))
 }
@@ -575,8 +583,10 @@ export const ExperienceIntentV2Schema = z.object({
     summaryScanComplete: z.boolean(),
     catalogEpoch: safeNonNegativeInteger.optional(),
     catalogMutationReceiptDigest: sha256Hex.optional(),
+    scanBasisRevision: positiveSafeInteger.optional(),
     scanPlanDigest: sha256Hex.optional(),
     scanPageCount: safeNonNegativeInteger.optional(),
+    scanSummaryCount: safeNonNegativeInteger.optional(),
     summaryClassifications: z.array(z.object({
       candidateId: identity,
       summaryDigest: sha256Hex,
@@ -665,6 +675,7 @@ export const ExperienceIntentV2Schema = z.object({
     intentRevision: positiveSafeInteger,
     callId: z.string().regex(/^call_[a-f0-9]{64}$/),
     ordinal: positiveSafeInteger,
+    itemCount: safeNonNegativeInteger.optional(),
     inputDigest: sha256Hex,
     provider: identity,
     model: identity,
@@ -890,21 +901,34 @@ export const ExperienceIntentV2Schema = z.object({
     || value.recall.pendingCatalogDigest === undefined
     || value.recall.catalogEpoch === undefined
     || value.recall.catalogMutationReceiptDigest === undefined
+    || value.recall.scanBasisRevision === undefined
     || value.recall.scanPlanDigest === undefined
     || value.recall.scanPageCount === undefined
+    || value.recall.scanSummaryCount === undefined
     || value.recall.summaryClassifications === undefined
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Complete recall requires full Catalog and summary-scan facts' })
   if (value.recall.state === 'NOT_STARTED' && (
     value.recall.summaryScanComplete
     || value.recall.candidates.length > 0
     || (value.recall.summaryClassifications?.length ?? 0) > 0
+    || value.recall.scanBasisRevision !== undefined
     || value.recall.scanPlanDigest !== undefined
     || value.recall.scanPageCount !== undefined
+    || value.recall.scanSummaryCount !== undefined
     || value.recall.runtimeCatalogDigest !== undefined
     || value.recall.pendingCatalogDigest !== undefined
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Unstarted recall cannot contain Catalog results' })
   if (value.recall.state === 'INCOMPLETE' && value.recall.incompleteReason === undefined) {
     context.addIssue({ code: 'custom', path: ['recall', 'incompleteReason'], message: 'Incomplete recall requires a reason' })
+  }
+  const scanPlanFieldPresence = [
+    value.recall.scanBasisRevision,
+    value.recall.scanPlanDigest,
+    value.recall.scanPageCount,
+    value.recall.scanSummaryCount,
+  ].map(item => item !== undefined)
+  if (scanPlanFieldPresence.some(Boolean) && !scanPlanFieldPresence.every(Boolean)) {
+    context.addIssue({ code: 'custom', path: ['recall'], message: 'Catalog scan plan must bind its exact Intent revision and complete size' })
   }
   for (const [index, candidate] of value.recall.candidates.entries()) {
     if (candidate.classification === 'UNRELATED') {
@@ -1165,17 +1189,31 @@ export const ExperienceIntentV2Schema = z.object({
   if (value.stageCalls.some(call => call.outcome === 'SUCCEEDED' && call.outputDigest === undefined)) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Successful stage call requires an output digest' })
   }
+  const stageCallIds = value.stageCalls.map(call => call.callId)
+  if (new Set(stageCallIds).size !== stageCallIds.length) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Stage calls must have unique call identities' })
+  }
   if (value.stageCalls.some(call => call.intentRevision > value.revision)) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Stage call cannot belong to a future Intent revision' })
   }
   const callsFor = (stage: 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION') => value.stageCalls.filter(call => call.stage === stage)
+  if (value.stageCalls.some(call => (call.stage === 'CATALOG_SCAN') !== (call.itemCount !== undefined))) {
+    context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Only Catalog scan calls require an exact page item count' })
+  }
+  const currentCatalogScanCallIds = value.recall.scanPlanDigest === undefined || value.recall.scanPageCount === undefined
+    ? new Set<string>()
+    : new Set(Array.from(
+      { length: value.recall.scanPageCount },
+      (_, index) => deriveCatalogScanCallIdV2(value.intentId, value.recall.scanPlanDigest!, index + 1),
+    ))
+  const currentCatalogScanCalls = callsFor('CATALOG_SCAN').filter(call => currentCatalogScanCallIds.has(call.callId))
   const summaryClassifications = value.recall.summaryClassifications ?? []
   const classificationIds = summaryClassifications.map(item => item.candidateId)
   if (new Set(classificationIds).size !== classificationIds.length) {
     context.addIssue({ code: 'custom', path: ['recall', 'summaryClassifications'], message: 'Summary classifications must have unique candidate identities' })
   }
   for (const [index, classification] of summaryClassifications.entries()) {
-    const call = callsFor('CATALOG_SCAN').find(item => item.callId === classification.callId)
+    const call = currentCatalogScanCalls.find(item => item.callId === classification.callId)
     if (
       call?.outcome !== 'SUCCEEDED'
       || call.ordinal !== classification.pageOrdinal
@@ -1186,9 +1224,17 @@ export const ExperienceIntentV2Schema = z.object({
       message: 'Summary classification must bind one exact successful Catalog scan call',
     })
   }
+  for (const call of currentCatalogScanCalls) {
+    const classificationCount = summaryClassifications.filter(item => item.callId === call.callId).length
+    if (call.outcome === 'SUCCEEDED' ? classificationCount !== call.itemCount : classificationCount !== 0) {
+      context.addIssue({ code: 'custom', path: ['recall', 'summaryClassifications'], message: 'Every current Catalog page summary must be classified exactly once' })
+    }
+  }
   if (value.recall.state === 'COMPLETE' && (
-    callsFor('CATALOG_SCAN').length !== value.recall.scanPageCount
-    || callsFor('CATALOG_SCAN').some(call => call.outcome !== 'SUCCEEDED')
+    currentCatalogScanCalls.length !== value.recall.scanPageCount
+    || currentCatalogScanCalls.some(call => call.outcome !== 'SUCCEEDED')
+    || currentCatalogScanCalls.reduce((total, call) => total + (call.itemCount ?? 0), 0) !== value.recall.scanSummaryCount
+    || summaryClassifications.length !== value.recall.scanSummaryCount
     || summaryClassifications.filter(item => item.classification !== 'UNRELATED').length !== value.recall.candidates.length
   )) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Complete recall requires the exact successful Catalog scan ledger' })

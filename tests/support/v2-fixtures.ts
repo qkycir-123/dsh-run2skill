@@ -5,6 +5,7 @@ import { derivePublicationTargetIdentityDigest, materializeLineage } from '../..
 import {
   deriveExperienceIntentIdV2,
   deriveBehaviorSignatureV2,
+  deriveCatalogScanCallIdV2,
   deriveNativeProposalLineageIdV2,
   deriveSessionBatchIdV2,
   deriveRecallSelfExclusionDigestV2,
@@ -253,6 +254,7 @@ export function createMinimalV2Fixtures() {
   }
   const ownershipEvidenceDigest = deriveOwnershipEvidenceDigestV2(ownershipEvidence)
   const ownershipReasonCode = 'NO_AGENT_SKILL_ACTIVITY'
+  const catalogScanCallId = deriveCatalogScanCallIdV2(experienceIntent.intentId, 'f'.repeat(64), 1)
   const proposalReadyIntent = {
     ...experienceIntent,
     status: 'PROPOSAL_READY' as const,
@@ -283,14 +285,16 @@ export function createMinimalV2Fixtures() {
       summaryScanComplete: true,
       catalogEpoch: sealedResult.inputCatalogEpoch,
       catalogMutationReceiptDigest: 'c'.repeat(64),
+      scanBasisRevision: 1,
       scanPlanDigest: 'f'.repeat(64),
       scanPageCount: 1,
+      scanSummaryCount: 1,
       summaryClassifications: [{
         candidateId: 'fixture-unrelated',
         summaryDigest: 'f'.repeat(64),
         classification: 'UNRELATED' as const,
         pageOrdinal: 1,
-        callId: `call_${'1'.repeat(64)}`,
+        callId: catalogScanCallId,
         inputDigest: '1'.repeat(64),
         outputDigest: '2'.repeat(64),
       }],
@@ -341,8 +345,9 @@ export function createMinimalV2Fixtures() {
       {
         stage: 'CATALOG_SCAN' as const,
         intentRevision: 1,
-        callId: `call_${'1'.repeat(64)}`,
+        callId: catalogScanCallId,
         ordinal: 1,
+        itemCount: 1,
         inputDigest: '1'.repeat(64),
         outputDigest: '2'.repeat(64),
         provider: 'deepseek-official',

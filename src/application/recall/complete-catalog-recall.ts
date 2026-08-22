@@ -4,6 +4,7 @@ import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { preprocessPersistentText } from '../../domain/observe/redaction.js'
 import {
+  deriveCatalogScanCallIdV2,
   ExperienceIntentV2Schema,
   SessionBatchV2Schema,
   type ExperienceIntentV2,
@@ -127,14 +128,23 @@ interface ScanPlan {
   readonly pages: readonly ScanPage[]
 }
 
+const safeCatalogLabel = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/
+
+function projectCatalogLabel(kind: 'provider' | 'source', value: string): string {
+  const redacted = preprocessPersistentText(value).text
+  return redacted === value && safeCatalogLabel.test(value)
+    ? value
+    : `${kind}-${sha256Utf8(value)}`
+}
+
 function summaryProjection(summary: RecallCatalogSummary): RecallCatalogSummary {
   return {
     candidateId: summary.candidateId,
     name: preprocessPersistentText(summary.name).text,
     description: preprocessPersistentText(summary.description).text,
     ...(summary.whenToUse === undefined ? {} : { whenToUse: preprocessPersistentText(summary.whenToUse).text }),
-    provider: summary.provider,
-    source: summary.source,
+    provider: projectCatalogLabel('provider', summary.provider),
+    source: projectCatalogLabel('source', summary.source),
     scope: summary.scope,
     writable: summary.writable,
     rootIdentityDigest: summary.rootIdentityDigest,
@@ -146,7 +156,7 @@ function summaryDigest(summary: RecallCatalogSummary): string {
 }
 
 function callId(intentId: string, scanPlanDigest: string, ordinal: number): `call_${string}` {
-  return `call_${sha256Utf8(canonicalJson({ intentId, scanPlanDigest, ordinal }))}`
+  return deriveCatalogScanCallIdV2(intentId, scanPlanDigest, ordinal)
 }
 
 export class CompleteCatalogRecallWorker {
@@ -208,7 +218,14 @@ export class CompleteCatalogRecallWorker {
       .map(([, value]) => ExperienceIntentV2Schema.parse(value))
       .filter(intent => intent.status === 'RECALLING')
     for (const intent of recalling) {
-      const reserved = intent.stageCalls.find(call => call.stage === 'CATALOG_SCAN' && call.outcome === 'RESERVED')
+      const reserved = intent.recall.scanPlanDigest === undefined || intent.recall.scanPageCount === undefined
+        ? undefined
+        : intent.stageCalls.find(call => (
+          call.stage === 'CATALOG_SCAN'
+          && call.outcome === 'RESERVED'
+          && call.ordinal <= intent.recall.scanPageCount!
+          && call.callId === callId(intent.intentId, intent.recall.scanPlanDigest!, call.ordinal)
+        ))
       if (reserved === undefined) continue
       await this.#intents.update(intent.intentId, current => {
         const parsed = ExperienceIntentV2Schema.parse(current)
@@ -266,7 +283,16 @@ export class CompleteCatalogRecallWorker {
     for (const page of plan.pages) {
       intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
       if (intent.status !== 'RECALLING') return
-      if (intent.stageCalls.some(call => call.stage === 'CATALOG_SCAN' && call.ordinal === page.ordinal && call.outcome === 'SUCCEEDED')) continue
+      const expectedCallId = callId(intent.intentId, plan.digest, page.ordinal)
+      if (intent.stageCalls.some(call => (
+        call.stage === 'CATALOG_SCAN'
+        && call.callId === expectedCallId
+        && call.inputDigest === page.inputDigest
+        && call.provider === batch.routeSnapshot.provider
+        && call.model === batch.routeSnapshot.model
+        && call.policyVersion === this.#policy.policyVersion
+        && call.outcome === 'SUCCEEDED'
+      ))) continue
       const reserved = await this.#reservePage(intent, batch, plan, page)
       if (!reserved) return
       let raw: unknown
@@ -327,10 +353,15 @@ export class CompleteCatalogRecallWorker {
 
   #plan(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot): ScanPlan | undefined {
     const summaries = [...snapshot.summaries].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    const scanBinding = {
+      scanBasisRevision: intent.recall.scanBasisRevision ?? intent.revision,
+      selfExclusionDigest: intent.recall.selfExclusion?.selfExclusionDigest ?? null,
+    }
     const fixedBytes = Buffer.byteLength(canonicalJson({
       intent: this.#intentProjection(intent),
       route: batch.routeSnapshot,
       catalogs: this.#catalogFacts(snapshot),
+      scanBinding,
       protocol: this.#policy.policyVersion,
     }), 'utf8') + this.#policy.catalogScanReserveBytes
     const pageBudget = batch.routeSnapshot.maxInputBytes - fixedBytes
@@ -359,6 +390,7 @@ export class CompleteCatalogRecallWorker {
           intent: this.#intentProjection(intent),
           route: batch.routeSnapshot,
           catalogs: this.#catalogFacts(snapshot),
+          scanBinding,
           policyVersion: this.#policy.policyVersion,
           ordinal,
           summaries: items,
@@ -370,6 +402,7 @@ export class CompleteCatalogRecallWorker {
       digest: sha256Utf8(canonicalJson({
         policyVersion: this.#policy.policyVersion,
         catalogs: this.#catalogFacts(snapshot),
+        scanBinding,
         pages: pages.map(item => ({ ordinal: item.ordinal, inputDigest: item.inputDigest })),
       })),
     }
@@ -388,8 +421,10 @@ export class CompleteCatalogRecallWorker {
           pendingCatalogDigest: snapshot.pendingCatalogDigest,
           catalogEpoch: snapshot.catalogEpoch,
           catalogMutationReceiptDigest: snapshot.catalogMutationReceiptDigest,
+          scanBasisRevision: intent.revision,
           scanPlanDigest: plan.digest,
           scanPageCount: plan.pages.length,
+          scanSummaryCount: plan.pages.reduce((total, page) => total + page.summaries.length, 0),
           summaryClassifications: [],
         },
         updatedAt: this.#isoNow(),
@@ -410,7 +445,7 @@ export class CompleteCatalogRecallWorker {
         revision: parsed.revision + 1,
         stageCalls: [...parsed.stageCalls, {
           stage: 'CATALOG_SCAN', intentRevision: parsed.revision,
-          callId: id, ordinal: page.ordinal, inputDigest: page.inputDigest,
+          callId: id, ordinal: page.ordinal, itemCount: page.summaries.length, inputDigest: page.inputDigest,
           provider: batch.routeSnapshot.provider, model: batch.routeSnapshot.model,
           policyVersion: this.#policy.policyVersion, outcome: 'RESERVED',
         }],

@@ -6,7 +6,7 @@ import {
   type CompleteRecallCatalogPort,
   type RecallCatalogSnapshot,
 } from '../src/application/recall/index.js'
-import { ExperienceIntentV2Schema, SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import { deriveCatalogScanCallIdV2, ExperienceIntentV2Schema, SessionBatchV2Schema } from '../src/domain/v2/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
@@ -137,6 +137,119 @@ describe('v2 complete Catalog recall', () => {
     expect(domain.experienceIntents.get(intent.intentId)?.recall.candidates).toHaveLength(4)
   })
 
+  it('does not reuse a successful Catalog scan call from an older scan plan', async () => {
+    const { domain, intent } = await seedOwnedIntent()
+    const item = summary(1)
+    await domain.table('experience_intents').put(intent.intentId, ExperienceIntentV2Schema.parse({
+      ...intent,
+      stageCalls: [{
+        stage: 'CATALOG_SCAN', intentRevision: intent.revision,
+        callId: `call_${'4'.repeat(64)}`, ordinal: 1, itemCount: 1, inputDigest: '5'.repeat(64),
+        provider: 'deepseek-official', model: 'deepseek-chat', policyVersion: 'old-policy',
+        outcome: 'SUCCEEDED', outputDigest: '6'.repeat(64),
+      }],
+    }))
+    const registry = catalog(snapshot([item]), new Map([[item.candidateId, '# existing reusable skill']]))
+    const model = classifier(async input => ({
+      classifications: input.summaries.map(candidate => ({
+        candidateId: candidate.candidateId,
+        classification: 'RELEVANT' as const,
+      })),
+    }))
+
+    await new CompleteCatalogRecallWorker(domain, { catalog: registry, classifier: model }).runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
+      status: 'COVERAGE_READY',
+      recall: {
+        state: 'COMPLETE', summaryScanComplete: true,
+        candidates: [{ candidateId: item.candidateId, capability: 'AVAILABLE' }],
+      },
+    })
+  })
+
+  it('does not reuse pre-refresh scan evidence for a stale self-excluding revision', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const fixture = createMinimalV2Fixtures()
+    const item = summary(2)
+    await domain.table('experience_intents').put(
+      fixture.staleRefreshIntent.intentId,
+      ExperienceIntentV2Schema.parse(fixture.staleRefreshIntent),
+    )
+    await domain.table('session_batches').put(
+      fixture.sessionBatch.batchId,
+      SessionBatchV2Schema.parse(fixture.sessionBatch),
+    )
+    const model = classifier(async input => ({
+      classifications: input.summaries.map(candidate => ({
+        candidateId: candidate.candidateId,
+        classification: 'RELEVANT' as const,
+      })),
+    }))
+
+    await new CompleteCatalogRecallWorker(domain, {
+      catalog: catalog(snapshot([item], {
+        catalogEpoch: fixture.staleRefreshIntent.duplicateBarrier.outcomeCatalogEpoch,
+      }), new Map([[item.candidateId, '# existing skill after refresh']])),
+      classifier: model,
+    }).runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(domain.experienceIntents.get(fixture.staleRefreshIntent.intentId)).toMatchObject({
+      status: 'COVERAGE_READY',
+      recall: {
+        state: 'COMPLETE',
+        selfExclusion: fixture.staleRefreshIntent.recall.selfExclusion,
+        candidates: [{ candidateId: item.candidateId }],
+      },
+    })
+  })
+
+  it('replaces untrusted provider and source text with path-free opaque labels before model or durable use', async () => {
+    const { domain, intent } = await seedOwnedIntent()
+    const unsafeFacts = {
+      name: 'private-workflow',
+      description: 'Reusable private workflow',
+      whenToUse: 'Use for a private workflow',
+      provider: 'token=private-credential-material',
+      source: 'C:\\Users\\alice\\private\\skills',
+      scope: 'PROJECT' as const,
+      writable: false,
+      rootIdentityDigest: '7'.repeat(64),
+    }
+    const item = { candidateId: deriveRecallCandidateId(unsafeFacts), ...unsafeFacts }
+    let modelSummary: { provider: string; source: string } | undefined
+    const model = classifier(async input => {
+      modelSummary = input.summaries[0]
+      return {
+        classifications: input.summaries.map(candidate => ({
+          candidateId: candidate.candidateId,
+          classification: 'RELEVANT' as const,
+        })),
+      }
+    })
+    await new CompleteCatalogRecallWorker(domain, {
+      catalog: catalog(snapshot([item]), new Map([[item.candidateId, '# full body']])),
+      classifier: model,
+    }).runOnce()
+
+    const recalled = domain.experienceIntents.get(intent.intentId)!
+    expect(modelSummary).not.toMatchObject({ provider: unsafeFacts.provider, source: unsafeFacts.source })
+    expect(JSON.stringify(modelSummary)).not.toContain('alice')
+    expect(JSON.stringify(recalled)).not.toContain('alice')
+    expect(JSON.stringify(recalled)).not.toContain('private-credential-material')
+    expect(recalled).toMatchObject({
+      recall: { candidates: [{
+        candidateId: item.candidateId,
+        summary: {
+          provider: expect.stringMatching(/^provider-[a-f0-9]{64}$/),
+          source: expect.stringMatching(/^source-[a-f0-9]{64}$/),
+        },
+      }] },
+    })
+  })
+
   it('reads 8940-byte and 14/20 KiB candidates completely when each fits the route envelope', async () => {
     const { domain, intent } = await seedOwnedIntent(32 * 1024)
     const summaries = [summary(1), summary(2), summary(3)]
@@ -234,12 +347,14 @@ describe('v2 complete Catalog recall', () => {
       recall: {
         state: 'SCANNING', complete: false, summaryScanComplete: false, candidates: [],
         runtimeCatalogDigest: '1'.repeat(64), pendingCatalogDigest: '2'.repeat(64), catalogEpoch: 4,
-        catalogMutationReceiptDigest: '3'.repeat(64), scanPlanDigest: '4'.repeat(64), scanPageCount: 1,
+        catalogMutationReceiptDigest: '3'.repeat(64), scanBasisRevision: intent.revision + 1,
+        scanPlanDigest: '4'.repeat(64), scanPageCount: 1, scanSummaryCount: 1,
         summaryClassifications: [],
       },
       stageCalls: [{
         stage: 'CATALOG_SCAN', intentRevision: intent.revision + 1,
-        callId: `call_${'5'.repeat(64)}`, ordinal: 1, inputDigest: '6'.repeat(64),
+        callId: deriveCatalogScanCallIdV2(intent.intentId, '4'.repeat(64), 1), ordinal: 1, itemCount: 1,
+        inputDigest: '6'.repeat(64),
         provider: 'deepseek-official', model: 'deepseek-chat', policyVersion: 'catalog-scan-v1', outcome: 'RESERVED',
       }],
     }))
@@ -265,5 +380,27 @@ describe('v2 complete Catalog recall', () => {
     expect(registry.snapshots).toBe(2)
     expect(model.calls).toBe(0)
     expect(domain.experienceIntents.get(intent.intentId)?.status).toBe('COVERAGE_READY')
+  })
+
+  it('allows only one worker to reserve and classify each current scan page', async () => {
+    const { domain, intent } = await seedOwnedIntent()
+    const item = summary(1)
+    const registry = catalog(snapshot([item]), new Map([[item.candidateId, '# existing skill']]))
+    const model = classifier(async input => ({
+      classifications: input.summaries.map(candidate => ({
+        candidateId: candidate.candidateId,
+        classification: 'RELEVANT' as const,
+      })),
+    }))
+    const first = new CompleteCatalogRecallWorker(domain, { catalog: registry, classifier: model })
+    const second = new CompleteCatalogRecallWorker(domain, { catalog: registry, classifier: model })
+
+    await Promise.all([first.runOnce(), second.runOnce()])
+
+    expect(model.calls).toBe(1)
+    expect(domain.experienceIntents.get(intent.intentId)).toMatchObject({
+      status: 'COVERAGE_READY',
+      recall: { candidates: [{ candidateId: item.candidateId }] },
+    })
   })
 })
