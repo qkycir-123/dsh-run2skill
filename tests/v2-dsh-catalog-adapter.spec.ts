@@ -122,18 +122,17 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
   it('captures stable exact bodies and path-free target identities for ownership baselines', async () => {
     const { domain, fixture } = await seed()
     const view = { cwd: 'D:\\repo', scope: { id: 'agent' }, signal: new AbortController().signal }
-    const exactSkillBytes = [
-      '---', 'name: existing-workflow', 'description: An existing workflow.', '---',
-      '', '# Existing workflow', '', 'x'.repeat(16 * 1024),
+    const exactSkillBody = [
+      '# Existing workflow', '', 'x'.repeat(16 * 1024),
     ].join('\n')
-    expect(Buffer.byteLength(exactSkillBytes, 'utf8')).toBeGreaterThan(8 * 1024)
+    expect(Buffer.byteLength(exactSkillBody, 'utf8')).toBeGreaterThan(8 * 1024)
     const adapter = new DshV2CatalogAdapter(domain, {
       registry: {
         snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
         get: async () => ({
           ...runtimeSkill,
           path: `${runtimeSkill.resourceBase.path}\\SKILL.md`,
-          content: exactSkillBytes,
+          content: exactSkillBody,
         }),
       },
       resolveView: () => view,
@@ -149,7 +148,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
     expect(observed.candidates[0]).toMatchObject({
       name: runtimeSkill.name,
       provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: true,
-      bodyDigest: sha256Utf8(exactSkillBytes),
+      bodyDigest: sha256Utf8(exactSkillBody),
     })
     expect(observed.candidates[0]?.targetPathDigest).toMatch(/^[a-f0-9]{64}$/u)
     expect(JSON.stringify(observed)).not.toContain('D:\\repo')
@@ -175,6 +174,51 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       runtimeCatalogDigest: sha256Utf8(canonicalJson([])),
       candidates: [],
     })
+  })
+
+  it('redacts non-canonical provider and source labels before persisting an ownership baseline', async () => {
+    const { domain, fixture } = await seed()
+    const sensitive = {
+      ...runtimeSkill,
+      provider: 'C:\\sensitive\\provider',
+      source: 'D:\\client\\skill-source',
+      resourceBase: { kind: 'opaque' as const, description: 'third-party resources' },
+    }
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [sensitive] }),
+        get: async () => ({ ...sensitive, content: '# Third-party Skill' }),
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+    })
+
+    const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)
+    expect(observed.complete).toBe(true)
+    expect(observed.candidates[0]).toMatchObject({
+      provider: expect.stringMatching(/^opaque-provider-[a-f0-9]{64}$/u),
+      source: expect.stringMatching(/^opaque-source-[a-f0-9]{64}$/u),
+    })
+    expect(JSON.stringify(observed)).not.toContain('C:\\sensitive')
+    expect(JSON.stringify(observed)).not.toContain('D:\\client')
+  })
+
+  it('fails closed when ownership body reads exceed the bounded candidate or total budget', async () => {
+    const { domain, fixture } = await seed()
+    const makeAdapter = (content: string, maxBodyCodeUnits: number, maxTotalBytes: number) => new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [runtimeSkill] }),
+        get: async () => ({ ...runtimeSkill, content }),
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+      internalOwnershipPolicy: { maxBodyCodeUnits, maxTotalBytes },
+    })
+
+    await expect(makeAdapter('x'.repeat(1_025), 1_024, 10_000)
+      .observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: false, candidates: [] })
+    await expect(makeAdapter('x'.repeat(800), 1_024, 1_500)
+      .observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey))
+      .resolves.toMatchObject({ complete: false, candidates: [] })
   })
 
   it('keeps every public DSH winner readable while granting writes only to canonical DSH bundles', async () => {

@@ -75,7 +75,7 @@ export interface DshV2OwnershipObservationAdapterOptions {
 interface ParsedWrite {
   readonly targetPathDigest?: string
   readonly content?: string
-  readonly contentDigest?: string
+  readonly readbackBodyDigest?: string
   readonly failed: boolean
   readonly skillMarker: boolean
 }
@@ -99,6 +99,24 @@ function canonicalPath(value: string, cwd?: string): string {
 
 export function deriveOwnershipTargetPathDigest(path: string, cwd?: string): string {
   return sha256Utf8(canonicalJson({ path: canonicalPath(path, cwd) }))
+}
+
+/** Mirrors the stock DSH filesystem provider's frontmatter boundary and body trim. */
+export function deriveDshSkillReadbackBodyDigest(raw: string): string | undefined {
+  const firstLineEnd = raw.indexOf('\n')
+  if (firstLineEnd < 0 || raw.slice(0, firstLineEnd).replace(/\r$/u, '') !== '---') return undefined
+  let lineStart = firstLineEnd + 1
+  while (lineStart <= raw.length) {
+    const nextNewline = raw.indexOf('\n', lineStart)
+    const lineEnd = nextNewline < 0 ? raw.length : nextNewline
+    if (raw.slice(lineStart, lineEnd).replace(/\r$/u, '') === '---') {
+      const bodyStart = nextNewline < 0 ? raw.length : nextNewline + 1
+      return sha256Utf8(raw.slice(bodyStart).trim())
+    }
+    if (nextNewline < 0) return undefined
+    lineStart = nextNewline + 1
+  }
+  return undefined
 }
 
 function sameHeader(left: DshSessionHeader, right: DshSessionHeader): boolean {
@@ -172,9 +190,13 @@ function directWrite(
       ? args.file_text
       : undefined
   if (content !== undefined && typeof content !== 'string') return undefined
+  const readbackBodyDigest = typeof content === 'string'
+    ? deriveDshSkillReadbackBodyDigest(content)
+    : undefined
   return {
     targetPathDigest: deriveOwnershipTargetPathDigest(path, cwd),
-    ...(typeof content === 'string' ? { content, contentDigest: sha256Utf8(content) } : {}),
+    ...(typeof content === 'string' ? { content } : {}),
+    ...(readbackBodyDigest === undefined ? {} : { readbackBodyDigest }),
     failed,
     skillMarker: SKILL_MARKER.test(path) || (typeof content === 'string' && /(?:^|\n)name:\s*[a-z0-9-]+/iu.test(content)),
   }
@@ -346,7 +368,7 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         const successful = matchingWrites.filter(write => !write.failed)
         const exactWrite = current === undefined
           ? undefined
-          : successful.find(write => write.contentDigest === current.bodyDigest)
+          : successful.find(write => write.readbackBodyDigest === current.bodyDigest)
         if (exactWrite !== undefined) exactAttributedWrites.add(exactWrite)
         const writeAttribution = successful.length === 1
           ? 'AGENT_WRITE_SUCCEEDED' as const

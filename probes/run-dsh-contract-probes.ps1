@@ -61,6 +61,7 @@ $testSupportDestination = Join-Path $probeDestination 'support'
 New-Item -ItemType Directory -Path $testSupportDestination -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'tests\support\work-item-fixture.ts') -Destination $testSupportDestination
 Copy-Item -LiteralPath (Join-Path $projectRoot 'tests\support\memory-run2skill-v2-domain.ts') -Destination $testSupportDestination
+Copy-Item -LiteralPath (Join-Path $projectRoot 'tests\support\v2-fixtures.ts') -Destination $testSupportDestination
 $configSource = Join-Path $PSScriptRoot 'dsh-contracts\vitest.config.ts'
 $configDestination = Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts'
 Copy-Item -LiteralPath $configSource -Destination $configDestination

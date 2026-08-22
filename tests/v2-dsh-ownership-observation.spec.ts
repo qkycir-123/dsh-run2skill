@@ -12,12 +12,15 @@ import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-dom
 
 const header: DshSessionHeader = { version: 1, id: 'session-v2', createdAt: 100, cwd: 'D:\\repo' }
 const skillPath = 'D:\\repo\\.dsh\\skills\\fixture-workflow\\SKILL.md'
+const exactSkillBody = [
+  '# Fixture workflow', '', 'Observe', '', 'Verify', '', 'Do not skip verification',
+].join('\n')
 const exactSkillBytes = [
   '---', 'name: fixture-workflow', 'description: Apply the fixture workflow.', '---', '',
-  '# Fixture workflow', '', 'Observe', '', 'Verify', '', 'Do not skip verification', '',
+  exactSkillBody, '',
 ].join('\n')
 
-function candidate(body = exactSkillBytes) {
+function candidate(body = exactSkillBody) {
   return {
     candidateId: 'candidate-fixture', name: 'fixture-workflow', provider: 'filesystem', source: 'project-dsh',
     scope: 'PROJECT' as const, writable: true,

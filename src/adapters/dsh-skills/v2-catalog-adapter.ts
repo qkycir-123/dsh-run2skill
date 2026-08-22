@@ -38,6 +38,16 @@ const runtimeDefinitionSchema = runtimeSummarySchema.safeExtend({ content: z.str
 
 type RuntimeSummary = z.infer<typeof runtimeSummarySchema>
 
+interface OwnershipCatalogPolicy {
+  readonly maxBodyCodeUnits: number
+  readonly maxTotalBytes: number
+}
+
+const DEFAULT_OWNERSHIP_CATALOG_POLICY: OwnershipCatalogPolicy = Object.freeze({
+  maxBodyCodeUnits: 32 * 1024 * 1024,
+  maxTotalBytes: 128 * 1024 * 1024,
+})
+
 export interface V2RuntimeCatalogIdentity {
   readonly scope: 'PROJECT' | 'USER'
   readonly writable: boolean
@@ -63,6 +73,8 @@ export interface DshV2CatalogAdapterOptions<TView extends object> {
     view: TView,
     context: { readonly sessionLifecycleKey: string },
   ) => V2RuntimeCatalogIdentity | undefined
+  /** @internal Allows deterministic boundary tests; Host wiring uses the frozen default policy. */
+  readonly internalOwnershipPolicy?: Partial<OwnershipCatalogPolicy>
 }
 
 interface RuntimeCandidate {
@@ -91,6 +103,17 @@ interface CapturedCatalog {
 }
 
 const EMPTY_DIGEST = sha256Utf8(canonicalJson([]))
+const CANONICAL_OWNERSHIP_PROVIDERS = new Set(['filesystem'])
+const CANONICAL_OWNERSHIP_SOURCES = new Set([
+  'project-dsh', 'project-agents', 'custom', 'user-dsh', 'user-agents', 'bundled', 'runtime',
+])
+
+function ownershipCatalogLabel(kind: 'provider' | 'source', value: string): string {
+  const canonical = kind === 'provider' ? CANONICAL_OWNERSHIP_PROVIDERS : CANONICAL_OWNERSHIP_SOURCES
+  return canonical.has(value)
+    ? value
+    : `opaque-${kind}-${sha256Utf8(canonicalJson({ kind, value }))}`
+}
 
 function pathApi(value: string): typeof win32 | typeof posix {
   return /^[a-zA-Z]:[\\/]/u.test(value) || value.includes('\\') ? win32 : posix
@@ -183,11 +206,16 @@ export class DshV2CatalogAdapter<TView extends object> {
   readonly #registry: DshSkillRegistryPort<TView>
   readonly #resolveView: DshV2CatalogAdapterOptions<TView>['resolveView']
   readonly #resolveRuntimeIdentity: NonNullable<DshV2CatalogAdapterOptions<TView>['resolveRuntimeIdentity']>
+  readonly #ownershipPolicy: OwnershipCatalogPolicy
 
   constructor(domain: Run2skillV2Domain, options: DshV2CatalogAdapterOptions<TView>) {
     this.#domain = domain
     this.#registry = options.registry
     this.#resolveView = options.resolveView
+    this.#ownershipPolicy = { ...DEFAULT_OWNERSHIP_CATALOG_POLICY, ...options.internalOwnershipPolicy }
+    if (!Object.values(this.#ownershipPolicy).every(value => Number.isSafeInteger(value) && value > 0)) {
+      throw new TypeError('Invalid ownership Catalog policy')
+    }
     this.#resolveRuntimeIdentity = options.resolveRuntimeIdentity
       ?? ((summary, view, context) => stockRuntimeIdentity(
         summary,
@@ -235,9 +263,17 @@ export class DshV2CatalogAdapter<TView extends object> {
     const unavailable = { complete: false, runtimeCatalogDigest: EMPTY_DIGEST, candidates: [] }
     const view = this.#resolveView(sessionLifecycleKey)
     if (view === undefined) return unavailable
-    const first = await this.#ownershipRuntime(view, sessionLifecycleKey)
+    let totalBytes = 0
+    const observeBody = (content: string): boolean => {
+      if (content.length > this.#ownershipPolicy.maxBodyCodeUnits) return false
+      const bytes = Buffer.byteLength(content, 'utf8')
+      if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
+      totalBytes += bytes
+      return true
+    }
+    const first = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBody)
     if (!first.complete) return unavailable
-    const second = await this.#ownershipRuntime(view, sessionLifecycleKey)
+    const second = await this.#ownershipRuntime(view, sessionLifecycleKey, observeBody)
     if (!second.complete || canonicalJson(first) !== canonicalJson(second)) return unavailable
     return {
       complete: true,
@@ -397,7 +433,11 @@ export class DshV2CatalogAdapter<TView extends object> {
     return { complete: true, digest: sha256Utf8(canonicalJson(candidates.map(item => item.summary))), candidates }
   }
 
-  async #ownershipRuntime(view: TView, sessionLifecycleKey: string): Promise<{
+  async #ownershipRuntime(
+    view: TView,
+    sessionLifecycleKey: string,
+    observeBody: (content: string) => boolean,
+  ): Promise<{
     readonly complete: boolean
     readonly runtimeCatalogDigest: string
     readonly candidates: readonly {
@@ -448,11 +488,12 @@ export class DshV2CatalogAdapter<TView extends object> {
         rootIdentityDigest: runtimeIdentity.rootIdentityDigest,
       }
       if (canonicalJson(loadedSummary) !== canonicalJson(candidate.summary)) return unavailable
+      if (!observeBody(definition.data.content)) return unavailable
       candidates.push({
         candidateId: candidate.summary.candidateId,
         name: candidate.summary.name,
-        provider: candidate.summary.provider,
-        source: candidate.summary.source,
+        provider: ownershipCatalogLabel('provider', candidate.summary.provider),
+        source: ownershipCatalogLabel('source', candidate.summary.source),
         scope: candidate.summary.scope,
         writable: candidate.summary.writable,
         ...(definition.data.path === undefined
