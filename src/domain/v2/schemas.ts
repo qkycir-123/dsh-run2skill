@@ -355,6 +355,82 @@ export function deriveExperienceIntentIdV2(facts: ExperienceIntentIdentityFactsV
   }))}`
 }
 
+export const OwnershipEvidenceV2Schema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('UNAVAILABLE'),
+    reasonCode: z.enum([
+      'INTENT_INCOMPLETE', 'BASELINE_INCOMPLETE', 'CLAIM_INPUT_UNAVAILABLE',
+      'OBSERVATION_FAILED', 'OBSERVATION_INVALID', 'OBSERVATION_OUTCOME_UNKNOWN',
+    ]),
+  }).strict(),
+  z.object({
+    status: z.literal('OBSERVED'),
+    observedAt: isoDateTime,
+    endManifest: z.object({
+      rootManifestDigest: sha256Hex,
+      runtimeCatalogDigest: sha256Hex,
+      complete: z.boolean(),
+    }).strict(),
+    catalogComplete: z.boolean(),
+    toolEvidenceComplete: z.boolean(),
+    agentActivity: z.enum(['NONE', 'WRITE_SUCCEEDED', 'WRITE_FAILED', 'BODY_GENERATED', 'AMBIGUOUS']),
+    changedCandidates: z.array(z.object({
+      candidateId: identity,
+      provider: identity,
+      source: identity,
+      scope: PersistenceScopeV2Schema,
+      writable: z.boolean(),
+      exactReadbackComplete: z.boolean(),
+      bodyDigest: sha256Hex.optional(),
+      writeAttribution: z.enum(['AGENT_WRITE_SUCCEEDED', 'NOT_AGENT', 'UNKNOWN']),
+      intentBinding: z.enum(['MATCH', 'NO_MATCH', 'UNKNOWN']),
+    }).strict().superRefine((candidate, context) => {
+      if (candidate.exactReadbackComplete !== (candidate.bodyDigest !== undefined)) {
+        context.addIssue({ code: 'custom', path: ['bodyDigest'], message: 'Exact readback completeness must match the body digest' })
+      }
+    })).max(256),
+  }).strict(),
+])
+
+export type OwnershipEvidenceV2 = z.infer<typeof OwnershipEvidenceV2Schema>
+
+export interface OwnershipClaimFactsV2 {
+  readonly intentId: string
+  readonly intentRevision: number
+}
+
+export function deriveOwnershipClaimIdV2(facts: OwnershipClaimFactsV2): `claim_${string}` {
+  return `claim_${sha256Utf8(canonicalJson(facts))}`
+}
+
+export function deriveOwnershipEvidenceDigestV2(evidence: OwnershipEvidenceV2): string {
+  return sha256Utf8(canonicalJson(evidence))
+}
+
+export interface OwnershipReceiptFactsV2 {
+  readonly intentId: string
+  readonly claimedIntentRevision: number
+  readonly claimId: string
+  readonly decision: 'RESOLVED_BY_AGENT' | 'NEEDS_CONFIRMATION' | 'RUN2SKILL_OWNED'
+  readonly evidenceDigest: string
+  readonly reasonCode?: string | undefined
+  readonly resolvedCandidateId?: string | undefined
+  readonly resolvedCandidateBodyDigest?: string | undefined
+}
+
+export function deriveOwnershipReceiptDigestV2(facts: OwnershipReceiptFactsV2): string {
+  return sha256Utf8(canonicalJson({
+    intentId: facts.intentId,
+    claimedIntentRevision: facts.claimedIntentRevision,
+    claimId: facts.claimId,
+    decision: facts.decision,
+    evidenceDigest: facts.evidenceDigest,
+    ...(facts.reasonCode === undefined ? {} : { reasonCode: facts.reasonCode }),
+    ...(facts.resolvedCandidateId === undefined ? {} : { resolvedCandidateId: facts.resolvedCandidateId }),
+    ...(facts.resolvedCandidateBodyDigest === undefined ? {} : { resolvedCandidateBodyDigest: facts.resolvedCandidateBodyDigest }),
+  }))
+}
+
 export const ExperienceIntentStatusV2Schema = z.enum([
   'DETECTOR_STAGED',
   'READY',
@@ -453,9 +529,15 @@ export const ExperienceIntentV2Schema = z.object({
   }).strict(),
   ownership: z.object({
     state: z.enum(['NOT_STARTED', 'ARBITRATING', 'RESOLVED_BY_AGENT', 'NEEDS_CONFIRMATION', 'RUN2SKILL_OWNED']),
+    claimId: z.string().regex(/^claim_[a-f0-9]{64}$/).optional(),
+    claimedIntentRevision: positiveSafeInteger.optional(),
+    claimedAt: isoDateTime.optional(),
+    evidence: OwnershipEvidenceV2Schema.optional(),
     evidenceDigest: sha256Hex.optional(),
     receiptDigest: sha256Hex.optional(),
     reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(),
+    resolvedCandidateId: identity.optional(),
+    resolvedCandidateBodyDigest: sha256Hex.optional(),
   }).strict(),
   recall: z.object({
     state: z.enum(['NOT_STARTED', 'SCANNING', 'COMPLETE', 'INCOMPLETE']),
@@ -670,9 +752,92 @@ export const ExperienceIntentV2Schema = z.object({
       void unreachable
     }
   }
-  if (value.ownership.state === 'RUN2SKILL_OWNED' && (
-    value.ownership.evidenceDigest === undefined || value.ownership.receiptDigest === undefined
-  )) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Run2Skill ownership requires evidence and a durable receipt' })
+  const ownership = value.ownership
+  if (ownership.state === 'NOT_STARTED' && Object.keys(ownership).length !== 1) {
+    context.addIssue({ code: 'custom', path: ['ownership'], message: 'Unstarted ownership cannot retain arbitration facts' })
+  }
+  if (ownership.state !== 'NOT_STARTED') {
+    if (
+      ownership.claimId === undefined
+      || ownership.claimedIntentRevision === undefined
+      || ownership.claimedAt === undefined
+    ) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Started ownership requires a durable claim' })
+    else if (ownership.claimId !== deriveOwnershipClaimIdV2({
+      intentId: value.intentId,
+      intentRevision: ownership.claimedIntentRevision,
+    })) context.addIssue({ code: 'custom', path: ['ownership', 'claimId'], message: 'Ownership claim id does not match the claimed Intent revision' })
+  }
+  if (ownership.evidence !== undefined && ownership.evidenceDigest !== deriveOwnershipEvidenceDigestV2(ownership.evidence)) {
+    context.addIssue({ code: 'custom', path: ['ownership', 'evidenceDigest'], message: 'Ownership evidence digest does not match sealed evidence' })
+  }
+  if ((ownership.evidence === undefined) !== (ownership.evidenceDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['ownership'], message: 'Ownership evidence and digest must appear together' })
+  }
+  const terminalOwnership = ['RESOLVED_BY_AGENT', 'NEEDS_CONFIRMATION', 'RUN2SKILL_OWNED'].includes(ownership.state)
+  if (terminalOwnership) {
+    if (
+      ownership.claimId === undefined
+      || ownership.claimedIntentRevision === undefined
+      || ownership.evidenceDigest === undefined
+      || ownership.receiptDigest === undefined
+    ) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Terminal ownership requires sealed evidence and a durable receipt' })
+    else {
+      const expectedReceipt = deriveOwnershipReceiptDigestV2({
+        intentId: value.intentId,
+        claimedIntentRevision: ownership.claimedIntentRevision,
+        claimId: ownership.claimId,
+        decision: ownership.state as OwnershipReceiptFactsV2['decision'],
+        evidenceDigest: ownership.evidenceDigest,
+        reasonCode: ownership.reasonCode,
+        resolvedCandidateId: ownership.resolvedCandidateId,
+        resolvedCandidateBodyDigest: ownership.resolvedCandidateBodyDigest,
+      })
+      if (ownership.receiptDigest !== expectedReceipt) {
+        context.addIssue({ code: 'custom', path: ['ownership', 'receiptDigest'], message: 'Ownership receipt does not match the terminal decision' })
+      }
+    }
+  }
+  if (ownership.state === 'RESOLVED_BY_AGENT' && (
+    ownership.resolvedCandidateId === undefined || ownership.resolvedCandidateBodyDigest === undefined
+  )) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Agent resolution requires the exact persisted candidate identity and body digest' })
+  if (ownership.state !== 'RESOLVED_BY_AGENT' && (
+    ownership.resolvedCandidateId !== undefined || ownership.resolvedCandidateBodyDigest !== undefined
+  )) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Only Agent resolution may bind a resolved candidate' })
+  if (ownership.state === 'NEEDS_CONFIRMATION' && ownership.reasonCode === undefined) {
+    context.addIssue({ code: 'custom', path: ['ownership', 'reasonCode'], message: 'Ownership confirmation requires a reason' })
+  }
+  if (ownership.state === 'ARBITRATING' && (
+    ownership.receiptDigest !== undefined
+    || ownership.reasonCode !== undefined
+    || ownership.resolvedCandidateId !== undefined
+    || ownership.resolvedCandidateBodyDigest !== undefined
+  )) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Arbitrating ownership cannot retain a terminal decision' })
+  if (ownership.state === 'RUN2SKILL_OWNED' && (
+    ownership.evidence?.status !== 'OBSERVED'
+    || !ownership.evidence.endManifest.complete
+    || !ownership.evidence.catalogComplete
+    || !ownership.evidence.toolEvidenceComplete
+    || ownership.evidence.agentActivity !== 'NONE'
+    || ownership.evidence.changedCandidates.length !== 0
+  )) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Run2Skill ownership requires complete proof of no Agent Skill activity' })
+  if (ownership.state === 'RESOLVED_BY_AGENT') {
+    const resolvedEvidence = ownership.evidence?.status === 'OBSERVED' ? ownership.evidence : undefined
+    const resolvedMatches = resolvedEvidence?.changedCandidates.filter(candidate => (
+      candidate.candidateId === ownership.resolvedCandidateId
+      && candidate.bodyDigest === ownership.resolvedCandidateBodyDigest
+      && candidate.exactReadbackComplete
+      && candidate.writeAttribution === 'AGENT_WRITE_SUCCEEDED'
+      && candidate.intentBinding === 'MATCH'
+    )) ?? []
+    if (
+      resolvedEvidence === undefined
+      || !resolvedEvidence.endManifest.complete
+      || !resolvedEvidence.catalogComplete
+      || !resolvedEvidence.toolEvidenceComplete
+      || resolvedEvidence.agentActivity !== 'WRITE_SUCCEEDED'
+      || resolvedMatches.length !== 1
+    ) context.addIssue({ code: 'custom', path: ['ownership'], message: 'Agent resolution requires one complete exact matching write proof' })
+  }
   if (value.recall.complete !== (value.recall.state === 'COMPLETE')) {
     context.addIssue({ code: 'custom', path: ['recall', 'complete'], message: 'Recall completeness must match its state' })
   }

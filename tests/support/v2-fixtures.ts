@@ -10,6 +10,9 @@ import {
   deriveRecallSelfExclusionDigestV2,
   deriveTurnObservationIdV2,
   deriveTurnObservationContentDigestV2,
+  deriveOwnershipClaimIdV2,
+  deriveOwnershipEvidenceDigestV2,
+  deriveOwnershipReceiptDigestV2,
 } from '../../src/domain/v2/index.js'
 import { createInitialGlobalV2 } from '../../src/adapters/dsh-storage/v2-domain.js'
 import {
@@ -219,13 +222,44 @@ export function createMinimalV2Fixtures() {
     mutationReceiptDigest: '4'.repeat(64),
     receiptDigest: '9'.repeat(64),
   }
+  const ownershipEvidence = {
+    status: 'OBSERVED' as const,
+    observedAt: now,
+    endManifest: {
+      rootManifestDigest: sessionBatch.batchManifestBaseline.rootManifestDigest,
+      runtimeCatalogDigest: sessionBatch.batchManifestBaseline.runtimeCatalogDigest,
+      complete: true,
+    },
+    catalogComplete: true,
+    toolEvidenceComplete: true,
+    agentActivity: 'NONE' as const,
+    changedCandidates: [],
+  }
+  const ownershipClaimId = deriveOwnershipClaimIdV2({
+    intentId: experienceIntent.intentId,
+    intentRevision: experienceIntent.revision,
+  })
+  const ownershipEvidenceDigest = deriveOwnershipEvidenceDigestV2(ownershipEvidence)
+  const ownershipReasonCode = 'NO_AGENT_SKILL_ACTIVITY'
   const proposalReadyIntent = {
     ...experienceIntent,
     status: 'PROPOSAL_READY' as const,
     ownership: {
       state: 'RUN2SKILL_OWNED' as const,
-      evidenceDigest: 'a'.repeat(64),
-      receiptDigest: 'b'.repeat(64),
+      claimId: ownershipClaimId,
+      claimedIntentRevision: experienceIntent.revision,
+      claimedAt: now,
+      evidence: ownershipEvidence,
+      evidenceDigest: ownershipEvidenceDigest,
+      reasonCode: ownershipReasonCode,
+      receiptDigest: deriveOwnershipReceiptDigestV2({
+        intentId: experienceIntent.intentId,
+        claimedIntentRevision: experienceIntent.revision,
+        claimId: ownershipClaimId,
+        decision: 'RUN2SKILL_OWNED',
+        evidenceDigest: ownershipEvidenceDigest,
+        reasonCode: ownershipReasonCode,
+      }),
     },
     recall: {
       state: 'COMPLETE' as const,
