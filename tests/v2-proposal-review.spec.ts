@@ -192,6 +192,49 @@ describe('v2 Proposal review coordinator', () => {
     })).resolves.toMatchObject({ changed: false, state: 'REJECTED' })
   })
 
+  it('finishes the rejection journal when an idempotent retry follows a finalize write failure', async () => {
+    const seeded = await seed()
+    const durableSet = seeded.domain.global.set.bind(seeded.domain.global)
+    let remainingFinalizeFailures = 2
+    seeded.domain.global.set = async value => {
+      if (
+        remainingFinalizeFailures > 0
+        && seeded.domain.global.get().proposalCatalogMutationJournal?.kind === 'REVIEW'
+        && value.proposalCatalogMutationJournal === undefined
+      ) {
+        remainingFinalizeFailures -= 1
+        throw new Error('synthetic review finalize failure')
+      }
+      await durableSet(value)
+    }
+    const coordinator = new V2ProposalReviewCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      now: () => NOW,
+    })
+
+    await expect(coordinator.reject({
+      lineageId: seeded.lineage.lineageId,
+      expectedLineageRevision: seeded.lineage.revision,
+      proposalRef: seeded.proposalRef,
+    })).rejects.toThrow('synthetic review finalize failure')
+    const rejected = ProposalLineageV2Schema.parse(
+      seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId),
+    )
+    expect(rejected).toMatchObject({ state: 'TERMINAL', revision: seeded.lineage.revision + 1 })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toMatchObject({ kind: 'REVIEW' })
+
+    await expect(coordinator.reject({
+      lineageId: rejected.lineageId,
+      expectedLineageRevision: rejected.revision,
+      proposalRef: seeded.proposalRef,
+    })).resolves.toMatchObject({ changed: false, state: 'REJECTED' })
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: 1,
+      proposalCatalogLastMutation: { kind: 'REVIEW', ownerId: seeded.proposalRef.proposalId },
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+  })
+
   it('finishes a durable rejected lineage after a crash left the review journal prepared', async () => {
     const seeded = await seed()
     const latest = seeded.lineage.proposalRevisions.at(-1)!

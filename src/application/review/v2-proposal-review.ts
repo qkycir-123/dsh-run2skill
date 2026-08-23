@@ -219,7 +219,13 @@ export class V2ProposalReviewCoordinator {
     return this.#serialize(async () => {
       const lineage = this.#required(request)
       const state = reviewState(lineage)
-      if (state === 'REJECTED') return { changed: false, state, lineage }
+      if (state === 'REJECTED') {
+        const journal = this.#global.get().proposalCatalogMutationJournal
+        if (journal?.kind === 'REVIEW' && journal.ownerId === request.proposalRef.proposalId) {
+          await this.#recoverReviewJournal()
+        }
+        return { changed: false, state, lineage }
+      }
       if (state === 'APPROVED') throw new V2ProposalReviewError('INVALID_REVIEW_STATE')
       await this.#prepareRejection(request.proposalRef.proposalId)
       let updated: NativeProposalLineageV2
@@ -257,7 +263,12 @@ export class V2ProposalReviewCoordinator {
         await this.#recoverReviewJournal()
         throw error
       }
-      await this.#finalizeRejection(request.proposalRef.proposalId)
+      try {
+        await this.#finalizeRejection(request.proposalRef.proposalId)
+      } catch (error) {
+        await this.#recoverReviewJournal()
+        throw error
+      }
       return { changed: true, state: 'REJECTED', lineage: updated }
     })
   }
