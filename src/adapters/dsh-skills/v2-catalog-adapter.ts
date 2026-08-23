@@ -313,7 +313,7 @@ export class DshV2CatalogAdapter<TView extends object> {
         if (
           journal?.kind !== 'PUBLICATION'
           || journal.ownerId !== input.proposalId
-          || (journal.phase !== 'PREPARED' && journal.phase !== 'EXECUTING')
+          || journal.phase !== 'PREPARED'
         ) return undefined
         return await this.#generationSnapshot(input.batch, input.intent, undefined, {
           mutationId: journal.mutationId,

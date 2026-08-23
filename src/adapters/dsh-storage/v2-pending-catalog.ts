@@ -56,7 +56,7 @@ export interface PendingProposalCatalogReadOptionsV2 {
   readonly allowPublicationJournal?: {
     readonly mutationId: string
     readonly ownerId: string
-    readonly phase: 'PREPARED' | 'EXECUTING'
+    readonly phase: 'PREPARED'
   } | undefined
 }
 

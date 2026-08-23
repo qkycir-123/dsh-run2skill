@@ -452,6 +452,10 @@ export class V2ProposalPublicationCoordinator {
     }
     this.#assertPublishable(lineage, journal.phase === 'EXECUTING')
     const input = this.#input(lineage, deriveV2ProposalRef(lineage))
+    if (journal.phase === 'EXECUTING') {
+      await this.#executePrepared(input, journal.mutationId)
+      return 'RECOVERED'
+    }
     let revalidation: V2ProposalReviewRevalidation
     try {
       revalidation = await this.options.revalidate(input)
@@ -460,18 +464,14 @@ export class V2ProposalPublicationCoordinator {
     }
     if (revalidation.status !== 'CURRENT') {
       const code = revalidation.status === 'STALE' ? 'CATALOG_CHANGED' : 'CATALOG_UNAVAILABLE'
-      if (journal.phase === 'PREPARED') {
-        if (code === 'CATALOG_CHANGED') {
-          await this.#markNeedsRefresh(journal.ownerId, journal.mutationId, code)
-          await this.#recordFailureIfNeeded(lineage, code)
-          await this.#clearJournal(journal.ownerId, journal.mutationId)
-          return 'RECOVERED'
-        }
+      if (code === 'CATALOG_CHANGED') {
+        await this.#markNeedsRefresh(journal.ownerId, journal.mutationId, code)
         await this.#recordFailureIfNeeded(lineage, code)
         await this.#clearJournal(journal.ownerId, journal.mutationId)
         return 'RECOVERED'
       }
       await this.#recordFailureIfNeeded(lineage, code)
+      await this.#clearJournal(journal.ownerId, journal.mutationId)
       return 'RECOVERED'
     }
     await this.#markExecuting(journal.ownerId, journal.mutationId)
