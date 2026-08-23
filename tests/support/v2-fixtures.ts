@@ -479,6 +479,10 @@ export function createMinimalV2Fixtures() {
       catalogMutationReceiptDigest: proposalReadyIntent.generation.receipts[5]!.digest,
       catalogEpoch: sealedResult.outcomeCatalogEpoch + 1,
       targetIdentityDigest: sealedResult.targetDigest,
+      projectScopeBinding: {
+        workspaceId: 'workspace-v2',
+        scopeIdentityDigest: 'c'.repeat(64),
+      },
       state: 'ACTIVE_PROPOSAL' as const,
       createdAt: now,
     }],

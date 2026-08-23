@@ -15,6 +15,7 @@ export interface PublicationHooks {
   readonly beforeBackupMove?: (record: Readonly<Record<string, unknown>>) => Promise<void>
   readonly beforeBackupRename?: (record: Readonly<Record<string, unknown>>) => Promise<void>
   readonly afterInstall?: (record: Readonly<Record<string, unknown>>) => Promise<void>
+  readonly afterBackupRemoval?: (record: Readonly<Record<string, unknown>>) => Promise<void>
 }
 
 export interface RootPreparation {
@@ -48,11 +49,16 @@ export function verifyFinalizedTransaction(input: {
   readonly txid: string
   readonly expectedHash: string
   readonly expectedRootIdentityDigest: string
+  readonly requireFinalizedJournal?: boolean
 }): Promise<boolean>
 export function preparePublicationRoot(input: {
   readonly binding: RootBindingV2
   readonly verifyIdentity: (canonicalPath: string, identityDigest: string) => Promise<boolean>
-  readonly verifyParity: (binding: RootBindingV2, canonicalRoot: string) => Promise<boolean>
+  readonly verifyParity: (
+    binding: RootBindingV2,
+    canonicalRoot: string,
+    rootIdentityDigest: string,
+  ) => Promise<boolean>
   readonly crashAt?: string
 }): Promise<RootPreparation>
 export function createBundle(input: {
@@ -78,10 +84,16 @@ export function recoverTransaction(input: {
   readonly root: string
   readonly txid: string
 }): Promise<PublicationResult>
+export function withdrawWrittenCreate(input: {
+  readonly root: string
+  readonly txid: string
+}): Promise<PublicationResult>
 export function finalizeTransaction(input: {
   readonly root: string
   readonly txid: string
   readonly confirmedExactReadback: true
+  readonly crashAt?: string
+  readonly hooks?: PublicationHooks
 }): Promise<PublicationResult>
 
 export const probeInternals: {

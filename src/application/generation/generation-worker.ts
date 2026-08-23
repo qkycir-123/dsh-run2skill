@@ -21,6 +21,7 @@ import {
   ExperienceIntentV2Schema,
   ProposalLineageV2Schema,
   SessionBatchV2Schema,
+  TurnObservationV2Schema,
   type ExperienceIntentV2,
   type GlobalV2,
   type SessionBatchV2,
@@ -148,6 +149,7 @@ export class GenerationWorker {
   readonly #intents
   readonly #batches
   readonly #lineages
+  readonly #observations
   readonly #catalog: GenerationCatalogPort
   readonly #quiescence: GenerationQuiescencePort
   readonly #generator: SkillGenerator
@@ -159,6 +161,7 @@ export class GenerationWorker {
     this.#intents = domain.table('experience_intents')
     this.#batches = domain.table('session_batches')
     this.#lineages = domain.table('proposal_lineages')
+    this.#observations = domain.table('turn_observations')
     this.#catalog = options.catalog
     this.#quiescence = options.quiescence
     this.#generator = options.generator
@@ -218,6 +221,7 @@ export class GenerationWorker {
     }
 
     let baseSkill: string | undefined
+    let baseSkillBytesDigest: string | undefined
     if (leased.generation.action === 'MERGE') {
       const targetCandidateId = leased.coverage.targetCandidateId
       if (targetCandidateId === undefined) {
@@ -230,7 +234,11 @@ export class GenerationWorker {
       } catch {
         target = undefined
       }
-      if (target === undefined || sha256Utf8(target.content) !== leased.coverage.targetDigest) {
+      if (
+        target === undefined
+        || target.skillBytesDigest === undefined
+        || sha256Utf8(target.content) !== leased.coverage.targetDigest
+      ) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_TARGET_CHANGED')
         return 'PROCESSED'
       }
@@ -240,6 +248,7 @@ export class GenerationWorker {
         return 'PROCESSED'
       }
       baseSkill = processed.text
+      baseSkillBytesDigest = target.skillBytesDigest
       const afterRead = await this.#safeSnapshot(batch.data, leased)
       if (afterRead === undefined || !this.#snapshotMatches(afterRead, leased)) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_CATALOG_CHANGED')
@@ -322,7 +331,7 @@ export class GenerationWorker {
     }
     const outputDigest = sha256Utf8(canonicalJson(parsed.data))
     if (!await this.#terminalCall(leased.intentId, callId, 'SUCCEEDED', outputDigest)) return 'PROCESSED'
-    await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes)
+    await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes, baseSkillBytesDigest)
     if (await this.#validateQuiescence(leased.intentId) !== 'VALID') {
       await this.#markStaleResult(leased.intentId, leased.generation.leaseId!)
     }
@@ -708,6 +717,7 @@ export class GenerationWorker {
     intentId: string,
     output: z.infer<typeof generationOutputSchema>,
     exactSkillBytes: string,
+    baseSkillBytesDigest: string | undefined,
   ): Promise<void> {
     const intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
     if (intent.generation.state !== 'GENERATION_CALL_TERMINAL') return
@@ -743,6 +753,7 @@ export class GenerationWorker {
         skillBytesDigest: sha256Utf8(exactSkillBytes),
       },
       targetDigest: intent.coverage.targetDigest!,
+      ...(baseSkillBytesDigest === undefined ? {} : { baseSkillBytesDigest }),
       inputDigest: intent.generation.inputDigest!,
       runtimeCatalogDigest: intent.recall.runtimeCatalogDigest!,
       pendingCatalogDigest: intent.recall.pendingCatalogDigest!,
@@ -1043,7 +1054,11 @@ export class GenerationWorker {
       if (candidateId === undefined) return undefined
       try {
         const target = await this.#catalog.read({ candidateId, batch, intent })
-        if (target === undefined || sha256Utf8(target.content) !== result.targetDigest) return undefined
+        if (
+          target === undefined
+          || sha256Utf8(target.content) !== result.targetDigest
+          || target.skillBytesDigest !== result.baseSkillBytesDigest
+        ) return undefined
       } catch {
         return undefined
       }
@@ -1153,6 +1168,8 @@ export class GenerationWorker {
   #buildProposalLineage(intent: ExperienceIntentV2, ownerIntentRevision = intent.revision) {
     const facts = this.#proposalMutationFacts(intent)
     if (facts === undefined) return undefined
+    const projectScopeBinding = this.#projectScopeBinding(intent)
+    if (intent.persistenceScope === 'PROJECT' && projectScopeBinding === undefined) return undefined
     return ProposalLineageV2Schema.parse({
       schemaVersion: 1,
       revision: 1,
@@ -1177,12 +1194,38 @@ export class GenerationWorker {
         catalogMutationReceiptDigest: facts.mutationReceiptDigest,
         catalogEpoch: facts.outcomeCatalogEpoch,
         targetIdentityDigest: facts.result.targetDigest,
+        ...(facts.result.baseSkillBytesDigest === undefined
+          ? {}
+          : { baseSkillBytesDigest: facts.result.baseSkillBytesDigest }),
+        ...(projectScopeBinding === undefined ? {} : { projectScopeBinding }),
         state: 'ACTIVE_PROPOSAL',
         createdAt: facts.revalidation.authorizedAt,
       }],
       createdAt: facts.revalidation.authorizedAt,
       updatedAt: facts.revalidation.authorizedAt,
     })
+  }
+
+  #projectScopeBinding(intent: ExperienceIntentV2): {
+    readonly workspaceId: string
+    readonly scopeIdentityDigest: string
+  } | undefined {
+    if (intent.persistenceScope !== 'PROJECT') return undefined
+    const bindings = intent.evidenceRefs.map(reference => {
+      const parsed = TurnObservationV2Schema.safeParse(this.#observations.get(reference.observationId))
+      if (
+        !parsed.success
+        || parsed.data.evidenceDigest !== reference.evidenceDigest
+        || parsed.data.scopeBinding.status !== 'PROJECT'
+      ) return undefined
+      return {
+        workspaceId: parsed.data.scopeBinding.workspaceId,
+        scopeIdentityDigest: parsed.data.scopeBinding.scopeIdentityDigest,
+      }
+    })
+    if (bindings.some(binding => binding === undefined)) return undefined
+    const unique = new Map(bindings.map(binding => [canonicalJson(binding), binding!]))
+    return unique.size === 1 ? [...unique.values()][0] : undefined
   }
 
   async #commitProposalBody(intentId: string, leaseId: string): Promise<void> {

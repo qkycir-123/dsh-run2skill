@@ -57,6 +57,13 @@ export class C5PublicationFileSystemAdapter implements PublicationFileSystemPort
     const binding = writableBinding(input.proposal)
     const observed = await observePublicationRoot(binding.rootBinding.declaredRootPath)
     if (observed.status === 'ABSENT') return { status: 'NO_JOURNAL' }
+    if (
+      binding.rootBinding.state === 'EXISTING'
+      && !await this.#verifyIdentity(
+        binding.rootBinding.canonicalRootPath,
+        binding.rootBinding.rootIdentityDigest,
+      )
+    ) throw new PublicationConflict('root_identity_changed', 'Publication root directory identity changed')
     try {
       return await recoverTransaction({
         root: binding.rootBinding.declaredRootPath,

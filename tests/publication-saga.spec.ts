@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { C5PublicationFileSystemAdapter } from '../src/adapters/dsh-publication/publication-filesystem.js'
-import { verifyPublicationDirectoryIdentity } from '../src/adapters/dsh-publication/filesystem-cas.mjs'
+import {
+  probeInternals,
+  verifyPublicationDirectoryIdentity,
+} from '../src/adapters/dsh-publication/filesystem-cas.mjs'
 import { NodePublicationFactsAdapter } from '../src/adapters/dsh-publication/publication-facts.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { PublicationSagaStore } from '../src/adapters/dsh-storage/publication-saga-store.js'
@@ -477,25 +480,34 @@ describe('ApprovalPublicationSaga', () => {
         attemptId: approved.item.publication!.activeAttemptId,
         rootIdentityDigest,
       })).resolves.toMatchObject({ status: 'finalized' })
-      await writeFile(
-        join(bundlePath, `.run2skill-${approved.item.publication!.activeAttemptId}.backup`),
-        'unknown artifact',
+      const transactionJournal = join(rootPath, probeInternals.JOURNAL_DIR)
+      await Promise.all((await readdir(transactionJournal))
+        .filter(entry => entry.startsWith(`${approved.item.publication!.activeAttemptId}.`))
+        .map(async entry => await unlink(join(transactionJournal, entry))))
+      const unknownArtifact = join(
+        bundlePath,
+        `.run2skill-${approved.item.publication!.activeAttemptId}.backup`,
       )
+      await writeFile(unknownArtifact, 'unknown artifact')
       await expect(productionFileSystem.finalize({
         proposal,
         attemptId: approved.item.publication!.activeAttemptId,
         rootIdentityDigest,
       })).rejects.toMatchObject({ code: 'journal_missing' })
+      await rm(unknownArtifact)
 
-      replaceRootAfterIdentityCheck = race === 'ROOT_REMOVED'
+      if (race === 'ROOT_REMOVED') {
+        await rename(rootPath, join(workspace, 'original-skills-root'))
+      }
+      replaceRootAfterIdentityCheck = false
       const retried = await store.retry(failed.workItemId, failed.revision, proposalRefOf(proposal))
       const recovered = await saga.run(retried.workItemId)
       expect(recovered).toMatchObject(race === 'ROOT_REMOVED'
         ? {
             processingState: 'NEEDS_ATTENTION',
             review: {
-              publicationOutcome: 'NEEDS_ATTENTION',
-              failure: { code: 'PUBLICATION_UNSAFE_STATE', retryable: false },
+              publicationOutcome: 'PUBLISH_FAILED',
+              failure: { code: 'FILESYSTEM_FINALIZE_FAILED', retryable: true },
             },
           }
         : {

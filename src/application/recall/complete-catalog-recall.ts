@@ -68,7 +68,10 @@ const snapshotSchema = z.object({
     context.addIssue({ code: 'custom', path: ['summaries'], message: 'Catalog candidate identities must be unique' })
   }
 })
-const definitionSchema = summarySchema.safeExtend({ content: z.string() }).strict()
+const definitionSchema = summarySchema.safeExtend({
+  content: z.string(),
+  skillBytesDigest: sha256Hex.optional(),
+}).strict()
 const classifierOutputSchema = z.object({
   classifications: z.array(z.object({
     candidateId: identity,

@@ -105,6 +105,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         },
       },
       resolveView: lifecycleKey => lifecycleKey === fixture.experienceIntent.sessionLifecycleKey ? view : undefined,
+      internalOpenOwnershipFile: openBundleText(rawSkill('# Existing workflow')),
       resolveStockWritableRoot: summary => summary.source === 'project-dsh'
         ? {
             scope: 'PROJECT',
@@ -455,6 +456,11 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
         },
       },
       resolveView: () => view,
+      internalOpenOwnershipFile: path => openBundleText(rawSkill(
+        `# ${path.toLowerCase().includes('windows-case') ? 'windows-case' : 'unknown'}`,
+        path.toLowerCase().includes('windows-case') ? 'windows-case' : 'unknown',
+      ))(path),
+      internalOpenOwnershipDirectory: openBundleDirectory,
       resolveStockWritableRoot: summary => summary.source === 'project-dsh'
         ? {
             scope: 'PROJECT',

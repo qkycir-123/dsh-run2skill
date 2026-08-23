@@ -7,6 +7,7 @@ import {
   readdir,
   realpath,
   rename,
+  rmdir,
   unlink,
 } from 'node:fs/promises'
 import { createHash, randomBytes } from 'node:crypto'
@@ -285,6 +286,7 @@ export async function verifyFinalizedTransaction({
   txid,
   expectedHash,
   expectedRootIdentityDigest,
+  requireFinalizedJournal = false,
 }) {
   if (!HASH_PATTERN.test(expectedHash) || !HASH_PATTERN.test(expectedRootIdentityDigest)) return false
   try {
@@ -296,6 +298,22 @@ export async function verifyFinalizedTransaction({
       return false
     }
     const paths = targetPaths(rootReal, name, txid)
+    let finalized
+    try {
+      finalized = await loadLatestRecord(rootReal, txid)
+    } catch (caught) {
+      if (!(caught instanceof PublicationConflict) || caught.code !== 'journal_missing') throw caught
+      if (requireFinalizedJournal) return await finalizedMismatch()
+    }
+    if (finalized !== undefined) {
+      validateRecoveredRecord(rootReal, finalized)
+      if (
+        finalized.state !== 'FINALIZED'
+        || finalized.name !== name
+        || finalized.nextHash !== expectedHash
+        || finalized.rootIdentityDigest !== expectedRootIdentityDigest
+      ) return await finalizedMismatch()
+    }
     const targetDirIdentity = await observeBundleDirectory(paths)
     const target = await observeRegularFile(paths.target)
     if (target?.hash !== expectedHash) {
@@ -309,7 +327,8 @@ export async function verifyFinalizedTransaction({
     ) return await finalizedMismatch()
     const journalDir = await ensureJournalDirectory(rootReal)
     const journalIdentity = await observeDirectoryIdentity(journalDir, 'Publication journal')
-    if ((await readdir(journalDir)).some(entry => entry.startsWith(`${txid}.`))) {
+    const hasTransactionJournal = (await readdir(journalDir)).some(entry => entry.startsWith(`${txid}.`))
+    if (finalized === undefined ? hasTransactionJournal : !hasTransactionJournal) {
       return await finalizedMismatch()
     }
     const confirmed = await observeRegularFile(paths.target)
@@ -358,13 +377,17 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
     if (!await verifyIdentity(root, binding.rootIdentityDigest)) {
       throw new PublicationConflict('root_changed', 'Approved root identity changed')
     }
-    if (!await verifyParity(binding, root)) {
+    const rootIdentityDigest = await observeDirectoryIdentity(root, 'Publication root')
+    if (!await verifyParity(binding, root, rootIdentityDigest)) {
       throw new PublicationConflict('root_parity_changed', 'Provider root observation changed')
+    }
+    if (await observeDirectoryIdentity(root, 'Publication root') !== rootIdentityDigest) {
+      throw new PublicationConflict('root_changed', 'Publication root identity changed during parity verification')
     }
     return {
       root,
       createdSegments: [],
-      rootIdentityDigest: await observeDirectoryIdentity(root, 'Publication root'),
+      rootIdentityDigest,
     }
   }
   if (
@@ -421,13 +444,17 @@ export async function preparePublicationRoot({ binding, verifyIdentity, verifyPa
   if (!samePath(current, binding.declaredRootPath)) {
     throw new PublicationConflict('root_changed', 'Prepared root does not match the declared root')
   }
-  if (!await verifyParity(binding, current)) {
+  const rootIdentityDigest = await observeDirectoryIdentity(current, 'Publication root')
+  if (!await verifyParity(binding, current, rootIdentityDigest)) {
     throw new PublicationConflict('root_parity_changed', 'Provider root observation changed')
+  }
+  if (await observeDirectoryIdentity(current, 'Publication root') !== rootIdentityDigest) {
+    throw new PublicationConflict('root_changed', 'Prepared root identity changed during parity verification')
   }
   return {
     root: current,
     createdSegments,
-    rootIdentityDigest: await observeDirectoryIdentity(current, 'Publication root'),
+    rootIdentityDigest,
   }
 }
 
@@ -878,7 +905,7 @@ async function loadLatestRecord(rootReal, txid) {
         && record.txid === txid
         && (record.kind === 'CREATE' || record.kind === 'MERGE')
         && typeof record.state === 'string'
-        && /^(?:INTENT|ROOT_PREPARED|TARGET_CLAIMED|CREATE_STAGED|MERGE_STAGED|BACKUP_RESERVING|BACKUP_RESERVED|BACKUP_MOVED|RECOVERY_BACKUP_MOVED|DISK_WRITTEN|CONFLICT_[A-Z0-9_]+)$/.test(record.state)
+        && /^(?:INTENT|ROOT_PREPARED|TARGET_CLAIMED|CREATE_STAGED|MERGE_STAGED|BACKUP_RESERVING|BACKUP_RESERVED|BACKUP_MOVED|RECOVERY_BACKUP_MOVED|DISK_WRITTEN|FINALIZING|FINALIZED|CONFLICT_[A-Z0-9_]+)$/.test(record.state)
         && Number.isSafeInteger(record.seq)
         && record.seq >= 0
         && record.seq < MAX_JOURNAL_RECORDS
@@ -952,6 +979,16 @@ export async function recoverTransaction({ root, txid }) {
   const rootReal = await ensureRoot(root)
   let record = await loadLatestRecord(rootReal, txid)
   validateRecoveredRecord(rootReal, record)
+  if (record.state === 'FINALIZED') {
+    if (await verifyFinalizedTransaction({
+      root: rootReal,
+      name: record.name,
+      txid,
+      expectedHash: record.nextHash,
+      expectedRootIdentityDigest: record.rootIdentityDigest,
+    })) return { status: 'finalized', txid }
+    throw new PublicationConflict('finalized_state_changed', 'Finalized publication facts changed')
+  }
 
   const dirStat = await statOrNull(record.targetDir)
   if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
@@ -1027,6 +1064,20 @@ export async function recoverTransaction({ root, txid }) {
   let backupFacts = await observeRegularFile(record.backup)
   let backupHash = backupFacts?.hash ?? null
   let reservationHash = expectedBackupReservationHash(record)
+  if (
+    record.state === 'FINALIZING'
+    && targetHash === record.nextHash
+    && targetFacts?.identityDigest === record.stageIdentityDigest
+    && stageHash === null
+    && backupHash === null
+  ) {
+    return {
+      status: 'written',
+      txid: record.txid,
+      target: record.target,
+      backup: record.backup,
+    }
+  }
   if (
     (targetHash !== null && targetHash !== record.expectedHash && targetHash !== record.nextHash)
     || (stageHash !== null && stageHash !== record.nextHash)
@@ -1140,24 +1191,67 @@ export async function recoverTransaction({ root, txid }) {
   return conflict(record, 'recovery_observed_unknown_merge_state')
 }
 
-export async function finalizeTransaction({ root, txid, confirmedExactReadback }) {
+export async function withdrawWrittenCreate({ root, txid }) {
+  const rootReal = await ensureRoot(root)
+  const record = await loadLatestRecord(rootReal, txid)
+  validateRecoveredRecord(rootReal, record)
+  if (record.kind !== 'CREATE' || record.state !== 'DISK_WRITTEN') {
+    throw new PublicationConflict('withdrawal_state_changed', 'Only an unfinalized written CREATE can be withdrawn')
+  }
+  if (!await verifyPublicationDirectoryIdentity(rootReal, record.rootIdentityDigest)) {
+    throw new PublicationConflict('root_identity_changed', 'Publication root identity changed before withdrawal')
+  }
+  await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
+  if (!await fileMatches(record.target, record.stageIdentityDigest, record.nextHash)) {
+    return conflict(record, 'withdrawal_target_changed')
+  }
+  await unlink(record.target)
+  await fsyncParent(record.targetDir)
+  await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
+  try {
+    await rmdir(record.targetDir)
+  } catch (error) {
+    if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST') {
+      throw new PublicationConflict('withdrawal_directory_changed', 'CREATE bundle directory changed before withdrawal')
+    }
+    throw error
+  }
+  await fsyncParent(rootReal)
+  return conflict(record, 'layout_alias_appeared')
+}
+
+export async function finalizeTransaction({ root, txid, confirmedExactReadback, crashAt, hooks }) {
   if (confirmedExactReadback !== true) {
     throw new PublicationConflict('readback_confirmation_required', 'Exact Registry readback is not confirmed')
   }
   const rootReal = await ensureRoot(root)
-  const record = await loadLatestRecord(rootReal, txid)
+  let record = await loadLatestRecord(rootReal, txid)
   validateRecoveredRecord(rootReal, record)
+  if (record.state === 'FINALIZED') {
+    if (await verifyFinalizedTransaction({
+      root: rootReal,
+      name: record.name,
+      txid,
+      expectedHash: record.nextHash,
+      expectedRootIdentityDigest: record.rootIdentityDigest,
+    })) return { status: 'finalized', txid }
+    throw new PublicationConflict('finalized_state_changed', 'Finalized publication facts changed')
+  }
   await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
   if (!await fileMatches(record.target, record.stageIdentityDigest, record.nextHash)) {
     throw new PublicationConflict('readback_changed', 'Final target no longer matches approved bytes')
   }
   if (
     record.kind === 'MERGE'
+    && record.state !== 'FINALIZING'
     && !await fileMatches(record.backup, record.backupIdentityDigest, record.expectedHash)
   ) {
     throw new PublicationConflict('backup_changed', 'Backup no longer matches the approved Base')
   }
 
+  record = record.state === 'FINALIZING'
+    ? record
+    : await nextRecord(record, 'FINALIZING')
   await assertBoundBundleDirectory(record, record.targetDirIdentityDigest)
   await unlinkOwnedFileIfPresent(record.stage, record.stageIdentityDigest, record.nextHash, 'stage_changed')
   if (record.kind === 'CREATE') {
@@ -1174,11 +1268,11 @@ export async function finalizeTransaction({ root, txid, confirmedExactReadback }
       record.expectedHash,
       'backup_changed',
     )
+    await hooks?.afterBackupRemoval?.(record)
+    maybeCrash('finalize-after-backup-removal', crashAt)
   }
+  record = await nextRecord(record, 'FINALIZED')
   const journalDir = await ensureJournalDirectory(rootReal)
-  for (const entry of await readdir(journalDir)) {
-    if (entry.startsWith(`${txid}.`)) await unlink(join(journalDir, entry))
-  }
   await fsyncParent(journalDir)
   return { status: 'finalized', txid }
 }

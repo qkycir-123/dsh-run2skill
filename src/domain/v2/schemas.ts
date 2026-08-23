@@ -905,6 +905,7 @@ const SealedGenerationResultV2Schema = z.object({
   action: z.enum(['CREATE', 'MERGE']),
   body: SealedSkillBodyV2Schema,
   targetDigest: sha256Hex,
+  baseSkillBytesDigest: sha256Hex.optional(),
   inputDigest: sha256Hex,
   runtimeCatalogDigest: sha256Hex,
   pendingCatalogDigest: sha256Hex,
@@ -914,7 +915,14 @@ const SealedGenerationResultV2Schema = z.object({
   sealedAt: isoDateTime,
   mutationReceiptDigest: sha256Hex,
   receiptDigest: sha256Hex,
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.action === 'MERGE' && value.baseSkillBytesDigest === undefined) {
+    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'MERGE result requires the exact Base Skill bytes digest' })
+  }
+  if (value.action === 'CREATE' && value.baseSkillBytesDigest !== undefined) {
+    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'CREATE result cannot retain a Base Skill bytes digest' })
+  }
+})
 
 const GenerationBarrierV2Schema = z.object({
   barrierId: z.string().regex(/^barrier_[a-f0-9]{64}$/),
@@ -2096,6 +2104,11 @@ const NativeProposalRevisionV2Schema = z.object({
   catalogMutationReceiptDigest: sha256Hex,
   catalogEpoch: safeNonNegativeInteger,
   targetIdentityDigest: sha256Hex.optional(),
+  baseSkillBytesDigest: sha256Hex.optional(),
+  projectScopeBinding: z.object({
+    workspaceId: identity,
+    scopeIdentityDigest: sha256Hex,
+  }).strict().optional(),
   state: z.enum(['ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
   reviewDecision: z.enum(['APPROVED', 'REJECTED']).optional(),
   reviewedAt: isoDateTime.optional(),
@@ -2196,6 +2209,18 @@ const NativeProposalLineageV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Active native lineage requires a matching immutable Proposal revision' })
   }
   const latestRevision = value.proposalRevisions.at(-1)
+  if (latestRevision !== undefined && value.persistenceScope === 'PROJECT' && latestRevision.projectScopeBinding === undefined) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'PROJECT Proposal requires its immutable Workspace scope binding' })
+  }
+  if (latestRevision?.projectScopeBinding !== undefined && value.persistenceScope !== 'PROJECT') {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Only PROJECT Proposal may retain a Workspace scope binding' })
+  }
+  if (latestRevision?.action === 'MERGE' && latestRevision.baseSkillBytesDigest === undefined) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'MERGE Proposal requires the exact reviewed Base Skill bytes digest' })
+  }
+  if (latestRevision?.action === 'CREATE' && latestRevision.baseSkillBytesDigest !== undefined) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'CREATE Proposal cannot retain a Base Skill bytes digest' })
+  }
   if (
     latestRevision !== undefined
     && (latestRevision.ownerIntentId !== value.ownerIntentId || latestRevision.ownerIntentRevision !== value.ownerIntentRevision)
