@@ -8,7 +8,7 @@
 
 ## 1. 范围审计
 
-本设计只重构 Run2Skill 从会话观察到 Proposal 生成之前的核心流水线，并给出已发布 `run2skill_v1` 数据进入新流水线的迁移方案。
+本设计只重构 Run2Skill 从会话观察到 Proposal 生成之前的核心流水线。当前插件尚无外部用户，`run2skill_v1` 中的 Proposal 和中间缓存不做兼容迁移。
 
 本设计包含：
 
@@ -40,7 +40,7 @@
 7. 取消单候选 8 KiB 限制。候选正文必须完整读取并以总模型输入预算决定能否参与；不得静默截断。
 8. coverage 只产出 `UNRELATED | COVERED | PARTIAL | AMBIGUOUS`；generation 只接受已证明安全的 CREATE 或唯一 MERGE target。
 9. 以 behavior signature 的全局 single-flight 和唯一 active lineage 避免跨批次、跨 Session 重复 Proposal。
-10. 使用新 `run2skill_v2` Domain；`run2skill_v1` 不原地改写，迁移后只作为 legacy source 和回退证据保留。
+10. 使用新 `run2skill_v2` Domain；首次启用只为现有 DSH Session 建立观察水位，不复制 `run2skill_v1` Proposal 或中间缓存。已发布 Skill 和 DSH Session Log 不受影响。
 11. Proposal commit 使用“Session quiescence fence + generation 前 Catalog 重校验 + 审核/发布前再次校验 + stale 回退”；不修改 DSH 上游，也不把 Runtime Catalog CAS/共享锁作为前置条件。
 
 ## 3. Durable 模型
@@ -347,14 +347,14 @@ generation 只接受 Host 已提交的 `CREATE_AUTHORIZED` 或 `MERGE_AUTHORIZED
 2. 连续 Turn 范围的 `batchId` 去重 threshold/idle/explicit 竞争；
 3. `intentId` 去重 batch replay 和 DEFER carry；
 4. `(persistenceScope, behaviorSignature)` 的 `BehaviorSignatureIndex` 只允许一个 active lineage owner；
-5. `PendingProposalCatalog` 每次从 `proposal_lineages` 与 `legacy_items` 的权威 active Proposal records、Intent 中已密封但尚未复制为 Proposal 的 `GenerationResult`，以及 unresolved generation barriers 派生 complete snapshot，并在新 Intent 的 summary scan/coverage 中作为不可写候选参与去重；它不是可独立漂移的缓存表；
-6. 相同签名的后续 Intent 附加 evidence digest 到已有 lineage，而不是生成第二个 Proposal；签名未精确对齐但 legacy Proposal 语义为 COVERED/PARTIAL/AMBIGUOUS 时同样不得 CREATE；
+5. `PendingProposalCatalog` 每次从 `proposal_lineages` 的权威 active Proposal records、Intent 中已密封但尚未复制为 Proposal 的 `GenerationResult`，以及 unresolved generation barriers 派生 complete snapshot，并在新 Intent 的 summary scan/coverage 中作为不可写候选参与去重；它不是可独立漂移的缓存表；
+6. 相同签名的后续 Intent 附加 evidence digest 到已有 lineage，而不是生成第二个 Proposal；签名未精确对齐但现有 Runtime/Pending Proposal 语义为 COVERED/PARTIAL/AMBIGUOUS 时同样不得 CREATE；
 7. Proposal ID 由 lineage id、coverage observation digest、action 和 target/base digest 派生；
 8. publication 继续按 canonical target path 串行和 CAS。
 
 若签名碰撞或语义近似但不能确定相同，进入 `NEEDS_ATTENTION`，不得抢占或并行 CREATE。
 
-`PendingProposalCatalog` 是按一次 Store consistent-read 序列从 `proposal_lineages`、`legacy_items`、Intent 中已密封但尚未复制为 Proposal 的 `GenerationResult`，以及 generation outcome unknown/failed 的去重屏障派生的 path-free snapshot，包含完整性、稳定排序和 catalog digest；它不在 global 中另存可漂移副本。Proposal/GenerationResult 提供完整正文；outcome unknown/failed 屏障只提供行为签名和 `UNAVAILABLE` capability，相关新 Intent 因此不能 CREATE。任一 authoritative record 无法解析、body/digest 不一致或扫描期间 revision 变化时 `complete=false`。CREATE absence proof 必须同时覆盖 Runtime Skill Catalog 和 complete PendingProposalCatalog。
+`PendingProposalCatalog` 是按一次 Store consistent-read 序列从 `proposal_lineages`、Intent 中已密封但尚未复制为 Proposal 的 `GenerationResult`，以及 generation outcome unknown/failed 的去重屏障派生的 path-free snapshot，包含完整性、稳定排序和 catalog digest；它不在 global 中另存可漂移副本。Proposal/GenerationResult 提供完整正文；outcome unknown/failed 屏障只提供行为签名和 `UNAVAILABLE` capability，相关新 Intent 因此不能 CREATE。任一 authoritative record 无法解析、body/digest 不一致或扫描期间 revision 变化时 `complete=false`。CREATE absence proof 必须同时覆盖 Runtime Skill Catalog 和 complete PendingProposalCatalog。
 
 Pending 的 `USER` records 在同一 DSH storage domain 内全局可见；`PROJECT` records 必须从 owner Intent 的 evidence observations 证明唯一 `scopeIdentityDigest`，只进入同一 project 的 effective view。缺 owner、缺 observation、scope unresolved/冲突或 legacy workspace identity 无法证明时，整个派生结果 `complete=false`，不能跨项目泄露摘要或误判覆盖。
 
@@ -414,7 +414,7 @@ refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结�
 
 启动时 generation/publication worker 之前使用两阶段恢复：打开 v2/migration -> 应用 active Purge visibility/quiesce fence（此时不等待物理删除） -> 恢复 proposalCatalogMutationJournal并扫描 Proposal/GenerationResult/barrier -> 对当前 lease 只做 outcome reconciliation，按第 5 步补成 sealed result 或 barrier，不复制 Proposal body -> outcome durable 后完成 Purge 物理删除并清除被隐藏 owner -> 重扫 authoritative rows并修复 BehaviorSignatureIndex -> 以受限恢复例外收敛 Publication Journal 的既有磁盘/Registry/membership 事实并留下 mutation receipt -> 刷新 Runtime Catalog并重建 complete PendingProposalCatalog -> 穷尽处理全部残留 lease：NOT_CALLED 校验后保留给恢复门结束后的同 owner 首次调用，恢复阶段本身不调用模型；RESULT_COMMITTED/PROPOSAL_COMMIT_AUTHORIZED 按当前两个 Catalog 重做第 6 步；BODY_COMMITTED_INDEX_PENDING 修复 index/journal并释放；ACTIVE_COMPLETE 校验 completion receipt并释放；失败/unknown 必须已由 barrier receipt 证明后释放 -> 最后恢复 SessionBatch/Intent worker和已校验的 NOT_CALLED generation owner。Publication receipt 是外部 mutation，旧 generation 的 revalidation 必须看见并转 stale；Purge/Publication 与 lease 因此不会互等，停机前的 Catalog 授权也不会跨重启复用。
 
-## 12. Storage Migration ADR
+## 12. Storage 启用 ADR
 
 ### 12.1 决策：新 domain，不原地 bump
 
@@ -427,62 +427,28 @@ refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结�
 | global schema | `GlobalV2`：Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、migration/Purge journal |
 | tables | `turn_observations`、`session_batches`、`experience_intents`、`proposal_lineages`、`legacy_items` |
 
-原因：DSH Storage Domain 对 version mismatch fail loud，当前没有已验证的原地 schema migration transaction。新 domain 允许先完成、校验和提交迁移，再启用 v2 observer；任何失败都不会把 v1 误认为空库或部分升级。
+原因：DSH Storage Domain 对 version mismatch fail loud，新 domain 可以直接启用 v2，同时完全隔离旧的派生缓存。`run2skill_v1`、已发布 Skill 和 DSH Session Log 均不删除、不改写；启用后所有新观察只写 v2。
 
-`run2skill_v1` 和诊断 sidecar 不删除、不改写。迁移完成后 v1 只读，所有新观察只写 v2。
+### 12.2 首次启用
 
-### 12.2 migration journal
+1. 打开空的 `run2skill_v2`，确认没有 v2 Observation、Batch、Intent 或 Proposal；
+2. 注册 live Session listener，再读取全部 durable root Session 快照；
+3. 只接受没有 open Turn 的稳定日志；`session/end-seed` 后的合法持久事件可作为 tail，仍在运行的 Session 延后重试，不能在半个 Turn 中间切水位；
+4. 为每个非空 Session 保存当前 durable tail，令 observed/detected cursor 都从该水位开始；历史 Turn 不重新学习；
+5. 原子提交 `COMMITTED`、activation digest 和 observer 起始水位；
+6. COMMITTED 后启动 v2 gap scan、scheduler 和 worker，把 listener 注册后出现的新 Turn 纳入补扫。
 
-`GlobalV2.migration` 状态：
+首次启用不打开、解析或复制 `run2skill_v1` Proposal/WorkItem/Lineage。启用失败时 v2 保持 `NOT_STARTED`，后台稍后重试；不得把不完整 Session 当成空历史。
 
-```text
-NOT_STARTED -> COPYING -> VALIDATING -> COMMITTED
-                    \-> FAILED
-```
+### 12.3 schema fixture
 
-迁移顺序：
+schema 测试必须为所有 v2 records 提供“除 `schemaVersion` 外全部必填字段有效”的最小夹具。版本失败用例只改变 literal 版本，证明拒绝原因确实是 schemaVersion，而不是其他字段缺失。
 
-1. 打开并验证 v1；活动 Purge journal 未完成时先恢复 Purge，不启动迁移；
-2. 创建 v2 migration journal，记录 v1 domain/schema contract 和不含正文的 source fingerprint；
-3. 先复制 completed purge fences 和 scope identity facts；
-4. 复制并校验 Lineage full snapshots，保留原 revision/body digest/publication outcome；
-5. 把每个 schema-valid legacy WorkItem 按 12.3 的穷尽表导入 `legacy_items`；
-6. 校验全部 active legacy Proposal 都能进入派生 PendingProposalCatalog；能从 Experience/Proposal 规范化出 behavior signature 时同时预占 `BehaviorSignatureIndex`，不能精确规范化时仍必须作为 legacy summary/full body 参与每次新 Intent 的去重；
-7. 校验数量、identity、digest、派生 Catalog completeness、BehaviorSignatureIndex、ProposalGenerationLease 空闲状态和 purge visibility；任何 active legacy Proposal 未被派生 Catalog 覆盖都不允许 COMMITTED；
-8. 原子提交 `COMMITTED`、v2 activation fence 和 observer 起始水位；
-9. 只有第 8 步成功后启用 v2 ingress、scheduler 和 worker。
+### 12.4 回退
 
-每一步按确定性 key 幂等 upsert。崩溃后从 journal phase 继续；partial v2 数据在 COMMITTED 前对 UI/worker 不可见。
-
-### 12.3 legacy WorkItem 处置
-
-| v1 `processingState` | schema-valid 子形态 | v2 处置 |
-|---|---|---|
-| `RESOLVED_NO_SIGNAL` | 无 learning/review/publication | 只保留审计引用，不进入队列或索引 |
-| `CAPTURED` | 无 committed Proposal | `LEGACY_NEEDS_ATTENTION`；不自动重放，允许关闭或显式授权新策略恢复 |
-| `ANALYZING` | 已 claim、无 Proposal，调用可能 in flight | `LEGACY_CALL_OUTCOME_UNKNOWN`；不自动重试，进入 Action Queue |
-| `LEARNED` | 有 Learning Proposal、尚无 Review | 导入 active legacy envelope，进入 curation/review；确保被派生 PendingProposalCatalog 覆盖，不重新 Learning |
-| `READY_FOR_REVIEW` | pending immutable Review Proposal | 导入 active legacy envelope，继续 Review；确保被派生 PendingProposalCatalog 覆盖 |
-| `PUBLISHING` | approved + publication journal | 导入 active legacy envelope，先按 journal/exact filesystem readback 恢复；确保被派生 PendingProposalCatalog 覆盖，不盲目重写 |
-| `NEEDS_ATTENTION` | 无 Review、无 Proposal的 structured learning failure | `LEGACY_NEEDS_ATTENTION`，保留 failure/usage，允许关闭或显式授权恢复 |
-| `NEEDS_ATTENTION` | 有 Review Proposal，outcome 为 NEEDS_ATTENTION/NEEDS_REFRESH/PUBLISH_FAILED | 导入 active legacy envelope和原恢复动作；确保被派生 PendingProposalCatalog 覆盖 |
-| `TERMINAL` | Review outcome 为 DISCARDED | 只保留审计引用，不占 active 去重索引 |
-| `TERMINAL` | Review outcome 为 PUBLISHED | 复制并校验 Lineage，Runtime Catalog 继续提供主要去重；只保留 legacy 审计引用 |
-
-任何 schema invalid、状态/子形态不在上表、身份冲突或无法解释的 publication saga 都使 migration fail closed，不允许把遗漏状态当作 terminal 或空记录。
-
-显式恢复无 Proposal 的 legacy item 时创建带 `legacySourceDigest` 的新 Intent；BehaviorSignatureIndex、PendingProposalCatalog 和 Runtime Catalog coverage 仍先去重。active legacy Proposal 无论是否能派生相同 behavior signature，都必须在新 Intent 的 summary/full-body coverage 中出现，因此普通新 batch 也不能绕过它生成第二份 Proposal。
-
-### 12.4 schema fixture
-
-迁移测试必须为 `GlobalV1`、`CaptureWorkItemV1`、`LineageV1` 以及所有 v2 records 提供“除 `schemaVersion` 外全部必填字段有效”的最小夹具。版本失败用例只改变 literal 版本，证明拒绝原因确实是 schemaVersion，而不是其他字段缺失。
-
-### 12.5 回退
-
-- 迁移 COMMITTED 前：停用新包并回到旧版本，v1 未变；可删除尚不可见的未提交 v2 domain 副本，但默认保留以便诊断。
-- 迁移 COMMITTED 后：禁止在同一 DSH Home 上启动不支持 v2 的旧插件。旧版本既不理解 v2 Purge fences，也无法保证不重放 v1；“先启动旧版再关闭自动学习”不是安全回退。
-- COMMITTED 后只允许两条恢复路径：前向修复并继续使用支持 v2 的版本；或停止 DSH 后恢复迁移前的完整 DSH Home 备份，再安装旧版本。后者明确回到备份时点，不能声称保留迁移后的清理或新学习事实。
-- 不通过删除 v1/v2 Storage 强行降级；发布说明必须明确该边界。
+- COMMITTED 前可直接停用新包；v1、已发布 Skill 和 Session Log 均未变化。
+- COMMITTED 后旧版本不会理解 v2 新事实；回退到旧版本只意味着放弃 v2 中间缓存，不会删除已发布 Skill 或 Session Log。
+- 当前无外部用户，不承诺保留 v1/v2 中间缓存；进入稳定版前再单独设计长期升级兼容策略。
 
 ## 13. Action Queue 与静默状态
 
@@ -538,7 +504,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 | 覆盖 | coverage 与 generation schema/ledger 分离；自动 Intent 的 COVERED 无 Proposal，显式保存的 COVERED 要求可见确认；唯一安全 PARTIAL 才 MERGE |
 | 去重 | 同一行为最多一个 owner、一个 active lineage、一个 Proposal；全局 generation lease、派生 PendingProposalCatalog 与 crash reconciliation 使跨 Session/Scope 竞争安全收敛 |
 | Generation crash | NOT_CALLED、KNOWN_FAILED、SUCCEEDED_RESULT_MISSING、RESULT_COMMITTED、PROPOSAL_COMMIT_AUTHORIZED、OUTCOME_UNKNOWN、BODY_COMMITTED_INDEX_PENDING、ACTIVE_COMPLETE 各自不重复调用且最终释放全局 lease |
-| 迁移 | v1 所有 processingState、pending、active Proposal、lineage、purge fence 分别迁移/保留；legacy Proposal 参与新 Intent 去重；崩溃恢复和禁止原地降级有测试 |
+| 首次启用 | 现有完整 Turn 不重学；启用后的 Turn 不漏学；半个 Turn 不切水位；重启补扫不重复 |
 | schema | 冻结 fixture 只改变 schemaVersion 即精确触发 literal 拒绝 |
 | 安全 | 脱敏、来源标签、scope、CAS、exact readback、Purge 和 fail-open/fail-closed 边界保持 |
 

@@ -24,7 +24,7 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
 2026-08-21，维护者进一步接受“无感自动沉淀且同一保存意图不能让 Agent 与 run2skill 各生成一次”的产品决定。显式保存和其他 `HIGH` evidence 在 run2skill Learning 前必须先做 durable ownership arbitration：有效 Agent Skill 已经与当前意图精确绑定时以 `RESOLVED_BY_AGENT` 静默完成；只有完整证据证明本回合没有发生 Skill 生成行为时，run2skill 才取得生成所有权。该窄修订不授权自动发布，也不能退化为两边生成后再去重。
 
-2026-08-22，#84 把逐 Turn Cheap Trigger/WorkItem/单阶段 Learning 替换为 `TurnObservation -> SessionBatch -> ExperienceIntent`：每 5 个完整 Turn、idle 30 分钟或显式保存触发一次批次检测，随后依次执行 Agent-first ownership、complete Catalog 全量摘要筛选、完整候选 coverage 与独立 generation。完整状态机、调用账本和 `run2skill_v1 -> run2skill_v2` Migration ADR 见 [`docs/design/issue-84-session-batch-learning.md`](../design/issue-84-session-batch-learning.md)；与本节旧机制冲突的逐 Turn描述均以该 Design 和本文修订段落为准。
+2026-08-22，#84 把逐 Turn Cheap Trigger/WorkItem/单阶段 Learning 替换为 `TurnObservation -> SessionBatch -> ExperienceIntent`：每 5 个完整 Turn、idle 30 分钟或显式保存触发一次批次检测，随后依次执行 Agent-first ownership、complete Catalog 全量摘要筛选、完整候选 coverage 与独立 generation。完整状态机、调用账本和 `run2skill_v2` 首次启用 ADR 见 [`docs/design/issue-84-session-batch-learning.md`](../design/issue-84-session-batch-learning.md)；与本节旧机制冲突的逐 Turn描述均以该 Design 和本文修订段落为准。
 
 本文中的“必须”来自冻结 PRD 或为满足它而不可缺少的技术约束；“候选”表示可在 Design 中细化但不得破坏稳定契约；“Contract Probe”表示源码不足以证明、必须在固定 DSH baseline 上运行验证的事项。
 
@@ -97,7 +97,7 @@ flowchart LR
 | Skill Catalog | ctx.skills.snapshot/list/get、rank、complete、热失效、stock filesystem provider 的有效 root 配置 | 全量 summary classification、完整正文能力、coverage、writable 判定、全部有效 root 的 ownership manifest、完整性 Guard、精确回读 |
 | Skill 文件格式 | DSH Skill name、frontmatter、invocation 语义 | canonical renderer、Proposal digest、secret/path/Base Guards |
 | Settings | ctx.settings namespace、默认值、revision、live watch | run2skill 可编辑字段及 Analysis 启动快照 |
-| Storage | ctx.storage.domain、backend durability、单 domain 写序列 | v2 TurnObservation/SessionBatch/Intent/Lineage schema、v1 migration、恢复 saga、Purge 语义 |
+| Storage | ctx.storage.domain、backend durability、单 domain 写序列 | v2 TurnObservation/SessionBatch/Intent/Lineage schema、fresh activation、恢复 saga、Purge 语义 |
 | Web transport | ctx.connection、Host/Origin fence、client module system、slot | /run2skill loopback RPC、DTO、Client Inbox 与轮询 |
 | 文件发布 | DSH home path helper、原子 staging/锁工具可复用部分 | compare-and-exchange、journal、路径证明、回读事务 |
 | 插件生命周期 | Cordis Loader、dsh.client、profile/plugin 命令 | 一个可发布包的 Host/Client entry、兼容检查与安装验收 |
@@ -285,7 +285,7 @@ v0.2 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 
 ### 7.8 run2skill-store
 
-输入：TurnObservation/SessionBatch/ExperienceIntent/Lineage 的 compare-revision 更新、v1 migration 与 Purge 请求。
+输入：TurnObservation/SessionBatch/ExperienceIntent/Lineage 的 compare-revision 更新、fresh activation 与 Purge 请求。
 输出：durable snapshot、冲突、恢复扫描。
 错误：backend unavailable、schema mismatch、write conflict。
 约束：使用 DSH Storage Domain；不绕过 Web profile 已装配的 backend，也不自建第二套持久化连接。
@@ -466,11 +466,11 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - Store 只保存过滤后的必要文本、坐标、hash 和元数据，不复制 Whole Session。
 - 已发布 `run2skill_v1` schema 不改写；旧记录字段缺失不能解释为 `RUN2SKILL_OWNED`。
 - D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
-- #84 Migration ADR 选择独立 `run2skill_v2` Domain version 1，按 `NOT_STARTED -> COPYING -> VALIDATING -> COMMITTED` journal copy/validate/commit；COMMITTED 前 v2 对 worker/UI 不可见。
-- v1 的 `RESOLVED_NO_SIGNAL`、`CAPTURED`、`ANALYZING`、`LEARNED`、`READY_FOR_REVIEW`、`PUBLISHING`、两类 `NEEDS_ATTENTION` 与两类 `TERMINAL` 必须按 Migration ADR 穷尽映射；遗漏或非法组合使迁移 fail closed。
-- v1 active Proposal 经完整校验导入 legacy envelope；COMMITTED 前必须证明从 active v2/legacy authoritative rows 派生的 PendingProposalCatalog 完整覆盖它们。能规范化 behavior signature 时同时预占 BehaviorSignatureIndex，不能精确规范化时仍作为不可写 summary/full-body candidate 参与每个新 Intent 的 coverage。未形成 Proposal 的旧项进入 legacy Action Queue，不按新策略静默重放。
-- v1 Lineage、completed Purge fences 和 scope identity 先于 observer activation 迁移；v1 不删除、不改写。
-- migration COMMITTED 后禁止在同一 DSH Home 上启动不支持 v2 的旧插件；只允许前向修复，或停止 DSH 后恢复完整迁移前备份再安装旧版。
+- #84 选择独立 `run2skill_v2` Domain version 1，并在首次启用时执行 fresh activation；COMMITTED 前 v2 对 worker/UI 不可见。
+- 当前插件尚无外部用户，`run2skill_v1` 的 Proposal、WorkItem、Lineage 和其他中间缓存不迁移、不重放。
+- listener 先注册，再从没有 open Turn 的 durable root Session tail 建立 activation watermark；半个 Turn、日志缺口或读取失败均延后启用。
+- COMMITTED 后只处理水位之后的新 Turn。已发布 Skill 和 DSH Session Log 不删除、不改写。
+- 当前开发阶段不承诺中间缓存跨版本保留；稳定发布前另行制定长期升级兼容策略。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
 - 在首个公开 alpha 前的开发数据可以显式导出后重建，但不得把这种做法用于已发布用户数据。
 
@@ -1044,7 +1044,7 @@ storageDomain, workspaceRegistry, connection
 维护者接受了以下架构边界：
 
 - 接受一个双面单插件和薄 Adapter 边界；
-- 接受 DSH Storage Domain + v2 SessionBatch/Intent/Lineage saga，以及 v1 copy/validate/commit migration；
+- 接受 DSH Storage Domain + v2 SessionBatch/Intent/Lineage saga，以及 fresh activation 水位；
 - 接受 Detector/Catalog/Coverage/Generation 分阶段调用，只有 generation 最多一次格式/截断恢复；
 - 接受 loopback unary RPC + v0.2 polling；
 - 接受 compare-exchange 为发布硬契约，CP-PUB-001 失败不能降级；
@@ -1059,4 +1059,4 @@ storageDomain, workspaceRegistry, connection
 - 接受方：项目维护者；
 - 批准日期：2026-08-19；
 - 批准的原基线版本：v0.1；#84 v0.2 修订待对应 Design PR 评审；
-- 接受范围：原发布与安全边界继续有效；2026-08-22 #84 以 `docs/design/issue-84-session-batch-learning.md` 作为批次核心流程和 migration gate，实施按该文档切片推进。
+- 接受范围：原发布与安全边界继续有效；2026-08-22 #84 以 `docs/design/issue-84-session-batch-learning.md` 作为批次核心流程和 activation gate，实施按该文档切片推进。

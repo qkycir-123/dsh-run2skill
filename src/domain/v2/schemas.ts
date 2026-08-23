@@ -2542,8 +2542,8 @@ export const GlobalV2Schema = z.object({
       const cursor = value.sessions[lifecycleKey]
       if (
         cursor === undefined
-        || cursor.observedThroughTurnEndSeq !== watermark.observedTailSeq
-        || cursor.detectedThroughTurnEndSeq !== watermark.observedTailSeq
+        || cursor.observedThroughTurnEndSeq < watermark.observedTailSeq
+        || cursor.detectedThroughTurnEndSeq < watermark.observedTailSeq
       ) context.addIssue({ code: 'custom', path: ['sessions', lifecycleKey], message: 'Session cursor must bind activation watermark' })
     }
   }
