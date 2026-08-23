@@ -137,6 +137,17 @@ function v2TablesAreEmpty(domain: Run2skillV2Domain): boolean {
     && domain.table('legacy_items').size === 0
 }
 
+function isUnverifiedInitialCursor(
+  cursor: ReturnType<typeof GlobalV2Schema.parse>['sessions'][string] | undefined,
+): boolean {
+  return cursor !== undefined
+    && cursor.observedThroughTurnEndSeq === 0
+    && cursor.detectedThroughTurnEndSeq === 0
+    && cursor.headerRevision === undefined
+    && cursor.observedLogPrefixDigest === undefined
+    && cursor.batchManifestBaseline?.afterTurnEndSeq === 0
+}
+
 /**
  * Enables v2 as a fresh product. Existing DSH Session history becomes the
  * activation fence; no v1-derived cache or Proposal is copied.
@@ -310,8 +321,13 @@ export class DshV2GapScanner {
       if (processedSessions >= GAP_SCAN_MAX_SESSIONS || processedEvents >= GAP_SCAN_MAX_EVENTS) break
       signal?.throwIfAborted()
       const cursor = GlobalV2Schema.parse(this.domain.global.get()).sessions[root.lifecycleKey]
-      const fromSeq = cursor === undefined ? 0 : cursor.observedThroughTurnEndSeq + 1
-      const mustValidatePrefix = cursor !== undefined && cursor.headerRevision !== root.revision
+      const unverifiedInitialCursor = isUnverifiedInitialCursor(cursor)
+      const fromSeq = cursor === undefined || unverifiedInitialCursor
+        ? 0
+        : cursor.observedThroughTurnEndSeq + 1
+      const mustValidatePrefix = cursor !== undefined
+        && !unverifiedInitialCursor
+        && cursor.headerRevision !== root.revision
       const readFromSeq = mustValidatePrefix ? 0 : fromSeq
       const readStartedAt = this.#now()
       const read = await this.reader.readFrom(root.header.id, readFromSeq, signal)
