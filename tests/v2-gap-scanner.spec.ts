@@ -297,6 +297,79 @@ describe('DshV2GapScanner', () => {
     expect(observeTurn).toHaveBeenCalledTimes(1)
   })
 
+  it.each([false, true])(
+    'rescans an unverified zero cursor left by a failed first observation (baseline complete=%s)',
+    async (baselineComplete) => {
+    const persisted = persistenceFixture([])
+    const domain = createMemoryRun2skillV2Domain()
+    const reader = new DshSessionGapReader(persisted)
+    await activateFreshRun2skillV2(domain, reader, {
+      now: () => new Date(CREATED_AT + 100).toISOString(),
+    })
+    const current = domain.global.get()
+    await domain.global.set({
+      ...current,
+      sessions: {
+        [lifecycleKey()]: {
+          observedThroughTurnEndSeq: 0,
+          detectedThroughTurnEndSeq: 0,
+          batchManifestBaseline: {
+            observedAt: new Date(CREATED_AT + 100).toISOString(),
+            rootManifestDigest: 'a'.repeat(64),
+            runtimeCatalogDigest: 'b'.repeat(64),
+            complete: baselineComplete,
+            afterTurnEndSeq: 0,
+          },
+          openExperienceCarry: [],
+          updatedAt: new Date(CREATED_AT + 100).toISOString(),
+        },
+      },
+    })
+    persisted.events = turn(0, 0)
+    persisted.readCalls.length = 0
+    const observeTurn = vi.fn(async (
+      _header: DshSessionHeader,
+      _events: readonly DshSessionEvent[],
+      turnEndSeq: number,
+      _workspace: unknown,
+      recovery: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
+    ) => {
+      const global = domain.global.get()
+      await domain.global.set({
+        ...global,
+        sessions: {
+          ...global.sessions,
+          [lifecycleKey()]: {
+            ...global.sessions[lifecycleKey()]!,
+            observedThroughTurnEndSeq: turnEndSeq,
+            ...recovery,
+            updatedAt: new Date(CREATED_AT + 200).toISOString(),
+          },
+        },
+      })
+      return { status: 'OBSERVED' as const }
+    })
+    const scanner = new DshV2GapScanner(reader, domain, {
+      prepareSessionWindow: async () => undefined,
+      observeTurn,
+    }, {
+      resolve: async () => ({ status: 'UNAVAILABLE' }),
+    }, new RuntimeNotices({ now: () => CREATED_AT + 200 }), {
+      now: () => CREATED_AT + 200,
+      heapUsed: () => 100,
+    })
+
+    await expect(scanner.scanBatch()).resolves.toMatchObject({ status: 'COMPLETE' })
+    expect(persisted.readCalls).toEqual([0])
+    expect(observeTurn).toHaveBeenCalledTimes(1)
+    expect(domain.global.get().sessions[lifecycleKey()]).toMatchObject({
+      observedThroughTurnEndSeq: 4,
+      headerRevision: 'rev-1',
+      observedLogPrefixDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    },
+  )
+
   it('returns MORE when the time slice ends before all changed Sessions are visited', async () => {
     const first = header('session-a')
     const second = header('session-b')
