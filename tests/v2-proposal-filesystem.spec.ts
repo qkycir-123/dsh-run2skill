@@ -145,6 +145,14 @@ async function fixture(options: {
 }
 
 describe('v2 DSH Proposal filesystem adapter', () => {
+  it('reports an absent recovery attempt without starting a new filesystem write', async () => {
+    const seeded = await fixture()
+    const request = { ...seeded.input, attemptId: `pcm_${'0'.repeat(64)}` }
+
+    await expect(seeded.adapter.recover(request)).resolves.toEqual({ status: 'ABSENT' })
+    await expect(readFile(seeded.target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('publishes a CREATE through the real CAS, exact DSH readback, and finalization', async () => {
     const seeded = await fixture()
     const request = { ...seeded.input, attemptId: `pcm_${'1'.repeat(64)}` }
@@ -292,7 +300,7 @@ describe('v2 DSH Proposal filesystem adapter', () => {
     expect(await readFile(seeded.target, 'utf8')).toBe(seeded.input.proposal.body.exactSkillBytes)
 
     seeded.setRegistryAvailable(true)
-    await expect(seeded.adapter.publish(request)).resolves.toMatchObject({ status: 'PUBLISHED' })
+    await expect(seeded.adapter.recover(request)).resolves.toMatchObject({ status: 'PUBLISHED' })
   })
 
   it('publishes MERGE only when the exact reviewed base hash still matches', async () => {

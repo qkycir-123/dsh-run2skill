@@ -3,12 +3,16 @@ import { opendir } from 'node:fs/promises'
 import { posix, win32 } from 'node:path'
 import { z } from 'zod'
 import type { Run2skillV2Domain } from '../dsh-storage/v2-types.js'
-import { derivePendingProposalCatalogV2, type PendingProposalCatalogEntryV2 } from '../dsh-storage/v2-pending-catalog.js'
+import {
+  derivePendingProposalCatalogV2,
+  type PendingProposalCatalogEntryV2,
+  type PendingProposalCatalogReadOptionsV2,
+} from '../dsh-storage/v2-pending-catalog.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { deriveRecallCandidateId, type CompleteRecallCatalogPort, type RecallCatalogDefinition, type RecallCatalogSnapshot, type RecallCatalogSummary } from '../../application/recall/index.js'
 import type { GenerationCatalogPort, GenerationCatalogSnapshot } from '../../application/generation/index.js'
-import type { ExperienceIntentV2, SessionBatchV2 } from '../../domain/v2/index.js'
+import { GlobalV2Schema, type ExperienceIntentV2, type SessionBatchV2 } from '../../domain/v2/index.js'
 import type { DshSkillRegistryPort } from './skill-catalog.js'
 import { parseDshSkillFileForOwnership } from './v2-skill-file.js'
 
@@ -108,6 +112,14 @@ export interface DshV2CatalogAdapterOptions<TView extends object> {
   readonly internalOpenOwnershipFile?: (path: string) => AsyncIterable<Uint8Array>
   /** @internal Allows deterministic bounded layout discovery tests. */
   readonly internalOpenOwnershipDirectory?: (path: string) => AsyncIterable<OwnershipDirectoryEntry>
+}
+
+export interface V2PublicationRecoveryCatalogPort {
+  snapshot(input: {
+    readonly batch: SessionBatchV2
+    readonly intent: ExperienceIntentV2
+    readonly proposalId: string
+  }): Promise<GenerationCatalogSnapshot | undefined>
 }
 
 interface RuntimeCandidate {
@@ -260,6 +272,7 @@ function sameState(left: CapturedCatalog, right: CapturedCatalog): boolean {
 export class DshV2CatalogAdapter<TView extends object> {
   readonly recall: CompleteRecallCatalogPort
   readonly generation: GenerationCatalogPort
+  readonly publicationRecovery: V2PublicationRecoveryCatalogPort
   readonly #domain: Run2skillV2Domain
   readonly #registry: DshSkillRegistryPort<TView>
   readonly #resolveView: DshV2CatalogAdapterOptions<TView>['resolveView']
@@ -292,6 +305,22 @@ export class DshV2CatalogAdapter<TView extends object> {
     this.generation = {
       snapshot: async input => this.#generationSnapshot(input.batch, input.intent, input.exclude),
       read: async input => this.#read(input.candidateId, input.batch, input.intent),
+    }
+    this.publicationRecovery = {
+      snapshot: async input => {
+        const global = GlobalV2Schema.safeParse(this.#domain.global.get())
+        const journal = global.success ? global.data.proposalCatalogMutationJournal : undefined
+        if (
+          journal?.kind !== 'PUBLICATION'
+          || journal.ownerId !== input.proposalId
+          || journal.phase !== 'PREPARED'
+        ) return undefined
+        return await this.#generationSnapshot(input.batch, input.intent, undefined, {
+          mutationId: journal.mutationId,
+          ownerId: journal.ownerId,
+          phase: journal.phase,
+        })
+      },
     }
   }
 
@@ -367,8 +396,9 @@ export class DshV2CatalogAdapter<TView extends object> {
     batch: SessionBatchV2,
     intent: ExperienceIntentV2,
     exclude: Parameters<GenerationCatalogPort['snapshot']>[0]['exclude'],
+    allowPublicationJournal?: NonNullable<PendingProposalCatalogReadOptionsV2['allowPublicationJournal']>,
   ): Promise<GenerationCatalogSnapshot> {
-    const captured = await this.#capture(batch, intent, exclude)
+    const captured = await this.#capture(batch, intent, exclude, undefined, allowPublicationJournal)
     return {
       complete: captured.complete,
       runtimeCatalogDigest: captured.runtimeCatalogDigest,
@@ -384,13 +414,18 @@ export class DshV2CatalogAdapter<TView extends object> {
     intent: ExperienceIntentV2,
     exclude?: Parameters<GenerationCatalogPort['snapshot']>[0]['exclude'],
     exactView?: TView,
+    allowPublicationJournal?: NonNullable<PendingProposalCatalogReadOptionsV2['allowPublicationJournal']>,
   ): Promise<CapturedCatalog> {
     const view = exactView ?? this.#resolveView(batch.sessionLifecycleKey)
     if (view === undefined || intent.sessionLifecycleKey !== batch.sessionLifecycleKey) {
       return this.#incomplete()
     }
     const firstRuntime = await this.#runtime(view, batch.sessionLifecycleKey)
-    const pending = derivePendingProposalCatalogV2(this.#domain, intent)
+    const pending = derivePendingProposalCatalogV2(
+      this.#domain,
+      intent,
+      allowPublicationJournal === undefined ? {} : { allowPublicationJournal },
+    )
     const secondRuntime = await this.#runtime(view, batch.sessionLifecycleKey)
     if (
       !firstRuntime.complete

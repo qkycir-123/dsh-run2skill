@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type {
   V2ProposalPublicationInput,
   V2ProposalPublicationOutcome,
+  V2ProposalPublicationRecoveryOutcome,
 } from '../../application/publication/index.js'
 import { parseCanonicalSkillBody } from '../../application/curation/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
@@ -111,6 +112,20 @@ export class DshV2ProposalFileSystemAdapter<TView extends object> {
   async publish(
     input: V2ProposalPublicationInput & { readonly attemptId: string },
   ): Promise<V2ProposalPublicationOutcome> {
+    const outcome = await this.#execute(input, true)
+    return outcome.status === 'ABSENT' ? { status: 'UNAVAILABLE' } : outcome
+  }
+
+  async recover(
+    input: V2ProposalPublicationInput & { readonly attemptId: string },
+  ): Promise<V2ProposalPublicationRecoveryOutcome> {
+    return await this.#execute(input, false)
+  }
+
+  async #execute(
+    input: V2ProposalPublicationInput & { readonly attemptId: string },
+    allowNewWrite: boolean,
+  ): Promise<V2ProposalPublicationRecoveryOutcome> {
     let expectedBody: string
     try {
       expectedBody = parseCanonicalSkillBody(input.proposal.body.exactSkillBytes)
@@ -173,6 +188,7 @@ export class DshV2ProposalFileSystemAdapter<TView extends object> {
         recovered = await recoverTransaction({ root, txid: transactionId })
       } catch (error) {
         if (!(error instanceof PublicationConflict) || error.code !== 'journal_missing') throw error
+        if (!allowNewWrite) return { status: 'ABSENT' }
       }
       if (recovered?.status === 'conflict') return { status: 'CONFLICT' }
       if (recovered?.status === 'finalized') {
@@ -196,6 +212,7 @@ export class DshV2ProposalFileSystemAdapter<TView extends object> {
       }
 
       if (recovered?.status !== 'written') {
+        if (!allowNewWrite) return { status: 'ABSENT' }
         if (input.proposal.action === 'CREATE') {
           if ((await observePublicationEntry(flatTarget)).status !== 'ABSENT') return { status: 'CONFLICT' }
           recovered = await createBundle({

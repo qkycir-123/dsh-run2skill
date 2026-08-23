@@ -66,6 +66,50 @@ async function* openBundleDirectory() {
 }
 
 describe('DSH v2 Runtime and Pending Catalog adapter', () => {
+  it('recovers only the exact Proposal Catalog behind its retained publication journal', async () => {
+    const { domain, fixture, sessionBatch } = await seed()
+    const proposalId = `prop_${'9'.repeat(64)}`
+    await domain.global.set(GlobalV2Schema.parse({
+      ...domain.global.get(),
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId: `pcm_${'8'.repeat(64)}`,
+        ownerId: proposalId,
+        kind: 'PUBLICATION',
+        phase: 'PREPARED',
+        preparedAt: '2026-08-22T01:00:00.000Z',
+      },
+    }))
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async () => ({ complete: true, skills: [] }),
+        get: async () => undefined,
+      },
+      resolveView: () => ({ cwd: 'D:\\repo' }),
+    })
+
+    await expect(adapter.generation.snapshot({
+      batch: sessionBatch, intent: fixture.experienceIntent,
+    })).resolves.toMatchObject({ complete: false })
+    await expect(adapter.publicationRecovery.snapshot({
+      batch: sessionBatch, intent: fixture.experienceIntent, proposalId,
+    })).resolves.toMatchObject({ complete: true })
+    await domain.global.set(GlobalV2Schema.parse({
+      ...domain.global.get(),
+      proposalCatalogMutationJournal: {
+        ...domain.global.get().proposalCatalogMutationJournal,
+        phase: 'EXECUTING',
+        executionStartedAt: '2026-08-22T01:01:00.000Z',
+      },
+    }))
+    await expect(adapter.publicationRecovery.snapshot({
+      batch: sessionBatch, intent: fixture.experienceIntent, proposalId,
+    })).resolves.toBeUndefined()
+    await expect(adapter.publicationRecovery.snapshot({
+      batch: sessionBatch, intent: fixture.experienceIntent, proposalId: `prop_${'7'.repeat(64)}`,
+    })).resolves.toBeUndefined()
+  })
+
   it('exposes one stable Runtime-only manifest for the pre-Turn ownership baseline', async () => {
     const { domain, fixture } = await seed()
     let calls = 0

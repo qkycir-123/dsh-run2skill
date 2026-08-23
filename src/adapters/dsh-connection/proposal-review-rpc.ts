@@ -37,15 +37,15 @@ const proposalId = z.string().regex(/^prop_[a-f0-9]{64}$/)
 const positiveSafeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 1)
 const safeNonNegativeInteger = z.number().refine(value => Number.isSafeInteger(value) && value >= 0)
 
-const listRequestSchema = z.object({
+export const listRequestSchema = z.object({
   apiVersion: z.literal(1),
   currentScope: CurrentScopeV1Schema,
   cursor: AuthoritativeActionCursorV1Schema.optional(),
   limit: z.number().int().positive().max(PAGE_SIZE).optional(),
 }).strict()
-const summaryRequestSchema = z.object({ apiVersion: z.literal(1), workspaceId: identity }).strict()
+export const summaryRequestSchema = z.object({ apiVersion: z.literal(1), workspaceId: identity }).strict()
 
-const getRequestSchema = z.object({
+export const getRequestSchema = z.object({
   apiVersion: z.literal(1),
   currentScope: CurrentScopeV1Schema,
   action: AttentionActionIdentityV1Schema,
@@ -60,8 +60,8 @@ const mutationRequestShape = {
   currentScope: CurrentScopeV1Schema,
   action: AttentionActionIdentityV1Schema,
 }
-const mutationRequestSchema = z.object(mutationRequestShape).strict()
-const rejectRequestSchema = z.object({ ...mutationRequestShape, confirm: z.literal(true) }).strict()
+export const mutationRequestSchema = z.object(mutationRequestShape).strict()
+export const rejectRequestSchema = z.object({ ...mutationRequestShape, confirm: z.literal(true) }).strict()
 
 const listItemSchema = z.object({
   workItemId,
@@ -76,12 +76,12 @@ const listItemSchema = z.object({
   publicationOutcome: z.enum(['PENDING_REVIEW', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISH_FAILED']),
 }).strict()
 
-const listResponseSchema = z.object({
+export const listResponseSchema = z.object({
   apiVersion: z.literal(1),
   items: z.array(listItemSchema).max(PAGE_SIZE),
   nextCursor: AuthoritativeActionCursorV1Schema.optional(),
 }).strict()
-const summaryResponseSchema = z.object({
+export const summaryResponseSchema = z.object({
   apiVersion: z.literal(1),
   status: z.enum(['READY', 'RECOVERING', 'DEGRADED', 'INCOMPATIBLE']),
   recoveryLag: z.boolean(),
@@ -136,7 +136,7 @@ const safeActionBindingSchema = z.discriminatedUnion('kind', [
     }).strict(),
   }).strict(),
 ])
-const safeProposalSchema = z.object({
+export const safeProposalSchema = z.object({
   schemaVersion: z.literal(1), revision: positiveSafeInteger,
   createdAt: z.string().min(1).max(64),
   sourceLearningProposalId: z.string().regex(/^lp_[a-f0-9]{64}$/),
@@ -158,7 +158,7 @@ const safeProposalSchema = z.object({
   actionBinding: safeActionBindingSchema,
   proposalId, digest: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict()
-const detailResponseSchema = z.object({
+export const detailResponseSchema = z.object({
   apiVersion: z.literal(1),
   workItemId,
   workItemRevision: positiveSafeInteger,
@@ -178,7 +178,7 @@ const detailResponseSchema = z.object({
   experiences: z.array(ExperienceRecordV1Schema),
 }).strict()
 
-const receiptSchema = z.object({
+export const receiptSchema = z.object({
   apiVersion: z.literal(1),
   workItemId,
   workItemRevision: positiveSafeInteger,
