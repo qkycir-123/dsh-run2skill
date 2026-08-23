@@ -14,7 +14,7 @@ Have you run into any of these situations?
 
 Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
 
-> This repository is on the `0.2.0` development line; the next npm release is planned as `0.2.0`. It currently supports DSH Web `0.1.0-rc.7` and `0.1.0-rc.8`.
+> The current stable release is `0.2.0`. It supports DSH Web `0.1.0-rc.7` and `0.1.0-rc.8`.
 
 ## See the complete flow
 
@@ -40,7 +40,7 @@ Run2Skill does not let an agent silently create permanent rules for itself. Ever
 First install DSH and Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available in your terminal. Then run:
 
 ```bash
-dsh plugin --profile web add dsh-run2skill
+dsh plugin --profile web add dsh-run2skill@0.2.0
 ```
 
 Restart DSH Web. Open **Settings → Plugins**; the plugin is loaded when the **Run2Skill** tab appears.
@@ -110,7 +110,7 @@ Uninstall:
 dsh plugin --profile web remove dsh-run2skill
 ```
 
-Restart DSH Web after either command. Uninstalling does not delete published Skills and keeps Run2Skill data by default. Use the settings-page clear-data action before uninstalling if you want to remove that data.
+Restart DSH Web after either command. Uninstalling does not delete published Skills and keeps Run2Skill data by default. Use **Clear all cache** on the settings page before uninstalling if you want to remove that data.
 
 ## Troubleshooting
 

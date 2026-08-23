@@ -6,6 +6,7 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
   version?: string
   private?: boolean
   description?: string
+  keywords?: string[]
   license?: string
   repository?: { type?: string; url?: string }
   bugs?: { url?: string }
@@ -34,7 +35,15 @@ describe('published package contract', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
       version: '0.2.0',
-      description: 'A DSH-native, local-first Run to Skill plugin',
+      description: 'Turn explicit DSH session experience into reviewable native Skills',
+      keywords: [
+        'deepseek-harness',
+        'dsh',
+        'dsh-plugin',
+        'agent-skills',
+        'local-first',
+        'human-in-the-loop',
+      ],
       license: 'MIT',
       repository: {
         type: 'git',
@@ -57,6 +66,7 @@ describe('published package contract', () => {
     expect(manifest.files).toEqual([
       'lib',
       'cordis.patch.yml',
+      'README.en.md',
       'README.md',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',

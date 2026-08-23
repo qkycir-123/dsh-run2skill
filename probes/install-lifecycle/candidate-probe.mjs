@@ -190,7 +190,7 @@ async function waitForAutomaticLearningSetting(expected) {
   throw new Error('native run2skill settings write did not become durable')
 }
 
-async function observe(present, expectedAutomaticLearning) {
+async function observe(present, expectedAutomaticLearning, expectedCapturedCounts = [0]) {
   const port = await reservePort()
   const base = `http://127.0.0.1:${String(port)}`
   const provider = present ? await startProbeProvider() : undefined
@@ -243,7 +243,10 @@ async function observe(present, expectedAutomaticLearning) {
     if (present) {
       const body = await rpc.json()
       assert.equal(body.result?.ok, true)
-      assert.equal(body.result?.value?.capturedCount, 0)
+      assert.ok(
+        expectedCapturedCounts.includes(body.result?.value?.capturedCount),
+        `unexpected capturedCount: ${String(body.result?.value?.capturedCount)}`,
+      )
       const workspaceResponse = await fetch(`${base}/api/workspace.create`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -452,7 +455,13 @@ if (webOnly || purgeUiOnly) {
   await dsh(['plugin', '--profile', 'web', 'add', v2])
   const installedManifest = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
   assert.equal(installedManifest.version, '0.1.0-alpha.2')
-  await observe(true, false)
+  await observe(true, false, [0, 1])
+  const upgradedStorage = JSON.parse(await readFile(join(home, 'storages', 'run2skill_v2.json'), 'utf8'))
+  assert.equal(
+    Object.keys(upgradedStorage.tables?.turn_observations ?? {}).length,
+    2,
+    'upgrade must retain exactly one observation for each completed controlled Turn',
+  )
 
   const storageEntries = await readdir(join(home, 'storages'))
   assert.ok(storageEntries.some(entry => /run2skill/iu.test(entry)), 'run2skill domain was not retained')

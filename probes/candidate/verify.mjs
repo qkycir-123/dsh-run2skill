@@ -219,6 +219,8 @@ const packedManifest = JSON.parse(run('tar', ['-xOf', tarballPath, 'package/pack
 assert.deepEqual({
   name: packedManifest.name,
   version: packedManifest.version,
+  description: packedManifest.description,
+  keywords: packedManifest.keywords,
   private: packedManifest.private,
   license: packedManifest.license,
   files: packedManifest.files,
@@ -232,9 +234,18 @@ assert.deepEqual({
 }, {
   name: 'dsh-run2skill',
   version: '0.2.0',
+  description: 'Turn explicit DSH session experience into reviewable native Skills',
+  keywords: [
+    'deepseek-harness',
+    'dsh',
+    'dsh-plugin',
+    'agent-skills',
+    'local-first',
+    'human-in-the-loop',
+  ],
   private: undefined,
   license: 'MIT',
-  files: ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'],
+  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'],
   repository: {
     type: 'git',
     url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
