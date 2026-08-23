@@ -81,6 +81,7 @@ interface ParsedWrite {
   readonly readbackBodyDigest?: string
   readonly failed: boolean
   readonly skillMarker: boolean
+  readonly ambiguousBodyEvidence: boolean
 }
 
 interface ToolEvidence {
@@ -175,20 +176,35 @@ function directWrite(
   if (args === undefined) return undefined
   const path = name === 'str_replace_editor' ? args.path : args.file_path
   if (typeof path !== 'string' || path.trim().length === 0) return undefined
-  const content = name === 'write'
+  const fullContent = name === 'write'
     ? args.content
     : name === 'str_replace_editor' && args.command === 'create'
       ? args.file_text
       : undefined
-  if (content !== undefined && typeof content !== 'string') return undefined
-  const readback = typeof content === 'string' ? parseDshSkillFileForOwnership(content) : undefined
+  const mutationText = name === 'edit'
+    ? args.new_string
+    : name === 'str_replace_editor' && (args.command === 'str_replace' || args.command === 'insert')
+      ? args.new_str
+      : undefined
+  const requiresFullContent = name === 'write'
+    || (name === 'str_replace_editor' && args.command === 'create')
+  const requiresMutationText = name === 'edit'
+    || (name === 'str_replace_editor' && (args.command === 'str_replace' || args.command === 'insert'))
+  if (requiresFullContent && typeof fullContent !== 'string') return undefined
+  if (requiresMutationText && typeof mutationText !== 'string') return undefined
+  const readback = typeof fullContent === 'string' ? parseDshSkillFileForOwnership(fullContent) : undefined
+  const authoredText = typeof fullContent === 'string' ? fullContent : mutationText
+  const authoredBodyEvidence = typeof authoredText === 'string' ? skillBodyEvidence(authoredText) : 'NONE'
   return {
     targetPathDigest: deriveOwnershipTargetPathDigest(path, cwd),
     ...(readback === undefined
       ? {}
       : { readbackBody: readback.body, readbackBodyDigest: sha256Utf8(readback.body) }),
     failed,
-    skillMarker: SKILL_MARKER.test(path) || (typeof content === 'string' && /(?:^|\n)name:\s*[a-z0-9-]+/iu.test(content)),
+    skillMarker: SKILL_MARKER.test(path)
+      || (typeof fullContent === 'string' && /(?:^|\n)name:\s*[a-z0-9-]+/iu.test(fullContent))
+      || authoredBodyEvidence === 'COMPLETE',
+    ambiguousBodyEvidence: authoredBodyEvidence === 'AMBIGUOUS',
   }
 }
 
@@ -307,7 +323,12 @@ function analyzeTools(
         ? { ...parsedWrite, skillMarker: true }
         : parsedWrite
       writes.push(write)
-      if (write.skillMarker && activity === 'NONE') activity = failed ? 'WRITE_FAILED' : 'BODY_GENERATED'
+      if (write.ambiguousBodyEvidence) {
+        activity = 'AMBIGUOUS'
+        unattributedBodyEvidence = true
+      } else if (write.skillMarker && activity === 'NONE') {
+        activity = failed ? 'WRITE_FAILED' : 'BODY_GENERATED'
+      }
       continue
     }
     if (SHELL_TOOLS.has(call.name)) {
@@ -322,7 +343,10 @@ function analyzeTools(
     activity = 'AMBIGUOUS'
     unattributedBodyEvidence = true
   }
-  if (writes.some(write => write.skillMarker && write.failed)) activity = 'WRITE_FAILED'
+  // Candidate/root membership is intentionally path-free. An unmatched failed
+  // mutation therefore cannot prove it was outside a custom or bundled Skill
+  // root, so fail closed instead of allowing a second generation channel.
+  if (writes.some(write => write.failed)) activity = 'WRITE_FAILED'
   return { complete: true, activity, writes, unattributedBodyEvidence }
 }
 

@@ -205,6 +205,38 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
   })
 
+  it('does not let an unmatched failed mutation hide behind an exact same-content Skill rewrite', async () => {
+    const customPath = 'D:\\repo\\custom-root\\existing.md'
+    const existing = {
+      ...candidate(exactSkillBody, 'PROJECT', customPath),
+      candidateId: 'candidate-custom-existing', source: 'custom', writable: false,
+    }
+    const observed = harness({
+      baselineCandidates: [existing], endCandidates: [existing],
+      between: [
+        event('tool/call', 2, {
+          turn: 2, step: 1, callId: 'call-rewrite', name: 'write',
+          arguments: JSON.stringify({ file_path: customPath, content: exactSkillBytes }),
+        }),
+        toolResult(3, 'call-rewrite'),
+        event('tool/call', 4, {
+          turn: 2, step: 1, callId: 'call-failed-flat', name: 'edit',
+          arguments: JSON.stringify({
+            file_path: 'D:\\repo\\custom-root\\new-flat.md', old_string: 'old', new_string: 'new',
+          }),
+        }),
+        toolResult(5, 'call-failed-flat', true),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ agentActivity: 'WRITE_FAILED' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_WRITE_FAILED' },
+    })
+  })
+
   it('does not bind a matching body saved to a different persistence scope', async () => {
     const userCandidate = { ...candidate(exactSkillBody, 'USER'), candidateId: 'candidate-user' }
     const observed = harness({
@@ -350,6 +382,58 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })).resolves.toMatchObject({ toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [] })
     await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
       status: 'RUN2SKILL_OWNED', ownership: { reasonCode: 'NO_AGENT_SKILL_ACTIVITY' },
+    })
+  })
+
+  it.each([
+    ['edit', {
+      file_path: 'D:\\repo\\notes.md', old_string: 'placeholder', new_string: exactSkillBytes,
+    }],
+    ['str_replace_editor', {
+      command: 'str_replace', path: 'D:\\repo\\notes.md', old_str: 'placeholder', new_str: exactSkillBytes,
+    }],
+    ['str_replace_editor', {
+      command: 'insert', path: 'D:\\repo\\notes.md', insert_line: 0, new_str: exactSkillBytes,
+    }],
+  ])('detects a complete Skill body carried by %s mutation text', async (name, args) => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-body', name, arguments: JSON.stringify(args),
+        }),
+        toolResult(4, 'call-body'),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ toolEvidenceComplete: true, agentActivity: 'BODY_GENERATED' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_BODY_GENERATED' },
+    })
+  })
+
+  it('fails closed on structurally ambiguous Skill text carried by a mutation', async () => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-ambiguous-body', name: 'edit',
+          arguments: JSON.stringify({
+            file_path: 'D:\\repo\\notes.md', old_string: 'placeholder',
+            new_string: '---\nname: unfinished-workflow',
+          }),
+        }),
+        toolResult(4, 'call-ambiguous-body'),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ toolEvidenceComplete: true, agentActivity: 'AMBIGUOUS' })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_ACTIVITY_AMBIGUOUS' },
     })
   })
 
