@@ -52,6 +52,14 @@ export interface PendingProposalCatalogV2 {
   readonly catalogMutationReceiptDigest: string
 }
 
+export interface PendingProposalCatalogReadOptionsV2 {
+  readonly allowPublicationJournal?: {
+    readonly mutationId: string
+    readonly ownerId: string
+    readonly phase: 'PREPARED' | 'EXECUTING'
+  } | undefined
+}
+
 const EMPTY_DIGEST = sha256Utf8(canonicalJson([]))
 const USER_SCOPE_IDENTITY = sha256Utf8(canonicalJson({ domain: 'run2skill_v2', scope: 'USER' }))
 
@@ -63,6 +71,20 @@ function incomplete(global: ReturnType<typeof GlobalV2Schema.parse> | undefined)
     catalogEpoch: global?.proposalCatalogEpoch ?? 0,
     catalogMutationReceiptDigest: global?.proposalCatalogLastMutation.digest ?? sha256Utf8('CATALOG_UNAVAILABLE'),
   }
+}
+
+function allowedPublicationJournal(
+  global: ReturnType<typeof GlobalV2Schema.parse>,
+  allowed: PendingProposalCatalogReadOptionsV2['allowPublicationJournal'],
+): boolean {
+  const journal = global.proposalCatalogMutationJournal
+  return journal === undefined || (
+    allowed !== undefined
+    && journal.kind === 'PUBLICATION'
+    && journal.mutationId === allowed.mutationId
+    && journal.ownerId === allowed.ownerId
+    && journal.phase === allowed.phase
+  )
 }
 
 function projectScopeIdentity(
@@ -114,13 +136,14 @@ function bodyEntry(input: Omit<PendingProposalCatalogEntryV2, 'capability' | 'bo
 export function derivePendingProposalCatalogV2(
   domain: Run2skillV2Domain,
   rawIntent: ExperienceIntentV2,
+  options: PendingProposalCatalogReadOptionsV2 = {},
 ): PendingProposalCatalogV2 {
   const before = GlobalV2Schema.safeParse(domain.global.get())
   if (
     !before.success
     || before.data.migration.phase !== 'COMMITTED'
     || before.data.activation === undefined
-    || before.data.proposalCatalogMutationJournal !== undefined
+    || !allowedPublicationJournal(before.data, options.allowPublicationJournal)
     || before.data.purgeJournal !== undefined
   ) return incomplete(before.success ? before.data : undefined)
   const intent = ExperienceIntentV2Schema.safeParse(rawIntent)
@@ -239,8 +262,10 @@ export function derivePendingProposalCatalogV2(
   const after = GlobalV2Schema.safeParse(domain.global.get())
   if (
     !after.success
-    || after.data.proposalCatalogMutationJournal !== undefined
+    || !allowedPublicationJournal(after.data, options.allowPublicationJournal)
     || after.data.purgeJournal !== undefined
+    || canonicalJson(after.data.proposalCatalogMutationJournal)
+      !== canonicalJson(before.data.proposalCatalogMutationJournal)
     || after.data.proposalCatalogEpoch !== before.data.proposalCatalogEpoch
     || canonicalJson(after.data.proposalCatalogLastMutation) !== canonicalJson(before.data.proposalCatalogLastMutation)
   ) return incomplete(after.success ? after.data : before.data)

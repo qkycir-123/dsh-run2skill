@@ -84,7 +84,10 @@ function currentCatalog(domain: ReturnType<typeof createMemoryRun2skillV2Domain>
 
 function createHandler(
   seeded: Awaited<ReturnType<typeof seed>>,
-  options: { readonly firstPublicationUnavailable?: boolean } = {},
+  options: {
+    readonly firstPublicationUnavailable?: boolean
+    readonly publicationServiceUnavailable?: boolean
+  } = {},
 ) {
   const published = options.firstPublicationUnavailable
     ? vi.fn()
@@ -154,11 +157,13 @@ function createHandler(
       evidenceRefs: [],
       experiences: [],
     }),
-    publications: domain => new V2ProposalPublicationCoordinator(domain, {
-      revalidate: async () => currentCatalog(domain as ReturnType<typeof createMemoryRun2skillV2Domain>),
-      publish: published,
-      now: () => NOW,
-    }),
+    publications: domain => options.publicationServiceUnavailable
+      ? undefined
+      : new V2ProposalPublicationCoordinator(domain, {
+          revalidate: async () => currentCatalog(domain as ReturnType<typeof createMemoryRun2skillV2Domain>),
+          publish: published,
+          now: () => NOW,
+        }),
   }, fallback)
   return { handler, fallback, published }
 }
@@ -311,5 +316,26 @@ describe('v2 Proposal RPC compatibility bridge', () => {
     })
     expect(published).toHaveBeenCalledTimes(2)
     expect(published.mock.calls[1]?.[0].attemptId).toBe(retainedAttemptId)
+  })
+
+  it('keeps an approved Proposal actionable when publication handoff is unavailable', async () => {
+    const seeded = await seed()
+    const { handler, published } = createHandler(seeded, { publicationServiceUnavailable: true })
+    const reviewAction = await attentionAction(handler)
+
+    await expect(handler(PROPOSALS_APPROVE_ENDPOINT, {
+      apiVersion: 1,
+      workItemId: reviewAction.subjectId,
+      workItemRevision: seeded.lineage.revision,
+      proposalRef: reviewAction.proposalRef,
+      currentScope,
+      action: reviewAction,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'internal' },
+    })
+    await expect(attentionAction(handler)).resolves.toMatchObject({
+      kind: 'RETRY_PUBLICATION',
+    })
+    expect(published).not.toHaveBeenCalled()
   })
 })

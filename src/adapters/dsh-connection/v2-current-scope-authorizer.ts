@@ -76,13 +76,17 @@ function projectLineage(lineage: NativeLineage): ProjectedV2AttentionAction | un
     }
   }
   const failure = proposal.publicationFailureCode
-  if (failure === undefined) return undefined
-  if (failure === 'CATALOG_UNAVAILABLE' || failure === 'PUBLICATION_UNAVAILABLE') {
+  if (
+    failure === undefined
+    || failure === 'CATALOG_UNAVAILABLE'
+    || failure === 'PUBLICATION_UNAVAILABLE'
+  ) {
+    const reasonCode = failure ?? 'PUBLICATION_PENDING'
     return {
       ...common,
-      actionKey: actionKey(lineage, 'RETRY_PUBLICATION', failure),
+      actionKey: actionKey(lineage, 'RETRY_PUBLICATION', reasonCode),
       kind: 'RETRY_PUBLICATION',
-      reasonCode: failure,
+      reasonCode,
       availableActions: ['RETRY'],
     }
   }

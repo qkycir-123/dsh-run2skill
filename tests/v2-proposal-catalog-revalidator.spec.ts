@@ -55,6 +55,22 @@ describe('v2 Proposal Catalog revalidator', () => {
     await expect(revalidator.revalidate(seeded.input)).resolves.toEqual({ status: 'UNAVAILABLE' })
   })
 
+  it('uses only the exact Proposal publication-recovery snapshot when its journal blocks the normal Catalog', async () => {
+    const seeded = fixture()
+    const recovery = vi.fn(async () => seeded.snapshot)
+    const revalidator = new V2ProposalCatalogRevalidator({
+      snapshot: async () => ({ ...seeded.snapshot, complete: false }),
+      read: vi.fn(),
+    }, { snapshot: recovery })
+
+    await expect(revalidator.revalidate(seeded.input)).resolves.toMatchObject({ status: 'CURRENT' })
+    expect(recovery).toHaveBeenCalledWith({
+      batch: seeded.input.batch,
+      intent: seeded.input.intent,
+      proposalId: seeded.input.proposal.proposalId,
+    })
+  })
+
   it.each([
     { field: 'runtimeCatalogDigest', value: 'c'.repeat(64) },
     { field: 'catalogEpoch', value: 999 },

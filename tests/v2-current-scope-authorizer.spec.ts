@@ -116,6 +116,36 @@ describe('v2 current-scope Action Queue authorization', () => {
     expect(refresh).toEqual([])
   })
 
+  it('keeps an approved Proposal recoverable before its publication journal exists', async () => {
+    const { domain, fixture } = await seed()
+    const active = ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)
+    if (active.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    const latest = active.proposalRevisions.at(-1)!
+    await domain.table('proposal_lineages').put(active.lineageId, ProposalLineageV2Schema.parse({
+      ...active,
+      revision: active.revision + 1,
+      proposalRevisions: [{
+        ...latest,
+        reviewDecision: 'APPROVED',
+        reviewedAt: '2026-08-23T00:00:00.000Z',
+        reviewReceiptDigest: 'a'.repeat(64),
+        reviewCatalog: {
+          status: 'CURRENT', runtimeCatalogDigest: 'b'.repeat(64), pendingCatalogDigest: 'c'.repeat(64),
+          catalogEpoch: 2, catalogMutationReceiptDigest: 'd'.repeat(64),
+        },
+      }],
+    }))
+    const authorizer = new V2CurrentScopeAuthorizer(async workspaceId => ({
+      workspaceId, canonicalPath: 'D:\\repo',
+    }))
+
+    await expect(authorizer.project(domain, {
+      kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
+    })).resolves.toMatchObject([{
+      kind: 'RETRY_PUBLICATION', reasonCode: 'PUBLICATION_PENDING', availableActions: ['RETRY'],
+    }])
+  })
+
   it('rejects a stale action identity after the lineage revision changes', async () => {
     const { domain, fixture } = await seed()
     const authorizer = new V2CurrentScopeAuthorizer(async workspaceId => ({

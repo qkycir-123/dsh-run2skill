@@ -53,7 +53,7 @@ export class V2ProposalHostServices<TView extends object> {
       resolveView: lifecycleKey => options.resolveSession(lifecycleKey)?.view,
       resolveStockWritableRoot: options.resolveStockWritableRoot,
     })
-    const revalidator = new V2ProposalCatalogRevalidator(catalog.generation)
+    const revalidator = new V2ProposalCatalogRevalidator(catalog.generation, catalog.publicationRecovery)
     const bindings = new DshV2StockPublicationBindingResolver({
       resolveSession: options.resolveSession,
     })
