@@ -22,6 +22,8 @@ const SUPPORTED_TURN_EVENT_TYPES = new Set([
   'permission/preset',
   'sandbox/mode',
   'approval/policy',
+  'approval/asked',
+  'approval/decided',
   'agent/inbox/spliced',
   'turn/start',
   'turn/end',
