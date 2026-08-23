@@ -9,8 +9,10 @@ import {
 } from '../../domain/v2/index.js'
 import {
   deriveV2ProposalRef,
+  V2ProposalRefreshError,
   V2ProposalReviewError,
   type V2ProposalRef,
+  type V2ProposalRefreshCoordinator,
   type V2ProposalReviewCoordinator,
 } from '../../application/review/index.js'
 import {
@@ -25,6 +27,7 @@ import {
   PROPOSALS_GET_ENDPOINT,
   PROPOSALS_LIST_ENDPOINT,
   PROPOSALS_REJECT_ENDPOINT,
+  PROPOSALS_REFRESH_ENDPOINT,
   PROPOSALS_RETRY_ENDPOINT,
   PROPOSAL_SUMMARY_ENDPOINT,
   detailResponseSchema,
@@ -64,6 +67,7 @@ const supported = new Set([
   PROPOSALS_GET_ENDPOINT,
   PROPOSALS_APPROVE_ENDPOINT,
   PROPOSALS_REJECT_ENDPOINT,
+  PROPOSALS_REFRESH_ENDPOINT,
   PROPOSALS_RETRY_ENDPOINT,
 ])
 
@@ -83,8 +87,10 @@ export interface V2ProposalRpcOptions {
     readonly proposalRef: V2ProposalRef
     readonly intent: z.infer<typeof ExperienceIntentV2Schema>
     readonly batch: z.infer<typeof SessionBatchV2Schema>
+    readonly allowUnresolvedBinding?: boolean
   }) => Promise<V2CompatibleProposalPresentation>
   readonly publications: (domain: Run2skillV2Domain) => V2ProposalPublicationCoordinator | undefined
+  readonly refreshes: (domain: Run2skillV2Domain) => V2ProposalRefreshCoordinator | undefined
   readonly readHealth?: () => {
     readonly status: 'READY' | 'RECOVERING' | 'DEGRADED' | 'INCOMPATIBLE'
     readonly recoveryLag: boolean
@@ -121,6 +127,13 @@ function activeDomain(getDomain: () => Run2skillV2Domain | undefined): Run2skill
 function stateOf(lineage: NativeLineage) {
   const proposal = lineage.proposalRevisions.at(-1)
   if (proposal === undefined) return undefined
+  if (lineage.state === 'REFRESHING') {
+    return {
+      processingState: 'PUBLISHING' as const,
+      reviewDecision: proposal.reviewDecision === 'APPROVED' ? 'APPROVED' as const : 'PENDING' as const,
+      publicationOutcome: 'PENDING_REVIEW' as const,
+    }
+  }
   if (lineage.state === 'PUBLISHED') {
     return { processingState: 'TERMINAL' as const, reviewDecision: 'APPROVED' as const, publicationOutcome: 'PUBLISHED' as const }
   }
@@ -130,7 +143,9 @@ function stateOf(lineage: NativeLineage) {
   if (proposal.reviewDecision === undefined) {
     return proposal.reviewFailureCode === undefined
       ? { processingState: 'READY_FOR_REVIEW' as const, reviewDecision: 'PENDING' as const, publicationOutcome: 'PENDING_REVIEW' as const }
-      : { processingState: 'NEEDS_ATTENTION' as const, reviewDecision: 'PENDING' as const, publicationOutcome: 'NEEDS_ATTENTION' as const }
+      : proposal.reviewFailureCode === 'CATALOG_CHANGED'
+        ? { processingState: 'NEEDS_ATTENTION' as const, reviewDecision: 'PENDING' as const, publicationOutcome: 'NEEDS_REFRESH' as const }
+        : { processingState: 'NEEDS_ATTENTION' as const, reviewDecision: 'PENDING' as const, publicationOutcome: 'NEEDS_ATTENTION' as const }
   }
   if (proposal.publicationFailureCode === undefined) {
     return { processingState: 'PUBLISHING' as const, reviewDecision: 'APPROVED' as const, publicationOutcome: 'PENDING_REVIEW' as const }
@@ -155,6 +170,15 @@ function asV1Action(action: ProjectedV2AttentionAction): ProjectedAttentionActio
   }
 }
 
+function asActionIdentity(action: ProjectedV2AttentionAction): V2AttentionActionIdentity {
+  return {
+    actionKey: action.actionKey,
+    subjectId: action.subjectId,
+    kind: action.kind,
+    proposalRef: action.proposalRef,
+  }
+}
+
 function findBySubject(domain: Run2skillV2Domain, subjectId: string): NativeLineage | undefined {
   const matches = [...domain.table('proposal_lineages').entries()].flatMap(([, raw]) => {
     const parsed = ProposalLineageV2Schema.safeParse(raw)
@@ -175,6 +199,15 @@ function mappedError(value: unknown): ObserveRpcResult<never> {
       case 'PUBLICATION_REVISION_CONFLICT':
       case 'STALE_PROPOSAL_REF': return error('conflict')
       case 'INVALID_PUBLICATION_STATE': return error('invalid-state')
+      default: return error('internal')
+    }
+  }
+  if (value instanceof V2ProposalRefreshError) {
+    switch (value.code) {
+      case 'REFRESH_LINEAGE_NOT_FOUND': return error('not-found')
+      case 'REFRESH_REVISION_CONFLICT':
+      case 'STALE_PROPOSAL_REF': return error('conflict')
+      case 'INVALID_REFRESH_STATE': return error('invalid-state')
       default: return error('internal')
     }
   }
@@ -309,24 +342,40 @@ export function createV2ProposalRpcHandler(
         const authorized = await options.authorizer.authorize(
           domain, request.data.currentScope, request.data.action as V2AttentionActionIdentity,
         )
-        const lineage = authorized.lineage
-        const proposal = lineage.proposalRevisions.at(-1)!
+        let lineage = authorized.lineage
+        let proposal = lineage.proposalRevisions.at(-1)!
         if (proposal.proposalId !== request.data.proposalId) return error('conflict')
+        if (proposal.reviewDecision === undefined) {
+          const reviews = options.reviews(domain)
+          if (reviews === undefined) return error('internal')
+          const inspected = await reviews.inspect({
+            lineageId: lineage.lineageId,
+            expectedLineageRevision: lineage.revision,
+            proposalRef: deriveV2ProposalRef(lineage),
+          })
+          lineage = inspected.lineage
+          proposal = lineage.proposalRevisions.at(-1)!
+        }
         const intent = ExperienceIntentV2Schema.safeParse(domain.table('experience_intents').get(lineage.ownerIntentId))
         const batch = intent.success
           ? SessionBatchV2Schema.safeParse(domain.table('session_batches').get(intent.data.batchId))
           : undefined
         if (!intent?.success || !batch?.success) return error('internal')
+        const state = stateOf(lineage)!
         const presentation = await options.present({
           lineage, proposal, proposalRef: deriveV2ProposalRef(lineage), intent: intent.data, batch: batch.data,
+          allowUnresolvedBinding: state.processingState === 'NEEDS_ATTENTION',
         })
-        const state = stateOf(lineage)!
+        const currentAction = (await options.authorizer.project(domain, request.data.currentScope))
+          .find(candidate => candidate.subjectId === authorized.action.subjectId)
+        if (currentAction === undefined) throw new CurrentScopeAuthorizationError('ACTION_STALE')
         return { ok: true, value: detailResponseSchema.parse({
           apiVersion: 1,
           workItemId: authorized.action.subjectId,
           workItemRevision: lineage.revision,
           ...state,
           ...presentation,
+          action: asActionIdentity(currentAction),
         }) }
       } catch (caught) {
         return mappedError(caught)
@@ -343,7 +392,9 @@ export function createV2ProposalRpcHandler(
         ? 'APPROVE'
         : endpoint === PROPOSALS_REJECT_ENDPOINT
           ? 'REJECT'
-          : 'RETRY'
+          : endpoint === PROPOSALS_REFRESH_ENDPOINT
+            ? 'REFRESH'
+            : 'RETRY'
       const authorized = await options.authorizer.authorize(
         domain, parsed.data.currentScope, parsed.data.action as V2AttentionActionIdentity, required,
       )
@@ -354,6 +405,17 @@ export function createV2ProposalRpcHandler(
       ) return error('conflict')
       let lineage = authorized.lineage
       let changed = false
+      if (endpoint === PROPOSALS_REFRESH_ENDPOINT) {
+        const refreshes = options.refreshes(domain)
+        if (refreshes === undefined) return error('internal')
+        const result = await refreshes.refresh({
+          lineageId: lineage.lineageId,
+          expectedLineageRevision: lineage.revision,
+          proposalRef: deriveV2ProposalRef(lineage),
+        })
+        lineage = result.lineage
+        changed = result.changed
+      }
       if (endpoint === PROPOSALS_APPROVE_ENDPOINT || endpoint === PROPOSALS_REJECT_ENDPOINT) {
         const reviews = options.reviews(domain)
         if (reviews === undefined) return error('internal')

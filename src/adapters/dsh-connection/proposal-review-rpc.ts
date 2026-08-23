@@ -27,6 +27,7 @@ export const PROPOSALS_GET_ENDPOINT = 'proposals/get'
 export const PROPOSALS_APPROVE_ENDPOINT = 'proposals/approve'
 export const PROPOSALS_REJECT_ENDPOINT = 'proposals/reject'
 export const PROPOSALS_RETRY_ENDPOINT = 'proposals/retry'
+export const PROPOSALS_REFRESH_ENDPOINT = 'proposals/refresh'
 export const COVERAGE_CONFIRM_DISCARD_ENDPOINT = 'coverage/confirm-discard'
 
 const MAX_REQUEST_BYTES = 8 * 1024
@@ -155,9 +156,15 @@ export const safeProposalSchema = z.object({
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
   catalogObservationDigest: z.string().regex(/^[a-f0-9]{64}$/),
   curationRationale: z.string().min(1).max(4_096),
-  actionBinding: safeActionBindingSchema,
+  actionBinding: safeActionBindingSchema.optional(),
   proposalId, digest: z.string().regex(/^[a-f0-9]{64}$/),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.actionBinding !== undefined && value.kind !== value.actionBinding.kind) {
+    context.addIssue({
+      code: 'custom', path: ['actionBinding'], message: 'action binding kind must match proposal kind',
+    })
+  }
+})
 export const detailResponseSchema = z.object({
   apiVersion: z.literal(1),
   workItemId,
@@ -176,7 +183,18 @@ export const detailResponseSchema = z.object({
   }).strict(),
   evidenceRefs: z.array(EvidenceRefSchema),
   experiences: z.array(ExperienceRecordV1Schema),
-}).strict()
+  action: AttentionActionIdentityV1Schema.optional(),
+}).strict().superRefine((value, context) => {
+  if (
+    value.processingState === 'READY_FOR_REVIEW'
+    && value.publicationOutcome === 'PENDING_REVIEW'
+    && value.proposal.actionBinding === undefined
+  ) {
+    context.addIssue({
+      code: 'custom', path: ['proposal', 'actionBinding'], message: 'approvable Proposal requires a safe action binding',
+    })
+  }
+})
 
 export const receiptSchema = z.object({
   apiVersion: z.literal(1),

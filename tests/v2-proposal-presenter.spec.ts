@@ -14,6 +14,7 @@ function input() {
     proposalRef: deriveV2ProposalRef(lineage),
     intent: fixture.proposalReadyIntent,
     batch: SessionBatchV2Schema.parse(fixture.sessionBatch),
+    observation: fixture.turnObservation,
   }
 }
 
@@ -43,6 +44,9 @@ describe('v2 compatible Proposal presenter', () => {
       sessionCoordinate: () => ({
         rootSessionId: 'session-v2', sessionCreatedAt: 100, turn: 2, turnEndSeq: 8,
       }),
+      observation: observationId => observationId === value.observation.observationId
+        ? value.observation
+        : undefined,
     })
 
     const presented = await presenter.present(value)
@@ -58,9 +62,44 @@ describe('v2 compatible Proposal presenter', () => {
         },
       },
       sessionCoordinate: { rootSessionId: 'session-v2', turnEndSeq: 8 },
-      evidenceRefs: [],
-      experiences: [],
+      evidenceRefs: value.observation.directUserEvidence,
+      experiences: [{
+        experienceId: expect.stringMatching(/^exp_[a-f0-9]{64}$/),
+        type: value.intent.experienceType,
+        lesson: value.intent.applicabilitySummary,
+        persistenceScope: value.intent.persistenceScope,
+        evidenceStrength: 'HIGH',
+        supportingEvidence: value.observation.directUserEvidence.map(evidence => ({
+          messageSeq: evidence.messageSeq,
+          excerptDigest: evidence.excerptDigest,
+        })),
+      }],
     })
     expect(JSON.stringify(presented)).not.toMatch(/declaredRootPath|canonicalExistingAncestorPath|D:\\\\repo/u)
+  })
+
+  it('keeps durable evidence readable when a stale Proposal no longer has a live Session or root binding', async () => {
+    const value = input()
+    const presenter = new V2CompatibleProposalPresenter({
+      bindings: { resolve: async () => ({ status: 'UNAVAILABLE' }) },
+      sessionCoordinate: () => undefined,
+      observation: observationId => observationId === value.observation.observationId
+        ? value.observation
+        : undefined,
+    })
+
+    const presented = await presenter.present({ ...value, allowUnresolvedBinding: true })
+
+    expect(presented).toMatchObject({
+      sessionCoordinate: {
+        rootSessionId: value.intent.sessionLifecycleKey,
+        sessionCreatedAt: 0,
+        turn: value.observation.turn,
+        turnEndSeq: value.observation.turnEndSeq,
+      },
+      evidenceRefs: value.observation.directUserEvidence,
+      experiences: [{ lesson: value.intent.applicabilitySummary }],
+    })
+    expect(presented.proposal).not.toHaveProperty('actionBinding')
   })
 })

@@ -237,6 +237,7 @@ export class GenerationWorker {
       if (
         target === undefined
         || target.skillBytesDigest === undefined
+        || target.skillBytesDigest !== sha256Utf8(target.content)
         || sha256Utf8(target.content) !== leased.coverage.targetDigest
       ) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_TARGET_CHANGED')
@@ -248,7 +249,7 @@ export class GenerationWorker {
         return 'PROCESSED'
       }
       baseSkill = processed.text
-      baseSkillBytesDigest = target.skillBytesDigest
+      baseSkillBytesDigest = sha256Utf8(baseSkill)
       const afterRead = await this.#safeSnapshot(batch.data, leased)
       if (afterRead === undefined || !this.#snapshotMatches(afterRead, leased)) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_CATALOG_CHANGED')
@@ -331,7 +332,7 @@ export class GenerationWorker {
     }
     const outputDigest = sha256Utf8(canonicalJson(parsed.data))
     if (!await this.#terminalCall(leased.intentId, callId, 'SUCCEEDED', outputDigest)) return 'PROCESSED'
-    await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes, baseSkillBytesDigest)
+    await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes, baseSkill, baseSkillBytesDigest)
     if (await this.#validateQuiescence(leased.intentId) !== 'VALID') {
       await this.#markStaleResult(leased.intentId, leased.generation.leaseId!)
     }
@@ -717,6 +718,7 @@ export class GenerationWorker {
     intentId: string,
     output: z.infer<typeof generationOutputSchema>,
     exactSkillBytes: string,
+    baseSkillBytes: string | undefined,
     baseSkillBytesDigest: string | undefined,
   ): Promise<void> {
     const intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
@@ -753,6 +755,7 @@ export class GenerationWorker {
         skillBytesDigest: sha256Utf8(exactSkillBytes),
       },
       targetDigest: intent.coverage.targetDigest!,
+      ...(baseSkillBytes === undefined ? {} : { baseSkillBytes }),
       ...(baseSkillBytesDigest === undefined ? {} : { baseSkillBytesDigest }),
       inputDigest: intent.generation.inputDigest!,
       runtimeCatalogDigest: intent.recall.runtimeCatalogDigest!,
@@ -770,8 +773,9 @@ export class GenerationWorker {
       const parsed = ExperienceIntentV2Schema.parse(current)
       if (parsed.generation.state !== 'GENERATION_CALL_TERMINAL') return parsed
       committed = true
+      const { duplicateBarrier: _barrier, ...stable } = parsed
       return ExperienceIntentV2Schema.parse({
-        ...parsed,
+        ...stable,
         revision: parsed.revision + 1,
         generation: {
           ...parsed.generation,
@@ -1057,7 +1061,9 @@ export class GenerationWorker {
         if (
           target === undefined
           || sha256Utf8(target.content) !== result.targetDigest
-          || target.skillBytesDigest !== result.baseSkillBytesDigest
+          || result.baseSkillBytes === undefined
+          || target.content !== result.baseSkillBytes
+          || sha256Utf8(target.content) !== result.baseSkillBytesDigest
         ) return undefined
       } catch {
         return undefined
@@ -1090,10 +1096,16 @@ export class GenerationWorker {
         'PROPOSAL_AUTHORIZED', intent, leaseId, recordedAt, undefined, result.outcomeCatalogEpoch,
       )
       const lineageId = deriveNativeProposalLineageIdV2(intent.persistenceScope, intent.behaviorSignature)
+      const existing = ProposalLineageV2Schema.safeParse(this.#lineages.get(lineageId))
+      const proposalRevision = existing.success
+        && existing.data.origin === 'RUN2SKILL_V2'
+        && existing.data.state === 'REFRESHING'
+        ? existing.data.currentProposalRevision + 1
+        : 1
       const proposalId = deriveNativeProposalId({
         lineageId,
         generationResultReceiptDigest: result.receiptDigest,
-        proposalRevision: 1,
+        proposalRevision,
       })
       authorizationDigest = receipt.digest
       authorized = true
@@ -1170,9 +1182,52 @@ export class GenerationWorker {
     if (facts === undefined) return undefined
     const projectScopeBinding = this.#projectScopeBinding(intent)
     if (intent.persistenceScope === 'PROJECT' && projectScopeBinding === undefined) return undefined
+    const stored = ProposalLineageV2Schema.safeParse(this.#lineages.get(facts.lineageId))
+    const prior = stored.success && stored.data.origin === 'RUN2SKILL_V2' ? stored.data : undefined
+    if (prior !== undefined && (
+      !['REFRESHING', 'ACTIVE_PROPOSAL'].includes(prior.state)
+      || (prior.state === 'REFRESHING' && !intent.generation.staleRefreshUsed)
+      || prior.ownerIntentId !== intent.intentId
+      || prior.persistenceScope !== intent.persistenceScope
+      || prior.behaviorSignature !== intent.behaviorSignature
+    )) return undefined
+    const proposalRevision = prior?.state === 'ACTIVE_PROPOSAL'
+      ? prior.currentProposalRevision
+      : (prior?.currentProposalRevision ?? 0) + 1
+    const proposal = {
+      revision: proposalRevision,
+      proposalId: facts.proposalId,
+      ownerIntentId: intent.intentId,
+      ownerIntentRevision,
+      action: facts.result.action,
+      body: facts.result.body,
+      runtimeCatalogDigest: facts.revalidation.runtimeCatalogDigest,
+      pendingCatalogDigest: facts.revalidation.pendingCatalogDigest,
+      generationResultReceiptDigest: facts.result.receiptDigest,
+      catalogMutationReceiptDigest: facts.mutationReceiptDigest,
+      catalogEpoch: facts.outcomeCatalogEpoch,
+      targetIdentityDigest: facts.result.targetDigest,
+      ...(facts.result.baseSkillBytes === undefined
+        ? {}
+        : { baseSkillBytes: facts.result.baseSkillBytes }),
+      ...(facts.result.baseSkillBytesDigest === undefined
+        ? {}
+        : { baseSkillBytesDigest: facts.result.baseSkillBytesDigest }),
+      ...(projectScopeBinding === undefined ? {} : { projectScopeBinding }),
+      state: 'ACTIVE_PROPOSAL' as const,
+      createdAt: facts.revalidation.authorizedAt,
+    }
+    if (prior?.state === 'ACTIVE_PROPOSAL') {
+      return canonicalJson(prior.proposalRevisions.at(-1)) === canonicalJson(proposal)
+        && prior.ownerIntentId === intent.intentId
+        && prior.ownerIntentRevision === ownerIntentRevision
+        && prior.currentProposalRevision === proposalRevision
+        ? prior
+        : undefined
+    }
     return ProposalLineageV2Schema.parse({
       schemaVersion: 1,
-      revision: 1,
+      revision: (prior?.revision ?? 0) + 1,
       lineageId: facts.lineageId,
       persistenceScope: intent.persistenceScope,
       origin: 'RUN2SKILL_V2',
@@ -1180,28 +1235,9 @@ export class GenerationWorker {
       behaviorSignature: intent.behaviorSignature,
       ownerIntentId: intent.intentId,
       ownerIntentRevision,
-      currentProposalRevision: 1,
-      proposalRevisions: [{
-        revision: 1,
-        proposalId: facts.proposalId,
-        ownerIntentId: intent.intentId,
-        ownerIntentRevision,
-        action: facts.result.action,
-        body: facts.result.body,
-        runtimeCatalogDigest: facts.revalidation.runtimeCatalogDigest,
-        pendingCatalogDigest: facts.revalidation.pendingCatalogDigest,
-        generationResultReceiptDigest: facts.result.receiptDigest,
-        catalogMutationReceiptDigest: facts.mutationReceiptDigest,
-        catalogEpoch: facts.outcomeCatalogEpoch,
-        targetIdentityDigest: facts.result.targetDigest,
-        ...(facts.result.baseSkillBytesDigest === undefined
-          ? {}
-          : { baseSkillBytesDigest: facts.result.baseSkillBytesDigest }),
-        ...(projectScopeBinding === undefined ? {} : { projectScopeBinding }),
-        state: 'ACTIVE_PROPOSAL',
-        createdAt: facts.revalidation.authorizedAt,
-      }],
-      createdAt: facts.revalidation.authorizedAt,
+      currentProposalRevision: proposalRevision,
+      proposalRevisions: [...(prior?.proposalRevisions ?? []), proposal],
+      createdAt: prior?.createdAt ?? facts.revalidation.authorizedAt,
       updatedAt: facts.revalidation.authorizedAt,
     })
   }
@@ -1301,13 +1337,29 @@ export class GenerationWorker {
     facts: ProposalMutationFacts,
   ): Promise<void> {
     let committed = false
+    let replacedLineage: z.infer<typeof ProposalLineageV2Schema> | undefined
     try {
       if (await this.#validateQuiescence(intent.intentId) !== 'VALID') throw new Error('Session quiescence fence is stale')
       const existing = this.#lineages.get(facts.lineageId)
       if (existing === undefined) await this.#lineages.put(facts.lineageId, expectedLineage)
       else {
         const parsed = ProposalLineageV2Schema.safeParse(existing)
-        if (!parsed.success || canonicalJson(parsed.data) !== canonicalJson(expectedLineage)) {
+        if (
+          parsed.success
+          && parsed.data.origin === 'RUN2SKILL_V2'
+          && parsed.data.state === 'REFRESHING'
+          && expectedLineage.origin === 'RUN2SKILL_V2'
+          && canonicalJson(parsed.data.proposalRevisions)
+            === canonicalJson(expectedLineage.proposalRevisions.slice(0, -1))
+          && expectedLineage.revision === parsed.data.revision + 1
+        ) {
+          replacedLineage = parsed.data
+          await this.#lineages.update(facts.lineageId, current => {
+            const latest = ProposalLineageV2Schema.parse(current)
+            if (canonicalJson(latest) !== canonicalJson(parsed.data)) throw new Error('Proposal lineage changed')
+            return expectedLineage
+          })
+        } else if (!parsed.success || canonicalJson(parsed.data) !== canonicalJson(expectedLineage)) {
           throw new Error('Proposal lineage conflict')
         }
       }
@@ -1326,7 +1378,7 @@ export class GenerationWorker {
     }
     if (!committed) {
       if (this.#proposalBodyCommitIsDurable(intent, expectedLineage, facts)) return
-      await this.#rollbackPreparedProposal(intent, expectedLineage, facts.mutationId)
+      await this.#rollbackPreparedProposal(intent, expectedLineage, facts.mutationId, replacedLineage)
     }
   }
 
@@ -1357,10 +1409,12 @@ export class GenerationWorker {
     intent: ExperienceIntentV2,
     expectedLineage: z.infer<typeof ProposalLineageV2Schema>,
     mutationId: string,
+    replacedLineage?: z.infer<typeof ProposalLineageV2Schema>,
   ): Promise<void> {
     const stored = ProposalLineageV2Schema.safeParse(this.#lineages.get(expectedLineage.lineageId))
     if (stored.success && canonicalJson(stored.data) === canonicalJson(expectedLineage)) {
-      await this.#lineages.delete(expectedLineage.lineageId)
+      if (replacedLineage === undefined) await this.#lineages.delete(expectedLineage.lineageId)
+      else await this.#lineages.put(expectedLineage.lineageId, replacedLineage)
     }
     await this.#abandonProposalJournal(mutationId)
     await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
@@ -1580,6 +1634,8 @@ export class GenerationWorker {
       || revision.catalogMutationReceiptDigest !== this.#proposalMutationFacts(intent)?.mutationReceiptDigest
       || revision.catalogEpoch !== revalidation.catalogEpoch + 1
       || revision.targetIdentityDigest !== result.targetDigest
+      || revision.baseSkillBytes !== result.baseSkillBytes
+      || revision.baseSkillBytesDigest !== result.baseSkillBytesDigest
       || revision.state !== 'ACTIVE_PROPOSAL'
     ) return
     const key = deriveBehaviorSignatureIndexKeyV2(intent.persistenceScope, intent.behaviorSignature)

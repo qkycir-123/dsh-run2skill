@@ -16,6 +16,12 @@ const processingState = z.enum(['READY_FOR_REVIEW', 'PUBLISHING', 'NEEDS_ATTENTI
 const publicationOutcome = z.enum([
   'PENDING_REVIEW', 'DISCARDED', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISHED', 'PUBLISH_FAILED',
 ])
+const attentionAction = z.object({
+  actionKey: z.string().regex(/^act_[a-f0-9]{64}$/),
+  subjectId: workItemId,
+  kind: z.enum(['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION']),
+  proposalRef,
+}).strict()
 
 const rootDisplay = z.object({
   state: z.enum(['EXISTING', 'ABSENT']),
@@ -86,12 +92,15 @@ const proposal = z.object({
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
   catalogObservationDigest: sha256,
   curationRationale: z.string().min(1).max(4_096),
-  actionBinding,
+  actionBinding: actionBinding.optional(),
   proposalId,
   digest: sha256,
-}).strict().refine(value => value.kind === value.actionBinding.kind, {
-  path: ['actionBinding'],
-  message: 'action binding kind must match proposal kind',
+}).strict().superRefine((value, context) => {
+  if (value.actionBinding !== undefined && value.kind !== value.actionBinding.kind) {
+    context.addIssue({
+      code: 'custom', path: ['actionBinding'], message: 'action binding kind must match proposal kind',
+    })
+  }
 })
 
 const evidence = z.object({
@@ -163,7 +172,18 @@ const detail = z.object({
   }).strict(),
   evidenceRefs: z.array(evidence).max(16),
   experiences: z.array(experience).max(3),
-}).strict()
+  action: attentionAction.optional(),
+}).strict().superRefine((value, context) => {
+  if (
+    value.processingState === 'READY_FOR_REVIEW'
+    && value.publicationOutcome === 'PENDING_REVIEW'
+    && value.proposal.actionBinding === undefined
+  ) {
+    context.addIssue({
+      code: 'custom', path: ['proposal', 'actionBinding'], message: 'approvable Proposal requires a safe action binding',
+    })
+  }
+})
 const receipt = z.object({
   apiVersion: z.literal(1),
   workItemId,

@@ -896,6 +896,9 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
       publications: domain => factory.currentV2Domain === domain
         ? factory.currentV2Runtime?.proposals.publications
         : undefined,
+      refreshes: domain => factory.currentV2Domain === domain
+        ? factory.currentV2Runtime?.proposals.refreshes
+        : undefined,
       readHealth: () => {
         const snapshot = lifecycle.snapshot()
         return {

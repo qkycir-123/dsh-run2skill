@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { V2LearningAttentionService } from '../src/adapters/dsh-connection/v2-learning-attention-rpc.js'
+import { CompleteCoverageWorker } from '../src/application/coverage-analysis/index.js'
+import { CompleteCatalogRecallWorker, deriveRecallCandidateId } from '../src/application/recall/index.js'
 import { deriveTurnObservationContentDigestV2, ExperienceIntentV2Schema, SessionBatchV2Schema } from '../src/domain/v2/index.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -33,7 +35,98 @@ async function seededObservation(domain: ReturnType<typeof createMemoryRun2skill
   return { fixture, observation }
 }
 
+async function seedCoveredIntent(domain: ReturnType<typeof createMemoryRun2skillV2Domain>) {
+  const { fixture } = await seededObservation(domain)
+  const owned = ExperienceIntentV2Schema.parse({
+    ...fixture.proposalReadyIntent,
+    revision: 1,
+    status: 'RUN2SKILL_OWNED',
+    recall: { state: 'NOT_STARTED', complete: false, summaryScanComplete: false, candidates: [] },
+    coverage: { state: 'NOT_STARTED', retryUsed: false },
+    generation: { state: 'NOT_STARTED', userRetryUsed: false, staleRefreshUsed: false, receipts: [] },
+    stageCalls: [],
+    lineageId: undefined,
+  })
+  const batch = SessionBatchV2Schema.parse(fixture.sessionBatch)
+  const summaryFacts = {
+    name: 'covered-skill',
+    description: 'Already covers the requested workflow',
+    whenToUse: 'Use for the same workflow',
+    provider: 'filesystem',
+    source: 'project-dsh',
+    scope: 'PROJECT' as const,
+    writable: true,
+    rootIdentityDigest: 'd'.repeat(64),
+  }
+  const summary = { candidateId: deriveRecallCandidateId(summaryFacts), ...summaryFacts }
+  const catalog = {
+    snapshot: async () => ({
+      complete: true as const,
+      runtimeCatalogDigest: '1'.repeat(64),
+      pendingCatalogDigest: '2'.repeat(64),
+      catalogEpoch: 4,
+      catalogMutationReceiptDigest: '3'.repeat(64),
+      summaries: [summary],
+    }),
+    read: async () => ({ ...summary, content: '# covered-skill\ncomplete body' }),
+  }
+  await domain.table('experience_intents').put(owned.intentId, owned)
+  await domain.table('session_batches').put(batch.batchId, batch)
+  await new CompleteCatalogRecallWorker(domain, {
+    catalog,
+    classifier: { classify: async () => ({
+      classifications: [{ candidateId: summary.candidateId, classification: 'RELEVANT' as const }],
+    }) },
+  }).runOnce()
+  await new CompleteCoverageWorker(domain, {
+    catalog,
+    classifier: { classify: async () => ({
+      decisions: [{ candidateId: summary.candidateId, decision: 'COVERED' as const, reason: 'already covered' }],
+    }) },
+  }).runOnce()
+  return ExperienceIntentV2Schema.parse(domain.experienceIntents.get(owned.intentId))
+}
+
 describe('v2 learning Attention RPC', () => {
+  it('durably authorizes one idempotent COVERED dispute retry and never a second retry loop', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const covered = await seedCoveredIntent(domain)
+    expect(covered.status).toBe('COVERED_NEEDS_CONFIRMATION')
+    const service = new V2LearningAttentionService(
+      domain,
+      async workspaceId => ({ workspaceId, canonicalPath: 'D:/workspace' }),
+      () => now,
+    )
+    const action = (await service.project(scope))[0]!
+    expect(action).toMatchObject({
+      kind: 'RETRY_LEARNING',
+      reasonCode: 'COVERED_NEEDS_CONFIRMATION',
+      availableActions: ['RETRY', 'DISMISS'],
+    })
+    const request = {
+      apiVersion: 1 as const,
+      workItemId: action.subjectId,
+      workItemRevision: covered.revision,
+      currentScope: scope,
+      action: { actionKey: action.actionKey, subjectId: action.subjectId, kind: action.kind },
+    }
+    const handler = service.handler()
+
+    await expect(handler('learning/issues/retry', request, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      value: { changed: true, processingState: 'CAPTURED', disposition: 'RETRY_QUEUED' },
+    })
+    expect(domain.experienceIntents.get(covered.intentId)).toMatchObject({
+      status: 'COVERAGE_RETRY_AUTHORIZED',
+      coverage: { state: 'ANALYZING', retryUsed: true },
+      reasonReceipts: [{ reasonCode: 'DISPUTE_COVERAGE' }],
+    })
+    await expect(handler('learning/issues/retry', request, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      value: { changed: false, disposition: 'RETRY_QUEUED' },
+    })
+  })
+
   it('projects a generation failure and durably dismisses its duplicate barrier facts', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const { fixture } = await seededObservation(domain)

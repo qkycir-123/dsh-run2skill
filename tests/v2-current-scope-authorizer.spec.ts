@@ -113,7 +113,9 @@ describe('v2 current-scope Action Queue authorization', () => {
     const refresh = await authorizer.project(domain, {
       kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
     })
-    expect(refresh).toEqual([])
+    expect(refresh).toMatchObject([{
+      kind: 'REFRESH_PROPOSAL', reasonCode: 'PUBLICATION_CONFLICT', availableActions: ['REFRESH'],
+    }])
   })
 
   it('keeps an approved Proposal recoverable before its publication journal exists', async () => {

@@ -56,6 +56,11 @@ export interface V2ProposalReviewResult {
   readonly lineage: NativeProposalLineageV2
 }
 
+export interface V2ProposalInspectionResult {
+  readonly changed: boolean
+  readonly lineage: NativeProposalLineageV2
+}
+
 export class V2ProposalReviewError extends Error {
   constructor(readonly code:
     | 'REVIEW_LINEAGE_NOT_FOUND'
@@ -95,6 +100,9 @@ function immutableProposalFacts(lineage: NativeProposalLineageV2, proposal: Nati
       ...(proposal.baseSkillBytesDigest === undefined
         ? {}
         : { baseSkillBytesDigest: proposal.baseSkillBytesDigest }),
+      ...(proposal.baseSkillBytes === undefined
+        ? {}
+        : { baseSkillBytes: proposal.baseSkillBytes }),
       ...(proposal.projectScopeBinding === undefined
         ? {}
         : { projectScopeBinding: proposal.projectScopeBinding }),
@@ -151,6 +159,51 @@ export class V2ProposalReviewCoordinator {
     this.#intents = domain.table('experience_intents')
     this.#batches = domain.table('session_batches')
     this.#now = options.now ?? (() => new Date().toISOString())
+  }
+
+  inspect(request: V2ProposalReviewRequest): Promise<V2ProposalInspectionResult> {
+    return this.#serialize(async () => {
+      const lineage = this.#matchingLineage(request)
+      this.#assertExpectedRevision(lineage, request)
+      const proposal = lineage.proposalRevisions.at(-1)!
+      if (proposal.reviewDecision !== undefined || lineage.state !== 'ACTIVE_PROPOSAL') {
+        throw new V2ProposalReviewError('INVALID_REVIEW_STATE')
+      }
+      const intent = ExperienceIntentV2Schema.safeParse(this.#intents.get(lineage.ownerIntentId))
+      const batch = intent.success
+        ? SessionBatchV2Schema.safeParse(this.#batches.get(intent.data.batchId))
+        : undefined
+      if (!intent?.success || !batch?.success || intent.data.lineageId !== lineage.lineageId) {
+        throw new V2ProposalReviewError('REVIEW_INPUT_UNAVAILABLE')
+      }
+      let revalidation: V2ProposalReviewRevalidation
+      try {
+        revalidation = await this.options.revalidate({
+          lineage, proposal, proposalRef: request.proposalRef, intent: intent.data, batch: batch.data,
+        })
+      } catch {
+        revalidation = { status: 'UNAVAILABLE' }
+      }
+      if (revalidation.status !== 'CURRENT') {
+        const failureCode = revalidation.status === 'STALE' ? 'CATALOG_CHANGED' : 'CATALOG_UNAVAILABLE'
+        if (proposal.reviewFailureCode === failureCode) return { changed: false, lineage }
+        const recorded = await this.#recordAttention(lineage, request, failureCode)
+        return { changed: recorded.changed, lineage: recorded.lineage }
+      }
+      if (proposal.reviewFailureCode === undefined) return { changed: false, lineage }
+      const inspectedAt = this.#now()
+      const updated = await this.#updateExpected(lineage, request, current => {
+        const latest = current.proposalRevisions.at(-1)!
+        const { reviewFailureCode: _failure, reviewAttemptedAt: _attempt, ...base } = latest
+        return {
+          ...current,
+          revision: current.revision + 1,
+          updatedAt: inspectedAt,
+          proposalRevisions: [...current.proposalRevisions.slice(0, -1), base],
+        }
+      })
+      return { changed: true, lineage: updated }
+    })
   }
 
   approve(request: V2ProposalReviewRequest): Promise<V2ProposalReviewResult> {
@@ -210,7 +263,7 @@ export class V2ProposalReviewCoordinator {
             ...current,
             revision: current.revision + 1,
             updatedAt: reviewedAt,
-            proposalRevisions: [{
+            proposalRevisions: [...current.proposalRevisions.slice(0, -1), {
               ...base,
               reviewDecision: 'APPROVED',
               reviewedAt,
@@ -264,7 +317,7 @@ export class V2ProposalReviewCoordinator {
             revision: current.revision + 1,
             state: 'TERMINAL',
             updatedAt: reviewedAt,
-            proposalRevisions: [{
+            proposalRevisions: [...current.proposalRevisions.slice(0, -1), {
               ...base,
               state: 'TERMINAL',
               reviewDecision: 'REJECTED',
@@ -348,7 +401,7 @@ export class V2ProposalReviewCoordinator {
         ...current,
         revision: current.revision + 1,
         updatedAt: attemptedAt,
-        proposalRevisions: [{
+        proposalRevisions: [...current.proposalRevisions.slice(0, -1), {
           ...base,
           reviewFailureCode: failureCode,
           reviewAttemptedAt: attemptedAt,

@@ -20,7 +20,7 @@ import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 const NOW = '2026-08-23T05:00:00.000Z'
 const EXTERNAL_RECEIPT = 'f'.repeat(64)
 
-async function seedApproved() {
+async function seedApproved(action: 'CREATE' | 'MERGE' = 'CREATE') {
   const domain = createMemoryRun2skillV2Domain()
   const fixture = createMinimalV2Fixtures()
   await domain.global.set(GlobalV2Schema.parse({
@@ -51,7 +51,18 @@ async function seedApproved() {
     SessionBatchV2Schema.parse(fixture.sessionBatch),
   )
   await domain.table('experience_intents').put(fixture.proposalReadyIntent.intentId, fixture.proposalReadyIntent)
-  const pending = ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)
+  const baseSkillBytes = '# Existing fixture\n\nBase behavior.\n'
+  const pending = ProposalLineageV2Schema.parse({
+    ...fixture.nativeActiveProposalLineage,
+    proposalRevisions: fixture.nativeActiveProposalLineage.proposalRevisions.map(proposal => action === 'CREATE'
+      ? proposal
+      : {
+          ...proposal,
+          action: 'MERGE',
+          baseSkillBytes,
+          baseSkillBytesDigest: sha256Utf8(baseSkillBytes),
+        }),
+  })
   if (pending.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
   const proposalRef = deriveV2ProposalRef(pending)
   const proposal = pending.proposalRevisions.at(-1)!
@@ -79,7 +90,7 @@ async function seedApproved() {
   })
   if (approved.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
   await domain.table('proposal_lineages').put(approved.lineageId, approved)
-  return { domain, fixture, lineage: approved, proposalRef }
+  return { domain, fixture, lineage: approved, proposalRef, baseSkillBytes }
 }
 
 function currentCatalog(domain: ReturnType<typeof createMemoryRun2skillV2Domain>) {
@@ -124,6 +135,43 @@ describe('v2 Proposal publication coordinator', () => {
 
     await expect(coordinator.publish(request)).resolves.toMatchObject({ changed: false, state: 'PUBLISHED' })
     expect(publish).toHaveBeenCalledTimes(1)
+  })
+
+  it('records the adopted base and Run2skill result as monotonic MERGE Skill revisions', async () => {
+    const seeded = await seedApproved('MERGE')
+    const coordinator = new V2ProposalPublicationCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      publish: async () => ({ status: 'PUBLISHED' as const, externalReceiptDigest: EXTERNAL_RECEIPT }),
+      now: () => NOW,
+    })
+
+    const result = await coordinator.publish({
+      lineageId: seeded.lineage.lineageId,
+      expectedLineageRevision: seeded.lineage.revision,
+      proposalRef: seeded.proposalRef,
+    })
+
+    expect(result.lineage).toMatchObject({
+      state: 'PUBLISHED',
+      currentSkillRevision: 2,
+      skillRevisions: [
+        {
+          revision: 1,
+          origin: 'ADOPTED_BASE',
+          exactSkillBytes: seeded.baseSkillBytes,
+          skillBytesDigest: sha256Utf8(seeded.baseSkillBytes),
+          committedAt: NOW,
+        },
+        {
+          revision: 2,
+          origin: 'RUN2SKILL',
+          proposalId: seeded.proposalRef.proposalId,
+          exactSkillBytes: seeded.lineage.proposalRevisions.at(-1)!.body.exactSkillBytes,
+          skillBytesDigest: seeded.lineage.proposalRevisions.at(-1)!.body.skillBytesDigest,
+          committedAt: NOW,
+        },
+      ],
+    })
   })
 
   it('does not call the filesystem when Catalog revalidation is stale', async () => {

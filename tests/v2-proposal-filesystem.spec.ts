@@ -326,6 +326,7 @@ describe('v2 DSH Proposal filesystem adapter', () => {
         targetIdentityDigest: sha256Utf8(parseCanonicalSkillBody(
           seeded.input.proposal.body.exactSkillBytes,
         )),
+        baseSkillBytes: seeded.input.proposal.body.exactSkillBytes,
         baseSkillBytesDigest: seeded.input.proposal.body.skillBytesDigest,
       }],
     })
@@ -373,6 +374,7 @@ describe('v2 DSH Proposal filesystem adapter', () => {
         targetIdentityDigest: sha256Utf8(parseCanonicalSkillBody(
           seeded.input.proposal.body.exactSkillBytes,
         )),
+        baseSkillBytes: seeded.input.proposal.body.exactSkillBytes,
         baseSkillBytesDigest: seeded.input.proposal.body.skillBytesDigest,
       }],
     })
@@ -412,6 +414,7 @@ describe('v2 DSH Proposal filesystem adapter', () => {
         ...seeded.input.proposal,
         action: 'MERGE',
         targetIdentityDigest: sha256Utf8(parseCanonicalSkillBody(reviewedBase)),
+        baseSkillBytes: reviewedBase,
         baseSkillBytesDigest: sha256Utf8(reviewedBase),
       }],
     })
@@ -440,6 +443,7 @@ describe('v2 DSH Proposal filesystem adapter', () => {
         targetIdentityDigest: sha256Utf8(parseCanonicalSkillBody(
           seeded.input.proposal.body.exactSkillBytes,
         )),
+        baseSkillBytes: seeded.input.proposal.body.exactSkillBytes,
         baseSkillBytesDigest: seeded.input.proposal.body.skillBytesDigest,
       }],
     })

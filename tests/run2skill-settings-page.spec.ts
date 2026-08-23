@@ -202,6 +202,58 @@ describe('run2skill native settings surface', () => {
     automatic.dispose()
   })
 
+  it('renders the Proposal section for a REFRESH_PROPOSAL action', async () => {
+    const review = vi.fn(async (_endpoint: string) => ({
+      ok: true,
+      value: { apiVersion: 1 as const, items: [] },
+    }))
+    const automatic = new AutomaticLearningSettingsController({
+      getSnapshot: () => ({
+        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+      }),
+      subscribe: () => () => undefined,
+      set: vi.fn(),
+    })
+    const purge = new PurgeSettingsController(
+      vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })),
+      () => 'workspace-a',
+    )
+    render(createElement(Run2skillSettingsPage, {
+      controller: automatic,
+      purgeController: purge,
+      workspaceId: 'workspace-a',
+      callAttention: vi.fn(async () => ({
+        ok: true,
+        value: {
+          apiVersion: 1,
+          userCompleteness: 'KNOWN',
+          projectCompleteness: 'KNOWN',
+          actions: [{
+            actionKey: `act_${'a'.repeat(64)}`,
+            subjectId: `wi_${'b'.repeat(64)}`,
+            kind: 'REFRESH_PROPOSAL',
+            proposalRef: {
+              proposalId: `prop_${'c'.repeat(64)}`,
+              revision: 1,
+              digest: 'd'.repeat(64),
+            },
+            availableActions: ['REFRESH'],
+          }],
+          runtimeCompleteness: 'KNOWN',
+          runtimeWarnings: [],
+        },
+      })),
+      callReview: review,
+      callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [] } })),
+    }))
+
+    expect(await screen.findByRole('region', { name: '技能草稿详情' })).toBeTruthy()
+    expect(screen.queryByRole('textbox', { name: '筛选技能草稿' })).toBeNull()
+    expect(review.mock.calls.some(([endpoint]) => endpoint === 'proposals/list')).toBe(true)
+    purge.dispose()
+    automatic.dispose()
+  })
+
   it('loads recent activity only while expanded and shows scope only to disambiguate', async () => {
     const call = vi.fn(async () => ({
       ok: true,
@@ -839,6 +891,50 @@ describe('run2skill native settings surface', () => {
     await waitFor(() => {
       expect(call.mock.calls.some(([endpoint]) => endpoint === 'learning/issues/retry')).toBe(true)
       expect(settled).toHaveBeenCalledOnce()
+    })
+  })
+
+  it('presents COVERED disagreement as one explicit generate-or-confirm choice', async () => {
+    const workItemId = `wi_${'e'.repeat(64)}`
+    const call = vi.fn(async (endpoint: string) => endpoint === 'learning/issues/list'
+      ? { ok: true, value: { apiVersion: 1, items: [{
+          workItemId,
+          workItemRevision: 7,
+          createdAt: '2026-08-21T00:00:00.000Z',
+          updatedAt: '2026-08-21T00:00:01.000Z',
+          failureCode: 'COVERED_NEEDS_CONFIRMATION',
+          retryable: false,
+          attempt: 1,
+          requestBudgetUsed: 0,
+          calls: [],
+        }] } }
+      : { ok: true, value: { apiVersion: 1, changed: true } })
+    render(createElement(LearningFailureSection, {
+      call,
+      active: true,
+      actions: [{
+        actionKey: `act_${'f'.repeat(64)}`,
+        subjectId: workItemId,
+        kind: 'RETRY_LEARNING',
+        reasonCode: 'COVERED_NEEDS_CONFIRMATION',
+        availableActions: ['RETRY', 'DISMISS'],
+      }],
+      onMutationSettled: vi.fn(),
+    }))
+
+    expect(await screen.findByText(
+      'Run2Skill 发现已有 Skill 可能已经包含这次经验，因此暂停生成新草稿。请选择下一步。',
+    )).toBeTruthy()
+    expect(screen.queryByText('COVERED_NEEDS_CONFIRMATION')).toBeNull()
+    expect(screen.getByText('发现可能重复的 Skill')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '继续生成新 Skill 草稿' })).toBeTruthy()
+    const dismiss = screen.getByRole('button', { name: '使用已有 Skill，不生成草稿' })
+    fireEvent.click(dismiss)
+    expect(await screen.findByRole('dialog', { name: '使用已有 Skill，不生成新草稿？' })).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: '取消' }).at(-1)!)
+    fireEvent.click(screen.getByRole('button', { name: '继续生成新 Skill 草稿' }))
+    await waitFor(() => {
+      expect(call.mock.calls.some(([endpoint]) => endpoint === 'learning/issues/retry')).toBe(true)
     })
   })
 

@@ -407,12 +407,12 @@ function ProposalSettingsSection(props: {
     actions: props.actions.flatMap(action => (
       action.subjectId === undefined
       || action.proposalRef === undefined
-      || !['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')
+      || !['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')
         ? []
         : [{
             actionKey: action.actionKey,
             subjectId: action.subjectId,
-            kind: action.kind as 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION',
+            kind: action.kind as 'REVIEW_PROPOSAL' | 'REFRESH_PROPOSAL' | 'RETRY_PUBLICATION',
             proposalRef: action.proposalRef,
           }]
     )),
@@ -517,6 +517,7 @@ function ProposalSettingsSection(props: {
             setRejectConfirm(true)
           },
           onRetry: () => { void controller.mutate('RETRY').finally(props.onMutationSettled) },
+          onRefresh: () => { void controller.mutate('REFRESH').finally(props.onMutationSettled) },
           onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD').finally(props.onMutationSettled) },
         }),
       ),
@@ -644,11 +645,17 @@ export function LearningFailureSection(props: {
     ...items.map(item => {
       const action = learningActions.get(item.workItemId)
       const busy = pending === item.workItemId
+      const isCoverageConfirmation = item.failureCode === 'COVERED_NEEDS_CONFIRMATION'
       return createElement('article', { className: css.detail, key: item.workItemId },
         createElement('div', { className: css.toolbar },
-          createElement(Pill, null, item.failureCode),
+          createElement(Pill, null, isCoverageConfirmation ? '发现可能重复的 Skill' : item.failureCode),
           item.failureDetail === undefined ? null : createElement(Pill, null, item.failureDetail),
         ),
+        isCoverageConfirmation
+          ? createElement('p', null,
+              'Run2Skill 发现已有 Skill 可能已经包含这次经验，因此暂停生成新草稿。请选择下一步。',
+            )
+          : null,
         createElement('p', null, `第 ${String(item.attempt)} 轮 · 已使用 ${String(item.requestBudgetUsed)} 次模型请求`),
         item.modelRoute === undefined
           ? null
@@ -659,7 +666,9 @@ export function LearningFailureSection(props: {
                 variant: 'primary',
                 disabled: busy || pending !== undefined,
                 onClick: () => { mutate('learning/issues/retry', item) },
-              }, busy ? '正在重试…' : '重试学习')
+              }, busy
+                ? '正在处理…'
+                : isCoverageConfirmation ? '继续生成新 Skill 草稿' : '重试学习')
             : null,
           action?.availableActions?.includes('DISMISS') === true
             ? createElement(Button, {
@@ -669,19 +678,23 @@ export function LearningFailureSection(props: {
                   dismissTriggerRef.current = event.currentTarget
                   setDismiss(item)
                 },
-              }, '关闭此失败')
+              }, isCoverageConfirmation ? '使用已有 Skill，不生成草稿' : '关闭此失败')
             : null,
         ),
       )
     }),
     createElement(ManagedConfirmationModal, {
       open: dismiss !== undefined,
-      title: '确认关闭此学习失败？',
-      description: '该失败会从待处理列表隐藏；已有 Skill 和 DSH 的原始会话记录不会改变。',
+      title: dismiss?.failureCode === 'COVERED_NEEDS_CONFIRMATION'
+        ? '使用已有 Skill，不生成新草稿？'
+        : '确认关闭此学习失败？',
+      description: dismiss?.failureCode === 'COVERED_NEEDS_CONFIRMATION'
+        ? '确认后，此项将从待处理列表移除，Run2Skill 不会为这次经验生成新草稿；已有 Skill 和 DSH 原始会话记录不会改变。'
+        : '该失败会从待处理列表隐藏；已有 Skill 和 DSH 的原始会话记录不会改变。',
       disabled: pending !== undefined,
       triggerRef: dismissTriggerRef,
       onClose: () => { setDismiss(undefined) },
-      confirmLabel: '确认关闭',
+      confirmLabel: dismiss?.failureCode === 'COVERED_NEEDS_CONFIRMATION' ? '使用已有 Skill' : '确认关闭',
       onConfirm: () => {
         const selected = dismiss
         setDismiss(undefined)
@@ -775,7 +788,7 @@ export function actionableProposalItems(
   const identities = new Set(actions.flatMap(action => (
     action.subjectId === undefined
     || action.proposalRef === undefined
-    || !['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')
+    || !['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')
       ? []
       : [`${action.subjectId}\u0000${action.proposalRef.proposalId}\u0000${String(action.proposalRef.revision)}\u0000${action.proposalRef.digest}`]
   )))
@@ -985,7 +998,7 @@ export function Run2skillSettingsPage(props: {
           refreshGeneration: attentionRefresh,
           onProjection: setAttention,
         }),
-        attention?.actions.some(action => ['REVIEW_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')) === true
+        attention?.actions.some(action => ['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')) === true
           ? createElement(ProposalSettingsSection, {
               ...(workspaceId === undefined ? {} : { workspaceId }),
               callReview: props.callReview,

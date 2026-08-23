@@ -15,6 +15,7 @@ import {
 } from '../application/publication/index.js'
 import {
   V2ProposalCatalogRevalidator,
+  V2ProposalRefreshCoordinator,
   V2ProposalReviewCoordinator,
 } from '../application/review/index.js'
 
@@ -42,6 +43,7 @@ export interface V2ProposalHostServicesOptions<TView extends object> {
 export class V2ProposalHostServices<TView extends object> {
   readonly reviews: V2ProposalReviewCoordinator
   readonly publications: V2ProposalPublicationCoordinator
+  readonly refreshes: V2ProposalRefreshCoordinator
   readonly presenter: V2CompatibleProposalPresenter<TView>
 
   constructor(
@@ -75,6 +77,11 @@ export class V2ProposalHostServices<TView extends object> {
     this.presenter = new V2CompatibleProposalPresenter({
       bindings,
       sessionCoordinate: options.sessionCoordinate,
+      observation: observationId => domain.table('turn_observations').get(observationId),
     })
+    this.refreshes = new V2ProposalRefreshCoordinator(
+      domain,
+      options.now === undefined ? {} : { now: options.now },
+    )
   }
 }

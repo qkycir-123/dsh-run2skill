@@ -6,6 +6,8 @@ import {
   type SkillGenerator,
 } from '../src/application/generation/index.js'
 import { CompleteCatalogRecallWorker, deriveRecallCandidateId, type RecallCatalogSnapshot } from '../src/application/recall/index.js'
+import { V2ProposalRefreshCoordinator, deriveV2ProposalRef } from '../src/application/review/index.js'
+import { canonicalJson } from '../src/domain/learn/identity.js'
 import {
   deriveCreateTargetDigestV2,
   deriveProposalCatalogMutationAnchorV2,
@@ -75,7 +77,7 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
       const content = bodies.get(candidateId)
       return item === undefined || content === undefined
         ? undefined
-        : { ...item, content, skillBytesDigest: sha256Utf8(`exact:${content}`) }
+        : { ...item, content, skillBytesDigest: sha256Utf8(content) }
     },
   }
   await domain.table('experience_intents').put(owned.intentId, owned)
@@ -386,6 +388,111 @@ describe('v2 generation lease worker', () => {
     expect(Object.values(global.behaviorSignatureIndex)).toEqual([
       expect.objectContaining({ ownerIntentId: seeded.intentId, state: 'ACTIVE' }),
     ])
+  })
+
+  it('appends a refreshed Proposal revision while retaining the superseded draft', async () => {
+    const seeded = await seedAuthorized()
+    const firstWorker = generationWorker(seeded, { catalog: seeded.catalog, generator: generator(), now: () => NOW })
+    await firstWorker.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+    await firstWorker.runOnce()
+    await firstWorker.runOnce()
+
+    const first = ProposalLineageV2Schema.parse([...seeded.domain.proposalLineages.values()][0])
+    if (first.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    const stale = ProposalLineageV2Schema.parse({
+      ...first,
+      revision: first.revision + 1,
+      proposalRevisions: first.proposalRevisions.map(proposal => ({
+        ...proposal,
+        reviewFailureCode: 'CATALOG_CHANGED',
+        reviewAttemptedAt: new Date(NOW).toISOString(),
+      })),
+    })
+    if (stale.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    await seeded.domain.table('proposal_lineages').put(stale.lineageId, stale)
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...seeded.domain.global.get(),
+      migration: {
+        schemaVersion: 1,
+        phase: 'COMMITTED',
+        source: { domainName: 'run2skill_v1', domainVersion: 2, globalSchemaVersion: 1 },
+        sourceFingerprint: 'a'.repeat(64),
+        counts: { workItems: 0, lineages: 0, activeLegacyProposals: 0 },
+        startedAt: new Date(NOW).toISOString(),
+        updatedAt: new Date(NOW).toISOString(),
+        committedAt: new Date(NOW).toISOString(),
+        activationFenceDigest: 'b'.repeat(64),
+      },
+      activation: {
+        committedAt: new Date(NOW).toISOString(),
+        sourceFingerprint: 'a'.repeat(64),
+        observerStartWatermarks: {},
+        observerStartWatermarkDigest: sha256Utf8(canonicalJson({})),
+        legacyPendingCatalogDigest: sha256Utf8(canonicalJson([])),
+        legacyPendingCandidateCount: 0,
+      },
+    }))
+    await new V2ProposalRefreshCoordinator(seeded.domain, {
+      now: () => new Date(NOW).toISOString(),
+    }).refresh({
+      lineageId: stale.lineageId,
+      expectedLineageRevision: stale.revision,
+      proposalRef: deriveV2ProposalRef(stale),
+    })
+
+    const refreshedGlobal = seeded.domain.global.get()
+    const refreshedSnapshot = {
+      complete: true as const,
+      runtimeCatalogDigest: 'a'.repeat(64),
+      pendingCatalogDigest: 'b'.repeat(64),
+      externalPendingDigest: 'b'.repeat(64),
+      catalogEpoch: refreshedGlobal.proposalCatalogEpoch,
+      catalogMutationReceiptDigest: refreshedGlobal.proposalCatalogLastMutation.digest,
+      summaries: [],
+    }
+    const { externalPendingDigest: _externalPendingDigest, ...recallSnapshot } = refreshedSnapshot
+    const recallCatalog = {
+      snapshot: async () => recallSnapshot,
+      read: async () => undefined,
+    }
+    await new CompleteCatalogRecallWorker(seeded.domain, {
+      catalog: recallCatalog,
+      classifier: { classify: async () => ({ classifications: [] }) },
+    }).runOnce()
+    await new CompleteCoverageWorker(seeded.domain, {
+      catalog: recallCatalog,
+      classifier: { classify: async () => ({ decisions: [] }) },
+    }).runOnce()
+    const refreshedAuthorized = seeded.domain.experienceIntents.get(seeded.intentId)
+    if (refreshedAuthorized?.status !== 'CREATE_AUTHORIZED') {
+      throw new Error(JSON.stringify(refreshedAuthorized))
+    }
+    expect(refreshedAuthorized).toMatchObject({
+      status: 'CREATE_AUTHORIZED',
+      generation: { staleRefreshUsed: true },
+    })
+    seeded.setGenerationSnapshot(refreshedSnapshot)
+
+    const secondWorker = generationWorker(seeded, { catalog: seeded.catalog, generator: generator(), now: () => NOW + 1_000 })
+    await secondWorker.runOnce()
+    await exposeSealedResultForRevalidation(seeded)
+    await secondWorker.runOnce()
+    await secondWorker.runOnce()
+
+    const lineage = ProposalLineageV2Schema.parse(seeded.domain.proposalLineages.get(stale.lineageId))
+    expect(lineage).toMatchObject({
+      origin: 'RUN2SKILL_V2',
+      state: 'ACTIVE_PROPOSAL',
+      currentProposalRevision: 2,
+      proposalRevisions: [
+        expect.objectContaining({ revision: 1, state: 'SUPERSEDED', reviewFailureCode: 'CATALOG_CHANGED' }),
+        expect.objectContaining({ revision: 2, state: 'ACTIVE_PROPOSAL' }),
+      ],
+    })
+    expect(new Set(lineage.origin === 'RUN2SKILL_V2'
+      ? lineage.proposalRevisions.map(proposal => proposal.proposalId)
+      : []).size).toBe(2)
   })
 
   it('does not commit a Proposal when external Pending Catalog membership changed after generation', async () => {

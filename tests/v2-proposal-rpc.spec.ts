@@ -5,11 +5,12 @@ import {
   PROPOSALS_APPROVE_ENDPOINT,
   PROPOSALS_GET_ENDPOINT,
   PROPOSALS_LIST_ENDPOINT,
+  PROPOSALS_REFRESH_ENDPOINT,
   safeProposalSchema,
 } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { createV2ProposalRpcHandler } from '../src/adapters/dsh-connection/v2-proposal-rpc.js'
 import { V2ProposalPublicationCoordinator } from '../src/application/publication/index.js'
-import { V2ProposalReviewCoordinator } from '../src/application/review/index.js'
+import { V2ProposalRefreshCoordinator, V2ProposalReviewCoordinator } from '../src/application/review/index.js'
 import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
@@ -17,6 +18,7 @@ import {
   GlobalV2Schema,
   ProposalLineageV2Schema,
   SessionBatchV2Schema,
+  deriveBehaviorSignatureIndexKeyV2,
 } from '../src/domain/v2/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
@@ -28,6 +30,10 @@ async function seed(options: { readonly committed?: boolean } = {}) {
   const domain = createMemoryRun2skillV2Domain()
   const fixture = createMinimalV2Fixtures()
   if (options.committed !== false) {
+    const indexKey = deriveBehaviorSignatureIndexKeyV2(
+      fixture.proposalReadyIntent.persistenceScope,
+      fixture.proposalReadyIntent.behaviorSignature,
+    )
     await domain.global.set(GlobalV2Schema.parse({
       ...domain.global.get(),
       migration: {
@@ -48,6 +54,17 @@ async function seed(options: { readonly committed?: boolean } = {}) {
         observerStartWatermarkDigest: sha256Utf8(canonicalJson({})),
         legacyPendingCatalogDigest: sha256Utf8(canonicalJson([])),
         legacyPendingCandidateCount: 0,
+      },
+      behaviorSignatureIndex: {
+        [indexKey]: {
+          schemaVersion: 1,
+          persistenceScope: fixture.proposalReadyIntent.persistenceScope,
+          behaviorSignature: fixture.proposalReadyIntent.behaviorSignature,
+          ownerIntentId: fixture.proposalReadyIntent.intentId,
+          ownerRevision: fixture.proposalReadyIntent.revision,
+          state: 'ACTIVE',
+          updatedAt: NOW,
+        },
       },
     }))
   }
@@ -87,6 +104,7 @@ function createHandler(
   options: {
     readonly firstPublicationUnavailable?: boolean
     readonly publicationServiceUnavailable?: boolean
+    readonly reviewRevalidation?: 'CURRENT' | 'STALE' | 'UNAVAILABLE'
   } = {},
 ) {
   const published = options.firstPublicationUnavailable
@@ -106,57 +124,60 @@ function createHandler(
       ? { workspaceId, canonicalPath: 'D:\\repo' }
       : undefined
   ))
+  const present = vi.fn(async ({ lineage, proposal, intent, batch }) => ({
+    proposal: safeProposalSchema.parse({
+      schemaVersion: 1,
+      revision: proposal.revision,
+      createdAt: proposal.createdAt,
+      sourceLearningProposalId: `lp_${'1'.repeat(64)}`,
+      kind: proposal.action,
+      name: proposal.body.name,
+      description: proposal.body.description,
+      whenToUse: proposal.body.whenToUse,
+      invocation: { modelInvocable: true, userInvocable: false },
+      exactSkillBytes: proposal.body.exactSkillBytes,
+      skillBytesDigest: proposal.body.skillBytesDigest,
+      rendererVersion: 'v2-compatible-presenter-v1',
+      persistenceScope: lineage.persistenceScope,
+      workspaceBinding: { workspaceId: currentScope.workspaceId },
+      supportingExperienceIds: [`exp_${'2'.repeat(64)}`],
+      catalogObservationDigest: proposal.runtimeCatalogDigest,
+      curationRationale: 'Generated from the complete v2 session evidence.',
+      actionBinding: {
+        kind: 'CREATE',
+        rootBinding: {
+          state: 'EXISTING',
+          scope: 'PROJECT',
+          expectedProvider: 'filesystem',
+          expectedSource: 'project-dsh',
+          resolverVersion: 'v2-compatible-presenter-v1',
+          rootContractVersion: 'dsh-stock-v1',
+          resolutionContractDigest: '3'.repeat(64),
+        },
+        targetBinding: { skillName: proposal.body.name },
+        expectedAbsence: { observedAt: proposal.createdAt },
+      },
+      proposalId: proposal.proposalId,
+      digest: '4'.repeat(64),
+    }),
+    sessionCoordinate: {
+      rootSessionId: intent.sessionLifecycleKey,
+      sessionCreatedAt: 0,
+      turn: 0,
+      turnEndSeq: batch.lastTurnEndSeq,
+    },
+    evidenceRefs: [],
+    experiences: [],
+  }))
   const handler = createV2ProposalRpcHandler(() => seeded.domain, {
     authorizer,
     reviews: domain => new V2ProposalReviewCoordinator(domain, {
-      revalidate: async () => currentCatalog(domain as ReturnType<typeof createMemoryRun2skillV2Domain>),
+      revalidate: async () => options.reviewRevalidation === undefined || options.reviewRevalidation === 'CURRENT'
+        ? currentCatalog(domain as ReturnType<typeof createMemoryRun2skillV2Domain>)
+        : { status: options.reviewRevalidation },
       now: () => NOW,
     }),
-    present: async ({ lineage, proposal, intent, batch }) => ({
-      proposal: safeProposalSchema.parse({
-        schemaVersion: 1,
-        revision: proposal.revision,
-        createdAt: proposal.createdAt,
-        sourceLearningProposalId: `lp_${'1'.repeat(64)}`,
-        kind: proposal.action,
-        name: proposal.body.name,
-        description: proposal.body.description,
-        whenToUse: proposal.body.whenToUse,
-        invocation: { modelInvocable: true, userInvocable: false },
-        exactSkillBytes: proposal.body.exactSkillBytes,
-        skillBytesDigest: proposal.body.skillBytesDigest,
-        rendererVersion: 'v2-compatible-presenter-v1',
-        persistenceScope: lineage.persistenceScope,
-        workspaceBinding: { workspaceId: currentScope.workspaceId },
-        supportingExperienceIds: [`exp_${'2'.repeat(64)}`],
-        catalogObservationDigest: proposal.runtimeCatalogDigest,
-        curationRationale: 'Generated from the complete v2 session evidence.',
-        actionBinding: {
-          kind: 'CREATE',
-          rootBinding: {
-            state: 'EXISTING',
-            scope: 'PROJECT',
-            expectedProvider: 'filesystem',
-            expectedSource: 'project-dsh',
-            resolverVersion: 'v2-compatible-presenter-v1',
-            rootContractVersion: 'dsh-stock-v1',
-            resolutionContractDigest: '3'.repeat(64),
-          },
-          targetBinding: { skillName: proposal.body.name },
-          expectedAbsence: { observedAt: proposal.createdAt },
-        },
-        proposalId: proposal.proposalId,
-        digest: '4'.repeat(64),
-      }),
-      sessionCoordinate: {
-        rootSessionId: intent.sessionLifecycleKey,
-        sessionCreatedAt: 0,
-        turn: 0,
-        turnEndSeq: batch.lastTurnEndSeq,
-      },
-      evidenceRefs: [],
-      experiences: [],
-    }),
+    present,
     publications: domain => options.publicationServiceUnavailable
       ? undefined
       : new V2ProposalPublicationCoordinator(domain, {
@@ -165,8 +186,9 @@ function createHandler(
           publish: published,
           now: () => NOW,
         }),
+    refreshes: domain => new V2ProposalRefreshCoordinator(domain, { now: () => NOW }),
   }, fallback)
-  return { handler, fallback, published }
+  return { handler, fallback, present, published }
 }
 
 async function attentionAction(handler: ReturnType<typeof createHandler>['handler']) {
@@ -237,6 +259,109 @@ describe('v2 Proposal RPC compatibility bridge', () => {
       },
     })
     expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it('revalidates while opening detail and replaces the stale review action with REFRESH', async () => {
+    const seeded = await seed()
+    const { handler, present } = createHandler(seeded, { reviewRevalidation: 'STALE' })
+    const action = await attentionAction(handler)
+
+    await expect(handler(PROPOSALS_GET_ENDPOINT, {
+      apiVersion: 1,
+      currentScope,
+      action,
+      proposalId: seeded.lineage.proposalRevisions[0]!.proposalId,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        workItemRevision: seeded.lineage.revision + 1,
+        processingState: 'NEEDS_ATTENTION',
+        publicationOutcome: 'NEEDS_REFRESH',
+        action: {
+          kind: 'REFRESH_PROPOSAL',
+        },
+      },
+    })
+    expect(seeded.domain.proposalLineages.get(seeded.lineage.lineageId)).toMatchObject({
+      revision: seeded.lineage.revision + 1,
+      proposalRevisions: [{ reviewFailureCode: 'CATALOG_CHANGED' }],
+    })
+    expect(present).toHaveBeenCalledWith(expect.objectContaining({ allowUnresolvedBinding: true }))
+    await expect(handler(PROPOSALS_APPROVE_ENDPOINT, {
+      apiVersion: 1,
+      workItemId: action.subjectId,
+      workItemRevision: seeded.lineage.revision,
+      proposalRef: action.proposalRef,
+      currentScope,
+      action,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'conflict' },
+    })
+  })
+
+  it('supersedes the stale Proposal and durably re-enters recall through REFRESH', async () => {
+    const seeded = await seed()
+    const { handler } = createHandler(seeded, { reviewRevalidation: 'STALE' })
+    const reviewAction = await attentionAction(handler)
+    const opened = await handler(PROPOSALS_GET_ENDPOINT, {
+      apiVersion: 1,
+      currentScope,
+      action: reviewAction,
+      proposalId: seeded.lineage.proposalRevisions[0]!.proposalId,
+    }, new AbortController().signal)
+    if (!opened.ok) throw new Error('expected stale detail')
+    const detail = opened.value as {
+      workItemId: string
+      workItemRevision: number
+      action: typeof reviewAction
+    }
+
+    const refreshed = await handler(PROPOSALS_REFRESH_ENDPOINT, {
+      apiVersion: 1,
+      workItemId: detail.workItemId,
+      workItemRevision: detail.workItemRevision,
+      proposalRef: detail.action.proposalRef,
+      currentScope,
+      action: detail.action,
+    }, new AbortController().signal)
+    if (!refreshed.ok) throw new Error(JSON.stringify(refreshed.error))
+    expect(refreshed).toMatchObject({
+      ok: true,
+      value: {
+        changed: true,
+        workItemRevision: detail.workItemRevision + 1,
+        processingState: 'PUBLISHING',
+        publicationOutcome: 'PENDING_REVIEW',
+      },
+    })
+    expect(seeded.domain.proposalLineages.get(seeded.lineage.lineageId)).toMatchObject({
+      state: 'REFRESHING',
+      currentProposalRevision: 1,
+      proposalRevisions: [{ revision: 1, state: 'SUPERSEDED' }],
+    })
+    expect(seeded.domain.experienceIntents.get(seeded.lineage.ownerIntentId)).toMatchObject({
+      status: 'RECALLING',
+      recall: { state: 'SCANNING', selfExclusion: { priorGenerationRevision: 1 } },
+      coverage: { state: 'NOT_STARTED' },
+      generation: { state: 'NOT_STARTED', staleRefreshUsed: true },
+      duplicateBarrier: { kind: 'STALE_RESULT', priorGenerationRevision: 1 },
+    })
+    const global = seeded.domain.global.get()
+    expect(global).toMatchObject({
+      proposalCatalogEpoch: 1,
+      behaviorSignatureIndex: expect.objectContaining({
+        [deriveBehaviorSignatureIndexKeyV2(
+          seeded.fixture.proposalReadyIntent.persistenceScope,
+          seeded.fixture.proposalReadyIntent.behaviorSignature,
+        )]: expect.objectContaining({ state: 'RESERVED', ownerRevision: 5 }),
+      }),
+    })
+    expect(global.proposalCatalogMutationJournal).toBeUndefined()
+    await expect(handler(ATTENTION_ENDPOINT, {
+      apiVersion: 1, currentScope,
+    }, new AbortController().signal)).resolves.toMatchObject({
+      ok: true, value: { actions: [] },
+    })
   })
 
   it('approves once, requests publication with the durable new revision, and rejects the stale action', async () => {
