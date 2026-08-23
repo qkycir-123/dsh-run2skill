@@ -174,7 +174,11 @@ async function waitForAlphaSessionState() {
       const v1Name = (await readdir(storageDirectory)).find(name => /^run2skill_v1.*\.json$/u.test(name))
       if (v1Name !== undefined) {
         const v1 = JSON.parse(await readFile(join(storageDirectory, v1Name), 'utf8'))
-        if (Object.keys(v1.global?.sessions ?? {}).length > 0) return
+        const sessions = Object.values(v1.global?.sessions ?? {})
+        if (
+          v1.global?.checkpoint?.dirty === false
+          && sessions.some(session => session.observedTailSeq > session.activationFenceSeq)
+        ) return
       }
     } catch { /* wait for the Alpha observer checkpoint */ }
     await delay(100)
@@ -231,13 +235,19 @@ async function observeWeb(expectCurrentRpc, createAlphaState = false) {
     const bundle = await fetch(`${base}/plugins/dsh-run2skill/client.js`)
     assert.equal(bundle.status, 200)
     if (expectCurrentRpc) {
-      const rpc = await fetch(`${base}/run2skill/observe-summary`, {
+      const rpcRequest = () => fetch(`${base}/run2skill/observe-summary`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           type: 'client-request', rpcId: 'stable-release-upgrade', method: 'observe-summary',
           payload: { apiVersion: 1 },
         }),
       })
+      let rpc = await rpcRequest()
+      const rpcDeadline = Date.now() + 30_000
+      while (rpc.status !== 200 && Date.now() < rpcDeadline) {
+        await delay(100)
+        rpc = await rpcRequest()
+      }
       assert.equal(rpc.status, 200)
       const body = await rpc.json()
       assert.equal(body.result?.ok, true)
@@ -308,8 +318,11 @@ assert.ok(v1Name, '0.1.1-alpha did not create its v1 storage domain')
 const v1Path = join(storageDirectory, v1Name)
 const v1Before = await readFile(v1Path)
 const v1 = JSON.parse(v1Before.toString('utf8'))
-const v1SessionKeys = Object.keys(v1.global?.sessions ?? {})
-assert.ok(v1SessionKeys.length > 0, '0.1.1-alpha did not retain its controlled session state')
+const v1Sessions = Object.entries(v1.global?.sessions ?? {})
+assert.ok(
+  v1Sessions.some(([, session]) => session.observedTailSeq > session.activationFenceSeq),
+  '0.1.1-alpha did not retain its completed controlled turn observation',
+)
 
 console.log('CP_RELEASE_UPGRADE_STAGE=upgrade-0.2.0')
 await dsh(['plugin', '--profile', 'web', 'add', candidateArchive])
@@ -324,11 +337,13 @@ assert.equal(v2.global?.migration?.phase, 'COMMITTED')
 assert.equal(v2.global?.migration?.counts?.workItems, 0)
 assert.equal(v2.global?.migration?.counts?.lineages, 0)
 assert.equal(Object.keys(v2.tables?.legacy_items ?? {}).length, 0)
-assert.equal(
-  v1SessionKeys.every(key => Object.hasOwn(v2.global?.activation?.observerStartWatermarks ?? {}, key)),
-  true,
-  '0.2.0 migration did not retain every checkpointed Alpha session watermark',
-)
+assert.equal(Object.keys(v2.tables?.turn_observations ?? {}).length, 0)
+for (const [key, session] of v1Sessions) {
+  const watermark = v2.global?.activation?.observerStartWatermarks?.[key]
+  assert.ok(watermark, `0.2.0 migration omitted Alpha session watermark ${key}`)
+  assert.ok(watermark.observedTailSeq >= session.observedTailSeq)
+  assert.equal(watermark.nextSeq, watermark.observedTailSeq + 1)
+}
 assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
 
 console.log('CP_RELEASE_UPGRADE_STAGE=uninstall-0.2.0')
