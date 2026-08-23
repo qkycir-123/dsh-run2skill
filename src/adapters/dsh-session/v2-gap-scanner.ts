@@ -18,9 +18,13 @@ import { Run2skillV2GlobalStore } from '../dsh-storage/v2-global-store.js'
 import { classifySessionRoot } from './observation.js'
 import type { DshSessionEvent, DshSessionHeader } from './types.js'
 import type { DshSessionGapReader } from './gap-reader.js'
+import {
+  DSH_SESSION_LOG_PREFIX_GENESIS,
+  deriveDshSessionLogPrefixDigest,
+  extendDshSessionLogPrefixDigest,
+} from './v2-log-prefix.js'
 
 const EMPTY_COUNTS = Object.freeze({ workItems: 0, lineages: 0, activeLegacyProposals: 0 })
-const LOG_PREFIX_GENESIS = sha256Utf8(canonicalJson({ contract: 'dsh-session-log-prefix-v1' }))
 
 interface RootSnapshot {
   readonly header: DshSessionHeader
@@ -45,6 +49,7 @@ export interface V2GapTurnSink {
     events: readonly DshSessionEvent[],
     turnEndSeq: number,
     workspace: WorkspaceBindingPort,
+    recovery: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
   ): Promise<
     | { readonly status: 'OBSERVED' }
     | { readonly status: 'CHILD' }
@@ -64,21 +69,6 @@ function assertContiguous(events: readonly DshSessionEvent[], fromSeq: number): 
   for (let index = 0; index < events.length; index += 1) {
     if (events[index]?.seq !== fromSeq + index) throw new Error('SESSION_LOG_UNAVAILABLE')
   }
-}
-
-function extendLogPrefixDigest(
-  initial: string,
-  events: readonly DshSessionEvent[],
-): string {
-  let digest = initial
-  for (const event of events) digest = sha256Utf8(canonicalJson({ previous: digest, event }))
-  return digest
-}
-
-function logPrefixDigest(events: readonly DshSessionEvent[], throughSeq: number): string | undefined {
-  const prefix = events.filter(event => event.seq <= throughSeq)
-  if (prefix.length !== throughSeq + 1) return undefined
-  return extendLogPrefixDigest(LOG_PREFIX_GENESIS, prefix)
 }
 
 function activationTail(
@@ -206,7 +196,7 @@ export async function activateFreshRun2skillV2(
       observedThroughTurnEndSeq: tail.seq,
       detectedThroughTurnEndSeq: tail.seq,
       headerRevision: root.revision,
-      observedLogPrefixDigest: logPrefixDigest(read.events, tail.seq)!,
+      observedLogPrefixDigest: deriveDshSessionLogPrefixDigest(read.events, tail.seq)!,
       openExperienceCarry: [],
       updatedAt: committedAt,
     }
@@ -344,7 +334,7 @@ export class DshV2GapScanner {
         )
       }
       if (mustValidatePrefix) {
-        const actual = logPrefixDigest(read.events, cursor.observedThroughTurnEndSeq)
+        const actual = deriveDshSessionLogPrefixDigest(read.events, cursor.observedThroughTurnEndSeq)
         if (actual === undefined || actual !== cursor.observedLogPrefixDigest) {
           this.notices.record({ healthCode: 'SESSION_LOG_ROLLBACK', sessionId: root.header.id })
           return this.#result(
@@ -370,8 +360,16 @@ export class DshV2GapScanner {
       const inspectedThrough = Math.min(scanEvents.length, startOffset + remainingBudget)
       processedEvents += inspectedThrough - startOffset
       let turnSliceStart = 0
+      let runningPrefixDigest = cursor?.observedLogPrefixDigest ?? DSH_SESSION_LOG_PREFIX_GENESIS
+      runningPrefixDigest = extendDshSessionLogPrefixDigest(
+        runningPrefixDigest,
+        scanEvents.slice(0, startOffset),
+      )
       for (let index = startOffset; index < inspectedThrough; index += 1) {
         const event = scanEvents[index]
+        if (event !== undefined) {
+          runningPrefixDigest = extendDshSessionLogPrefixDigest(runningPrefixDigest, [event])
+        }
         if (event?.type !== 'turn/end') continue
         const turnEvents = scanEvents.slice(turnSliceStart, index + 1)
         await this.sink.prepareSessionWindow(root.lifecycleKey)
@@ -380,6 +378,7 @@ export class DshV2GapScanner {
           turnEvents,
           event.seq,
           this.workspace,
+          { headerRevision: root.revision, observedLogPrefixDigest: runningPrefixDigest },
         )
         if (observed.status !== 'OBSERVED') {
           const healthCode = observed.status === 'UNAVAILABLE'
@@ -434,12 +433,12 @@ export class DshV2GapScanner {
       if (cursor === undefined) return { value: undefined }
       let digest: string | undefined
       if (fullRead || previous === undefined) {
-        digest = logPrefixDigest(readEvents, cursor.observedThroughTurnEndSeq)
+        digest = deriveDshSessionLogPrefixDigest(readEvents, cursor.observedThroughTurnEndSeq)
       } else if (
         previous.observedLogPrefixDigest !== undefined
         && cursor.observedThroughTurnEndSeq >= previous.observedThroughTurnEndSeq
       ) {
-        digest = extendLogPrefixDigest(
+        digest = extendDshSessionLogPrefixDigest(
           previous.observedLogPrefixDigest,
           readEvents.filter(event => event.seq <= cursor.observedThroughTurnEndSeq),
         )

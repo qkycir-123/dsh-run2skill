@@ -380,6 +380,7 @@ export async function projectDshTurnObservationV2(
   sessionEvents: readonly DshSessionEvent[],
   turnEndSeq: number,
   workspace: WorkspaceBindingPort,
+  recovery?: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
 ): Promise<DshTurnObservationV2Result> {
   const base = buildTurnObservation(header, sessionEvents, turnEndSeq)
   if (base.status !== 'OBSERVED') return base
@@ -427,6 +428,7 @@ export async function projectDshTurnObservationV2(
         ...contentFacts,
         directUserEvidence,
         contentDigest: deriveTurnObservationContentDigestV2(contentFacts),
+        ...(recovery === undefined ? {} : { sessionRecovery: recovery }),
       }),
     }
   } catch {

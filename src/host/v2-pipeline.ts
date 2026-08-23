@@ -125,8 +125,15 @@ export class DshV2PipelineRuntime {
     events: readonly DshSessionEvent[],
     turnEndSeq: number,
     workspace: WorkspaceBindingPort,
+    recovery?: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
   ): Promise<DshTurnObservationV2Result> {
-    const projected = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+    const projected = await projectDshTurnObservationV2(
+      header,
+      events,
+      turnEndSeq,
+      workspace,
+      recovery,
+    )
     if (projected.status === 'OBSERVED') await this.#runtime.observe(projected.observation)
     return projected
   }

@@ -283,6 +283,27 @@ describe('v2 SessionBatch coordinator', () => {
     expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline?.complete).toBe(false)
   })
 
+  it('recovers the session log receipt from an observation-only crash window', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const value: TurnObservationV2 = {
+      ...observation({ seq: 7, observedAt: 7 }),
+      sessionRecovery: {
+        headerRevision: 'rev-2',
+        observedLogPrefixDigest: 'a'.repeat(64),
+      },
+    }
+    await domain.table('turn_observations').put(value.observationId, value)
+
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await recovered.recover(7)
+
+    expect(domain.global.get().sessions[value.sessionLifecycleKey]).toMatchObject({
+      observedThroughTurnEndSeq: 7,
+      headerRevision: 'rev-2',
+      observedLogPrefixDigest: 'a'.repeat(64),
+    })
+  })
+
   it('does not reuse the consumed baseline after a batch-only crash window', async () => {
     const domain = createMemoryRun2skillV2Domain()
     let digest = '1'.repeat(64)

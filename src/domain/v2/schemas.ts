@@ -321,6 +321,10 @@ export const TurnObservationV2Schema = z.object({
   directUserEvidence: z.array(EvidenceRefSchema).max(RUN2SKILL_V2_LIMITS.maxObservationEvidence),
   evidenceDigest: sha256Hex,
   contentDigest: sha256Hex,
+  sessionRecovery: z.object({
+    headerRevision: identity,
+    observedLogPrefixDigest: sha256Hex,
+  }).strict().optional(),
 }).strict().superRefine((value, context) => {
   if (value.observationId !== deriveTurnObservationIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['observationId'], message: 'Observation id does not match facts' })

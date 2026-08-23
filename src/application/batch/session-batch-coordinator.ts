@@ -84,6 +84,16 @@ function latestIso(left: string | undefined, right: string): string {
   return Date.parse(left) >= Date.parse(right) ? left : right
 }
 
+function sessionRecoveryMetadata(
+  cursor: Pick<SessionCursorV2, 'headerRevision' | 'observedLogPrefixDigest'> | undefined,
+  receipt: TurnObservationV2['sessionRecovery'],
+): Pick<SessionCursorV2, 'headerRevision' | 'observedLogPrefixDigest'> {
+  const headerRevision = receipt?.headerRevision ?? cursor?.headerRevision
+  const observedLogPrefixDigest = receipt?.observedLogPrefixDigest ?? cursor?.observedLogPrefixDigest
+  if (headerRevision === undefined || observedLogPrefixDigest === undefined) return {}
+  return { headerRevision, observedLogPrefixDigest }
+}
+
 export class SessionBatchCoordinator {
   readonly #global: Run2skillV2GlobalStore
   readonly #observations
@@ -164,10 +174,7 @@ export class SessionBatchCoordinator {
       const nextCursor: SessionCursorV2 = {
         observedThroughTurnEndSeq: Math.max(cursor?.observedThroughTurnEndSeq ?? 0, observation.turnEndSeq),
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
-        ...(cursor?.headerRevision === undefined ? {} : { headerRevision: cursor.headerRevision }),
-        ...(cursor?.observedLogPrefixDigest === undefined
-          ? {}
-          : { observedLogPrefixDigest: cursor.observedLogPrefixDigest }),
+        ...sessionRecoveryMetadata(cursor, observation.sessionRecovery),
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
         lastActivityAt: latestIso(cursor?.lastActivityAt, observation.observedAt),
         ...(baseline === undefined ? {} : { batchManifestBaseline: baseline }),
@@ -284,10 +291,7 @@ export class SessionBatchCoordinator {
           existing?.detectedThroughTurnEndSeq ?? 0,
           detectedBySession.get(lifecycleKey) ?? 0,
         ),
-        ...(existing?.headerRevision === undefined ? {} : { headerRevision: existing.headerRevision }),
-        ...(existing?.observedLogPrefixDigest === undefined
-          ? {}
-          : { observedLogPrefixDigest: existing.observedLogPrefixDigest }),
+        ...sessionRecoveryMetadata(existing, tail.sessionRecovery),
         ...(existing?.activeBatchId === undefined ? {} : { activeBatchId: existing.activeBatchId }),
         lastActivityAt: latestIso(existing?.lastActivityAt, tail.observedAt),
         ...(existing?.batchManifestBaseline === undefined

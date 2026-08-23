@@ -117,7 +117,13 @@ describe('DshV2GapScanner', () => {
     persisted.revision = 'rev-2'
     persisted.readCalls.length = 0
     const prepareSessionWindow = vi.fn(async () => undefined)
-    const observeTurn = vi.fn(async (_header: DshSessionHeader, _events: readonly DshSessionEvent[], turnEndSeq: number) => {
+    const observeTurn = vi.fn(async (
+      _header: DshSessionHeader,
+      _events: readonly DshSessionEvent[],
+      turnEndSeq: number,
+      _workspace: unknown,
+      recovery: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
+    ) => {
       const global = domain.global.get()
       await domain.global.set({
         ...global,
@@ -126,6 +132,7 @@ describe('DshV2GapScanner', () => {
           [lifecycleKey()]: {
             ...global.sessions[lifecycleKey()]!,
             observedThroughTurnEndSeq: turnEndSeq,
+            ...recovery,
             updatedAt: new Date(CREATED_AT + 200).toISOString(),
           },
         },
@@ -149,7 +156,10 @@ describe('DshV2GapScanner', () => {
     expect(prepareSessionWindow).toHaveBeenCalledTimes(1)
     expect(observeTurn).toHaveBeenCalledTimes(1)
     expect(observeTurn).toHaveBeenCalledWith(
-      header(), turn(5, 1), 9, expect.any(Object),
+      header(), turn(5, 1), 9, expect.any(Object), {
+        headerRevision: 'rev-2',
+        observedLogPrefixDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     )
 
     await expect(scanner.scanBatch()).resolves.toMatchObject({ status: 'COMPLETE' })
@@ -238,6 +248,53 @@ describe('DshV2GapScanner', () => {
       status: 'UNAVAILABLE', healthCode: 'SESSION_LOG_ROLLBACK',
     })
     expect(observeTurn).not.toHaveBeenCalled()
+  })
+
+  it('does not report a rollback after crashing between observation and scanner bookkeeping', async () => {
+    const persisted = persistenceFixture(turn(0, 0))
+    const domain = createMemoryRun2skillV2Domain()
+    const reader = new DshSessionGapReader(persisted)
+    await activateFreshRun2skillV2(domain, reader, {
+      now: () => new Date(CREATED_AT + 100).toISOString(),
+    })
+    persisted.events.push(...turn(5, 1))
+    persisted.revision = 'rev-2'
+    const observeTurn = vi.fn(async (
+      _header: DshSessionHeader,
+      _events: readonly DshSessionEvent[],
+      turnEndSeq: number,
+      _workspace: unknown,
+      recovery: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
+    ) => {
+      const global = domain.global.get()
+      await domain.global.set({
+        ...global,
+        sessions: {
+          ...global.sessions,
+          [lifecycleKey()]: {
+            ...global.sessions[lifecycleKey()]!,
+            observedThroughTurnEndSeq: turnEndSeq,
+            ...recovery,
+            updatedAt: new Date(CREATED_AT + 200).toISOString(),
+          },
+        },
+      })
+      throw new Error('synthetic crash after durable observation')
+    })
+    const dependencies = [
+      reader,
+      domain,
+      { prepareSessionWindow: async () => undefined, observeTurn },
+      { resolve: async () => ({ status: 'UNAVAILABLE' as const }) },
+      new RuntimeNotices({ now: () => CREATED_AT + 200 }),
+      { now: () => CREATED_AT + 200, heapUsed: () => 100 },
+    ] as const
+
+    await expect(new DshV2GapScanner(...dependencies).scanBatch())
+      .rejects.toThrow('synthetic crash after durable observation')
+    await expect(new DshV2GapScanner(...dependencies).scanBatch())
+      .resolves.toMatchObject({ status: 'COMPLETE' })
+    expect(observeTurn).toHaveBeenCalledTimes(1)
   })
 
   it('returns MORE when the time slice ends before all changed Sessions are visited', async () => {
