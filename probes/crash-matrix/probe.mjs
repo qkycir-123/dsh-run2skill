@@ -20,28 +20,42 @@ function run(caseName, mode, expected = 0) {
   return caseRoot
 }
 
-async function items(caseRoot) {
-  try { return JSON.parse(await readFile(join(caseRoot, 'work-items.json'), 'utf8')) }
+async function records(caseRoot, table) {
+  try { return JSON.parse(await readFile(join(caseRoot, `${table}.json`), 'utf8')) }
   catch { return {} }
+}
+
+async function global(caseRoot) {
+  return JSON.parse(await readFile(join(caseRoot, 'global-v2.json'), 'utf8'))
 }
 
 const beforeUpstream = run('before-upstream', 'crash-before-upstream', 23)
 run('before-upstream', 'recover')
-assert.equal(Object.keys(await items(beforeUpstream)).length, 0)
+assert.equal(Object.keys(await records(beforeUpstream, 'turn_observations')).length, 0)
+assert.equal((await global(beforeUpstream)).migration.phase, 'COMMITTED')
 
-const afterTurn = run('after-turn', 'crash-after-turn', 23)
-run('after-turn', 'recover')
-assert.equal(Object.keys(await items(afterTurn)).length, 1)
+const historical = run('historical-first-activation', 'historical-turn-crash', 23)
+run('historical-first-activation', 'recover')
+assert.equal(Object.keys(await records(historical, 'turn_observations')).length, 0)
+assert.equal(Object.keys((await global(historical)).activation.observerStartWatermarks).length, 1)
 
-const afterWorkItem = run('after-work-item', 'crash-after-work-item', 23)
-run('after-work-item', 'recover')
-assert.equal(Object.keys(await items(afterWorkItem)).length, 1)
-const recoveredGlobal = JSON.parse(await readFile(join(afterWorkItem, 'global.json'), 'utf8'))
-assert.equal(Object.values(recoveredGlobal.sessions)[0].durableNextSeq, 3)
+const gap = run('gap-after-activation', 'activate')
+run('gap-after-activation', 'offline-turn-crash', 23)
+run('gap-after-activation', 'recover')
+assert.equal(Object.keys(await records(gap, 'turn_observations')).length, 1)
 
-const reusedTail = run('reused-tail', 'volatile-old-crash', 23)
-run('reused-tail', 'recover-new')
-assert.equal(Object.keys(await items(reusedTail)).length, 2)
+const observationCrash = run('observation-crash', 'activate')
+run('observation-crash', 'gap-crash-after-observation', 23)
+run('observation-crash', 'recover')
+assert.equal(Object.keys(await records(observationCrash, 'turn_observations')).length, 1)
+assert.equal(Object.keys((await global(observationCrash)).sessions).length, 1)
 
-console.log('CRASH_MATRIX_CASES=4')
+const appended = run('new-tail', 'activate')
+run('new-tail', 'offline-turn-crash', 23)
+run('new-tail', 'recover')
+run('new-tail', 'append-second-turn-crash', 23)
+run('new-tail', 'recover')
+assert.equal(Object.keys(await records(appended, 'turn_observations')).length, 2)
+
+console.log('CRASH_MATRIX_CASES=5')
 console.log('CRASH_MATRIX=PASS')

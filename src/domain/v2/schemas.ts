@@ -132,7 +132,7 @@ export function deriveGenerationBarrierReceiptDigestV2(facts: {
 
 export function deriveProposalCatalogMutationIdV2(facts: {
   readonly ownerId: string
-  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE'
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE' | 'USER_ACTION'
   readonly inputCatalogEpoch: number
 }): `pcm_${string}` {
   return `pcm_${sha256Utf8(canonicalJson(facts))}`
@@ -141,7 +141,7 @@ export function deriveProposalCatalogMutationIdV2(facts: {
 export function deriveProposalCatalogMutationReceiptDigestV2(facts: {
   readonly mutationId: string
   readonly ownerId: string
-  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE'
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE' | 'USER_ACTION'
   readonly outcomeCatalogEpoch: number
 }): string {
   return sha256Utf8(canonicalJson(facts))
@@ -155,6 +155,7 @@ export type ProposalCatalogMutationKindV2 =
   | 'REVIEW'
   | 'PUBLICATION'
   | 'PURGE'
+  | 'USER_ACTION'
 
 export interface ProposalCatalogMutationAnchorFactsV2 {
   readonly ownerId: string
@@ -2432,7 +2433,7 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
   schemaVersion: z.literal(1),
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   ownerId: identity,
-  kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
+  kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE', 'USER_ACTION']),
   phase: z.enum(['PREPARED', 'EXECUTING', 'NEEDS_REFRESH']),
   preparedAt: isoDateTime,
   executionStartedAt: isoDateTime.optional(),
@@ -2473,7 +2474,7 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
 
 const ProposalCatalogLastMutationV2Schema = z.object({
   epoch: safeNonNegativeInteger,
-  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
+  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE', 'USER_ACTION']),
   ownerId: identity,
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   digest: sha256Hex,

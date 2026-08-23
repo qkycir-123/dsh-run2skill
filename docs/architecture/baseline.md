@@ -395,7 +395,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 
 启动时按以下顺序恢复：
 
-1. 打开 v2 Store 并校验 schema/migration journal；未 COMMITTED 前不启用新 worker；
+1. 打开 v2 Store；首次启用未 COMMITTED 时只建立既有 durable Session 的尾部水位，不读取或复制 v1 中间缓存；
 2. 应用 active Purge journal 的 visibility/quiesce fence，但不等待物理删除；普通 generation 继续禁用；
 3. 恢复 `proposalCatalogMutationJournal`，扫描 Proposal body、sealed GenerationResult 和 unresolved barriers；
 4. 对当前 ProposalGenerationLease 只做 outcome reconciliation：按 call ledger 补成且只补成 sealed result 或 unresolved barrier，不调用模型、不复制 Proposal body；
@@ -447,8 +447,8 @@ v0.2 继续复用 `ctx.storage.domain`，物理存储完全服从目标 profile 
 | session_batches | batchId | 连续范围、triggerReasons、manifest、Detector 与阶段账本 |
 | experience_intents | intentId | behavior signature、evidence、ownership、recall、coverage、generation |
 | proposal_lineages | lineageId | 唯一活动 lineage、Proposal/Review/Publication Journal、完整 Revision snapshots |
-| legacy_items | legacy id | v1 pending/Proposal 的兼容处置，不自动重新 Learning |
-| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、migration journal、Purge fences、健康索引 |
+| legacy_items | legacy id | 当前正常流程不写入的保留表 |
+| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、activation receipt、Purge journal、健康索引 |
 
 Session cursor 只能在对应 TurnObservation/SessionBatch 结果 durable 后推进。NONE 提交后可回收观察；DEFER 只保留有界 carry；READY 的必要证据转入 Intent 后可回收旧观察。BatchManifest 不保存绝对路径或 Session 原文；同版本重放只能读取原记录，不能刷新 baseline。ObservationId、BatchId、IntentId 和 BehaviorSignatureIndex 分别负责事件、调度、经验和 Proposal 去重。
 
@@ -460,7 +460,7 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - 崩溃后从 Journal 重放缺失的 Lineage 或最终 outcome；
 - 永远不能仅凭 APPROVED 或 WRITE_ATTEMPTED 推导 PUBLISHED。
 
-### 9.3 Snapshot、版本与迁移
+### 9.3 Snapshot、版本与升级
 
 - Revision 保存 full snapshot；不使用 delta。
 - Store 只保存过滤后的必要文本、坐标、hash 和元数据，不复制 Whole Session。
@@ -476,22 +476,22 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 
 ### 9.4 Purge
 
-Purge 是持久 saga：
+Purge 是只作用于 v2 中间缓存的持久 saga：
 
-1. global 写入 purgeId、`ALL` binding、hideBefore epoch 和本次 v1 目标计数；
+1. global 写入 purgeId、`ALL` binding、preview digest、目标计数和当前 catalog epoch；
 2. UI 和所有 worker 立即应用 visibility/quiesce fence，命中数据不再对普通流程可见；
 3. 若命中当前 generation owner，尚无 call slot 时直接清除未消费 reservation/lease；已有 call slot 时只运行受限 outcome reconciliation，按 durable call ledger 提交且只提交 sealed result 或 unresolved barrier；该步骤不调用模型、不写 Proposal body，也不等待普通 generation worker；
-4. outcome durable 后扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，清理对应 GenerationResult/barrier、BehaviorSignatureIndex/ProposalGenerationLease，并保持 v1 legacy 视图不可见；
+4. outcome durable 后删除 v2 Observation/Batch/Intent/Lineage/legacy item，并清理对应 GenerationResult/barrier、BehaviorSignatureIndex/ProposalGenerationLease；
 5. 从 purge-visible authoritative rows 重建 PendingProposalCatalog，校验无正常可见 Proposal、dangling index/lease 或其他残留；
-6. 将同一 path-free `ALL` completed fence 写入 v2 legacy fence 投影，再在 authoritative v1 global update 中 upsert fence 并清除 journal。
+6. 推进 v2 proposal catalog epoch，写入 PURGE mutation receipt 并清除 journal。
 
-设置页只调用 `ALL` preview/confirm，不接受 `workspaceId`，也不向用户暴露 PROJECT/USER 内部术语。旧 PROJECT/USER RPC 继续作为兼容接口存在，但不再是常驻产品入口；`status` 与 `retry` 只使用 journal 标识。
+设置页只调用 `ALL` preview/confirm，不接受 `workspaceId`，也不向用户暴露 PROJECT/USER 内部术语；`status` 与 `retry` 只使用 journal 标识。
 
-崩溃后继续同一 purgeId。active journal 与 durable completed fences 共同定义所有 create/update/claim/query 的 visibility：`createdAt/first committedAt <= hideBefore` 的匹配旧事实在 runtime/进程重启后仍不能重新进入，边界后的新事实仍允许。`ALL` fence 为单例并覆盖全部 Run2Skill 派生记录；旧 USER/PROJECT fences 仅为兼容已有数据保留。
+崩溃后继续同一 purgeId，恢复期间所有 v2 学习、审核和发布写操作保持关闭。当前无外部用户，不读取或清理 `run2skill_v1`、诊断 sidecar 或其他历史中间缓存。
 
 每次新建 journal 固化 `targetWorkItems` 与 `targetLineages`。最终 receipt 使用该 durable 目标计数，因此即使进程在物理删除完成、进度计数写回之前终止，恢复后也不会少报。旧 journal 缺少目标字段时继续按既有累计计数恢复。
 
-PROJECT completed fences 固定最多 1024 个且不得淘汰。达到上限时已有 scope 可更新，新 PROJECT 必须在 preview/confirm 写 journal 前以 `PURGE_FENCE_LIMIT` fail closed。任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/迁移门。
+任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/升级门。
 
 Purge 不删除 DSH Session Log，也不删除已发布 SKILL.md。删除失败时保持隐藏并显示可恢复错误，不把部分删除伪装成完成。
 
@@ -949,7 +949,7 @@ dsh-run2skill/
 Host 候选依赖注入：
 
 ```text
-sessions/sessionPersistence, llm, skills, settings,
+sessions/sessionPersistence, agents, llm, skills, settings,
 storageDomain, workspaceRegistry, connection
 ```
 
@@ -964,7 +964,7 @@ storageDomain, workspaceRegistry, connection
 | B2 Recall/Coverage | ownership -> complete summary scan -> exact body -> coverage | CP-SKL-001、dynamic budget、duplicate probes |
 | B3 Generation | authorized CREATE/MERGE -> Proposal；独立 ledger | CP-LLM-001、output/truncation guards |
 | C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-003、CP-PUB-001、CP-WEB-001 |
-| D Productize | Inbox 完善、Purge、迁移策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
+| D Productize | Inbox 完善、v2 Purge、升级策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
 
 每个切片开始前仍需独立 Design。切片 A/B 不得宣称 Run -> Skill 闭环成功；只有切片 C 通过 Web Human Review 和回读后才可以。
 
@@ -1032,7 +1032,7 @@ storageDomain, workspaceRegistry, connection
 | REQ-PUB-001..009 | publication-service、CAS adapter、Registry readback | CP-PUB-001 + CP-SKL-001 + security integration |
 | REQ-LFC-001..005 | Lineage aggregate、reconciliation、installer | State-machine unit + manual edit/delete E2E + CP-INS-001 |
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
-| 状态与恢复 | SessionBatch/Intent aggregates、migration/publication journals | migration + crash matrix + restart E2E |
+| 状态与恢复 | SessionBatch/Intent aggregates、activation/Purge/publication journals | fresh-activation + crash matrix + restart E2E |
 | Generation lease 恢复 | call ledger、sealed result、commit authorization、body/index、unresolved barrier 八类组合 | crash matrix：不重复调用、不丢去重屏障、全局 lease 不永久阻塞 |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
 | 五个黄金场景 | 全系统 | Web profile E2E；场景 E 证明 Agent `.agents/skills` 写入只产生 `RESOLVED_BY_AGENT` 且 Learning/Proposal 为 0 |

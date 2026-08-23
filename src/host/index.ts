@@ -25,13 +25,16 @@ import type {
   TurnIngressCandidate,
 } from '../adapters/dsh-session/types.js'
 import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
-import { registerObserveSummaryRpc, type ObserveSummaryHostConnection } from '../adapters/dsh-connection/observe-summary-rpc.js'
-import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/proposal-review-rpc.js'
+import {
+  registerObserveSummaryRpc,
+  type ObserveSummaryHostConnection,
+  type ObserveSummaryRpcHandler,
+} from '../adapters/dsh-connection/observe-summary-rpc.js'
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
-import { createAttentionRpcHandler } from '../adapters/dsh-connection/attention-rpc.js'
-import { createLearningAttentionRpcHandler } from '../adapters/dsh-connection/learning-attention-rpc.js'
-import { createRecentSkillActivityRpcHandler } from '../adapters/dsh-connection/recent-skill-activity-rpc.js'
-import { CurrentScopeAuthorizer } from '../adapters/dsh-connection/current-scope-authorizer.js'
+import { projectRuntimeAttention } from '../adapters/dsh-connection/attention-rpc.js'
+import { createV2RecentSkillActivityRpcHandler } from '../adapters/dsh-connection/v2-recent-skill-activity-rpc.js'
+import { createV2ProposalRpcHandler } from '../adapters/dsh-connection/v2-proposal-rpc.js'
+import { V2CurrentScopeAuthorizer } from '../adapters/dsh-connection/v2-current-scope-authorizer.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
 import type { Run2skillDomain, Run2skillStorageContext } from '../adapters/dsh-storage/types.js'
@@ -49,7 +52,6 @@ import {
 import { RuntimeNotices } from '../application/capture/runtime-notices.js'
 import { TurnCaptureProcessor } from '../application/capture/turn-capture-processor.js'
 import { WriteBehindCheckpoint } from '../application/capture/write-behind-checkpoint.js'
-import { createObserveSummary } from '../application/observe-summary.js'
 import {
   LearningScheduler,
   LearningWorker,
@@ -91,6 +93,7 @@ import {
 } from '../application/purge/index.js'
 import { HostMutationGate } from '../application/host-mutation-gate.js'
 import type { PurgeScopeBindingV1 } from '../domain/purge/index.js'
+import { DshV2ProductionRuntime } from './v2-production-runtime.js'
 
 export {
   PublicationConflict,
@@ -105,6 +108,7 @@ export * from '../application/publication/index.js'
 
 export const name = 'run2skill'
 export const inject = [
+  'agents',
   'sessions',
   'sessionPersistence',
   'storageDomain',
@@ -131,6 +135,7 @@ interface AgentDisposedPayload {
 }
 
 export interface Run2skillHostContext extends Run2skillStorageContext {
+  readonly agents: unknown
   readonly sessions: unknown
   readonly sessionPersistence: SessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
@@ -155,7 +160,7 @@ function candidateKey(candidate: TurnIngressCandidate): string {
   ])
 }
 
-class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
+export class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   currentDomain: Run2skillDomain | undefined
   currentScheduler: LearningScheduler | undefined
   currentPublicationScheduler: PublicationScheduler | undefined
@@ -620,6 +625,158 @@ class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
   }
 }
 
+/**
+ * Fresh v2 cutover factory. No v1 capture, learning, curation or publication
+ * worker is constructed and old v1 cache is intentionally ignored.
+ */
+class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
+  currentV2Domain: Run2skillV2Domain | undefined
+  currentV2Runtime: DshV2ProductionRuntime<LearningSkillView<Run2skillAgent>> | undefined
+  readonly #stockConfigurations: StockSkillRuntimeConfigurationCache<Run2skillAgent>
+  readonly #workspaceBindings = new WeakMap<Run2skillAgent, {
+    readonly workspaceId: string
+    readonly canonicalPath: string
+  }>()
+
+  constructor(
+    private readonly context: Run2skillHostContext,
+    private readonly notices: RuntimeNotices,
+    private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
+    private readonly automaticLearning: AutomaticLearningSettingsPolicy,
+  ) {
+    this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
+      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
+        ?? await resolvePinnedStockPresetConfiguration(this.context.agentPresets, agent),
+    )
+  }
+
+  wakeLearning(): void { this.currentV2Runtime?.pipeline.wake() }
+  wakePublication(): void {}
+  wakeCuration(): void {}
+
+  async captureRootConfiguration(agent: Run2skillAgent): Promise<void> {
+    const configuration = await this.#stockConfigurations.capture(agent)
+    if (configuration === undefined) throw new Error('V2_ROOT_CONFIGURATION_UNAVAILABLE')
+    const cwd = agent.session.header.cwd
+    if (cwd === undefined) {
+      this.#workspaceBindings.delete(agent)
+      return
+    }
+    const binding = await new DshWorkspaceBindingResolver(this.context.workspaceRegistry).resolve(cwd)
+    if (binding.status === 'BOUND') {
+      this.#workspaceBindings.set(agent, {
+        workspaceId: binding.workspaceId,
+        canonicalPath: binding.canonicalPath,
+      })
+    } else {
+      this.#workspaceBindings.delete(agent)
+    }
+  }
+
+  releaseRootConfiguration(agent: Run2skillAgent): void {
+    this.#workspaceBindings.delete(agent)
+    this.#stockConfigurations.release(agent)
+  }
+
+  async resolveCurrentWorkspace(workspaceId: string) {
+    const workspace = this.context.workspaceRegistry.get?.(workspaceId)
+    if (
+      workspace === undefined
+      || workspace.id !== workspaceId
+      || workspace.path.length === 0
+      || (workspace.status !== undefined && await workspace.status() !== 'ok')
+    ) return undefined
+    return { workspaceId: workspace.id, canonicalPath: workspace.path }
+  }
+
+  async open(): Promise<RecoveryRuntime> {
+    let domain: Run2skillV2Domain | undefined
+    let runtime: DshV2ProductionRuntime<LearningSkillView<Run2skillAgent>> | undefined
+    try {
+      domain = await openRun2skillV2Domain(this.context)
+      const publicationAbort = new AbortController()
+      const viewForAgent = (agent: Run2skillAgent): LearningSkillView<Run2skillAgent> => ({
+        ...(agent.session.header.cwd === undefined ? {} : { cwd: agent.session.header.cwd }),
+        scope: agent,
+        signal: publicationAbort.signal,
+      })
+      const resolveSession = (lifecycleKey: string) => {
+        const scope = this.scopes.resolveLifecycleKey(lifecycleKey)
+        if (scope.status !== 'AVAILABLE') return undefined
+        const configuration = this.#stockConfigurations.get(scope.agent)
+        if (configuration === undefined) return undefined
+        const workspaceBinding = this.#workspaceBindings.get(scope.agent)
+        return {
+          header: scope.agent.session.header as DshSessionHeader,
+          view: viewForAgent(scope.agent),
+          configuration,
+          ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+        }
+      }
+      const resolveSessionByView = (view: LearningSkillView<Run2skillAgent>) => {
+        const configuration = this.#stockConfigurations.get(view.scope)
+        if (configuration === undefined) return undefined
+        const workspaceBinding = this.#workspaceBindings.get(view.scope)
+        return {
+          header: view.scope.session.header as DshSessionHeader,
+          view,
+          configuration,
+          ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+        }
+      }
+      const sessions = typeof this.context.sessions === 'object'
+        && this.context.sessions !== null
+        && 'get' in this.context.sessions
+        && typeof this.context.sessions.get === 'function'
+        ? this.context.sessions as { get(id: string): never }
+        : { get: (_id: string) => undefined }
+      const agents = typeof this.context.agents === 'object'
+        && this.context.agents !== null
+        && 'get' in this.context.agents
+        && typeof this.context.agents.get === 'function'
+        ? this.context.agents as { get(id: string): never }
+        : { get: (_id: string) => undefined }
+      runtime = new DshV2ProductionRuntime(domain, {
+        persistence: this.context.sessionPersistence,
+        sessions,
+        agents,
+        llm: this.context.llm,
+        skills: this.context.skills,
+        workspace: new DshWorkspaceBindingResolver(this.context.workspaceRegistry),
+        resolveWorkspace: workspaceId => this.resolveCurrentWorkspace(workspaceId),
+        notices: this.notices,
+        resolveSession,
+        resolveSessionByView,
+        automaticLearning: () => this.automaticLearning.snapshot().automaticLearning,
+        refreshView: view => view.cwd === undefined
+          ? view
+          : { ...view, cwd: view.cwd.endsWith(sep) ? `${view.cwd}.${sep}` : `${view.cwd}${sep}` },
+      })
+      await runtime.start()
+      const activeRuntime = runtime
+      this.currentV2Domain = domain
+      this.currentV2Runtime = activeRuntime
+      let closed = false
+      return {
+        scanner: activeRuntime.scanner,
+        processCandidate: candidate => activeRuntime.processCandidate(candidate),
+        close: async () => {
+          if (closed) return
+          closed = true
+          publicationAbort.abort()
+          if (this.currentV2Runtime === activeRuntime) this.currentV2Runtime = undefined
+          if (this.currentV2Domain === domain) this.currentV2Domain = undefined
+          await activeRuntime.close()
+        },
+      }
+    } catch (error) {
+      if (runtime !== undefined) await runtime.close().catch(() => undefined)
+      else if (domain !== undefined) await domain.close().catch(() => undefined)
+      throw error
+    }
+  }
+}
+
 function sameHostPath(left: string, right: string): boolean {
   const a = normalize(resolve(left))
   const b = normalize(resolve(right))
@@ -639,13 +796,41 @@ function unavailableSummary(lifecycle: RecoveryLifecycle, notices: RuntimeNotice
   })
 }
 
+function v2Summary(
+  domain: Run2skillV2Domain | undefined,
+  lifecycle: RecoveryLifecycle,
+  notices: RuntimeNotices,
+): ObserveSummaryV1 {
+  if (domain === undefined) return unavailableSummary(lifecycle, notices)
+  const snapshot = lifecycle.snapshot()
+  const latest = notices.list().at(-1)
+  const status = lifecycle.status === 'READY' && !snapshot.recoveryLag
+    ? 'READY'
+    : lifecycle.status === 'RECOVERING'
+      ? 'RECOVERING'
+      : 'DEGRADED'
+  return ObserveSummaryV1Schema.parse({
+    apiVersion: 1,
+    status,
+    capturedCount: domain.table('turn_observations').size,
+    blockedCaptureCount: 0,
+    learning: { captured: 0, analyzing: 0, learned: 0, needsAttention: 0 },
+    unsaved: {
+      completeness: status === 'READY' && notices.unsavedCompletenessKnown() ? 'KNOWN' : 'UNKNOWN',
+      knownCount: notices.list().filter(item => item.kind === 'UNSAVED_SIGNAL').length,
+    },
+    recoveryLag: snapshot.recoveryLag,
+    ...(latest === undefined ? {} : { lastHealthCode: latest.healthCode }),
+  })
+}
+
 export async function apply(context: Run2skillHostContext): Promise<() => Promise<void>> {
   const automaticLearning = registerAutomaticLearningSettings(context.settings)
   const notices = new RuntimeNotices()
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
   const mutationGate = new HostMutationGate()
-  const factory = new Run2skillRuntimeFactory(context, notices, scopes, automaticLearning, mutationGate)
+  const factory = new Run2skillV2RuntimeFactory(context, notices, scopes, automaticLearning)
   const stopWatchingSettings = automaticLearning.watch((next, previous) => {
     if (!previous.automaticLearning && next.automaticLearning) factory.wakeLearning()
   })
@@ -661,13 +846,15 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   })
   context.on('agent/pre-step', async ({ agent }: AgentPreStepPayload, next: () => Promise<unknown>) => {
     if (accepting && !scopeDisposers.has(agent)) {
+      const disposeScope = scopes.register(agent)
       try {
         await factory.captureRootConfiguration(agent)
-        scopeDisposers.set(agent, scopes.register(agent))
+        scopeDisposers.set(agent, disposeScope)
         factory.wakeLearning()
         factory.wakePublication()
         factory.wakeCuration()
       } catch {
+        disposeScope()
         notices.record({ healthCode: 'AGENT_SCOPE_UNAVAILABLE', sessionId: agent.id || 'global' })
       }
     }
@@ -680,67 +867,67 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   })
 
   const readSummary = (): ObserveSummaryV1 => {
-    const domain = factory.currentDomain
-    return domain === undefined
-      ? unavailableSummary(lifecycle, notices)
-      : createObserveSummary({
-          domain,
-          lifecycle: lifecycle.snapshot(),
-          notices,
-          compatibility: 'COMPATIBLE',
-        })
+    return v2Summary(factory.currentV2Domain, lifecycle, notices)
   }
-  const resolveCurrentWorkspace = async (workspaceId: string) => {
-    const workspace = context.workspaceRegistry.get?.(workspaceId)
-    if (
-      workspace === undefined
-      || workspace.id !== workspaceId
-      || workspace.path.length === 0
-      || (workspace.status !== undefined && await workspace.status() !== 'ok')
-    ) return undefined
-    return { workspaceId: workspace.id, canonicalPath: workspace.path }
-  }
-  const currentScopeAuthorizer = new CurrentScopeAuthorizer(resolveCurrentWorkspace)
-  const reviewRpc = createProposalReviewRpcHandler(() => factory.currentDomain, () => {
-    const summary = readSummary()
-    return {
-      status: summary.status,
-      recoveryLag: summary.recoveryLag,
-      ...(summary.lastHealthCode === undefined ? {} : { lastHealthCode: summary.lastHealthCode }),
-    }
-  }, {
-    authorizer: currentScopeAuthorizer,
-    onPublicationRequested: () => { factory.wakePublication() },
-    visibility: domain => new PurgeVisibility(domain),
-    runMutation: operation => mutationGate.run(operation),
+  const resolveCurrentWorkspace = (workspaceId: string) => factory.resolveCurrentWorkspace(workspaceId)
+  const unavailableV2Rpc: ObserveSummaryRpcHandler = async () => ({
+    ok: false,
+    error: { code: 'internal', message: 'run2skill v2 unavailable', details: {} },
   })
+  const v2Authorizer = new V2CurrentScopeAuthorizer(resolveCurrentWorkspace)
+  const v2LearningRpc: ObserveSummaryRpcHandler = async (endpoint, payload, signal) => {
+    const attention = factory.currentV2Runtime?.attention
+    return attention === undefined
+      ? await unavailableV2Rpc(endpoint, payload, signal)
+      : await attention.handler(unavailableV2Rpc)(endpoint, payload, signal)
+  }
+  const v2ProposalRpc = createV2ProposalRpcHandler(
+    () => factory.currentV2Domain,
+    {
+      authorizer: v2Authorizer,
+      reviews: domain => factory.currentV2Domain === domain
+        ? factory.currentV2Runtime?.proposals.reviews
+        : undefined,
+      present: async input => {
+        const presenter = factory.currentV2Runtime?.proposals.presenter
+        if (presenter === undefined) throw new Error('V2_PROPOSAL_PRESENTER_UNAVAILABLE')
+        return await presenter.present(input)
+      },
+      publications: domain => factory.currentV2Domain === domain
+        ? factory.currentV2Runtime?.proposals.publications
+        : undefined,
+      readHealth: () => {
+        const snapshot = lifecycle.snapshot()
+        return {
+          status: lifecycle.status === 'READY'
+            ? 'READY'
+            : lifecycle.status === 'RECOVERING'
+              ? 'RECOVERING'
+              : 'DEGRADED',
+          recoveryLag: snapshot.recoveryLag,
+          ...(notices.list().at(-1)?.healthCode === undefined
+            ? {}
+            : { lastHealthCode: notices.list().at(-1)!.healthCode }),
+        }
+      },
+      runtimeAttention: sessionId => projectRuntimeAttention(notices, sessionId),
+      learningActions: async currentScope => await (factory.currentV2Runtime?.attention.project(currentScope) ?? []),
+    },
+    v2LearningRpc,
+  )
+  const v2Rpc = createV2RecentSkillActivityRpcHandler(
+    () => factory.currentV2Domain,
+    resolveCurrentWorkspace,
+    createPurgeRpcHandler(
+      () => factory.currentV2Runtime?.purge,
+      v2ProposalRpc,
+      { runMutation: operation => mutationGate.run(operation) },
+    ),
+  )
   const disposeRpc = registerObserveSummaryRpc(
     context.connection,
     readSummary,
-    createRecentSkillActivityRpcHandler(
-      () => factory.currentDomain,
-      resolveCurrentWorkspace,
-      createAttentionRpcHandler(
-        () => factory.currentDomain,
-        notices,
-        resolveCurrentWorkspace,
-        createLearningAttentionRpcHandler(
-          () => factory.currentDomain,
-          createPurgeRpcHandler(
-            () => factory.currentPurgeService,
-            reviewRpc,
-            { runMutation: operation => mutationGate.run(operation) },
-          ),
-          {
-            authorizer: currentScopeAuthorizer,
-            onRetry: () => { factory.wakeLearning() },
-            visibility: domain => new PurgeVisibility(domain),
-            runMutation: operation => mutationGate.run(operation),
-            diagnostics: () => factory.currentDiagnosticStore,
-          },
-        ),
-      ),
-    ),
+    v2Rpc,
   )
 
   try {

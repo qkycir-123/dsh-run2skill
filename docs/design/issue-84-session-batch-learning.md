@@ -17,7 +17,7 @@
 - ExperienceIntent 级单一生成所有者；
 - complete Catalog 的全量摘要筛选、候选全文读取与动态总预算；
 - coverage 与 generation 分阶段调用和独立账本；
-- 去重、崩溃恢复、迁移、回退、Action Queue 和验收矩阵。
+- 去重、崩溃恢复、fresh activation、回退、Action Queue 和验收矩阵。
 
 本设计不包含：
 
@@ -360,7 +360,7 @@ Pending 的 `USER` records 在同一 DSH storage domain 内全局可见；`PROJE
 
 唯一的 self-exclusion 是 `REFRESH_STALE_RESULT` 创建的新 recall revision：完整 snapshot 仍包含其 refresh barrier，但该 revision 的 effective recall/coverage view 按精确 `intentId + priorGenerationRevision + barrierReceipt` 排除且只排除自己的 refresh barrier。调用输入和 absence proof 同时绑定未删减 `catalogDigest` 与 `selfExclusionDigest`；其他 Intent、其他 barrier 或 identity/revision 不匹配时都不得排除。这样当前 Intent 不会被自己永久阻塞，而任何并发 Intent 始终看到 `UNAVAILABLE` barrier。
 
-全部会改变 PendingProposalCatalog authoritative membership 的操作（Proposal create、GenerationResult/barrier create/resolve、Review/Publication 进入或离开 active、legacy migration、Purge hide/delete）通过同一个 `ProposalCatalogCoordinator` 单写序列，并使用 global `proposalCatalogMutationJournal + proposalCatalogEpoch + proposalCatalogLastMutation`：先 durable PREPARED journal，再改 authoritative row，最后在同一次 global update 中推进 epoch、写入该 epoch 的 mutation receipt anchor 并清 journal。派生 snapshot 必须在 journal 为空时读取 epoch/anchor-before，扫描全部 purge-visible active rows，再验证 epoch/anchor-after 相同；否则 `complete=false`。锚点让 generation 能证明唯一允许的 epoch 变化确由自己的 sealed result/Proposal receipt 引起，而不是根据散落记录猜测。崩溃恢复先按 authoritative body/status 完成或回滚 journal并推进 epoch，完成前所有 CREATE/MERGE 为 0。
+全部会改变 PendingProposalCatalog authoritative membership 的操作（Proposal create、GenerationResult/barrier create/resolve、Review/Publication 进入或离开 active、Purge hide/delete、用户关闭失败）通过同一个 `ProposalCatalogCoordinator` 单写序列，并使用 global `proposalCatalogMutationJournal + proposalCatalogEpoch + proposalCatalogLastMutation`：先 durable PREPARED journal，再改 authoritative row，最后在同一次 global update 中推进 epoch、写入该 epoch 的 mutation receipt anchor 并清 journal。派生 snapshot 必须在 journal 为空时读取 epoch/anchor-before，扫描全部 purge-visible active rows，再验证 epoch/anchor-after 相同；否则 `complete=false`。锚点让 generation 能证明唯一允许的 epoch 变化确由自己的 sealed result/Proposal receipt 引起，而不是根据散落记录猜测。崩溃恢复先按 authoritative body/status 完成或回滚 journal并推进 epoch，完成前所有 CREATE/MERGE 为 0。
 
 Runtime Catalog adapter 只调用 DSH 公开的 `skills.snapshot/get`，并在同一个 exact Agent `{scope, cwd}` view 上做 snapshot-before/get/snapshot-after。DSH `complete=false`、前后 digest 漂移或 exact get 的 name/provider/source/root 变化都 fail closed；合法但无法由 composition-owned stock root contract 证明写入目标的 flat、runtime、bundled 或第三方 winner 仍以稳定 path-free identity 参与去重，但一律标记为只读。只有 exact `resourceBase == trustedRoot/name` 的 stock `project-dsh/user-dsh` directory bundle 才可写，不能用 basename 猜测目录形态。Catalog summary 仅保留 root identity digest，不持久化或发送本机 path。DSH 不需要暴露内部 revision、CAS 或共享锁。
 
@@ -412,7 +412,7 @@ refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结�
 
 自动恢复永不重新调用模型。无论用户是否操作，全局 lease 都在 unresolved barrier durable 后释放，因此单个 Intent 不能永久阻塞其他 Session/Scope；barrier 继续阻止相关重复 Proposal。
 
-启动时 generation/publication worker 之前使用两阶段恢复：打开 v2/migration -> 应用 active Purge visibility/quiesce fence（此时不等待物理删除） -> 恢复 proposalCatalogMutationJournal并扫描 Proposal/GenerationResult/barrier -> 对当前 lease 只做 outcome reconciliation，按第 5 步补成 sealed result 或 barrier，不复制 Proposal body -> outcome durable 后完成 Purge 物理删除并清除被隐藏 owner -> 重扫 authoritative rows并修复 BehaviorSignatureIndex -> 以受限恢复例外收敛 Publication Journal 的既有磁盘/Registry/membership 事实并留下 mutation receipt -> 刷新 Runtime Catalog并重建 complete PendingProposalCatalog -> 穷尽处理全部残留 lease：NOT_CALLED 校验后保留给恢复门结束后的同 owner 首次调用，恢复阶段本身不调用模型；RESULT_COMMITTED/PROPOSAL_COMMIT_AUTHORIZED 按当前两个 Catalog 重做第 6 步；BODY_COMMITTED_INDEX_PENDING 修复 index/journal并释放；ACTIVE_COMPLETE 校验 completion receipt并释放；失败/unknown 必须已由 barrier receipt 证明后释放 -> 最后恢复 SessionBatch/Intent worker和已校验的 NOT_CALLED generation owner。Publication receipt 是外部 mutation，旧 generation 的 revalidation 必须看见并转 stale；Purge/Publication 与 lease 因此不会互等，停机前的 Catalog 授权也不会跨重启复用。
+启动时先打开 v2 Store；未完成首次启用时只为既有 durable Session 建立尾部水位。COMMITTED 后依次恢复 active Purge、USER_ACTION、proposal catalog mutation、Review/Publication journal 和 ProposalGenerationLease，再重建 Runtime/Pending catalogs、修复 BehaviorSignatureIndex，最后启动 SessionBatch/Intent worker、gap scan 和实时事件处理。恢复阶段不调用模型；停机前的 Catalog 授权不能跨重启直接复用。
 
 ## 12. Storage 启用 ADR
 
@@ -424,7 +424,7 @@ refresh 后若已被 Runtime/Pending candidate 覆盖则按 coverage 规则结�
 |---|---|
 | domain | `run2skill_v2` |
 | domain version | `1` |
-| global schema | `GlobalV2`：Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、migration/Purge journal |
+| global schema | `GlobalV2`：Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、activation receipt、Purge journal |
 | tables | `turn_observations`、`session_batches`、`experience_intents`、`proposal_lineages`、`legacy_items` |
 
 原因：DSH Storage Domain 对 version mismatch fail loud，新 domain 可以直接启用 v2，同时完全隔离旧的派生缓存。`run2skill_v1`、已发布 Skill 和 DSH Session Log 均不删除、不改写；启用后所有新观察只写 v2。
@@ -460,8 +460,7 @@ schema 测试必须为所有 v2 records 提供“除 `schemaVersion` 外全部�
 - Catalog 未完整扫描，或任一 `RELEVANT` / `POSSIBLE` 候选在 coverage 前 UNAVAILABLE；
 - 显式保存 Intent 的 `COVERED_NEEDS_CONFIRMATION`：展示已覆盖目标与理由，确认后 DISCARDED；
 - 多个 PARTIAL、AMBIGUOUS、只读/跨 scope/大型不可合并；
-- 阶段预算耗尽、call outcome unknown、迁移或不可恢复 Store failure；
-- legacy item 需要关闭或显式恢复。
+- 阶段预算耗尽、call outcome unknown 或不可恢复 Store failure。
 
 Action Queue 只展示用户能采取的动作和必要原因，不在会话 Header 常驻中间计数。
 
@@ -472,7 +471,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 - NONE batch 提交水位后可删除其 TurnObservation；
 - DEFER 只保留有界 carry，旧观察在证据 digest 转移后可回收；
 - READY 观察在 Intent/Proposal 已持久承接必要证据后可回收；
-- Purge visibility 适用于 v2 全部表、BehaviorSignatureIndex、ProposalGenerationLease、migration copy 和 legacy items；派生 PendingProposalCatalog 必须只读取 purge-visible authoritative rows；
+- Purge visibility 适用于 v2 全部表、BehaviorSignatureIndex 和 ProposalGenerationLease；派生 PendingProposalCatalog 必须只读取 purge-visible authoritative rows；
 - active Purge 先 durable 应用 visibility/quiesce fence；若命中当前 generation owner，尚无 call slot 时可直接删除未消费 reservation/lease，已有 call slot 时只允许受限 outcome reconciliation 把调用收敛为 sealed result 或 unresolved barrier，随后才删除该 owner 的 result/barrier/index/lease。不得先删已发起调用的 lease/ledger，也不得等待普通 generation worker；
 - Purge preview/confirm、崩溃恢复和最终“无正常可见残留”校验必须重建派生 Catalog，并证明已删除/隐藏 Proposal 不再出现、没有 dangling signature reservation 或 lease；
 - 已发布 Skill 与 DSH Session Log 永不由 Run2Skill Purge 删除。
@@ -480,15 +479,15 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 ## 15. 实现切片
 
 1. Design/ADR 与 PRD/Architecture/storage 文档同步。
-2. `run2skill_v2` schema、最小有效夹具、migration journal 和 legacy adapter。
+2. `run2skill_v2` schema、最小有效夹具和 fresh activation。
 3. TurnObservation、SessionBatch scheduler、5-Turn/30-minute/explicit 和恢复。
 4. Detector、NONE/DEFER/READY、carry 与 ExperienceIntent 幂等。
 5. batch-level Agent-first ownership。
 6. complete Catalog 全量摘要扫描和 dynamic full-body budget。
 7. coverage/generation 分离、BehaviorSignatureIndex、ProposalGenerationLease 和唯一 Proposal lineage。
-8. Action Queue、旧 worker 移除、真实 DSH E2E 与发布迁移说明。
+8. Action Queue、Host v2 cutover、真实 DSH E2E 与发布说明。
 
-每个实现 PR 必须保持现有发布主链可测试；在 v2 全链闭环前不得默认启用半条新流水线。
+#84 使用一个完整架构 PR 完成上述切片；在 v2 全链闭环和验收通过前不得合并半条新流水线。
 
 ## 16. 验收矩阵
 
@@ -508,7 +507,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 | schema | 冻结 fixture 只改变 schemaVersion 即精确触发 literal 拒绝 |
 | 安全 | 脱敏、来源标签、scope、CAS、exact readback、Purge 和 fail-open/fail-closed 边界保持 |
 
-稳定 HEAD 最后运行 typecheck、lint、完整单元测试、migration/crash/concurrency/call-budget/duplicate probes，以及真实 DSH Web/learning E2E。
+稳定 HEAD 最后运行 typecheck、lint、完整单元测试、fresh-activation/crash/concurrency/call-budget/duplicate probes，以及真实 DSH Web/learning E2E。
 
 ## 17. Roadmap 状态
 
