@@ -1,5 +1,7 @@
 # dsh-run2skill
 
+中文 | [English](README.en.md)
+
 你是否遇到过这些场景？
 
 - 同一套工作流，今天教 Agent 一遍，明天换个 Session 又教一遍；
@@ -15,6 +17,25 @@
 它不会让 Agent 偷偷给自己立规矩。每份技能草稿都可以先看来源、适用范围和完整内容，然后由你决定确认保存还是放弃草稿。只有确认后，它才会写入 DSH 的原生 Skill 目录。
 
 > 本仓库已进入 `0.2.0` 开发线，下一次 npm 发布版本为 `0.2.0`。目前支持 DSH Web 版的 `0.1.0-rc.7` 和 `0.1.0-rc.8`。
+
+## 看一遍完整流程
+
+![Run2Skill 从待审核技能草稿、人工核对到成功沉淀的真实 DSH Web 流程](docs/assets/run2skill-demo.gif)
+
+1. **发现技能草稿**：Run2Skill 只在有事项需要处理时提醒你，并把草稿放在 **设置 → 插件 → Run2Skill**。
+2. **核对来源与范围**：查看生成理由、经过过滤的对话证据、保存范围以及将要写入的完整 `SKILL.md`。
+3. **确认后才保存**：成功结果会进入“最近活动”；保存下来的内容是普通的 DSH 原生 Skill。
+
+<details>
+<summary>查看三张关键界面截图</summary>
+
+![Run2Skill 设置页中的待审核技能草稿](docs/assets/01-proposal-inbox.png)
+
+![Run2Skill 技能草稿的来源、保存范围与审核内容](docs/assets/02-review-details.png)
+
+![Run2Skill 最近活动中显示已经成功创建的原生 Skill](docs/assets/03-saved-activity.png)
+
+</details>
 
 ## 安装
 
@@ -71,11 +92,11 @@ run2skill 是本地优先插件。它不会保存模型密钥，也不会复制�
 
 换句话说：run2skill 可以帮你整理经验，但不会替你签字。
 
-设置页也提供**清除插件数据**功能，可以选择清理当前项目或当前用户范围。它会删除对应范围内 run2skill 自己保存的数据，但不会删除：
+设置页也提供**清理所有缓存**功能。它会删除 Run2Skill 自己产生的中间缓存、待处理技能草稿、失败与非敏感诊断记录，但不会删除：
 
 - DSH 的原始会话记录；
 - 已发布的原生 Skill；
-- 无法证明属于所选范围的数据。
+- Provider、Agent 或其他 DSH 设置。
 
 更详细的保留与升级规则见 [数据存储与升级](docs/storage-and-upgrades.md)。
 
