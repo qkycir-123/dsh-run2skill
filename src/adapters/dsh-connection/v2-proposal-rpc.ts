@@ -40,6 +40,7 @@ import {
 } from './proposal-review-rpc.js'
 import {
   CurrentScopeAuthorizationError,
+  CurrentScopeV1Schema,
   pageAuthoritativeActions,
   type ProjectedAttentionAction,
 } from './current-scope-authorizer.js'
@@ -89,6 +90,11 @@ export interface V2ProposalRpcOptions {
     readonly recoveryLag: boolean
     readonly lastHealthCode?: string | undefined
   }
+  readonly runtimeAttention?: (sessionId?: string) => {
+    readonly runtimeCompleteness: 'KNOWN' | 'UNKNOWN'
+    readonly runtimeWarnings: readonly unknown[]
+  }
+  readonly learningActions?: (currentScope: z.infer<typeof CurrentScopeV1Schema>) => Promise<readonly ProjectedAttentionAction[]>
 }
 
 function error(code: 'bad-request' | 'cancelled' | 'internal' | 'not-found' | 'conflict' | 'invalid-state'): ObserveRpcResult<never> {
@@ -210,14 +216,20 @@ export function createV2ProposalRpcHandler(
         } }
       }
       try {
-        const actions = await options.authorizer.project(domain, request.data.currentScope)
+        const actions = [
+          ...await options.authorizer.project(domain, request.data.currentScope),
+          ...await (options.learningActions?.(request.data.currentScope) ?? Promise.resolve([])),
+        ]
+        const runtime = options.runtimeAttention?.(request.data.sessionId) ?? {
+          runtimeCompleteness: 'KNOWN' as const,
+          runtimeWarnings: [],
+        }
         return { ok: true, value: {
           apiVersion: 1,
           userCompleteness: 'KNOWN',
           projectCompleteness: request.data.currentScope.kind === 'USER_ONLY' ? 'UNAVAILABLE' : 'KNOWN',
           actions,
-          runtimeCompleteness: 'KNOWN',
-          runtimeWarnings: [],
+          ...runtime,
         } }
       } catch (caught) {
         return caught instanceof CurrentScopeAuthorizationError ? error('conflict') : error('internal')

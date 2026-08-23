@@ -66,6 +66,7 @@ export interface BatchDetectorClient {
 
 export interface BatchDetectorWorkerOptions {
   readonly client: BatchDetectorClient
+  readonly permitBatch?: (batch: SessionBatchV2) => boolean
   readonly now?: () => number
 }
 
@@ -87,6 +88,7 @@ export class BatchDetectorWorker {
   readonly #observations
   readonly #intents
   readonly #client
+  readonly #permitBatch
   readonly #now
 
   constructor(domain: Run2skillV2Domain, options: BatchDetectorWorkerOptions) {
@@ -95,6 +97,7 @@ export class BatchDetectorWorker {
     this.#observations = domain.table('turn_observations')
     this.#intents = domain.table('experience_intents')
     this.#client = options.client
+    this.#permitBatch = options.permitBatch ?? (() => true)
     this.#now = options.now ?? Date.now
   }
 
@@ -166,9 +169,10 @@ export class BatchDetectorWorker {
 
   #claimNext(): Promise<ClaimedBatch | RejectedBatch | undefined> {
     return this.#global.runExclusive<ClaimedBatch | RejectedBatch | undefined>(async current => {
+      if (current.purgeJournal !== undefined) return { value: undefined }
       const batch = [...this.#batches.entries()]
         .map(([, value]) => SessionBatchV2Schema.parse(value))
-        .filter(value => value.state === 'FROZEN')
+        .filter(value => value.state === 'FROZEN' && this.#permitBatch(value))
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.batchId.localeCompare(right.batchId))[0]
       if (batch === undefined) return { value: undefined }
       const cursor = current.sessions[batch.sessionLifecycleKey]

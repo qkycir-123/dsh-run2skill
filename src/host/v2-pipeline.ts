@@ -29,6 +29,7 @@ export interface DshV2PipelineRuntimeOptions {
   readonly activity: SessionActivityObservationPort
   readonly ownership: OwnershipObservationPort
   readonly catalog: DshV2PipelineCatalogPorts
+  readonly permitBatchDetection?: (batch: SessionBatchV2) => boolean
   readonly onError?: (error: unknown) => void
   readonly now?: () => number
   /** @internal Deterministic clock adapter for Host assembly tests. */
@@ -71,6 +72,9 @@ export class DshV2PipelineRuntime {
     })
     const detector = new BatchDetectorWorker(domain, {
       client: stageClient,
+      ...(options.permitBatchDetection === undefined
+        ? {}
+        : { permitBatch: options.permitBatchDetection }),
       ...(options.now === undefined ? {} : { now: options.now }),
     })
     const ownership = new AgentFirstOwnershipCoordinator(domain, {
@@ -125,8 +129,15 @@ export class DshV2PipelineRuntime {
     events: readonly DshSessionEvent[],
     turnEndSeq: number,
     workspace: WorkspaceBindingPort,
+    recovery?: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
   ): Promise<DshTurnObservationV2Result> {
-    const projected = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+    const projected = await projectDshTurnObservationV2(
+      header,
+      events,
+      turnEndSeq,
+      workspace,
+      recovery,
+    )
     if (projected.status === 'OBSERVED') await this.#runtime.observe(projected.observation)
     return projected
   }

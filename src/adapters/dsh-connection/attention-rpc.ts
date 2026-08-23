@@ -24,6 +24,45 @@ function noticeKey(parts: readonly string[]): string {
   return `notice_${createHash('sha256').update(parts.join('\u0000'), 'utf8').digest('hex')}`
 }
 
+export function projectRuntimeAttention(notices: RuntimeNotices, sessionId?: string): {
+  readonly runtimeCompleteness: 'KNOWN' | 'UNKNOWN'
+  readonly runtimeWarnings: readonly {
+    readonly noticeKey: string
+    readonly kind: 'UNSAVED_SIGNAL'
+    readonly healthCode: string
+    readonly signalClass: string
+    readonly count: number
+    readonly message: string
+  }[]
+} {
+  return {
+    runtimeCompleteness: notices.unsavedCompletenessKnown() ? 'KNOWN' : 'UNKNOWN',
+    runtimeWarnings: notices.list().flatMap(notice => {
+      if (
+        notice.kind !== 'UNSAVED_SIGNAL'
+        || !notice.requiresAttention
+        || notice.signalClass === undefined
+        || (notice.sessionId !== 'global' && notice.sessionId !== sessionId)
+      ) return []
+      return [{
+        noticeKey: noticeKey([
+          notice.healthCode,
+          notice.sessionId,
+          String(notice.turnEndSeq ?? ''),
+          String(notice.firstObservedAt),
+        ]),
+        kind: 'UNSAVED_SIGNAL' as const,
+        healthCode: notice.healthCode,
+        signalClass: notice.signalClass,
+        count: notice.count,
+        message: notice.signalClass === 'EXPLICIT_SAVE'
+          ? '保存请求尚未持久化，请保持 DSH 运行并稍后重试。'
+          : '学习信号尚未持久化，请保持 DSH 运行并稍后重试。',
+      }]
+    }),
+  }
+}
+
 function badRequest(): ObserveRpcResult<never> {
   return { ok: false, error: { code: 'bad-request', message: 'invalid attention request', details: {} } }
 }
@@ -63,29 +102,7 @@ export function createAttentionRpcHandler(
         throw caught
       }
     }
-    const runtimeWarnings = notices.list().flatMap(notice => {
-      if (
-        notice.kind !== 'UNSAVED_SIGNAL'
-        || !notice.requiresAttention
-        || notice.signalClass === undefined
-        || (notice.sessionId !== 'global' && notice.sessionId !== parsed.data.sessionId)
-      ) return []
-      return [{
-        noticeKey: noticeKey([
-          notice.healthCode,
-          notice.sessionId,
-          String(notice.turnEndSeq ?? ''),
-          String(notice.firstObservedAt),
-        ]),
-        kind: 'UNSAVED_SIGNAL' as const,
-        healthCode: notice.healthCode,
-        signalClass: notice.signalClass,
-        count: notice.count,
-        message: notice.signalClass === 'EXPLICIT_SAVE'
-          ? '保存请求尚未持久化，请保持 DSH 运行并稍后重试。'
-          : '学习信号尚未持久化，请保持 DSH 运行并稍后重试。',
-      }]
-    })
+    const runtime = projectRuntimeAttention(notices, parsed.data.sessionId)
     return {
       ok: true,
       value: {
@@ -93,8 +110,7 @@ export function createAttentionRpcHandler(
         userCompleteness: domain === undefined ? 'UNKNOWN' : 'KNOWN',
         projectCompleteness,
         actions,
-        runtimeCompleteness: notices.unsavedCompletenessKnown() ? 'KNOWN' : 'UNKNOWN',
-        runtimeWarnings,
+        ...runtime,
       },
     }
   }

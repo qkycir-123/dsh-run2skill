@@ -1,5 +1,11 @@
 import { z } from 'zod'
-import { PurgeError, type PurgeService } from '../../application/purge/index.js'
+import { PurgeError } from '../../application/purge/index.js'
+import type {
+  PurgeConfirmationScope,
+  PurgePreviewV1,
+  PurgeReceiptV1,
+  PurgeStatusV1,
+} from '../../application/purge/purge-service.js'
 import type { ObserveRpcResult, ObserveSummaryRpcHandler } from './observe-summary-rpc.js'
 import { PurgePhaseV1Schema } from '../../domain/purge/index.js'
 
@@ -89,13 +95,20 @@ export interface PurgeRpcOptions {
   readonly runMutation?: <T>(operation: () => Promise<T>) => Promise<T>
 }
 
+export interface PurgeRpcService {
+  preview(scope: 'ALL' | 'PROJECT' | 'USER', workspaceId?: string): Promise<PurgePreviewV1>
+  confirm(previewId: string, digest: string, scope?: PurgeConfirmationScope): Promise<PurgeReceiptV1>
+  retry(purgeId: string): Promise<PurgeReceiptV1>
+  status(): PurgeStatusV1
+}
+
 export function createPurgeRpcHandler(
-  service: PurgeService | (() => PurgeService | undefined),
+  service: PurgeRpcService | (() => PurgeRpcService | undefined),
   fallback?: ObserveSummaryRpcHandler,
   options: PurgeRpcOptions = {},
 ): ObserveSummaryRpcHandler {
   const runMutation = options.runMutation ?? (async operation => await operation())
-  const serviceOf = (): PurgeService | undefined => typeof service === 'function' ? service() : service
+  const serviceOf = (): PurgeRpcService | undefined => typeof service === 'function' ? service() : service
   return async (endpoint, payload, signal) => {
     if (!requestFits(payload)) return failure('bad-request')
     const schema = endpoint === PURGE_PREVIEW_ENDPOINT

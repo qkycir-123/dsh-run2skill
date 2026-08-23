@@ -52,7 +52,7 @@ New-Item -ItemType Directory -Path $packageExtract | Out-Null
 & tar -xzf $tarballs[0].FullName -C $packageExtract
 if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the candidate tarball' }
 $candidatePackage = (Resolve-Path (Join-Path $packageExtract 'package')).Path
-git clone --local --no-hardlinks $dshPath $clone
+git -c core.longpaths=true clone --local --no-hardlinks $dshPath $clone
 if ($LASTEXITCODE -ne 0) { throw 'Unable to create the disposable DSH clone' }
 git -C $clone checkout --detach $ExpectedDshHead
 if ($LASTEXITCODE -ne 0) { throw 'Unable to pin the disposable DSH clone' }

@@ -324,12 +324,12 @@ async function observe(present, expectedAutomaticLearning) {
         await page.locator('textarea').last().fill('run2skill controlled UI probe draft')
         uiPhase = 'review'
         await page.locator('textarea').last().press('Enter')
-        await page.getByText(/run2skill 有 1 项需要处理/u).waitFor({ timeout: 15_000 })
+        await page.getByText(/Run2Skill 有 1 项需要处理/u).waitFor({ timeout: 15_000 })
       }
       await page.getByRole('button', { name: /^(Settings|设置)$/ }).click()
       const dialog = page.getByRole('dialog', { name: /^(Settings|设置)$/ })
       await dialog.getByRole('button', { name: /^(Plugins|插件)$/ }).click()
-      await dialog.getByRole('tab', { name: 'run2skill' }).click()
+      await dialog.getByRole('tab', { name: 'Run2Skill' }).click()
       const surface = dialog.locator('[data-run2skill-settings-page]')
       await surface.waitFor({ timeout: 10_000 })
       assert.equal(await page.locator('[data-run2skill-status], [data-run2skill-proposal-trigger]').count(), 0)
@@ -349,15 +349,15 @@ async function observe(present, expectedAutomaticLearning) {
           'Proposal detail network DTO leaked an absolute or target path',
         )
         console.log('CP_INS_A6_DETAIL_NETWORK_PRIVACY=PASS')
-        await surface.getByRole('button', { name: '批准并发布' }).waitFor({ timeout: 10_000 })
+        await surface.getByRole('button', { name: '确认并保存' }).waitFor({ timeout: 10_000 })
         assert.equal((await surface.innerText()).includes('D:\\workspace'), false)
-        await surface.getByRole('button', { name: '批准并发布' }).click()
-        const retryPublication = surface.getByRole('button', { name: '重试发布' })
+        await surface.getByRole('button', { name: '确认并保存' }).click()
+        const retryPublication = surface.getByRole('button', { name: '重试保存' })
         await retryPublication.waitFor({ timeout: 10_000 })
-        assert.match(await surface.innerText(), /发布失败，可重试/u)
+        assert.match(await surface.innerText(), /保存失败，可重试/u)
         await retryPublication.click()
         await retryPublication.waitFor({ state: 'detached', timeout: 10_000 })
-        await surface.getByText('0 项可操作事项').waitFor({ timeout: 10_000 })
+        await surface.getByText('暂无').waitFor({ timeout: 10_000 })
         console.log('CP_INS_A6_ACTIONABLE_UI=PASS')
       }
       await surface.getByRole('button', { name: '自动学习' }).click()
@@ -400,10 +400,24 @@ async function observe(present, expectedAutomaticLearning) {
         console.log('CP_D3_PURGE_CONFIRM=PASS')
       }
       if (!purgeUiOnly && expectedAutomaticLearning) {
-        const mutation = page.waitForResponse(response => response.url().endsWith('/api/settings.mutate'))
-        await toggle.click()
-        const mutationBody = await (await mutation).json()
-        assert.equal(mutationBody.result?.ok, true, 'native settings mutation was rejected')
+        let mutationBody
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const mutation = page.waitForResponse(response => response.url().endsWith('/api/settings.mutate'))
+          await toggle.click()
+          mutationBody = await (await mutation).json()
+          if (mutationBody.result?.ok === true) break
+          assert.equal(
+            mutationBody.result?.error?.code,
+            'settings-conflict',
+            `native settings mutation was rejected: ${String(mutationBody.result?.error?.code ?? 'unknown')}`,
+          )
+          await delay(250)
+        }
+        assert.equal(
+          mutationBody.result?.ok,
+          true,
+          `native settings mutation was rejected: ${String(mutationBody.result?.error?.code ?? 'unknown')}`,
+        )
         await waitForAutomaticLearningSetting(false)
       }
     }

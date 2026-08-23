@@ -38,6 +38,60 @@ function client(result: Awaited<ReturnType<BatchDetectorClient['detect']>>) {
 }
 
 describe('v2 Batch Detector worker', () => {
+  it('leaves ordinary frozen batches untouched while automatic learning is off', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    domain.sessionBatches.set(fixtures.sessionBatch.batchId, SessionBatchV2Schema.parse({
+      ...fixtures.sessionBatch,
+      triggerReasons: ['THRESHOLD'],
+    }))
+    const model = client({ result: 'NONE' })
+    const worker = new BatchDetectorWorker(domain, {
+      client: model,
+      permitBatch: batch => batch.triggerReasons.includes('EXPLICIT'),
+    })
+
+    expect(await worker.runOnce()).toBe('IDLE')
+    expect(model.calls).toBe(0)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)?.state).toBe('FROZEN')
+  })
+
+  it('does not claim a frozen batch while clear-all owns the purge fence', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    await domain.global.set({
+      ...domain.global.get(),
+      purgeJournal: {
+        schemaVersion: 1,
+        purgeId: `purge_${'a'.repeat(64)}`,
+        scopeBinding: { scope: 'ALL' },
+        hideBefore: '2026-08-23T12:00:00.000Z',
+        phase: 'QUIESCED',
+        updatedAt: '2026-08-23T12:00:00.000Z',
+      },
+    })
+    const model = client({ result: 'NONE' })
+    const worker = new BatchDetectorWorker(domain, { client: model })
+
+    expect(await worker.runOnce()).toBe('IDLE')
+    expect(model.calls).toBe(0)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)?.state).toBe('FROZEN')
+  })
+
+  it('still detects an explicit save batch while automatic learning is off', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    domain.sessionBatches.set(fixtures.sessionBatch.batchId, SessionBatchV2Schema.parse({
+      ...fixtures.sessionBatch,
+      triggerReasons: ['EXPLICIT'],
+    }))
+    const model = client({ result: 'NONE' })
+    const worker = new BatchDetectorWorker(domain, {
+      client: model,
+      permitBatch: batch => batch.triggerReasons.includes('EXPLICIT'),
+    })
+
+    expect(await worker.runOnce()).toBe('PROCESSED')
+    expect(model.calls).toBe(1)
+  })
+
   it('reserves one call and commits NONE without downstream work', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
     const model = client({ result: 'NONE' })

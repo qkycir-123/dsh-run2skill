@@ -24,7 +24,7 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 
 2026-08-21，维护者进一步接受“无感自动沉淀且同一保存意图不能让 Agent 与 run2skill 各生成一次”的产品决定。显式保存和其他 `HIGH` evidence 在 run2skill Learning 前必须先做 durable ownership arbitration：有效 Agent Skill 已经与当前意图精确绑定时以 `RESOLVED_BY_AGENT` 静默完成；只有完整证据证明本回合没有发生 Skill 生成行为时，run2skill 才取得生成所有权。该窄修订不授权自动发布，也不能退化为两边生成后再去重。
 
-2026-08-22，#84 把逐 Turn Cheap Trigger/WorkItem/单阶段 Learning 替换为 `TurnObservation -> SessionBatch -> ExperienceIntent`：每 5 个完整 Turn、idle 30 分钟或显式保存触发一次批次检测，随后依次执行 Agent-first ownership、complete Catalog 全量摘要筛选、完整候选 coverage 与独立 generation。完整状态机、调用账本和 `run2skill_v1 -> run2skill_v2` Migration ADR 见 [`docs/design/issue-84-session-batch-learning.md`](../design/issue-84-session-batch-learning.md)；与本节旧机制冲突的逐 Turn描述均以该 Design 和本文修订段落为准。
+2026-08-22，#84 把逐 Turn Cheap Trigger/WorkItem/单阶段 Learning 替换为 `TurnObservation -> SessionBatch -> ExperienceIntent`：每 5 个完整 Turn、idle 30 分钟或显式保存触发一次批次检测，随后依次执行 Agent-first ownership、complete Catalog 全量摘要筛选、完整候选 coverage 与独立 generation。完整状态机、调用账本和 `run2skill_v2` 首次启用 ADR 见 [`docs/design/issue-84-session-batch-learning.md`](../design/issue-84-session-batch-learning.md)；与本节旧机制冲突的逐 Turn描述均以该 Design 和本文修订段落为准。
 
 本文中的“必须”来自冻结 PRD 或为满足它而不可缺少的技术约束；“候选”表示可在 Design 中细化但不得破坏稳定契约；“Contract Probe”表示源码不足以证明、必须在固定 DSH baseline 上运行验证的事项。
 
@@ -97,7 +97,7 @@ flowchart LR
 | Skill Catalog | ctx.skills.snapshot/list/get、rank、complete、热失效、stock filesystem provider 的有效 root 配置 | 全量 summary classification、完整正文能力、coverage、writable 判定、全部有效 root 的 ownership manifest、完整性 Guard、精确回读 |
 | Skill 文件格式 | DSH Skill name、frontmatter、invocation 语义 | canonical renderer、Proposal digest、secret/path/Base Guards |
 | Settings | ctx.settings namespace、默认值、revision、live watch | run2skill 可编辑字段及 Analysis 启动快照 |
-| Storage | ctx.storage.domain、backend durability、单 domain 写序列 | v2 TurnObservation/SessionBatch/Intent/Lineage schema、v1 migration、恢复 saga、Purge 语义 |
+| Storage | ctx.storage.domain、backend durability、单 domain 写序列 | v2 TurnObservation/SessionBatch/Intent/Lineage schema、fresh activation、恢复 saga、Purge 语义 |
 | Web transport | ctx.connection、Host/Origin fence、client module system、slot | /run2skill loopback RPC、DTO、Client Inbox 与轮询 |
 | 文件发布 | DSH home path helper、原子 staging/锁工具可复用部分 | compare-and-exchange、journal、路径证明、回读事务 |
 | 插件生命周期 | Cordis Loader、dsh.client、profile/plugin 命令 | 一个可发布包的 Host/Client entry、兼容检查与安装验收 |
@@ -285,7 +285,7 @@ v0.2 不把 API 挂为 trusted-host，不实现远程认证，不支持 LAN 审�
 
 ### 7.8 run2skill-store
 
-输入：TurnObservation/SessionBatch/ExperienceIntent/Lineage 的 compare-revision 更新、v1 migration 与 Purge 请求。
+输入：TurnObservation/SessionBatch/ExperienceIntent/Lineage 的 compare-revision 更新、fresh activation 与 Purge 请求。
 输出：durable snapshot、冲突、恢复扫描。
 错误：backend unavailable、schema mismatch、write conflict。
 约束：使用 DSH Storage Domain；不绕过 Web profile 已装配的 backend，也不自建第二套持久化连接。
@@ -395,7 +395,7 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 
 启动时按以下顺序恢复：
 
-1. 打开 v2 Store 并校验 schema/migration journal；未 COMMITTED 前不启用新 worker；
+1. 打开 v2 Store；首次启用未 COMMITTED 时只建立既有 durable Session 的尾部水位，不读取或复制 v1 中间缓存；
 2. 应用 active Purge journal 的 visibility/quiesce fence，但不等待物理删除；普通 generation 继续禁用；
 3. 恢复 `proposalCatalogMutationJournal`，扫描 Proposal body、sealed GenerationResult 和 unresolved barriers；
 4. 对当前 ProposalGenerationLease 只做 outcome reconciliation：按 call ledger 补成且只补成 sealed result 或 unresolved barrier，不调用模型、不复制 Proposal body；
@@ -447,8 +447,8 @@ v0.2 继续复用 `ctx.storage.domain`，物理存储完全服从目标 profile 
 | session_batches | batchId | 连续范围、triggerReasons、manifest、Detector 与阶段账本 |
 | experience_intents | intentId | behavior signature、evidence、ownership、recall、coverage、generation |
 | proposal_lineages | lineageId | 唯一活动 lineage、Proposal/Review/Publication Journal、完整 Revision snapshots |
-| legacy_items | legacy id | v1 pending/Proposal 的兼容处置，不自动重新 Learning |
-| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、migration journal、Purge fences、健康索引 |
+| legacy_items | legacy id | 当前正常流程不写入的保留表 |
+| global | 单记录 | schema/policy、Session cursors、BehaviorSignatureIndex、ProposalGenerationLease、proposalCatalogEpoch/mutation journal、activation receipt、Purge journal、健康索引 |
 
 Session cursor 只能在对应 TurnObservation/SessionBatch 结果 durable 后推进。NONE 提交后可回收观察；DEFER 只保留有界 carry；READY 的必要证据转入 Intent 后可回收旧观察。BatchManifest 不保存绝对路径或 Session 原文；同版本重放只能读取原记录，不能刷新 baseline。ObservationId、BatchId、IntentId 和 BehaviorSignatureIndex 分别负责事件、调度、经验和 Proposal 去重。
 
@@ -460,38 +460,38 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - 崩溃后从 Journal 重放缺失的 Lineage 或最终 outcome；
 - 永远不能仅凭 APPROVED 或 WRITE_ATTEMPTED 推导 PUBLISHED。
 
-### 9.3 Snapshot、版本与迁移
+### 9.3 Snapshot、版本与升级
 
 - Revision 保存 full snapshot；不使用 delta。
 - Store 只保存过滤后的必要文本、坐标、hash 和元数据，不复制 Whole Session。
 - 已发布 `run2skill_v1` schema 不改写；旧记录字段缺失不能解释为 `RUN2SKILL_OWNED`。
 - D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
-- #84 Migration ADR 选择独立 `run2skill_v2` Domain version 1，按 `NOT_STARTED -> COPYING -> VALIDATING -> COMMITTED` journal copy/validate/commit；COMMITTED 前 v2 对 worker/UI 不可见。
-- v1 的 `RESOLVED_NO_SIGNAL`、`CAPTURED`、`ANALYZING`、`LEARNED`、`READY_FOR_REVIEW`、`PUBLISHING`、两类 `NEEDS_ATTENTION` 与两类 `TERMINAL` 必须按 Migration ADR 穷尽映射；遗漏或非法组合使迁移 fail closed。
-- v1 active Proposal 经完整校验导入 legacy envelope；COMMITTED 前必须证明从 active v2/legacy authoritative rows 派生的 PendingProposalCatalog 完整覆盖它们。能规范化 behavior signature 时同时预占 BehaviorSignatureIndex，不能精确规范化时仍作为不可写 summary/full-body candidate 参与每个新 Intent 的 coverage。未形成 Proposal 的旧项进入 legacy Action Queue，不按新策略静默重放。
-- v1 Lineage、completed Purge fences 和 scope identity 先于 observer activation 迁移；v1 不删除、不改写。
-- migration COMMITTED 后禁止在同一 DSH Home 上启动不支持 v2 的旧插件；只允许前向修复，或停止 DSH 后恢复完整迁移前备份再安装旧版。
+- #84 选择独立 `run2skill_v2` Domain version 1，并在首次启用时执行 fresh activation；COMMITTED 前 v2 对 worker/UI 不可见。
+- 当前插件尚无外部用户，`run2skill_v1` 的 Proposal、WorkItem、Lineage 和其他中间缓存不迁移、不重放。
+- listener 先注册，再从没有 open Turn 的 durable root Session tail 建立 activation watermark；半个 Turn、日志缺口或读取失败均延后启用。
+- COMMITTED 后只处理水位之后的新 Turn。已发布 Skill 和 DSH Session Log 不删除、不改写。
+- 当前开发阶段不承诺中间缓存跨版本保留；稳定发布前另行制定长期升级兼容策略。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
 - 在首个公开 alpha 前的开发数据可以显式导出后重建，但不得把这种做法用于已发布用户数据。
 
 ### 9.4 Purge
 
-Purge 是持久 saga：
+Purge 是只作用于 v2 中间缓存的持久 saga：
 
-1. global 写入 purgeId、`ALL` binding、hideBefore epoch 和本次 v1 目标计数；
+1. global 写入 purgeId、`ALL` binding、preview digest、目标计数和当前 catalog epoch；
 2. UI 和所有 worker 立即应用 visibility/quiesce fence，命中数据不再对普通流程可见；
 3. 若命中当前 generation owner，尚无 call slot 时直接清除未消费 reservation/lease；已有 call slot 时只运行受限 outcome reconciliation，按 durable call ledger 提交且只提交 sealed result 或 unresolved barrier；该步骤不调用模型、不写 Proposal body，也不等待普通 generation worker；
-4. outcome durable 后扫描并删除/隐藏匹配的 v2 Observation/Batch/Intent/Lineage/legacy item，清理对应 GenerationResult/barrier、BehaviorSignatureIndex/ProposalGenerationLease，并保持 v1 legacy 视图不可见；
+4. outcome durable 后删除 v2 Observation/Batch/Intent/Lineage/legacy item，并清理对应 GenerationResult/barrier、BehaviorSignatureIndex/ProposalGenerationLease；
 5. 从 purge-visible authoritative rows 重建 PendingProposalCatalog，校验无正常可见 Proposal、dangling index/lease 或其他残留；
-6. 将同一 path-free `ALL` completed fence 写入 v2 legacy fence 投影，再在 authoritative v1 global update 中 upsert fence 并清除 journal。
+6. 推进 v2 proposal catalog epoch，写入 PURGE mutation receipt 并清除 journal。
 
-设置页只调用 `ALL` preview/confirm，不接受 `workspaceId`，也不向用户暴露 PROJECT/USER 内部术语。旧 PROJECT/USER RPC 继续作为兼容接口存在，但不再是常驻产品入口；`status` 与 `retry` 只使用 journal 标识。
+设置页只调用 `ALL` preview/confirm，不接受 `workspaceId`，也不向用户暴露 PROJECT/USER 内部术语；`status` 与 `retry` 只使用 journal 标识。
 
-崩溃后继续同一 purgeId。active journal 与 durable completed fences 共同定义所有 create/update/claim/query 的 visibility：`createdAt/first committedAt <= hideBefore` 的匹配旧事实在 runtime/进程重启后仍不能重新进入，边界后的新事实仍允许。`ALL` fence 为单例并覆盖全部 Run2Skill 派生记录；旧 USER/PROJECT fences 仅为兼容已有数据保留。
+崩溃后继续同一 purgeId，恢复期间所有 v2 学习、审核和发布写操作保持关闭。当前无外部用户，不读取或清理 `run2skill_v1`、诊断 sidecar 或其他历史中间缓存。
 
 每次新建 journal 固化 `targetWorkItems` 与 `targetLineages`。最终 receipt 使用该 durable 目标计数，因此即使进程在物理删除完成、进度计数写回之前终止，恢复后也不会少报。旧 journal 缺少目标字段时继续按既有累计计数恢复。
 
-PROJECT completed fences 固定最多 1024 个且不得淘汰。达到上限时已有 scope 可更新，新 PROJECT 必须在 preview/confirm 写 journal 前以 `PURGE_FENCE_LIMIT` fail closed。任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/迁移门。
+任何未来 retention/compaction 必须先独立证明旧 Session gap 与迟到 mutation 不可重放，并经过 Design/升级门。
 
 Purge 不删除 DSH Session Log，也不删除已发布 SKILL.md。删除失败时保持隐藏并显示可恢复错误，不把部分删除伪装成完成。
 
@@ -949,7 +949,7 @@ dsh-run2skill/
 Host 候选依赖注入：
 
 ```text
-sessions/sessionPersistence, llm, skills, settings,
+sessions/sessionPersistence, agents, llm, skills, settings,
 storageDomain, workspaceRegistry, connection
 ```
 
@@ -964,7 +964,7 @@ storageDomain, workspaceRegistry, connection
 | B2 Recall/Coverage | ownership -> complete summary scan -> exact body -> coverage | CP-SKL-001、dynamic budget、duplicate probes |
 | B3 Generation | authorized CREATE/MERGE -> Proposal；独立 ledger | CP-LLM-001、output/truncation guards |
 | C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-003、CP-PUB-001、CP-WEB-001 |
-| D Productize | Inbox 完善、Purge、迁移策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
+| D Productize | Inbox 完善、v2 Purge、升级策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
 
 每个切片开始前仍需独立 Design。切片 A/B 不得宣称 Run -> Skill 闭环成功；只有切片 C 通过 Web Human Review 和回读后才可以。
 
@@ -1032,7 +1032,7 @@ storageDomain, workspaceRegistry, connection
 | REQ-PUB-001..009 | publication-service、CAS adapter、Registry readback | CP-PUB-001 + CP-SKL-001 + security integration |
 | REQ-LFC-001..005 | Lineage aggregate、reconciliation、installer | State-machine unit + manual edit/delete E2E + CP-INS-001 |
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
-| 状态与恢复 | SessionBatch/Intent aggregates、migration/publication journals | migration + crash matrix + restart E2E |
+| 状态与恢复 | SessionBatch/Intent aggregates、activation/Purge/publication journals | fresh-activation + crash matrix + restart E2E |
 | Generation lease 恢复 | call ledger、sealed result、commit authorization、body/index、unresolved barrier 八类组合 | crash matrix：不重复调用、不丢去重屏障、全局 lease 不永久阻塞 |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
 | 五个黄金场景 | 全系统 | Web profile E2E；场景 E 证明 Agent `.agents/skills` 写入只产生 `RESOLVED_BY_AGENT` 且 Learning/Proposal 为 0 |
@@ -1044,7 +1044,7 @@ storageDomain, workspaceRegistry, connection
 维护者接受了以下架构边界：
 
 - 接受一个双面单插件和薄 Adapter 边界；
-- 接受 DSH Storage Domain + v2 SessionBatch/Intent/Lineage saga，以及 v1 copy/validate/commit migration；
+- 接受 DSH Storage Domain + v2 SessionBatch/Intent/Lineage saga，以及 fresh activation 水位；
 - 接受 Detector/Catalog/Coverage/Generation 分阶段调用，只有 generation 最多一次格式/截断恢复；
 - 接受 loopback unary RPC + v0.2 polling；
 - 接受 compare-exchange 为发布硬契约，CP-PUB-001 失败不能降级；
@@ -1059,4 +1059,4 @@ storageDomain, workspaceRegistry, connection
 - 接受方：项目维护者；
 - 批准日期：2026-08-19；
 - 批准的原基线版本：v0.1；#84 v0.2 修订待对应 Design PR 评审；
-- 接受范围：原发布与安全边界继续有效；2026-08-22 #84 以 `docs/design/issue-84-session-batch-learning.md` 作为批次核心流程和 migration gate，实施按该文档切片推进。
+- 接受范围：原发布与安全边界继续有效；2026-08-22 #84 以 `docs/design/issue-84-session-batch-learning.md` 作为批次核心流程和 activation gate，实施按该文档切片推进。

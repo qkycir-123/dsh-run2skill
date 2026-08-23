@@ -132,7 +132,7 @@ export function deriveGenerationBarrierReceiptDigestV2(facts: {
 
 export function deriveProposalCatalogMutationIdV2(facts: {
   readonly ownerId: string
-  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE'
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE' | 'USER_ACTION'
   readonly inputCatalogEpoch: number
 }): `pcm_${string}` {
   return `pcm_${sha256Utf8(canonicalJson(facts))}`
@@ -141,7 +141,7 @@ export function deriveProposalCatalogMutationIdV2(facts: {
 export function deriveProposalCatalogMutationReceiptDigestV2(facts: {
   readonly mutationId: string
   readonly ownerId: string
-  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE'
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE' | 'USER_ACTION'
   readonly outcomeCatalogEpoch: number
 }): string {
   return sha256Utf8(canonicalJson(facts))
@@ -155,6 +155,7 @@ export type ProposalCatalogMutationKindV2 =
   | 'REVIEW'
   | 'PUBLICATION'
   | 'PURGE'
+  | 'USER_ACTION'
 
 export interface ProposalCatalogMutationAnchorFactsV2 {
   readonly ownerId: string
@@ -321,6 +322,10 @@ export const TurnObservationV2Schema = z.object({
   directUserEvidence: z.array(EvidenceRefSchema).max(RUN2SKILL_V2_LIMITS.maxObservationEvidence),
   evidenceDigest: sha256Hex,
   contentDigest: sha256Hex,
+  sessionRecovery: z.object({
+    headerRevision: identity,
+    observedLogPrefixDigest: sha256Hex,
+  }).strict().optional(),
 }).strict().superRefine((value, context) => {
   if (value.observationId !== deriveTurnObservationIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['observationId'], message: 'Observation id does not match facts' })
@@ -2288,6 +2293,8 @@ export const MigrationJournalV2Schema = z.discriminatedUnion('phase', [
 const SessionCursorV2Schema = z.object({
   observedThroughTurnEndSeq: safeNonNegativeInteger,
   detectedThroughTurnEndSeq: safeNonNegativeInteger,
+  headerRevision: identity.optional(),
+  observedLogPrefixDigest: sha256Hex.optional(),
   activeBatchId: z.string().regex(/^batch_[a-f0-9]{64}$/).optional(),
   lastActivityAt: isoDateTime.optional(),
   batchManifestBaseline: BatchManifestBaselineV2Schema.extend({
@@ -2296,6 +2303,9 @@ const SessionCursorV2Schema = z.object({
   openExperienceCarry: z.array(OpenExperienceCarryV2Schema).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
+  if ((value.headerRevision === undefined) !== (value.observedLogPrefixDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['headerRevision'], message: 'Session recovery metadata must be complete' })
+  }
   if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
     context.addIssue({ code: 'custom', path: ['detectedThroughTurnEndSeq'], message: 'Detected cursor cannot exceed observed cursor' })
   }
@@ -2423,7 +2433,7 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
   schemaVersion: z.literal(1),
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   ownerId: identity,
-  kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
+  kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE', 'USER_ACTION']),
   phase: z.enum(['PREPARED', 'EXECUTING', 'NEEDS_REFRESH']),
   preparedAt: isoDateTime,
   executionStartedAt: isoDateTime.optional(),
@@ -2464,7 +2474,7 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
 
 const ProposalCatalogLastMutationV2Schema = z.object({
   epoch: safeNonNegativeInteger,
-  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
+  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE', 'USER_ACTION']),
   ownerId: identity,
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   digest: sha256Hex,
@@ -2542,8 +2552,8 @@ export const GlobalV2Schema = z.object({
       const cursor = value.sessions[lifecycleKey]
       if (
         cursor === undefined
-        || cursor.observedThroughTurnEndSeq !== watermark.observedTailSeq
-        || cursor.detectedThroughTurnEndSeq !== watermark.observedTailSeq
+        || cursor.observedThroughTurnEndSeq < watermark.observedTailSeq
+        || cursor.detectedThroughTurnEndSeq < watermark.observedTailSeq
       ) context.addIssue({ code: 'custom', path: ['sessions', lifecycleKey], message: 'Session cursor must bind activation watermark' })
     }
   }
