@@ -99,8 +99,15 @@ if ($LASTEXITCODE -ne 0) { throw "Install lifecycle probe failed: $LASTEXITCODE"
 if ($LASTEXITCODE -ne 0) { throw "Candidate install lifecycle probe failed: $LASTEXITCODE" }
 if ($hasReleaseCandidate) {
   New-Item -ItemType Directory -Path $previousReleaseArchive | Out-Null
-  & npm pack dsh-run2skill@0.1.1-alpha --pack-destination $previousReleaseArchive *> $previousReleasePackLog
-  if ($LASTEXITCODE -ne 0) { throw 'Unable to download the published 0.1.1-alpha package' }
+  $savedPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & npm pack dsh-run2skill@0.1.1-alpha --pack-destination $previousReleaseArchive *> $previousReleasePackLog
+    $previousReleasePackExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $savedPreference
+  }
+  if ($previousReleasePackExitCode -ne 0) { throw 'Unable to download the published 0.1.1-alpha package' }
   $previousTarballs = @(Get-ChildItem -LiteralPath $previousReleaseArchive -Filter '*.tgz' -File)
   if ($previousTarballs.Count -ne 1) { throw 'Previous release fetch must produce exactly one tarball' }
   & node $releaseUpgradeProbe $clone $previousTarballs[0].FullName $releaseCandidate $releaseUpgrade $ReleaseCandidateSha256
