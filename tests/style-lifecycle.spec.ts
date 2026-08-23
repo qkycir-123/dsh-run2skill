@@ -25,8 +25,20 @@ describe('run2skill CSS lifecycle', () => {
       '--dsw-alias-bg-layer-1',
       '--dsw-alias-bg-layer-2',
       '--dsw-alias-bg-mask-1',
+      '--dsw-alias-brand-primary',
+      '--dsw-alias-interactive-bg-active',
       '--dsw-alias-state-error-primary',
     ]) expect(css).toContain(token)
+  })
+
+  it('keeps the populated Attention panel readable at the panel width', () => {
+    const css = readFileSync(resolve('src/client/run2skill-settings-page.module.css'), 'utf8')
+
+    expect(css).toMatch(/\.sectionBody\s*\{[^}]*container-type:\s*inline-size/s)
+    expect(css).toMatch(/\.proposalLayout\s*\{[^}]*grid-template-columns:\s*1fr/s)
+    expect(css).toMatch(/@container\s*\(min-width:\s*760px\)/)
+    expect(css).toMatch(/\.detailFacts\s*\{[^}]*grid-template-columns:\s*minmax\(6rem,\s*max-content\)\s+minmax\(0,\s*1fr\)/s)
+    expect(css).toMatch(/\.proposalListButton\[aria-current=['"]true['"]\]/)
   })
 
   it('updates one owner/style id across HMR and removes it after the last disposer', () => {

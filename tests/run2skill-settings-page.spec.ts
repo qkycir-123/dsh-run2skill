@@ -16,6 +16,12 @@ import {
 } from '../src/client/run2skill-settings-page.js'
 import { AutomaticLearningSettingsController } from '../src/client/automatic-learning-settings.js'
 import { PurgeSettingsController } from '../src/client/purge-settings.js'
+import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
+import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
+import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
+import { PurgeVisibility } from '../src/application/purge/index.js'
+import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
+import { makeCreateProposalSnapshot, makeLearnedWorkItem } from './support/review-fixture.js'
 
 afterEach(() => {
   cleanup()
@@ -56,6 +62,76 @@ describe('run2skill native settings surface', () => {
         proposalRef: review.proposalRef,
       },
     ], [review, publishing])).toEqual([review])
+  })
+
+  it('presents a populated Proposal as a readable selectable card and labelled detail region', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const staged = await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const currentScope = {
+      kind: 'WORKSPACE' as const,
+      generation: 0,
+      workspaceId: 'workspace-fixture',
+    }
+    const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({
+      workspaceId,
+      canonicalPath: 'D:\\workspace',
+    }))
+    const actions = (await authorizer.project(domain, currentScope, new PurgeVisibility(domain)))
+      .flatMap(action => action.proposalRef === undefined ? [] : [{
+        actionKey: action.actionKey,
+        subjectId: action.subjectId,
+        kind: action.kind,
+        proposalRef: action.proposalRef,
+      }])
+    const host = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
+    const automatic = new AutomaticLearningSettingsController({
+      getSnapshot: () => ({
+        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+      }),
+      subscribe: () => () => undefined,
+      set: vi.fn(),
+    })
+    const purge = new PurgeSettingsController(
+      vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })),
+      () => 'workspace-fixture',
+    )
+
+    render(createElement(Run2skillSettingsPage, {
+      controller: automatic,
+      purgeController: purge,
+      workspaceId: 'workspace-fixture',
+      callAttention: vi.fn(async () => ({
+        ok: true,
+        value: {
+          apiVersion: 1,
+          userCompleteness: 'KNOWN',
+          projectCompleteness: 'KNOWN',
+          actions,
+          runtimeCompleteness: 'KNOWN',
+          runtimeWarnings: [],
+        },
+      })),
+      callReview: async (endpoint, payload, signal) => await host(endpoint, payload, signal),
+      callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [] } })),
+    }))
+
+    const proposalButton = await screen.findByRole('button', { name: /generated-file-hygiene/ })
+    expect(screen.queryByRole('textbox', { name: '筛选技能草稿' })).toBeNull()
+    expect(proposalButton.getAttribute('aria-current')).toBeNull()
+    expect(proposalButton.querySelectorAll('span')).toHaveLength(2)
+    fireEvent.click(proposalButton)
+    await waitFor(() => { expect(proposalButton.getAttribute('aria-current')).toBe('true') })
+    const detail = await screen.findByRole('region', { name: '技能草稿详情' })
+    expect(detail.textContent).toContain(staged.item.review!.proposal.description)
+
+    purge.dispose()
+    automatic.dispose()
   })
 
   it('treats a DSH tab hidden by an ancestor as inactive', () => {

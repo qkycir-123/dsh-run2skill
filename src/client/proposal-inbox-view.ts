@@ -330,7 +330,7 @@ export function ProposalDetailView(props: {
 
   return createElement(Fragment, null,
     createElement('h3', null, `${proposal.kind}: ${makeSafeText(proposal.name)}`),
-    createElement('dl', null,
+    createElement('dl', { className: css.detailFacts },
       createElement('dt', null, '说明'), createElement('dd', null, makeSafeText(proposal.description)),
       createElement('dt', null, '何时使用'), createElement('dd', null, makeSafeText(proposal.whenToUse)),
       createElement('dt', null, '保存范围'), createElement('dd', null,

@@ -448,19 +448,28 @@ function ProposalSettingsSection(props: {
   const [textMode, setTextMode] = useState<'SAFE' | 'RAW'>('SAFE')
   const [rejectConfirm, setRejectConfirm] = useState(false)
   const rejectTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const items = actionableProposalItems(props.actions, state.items)
-    .filter(item => `${item.name} ${item.description} ${item.kind}`
-    .toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()))
+  const actionableItems = actionableProposalItems(props.actions, state.items)
+  const showFilter = actionableItems.length > 1
+  const items = showFilter
+    ? actionableItems.filter(item => `${item.name} ${item.description} ${item.kind}`
+      .toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()))
+    : actionableItems
   const selectedActionable = items.some(item => item.proposalRef.proposalId === state.selectedProposalId)
   if (props.actions.length === 0) return createElement(Fragment)
-  return createElement('div', { className: css.sectionBody },
-    createElement('div', { className: css.toolbar },
-      createElement(Input, {
-        value: filter,
-        placeholder: '筛选技能草稿',
-        'aria-label': '筛选技能草稿',
-        onChange: event => { setFilter(event.currentTarget.value) },
-      }),
+  return createElement('div', { className: css.attentionGroup },
+    createElement('div', {
+      className: showFilter
+        ? css.proposalToolbar
+        : `${css.proposalToolbar} ${css.proposalToolbarCompact}`,
+    },
+      showFilter
+        ? createElement(Input, {
+            value: filter,
+            placeholder: '筛选技能草稿',
+            'aria-label': '筛选技能草稿',
+            onChange: event => { setFilter(event.currentTarget.value) },
+          })
+        : null,
       createElement(Button, {
         variant: 'outline',
         size: 'sm',
@@ -474,14 +483,20 @@ function ProposalSettingsSection(props: {
       createElement('ul', { className: css.proposalList },
         ...items.map(item => createElement('li', { key: item.proposalRef.proposalId },
           createElement(Button, {
-            variant: state.selectedProposalId === item.proposalRef.proposalId ? 'primary' : 'outline',
+            variant: 'outline',
             className: css.proposalListButton,
+            'aria-current': state.selectedProposalId === item.proposalRef.proposalId ? 'true' : undefined,
+            'aria-label': `${item.name}，${item.kind}，${item.persistenceScope}，${describeProposalListItem(item)}`,
             disabled: state.mutationPending || state.detailPhase === 'LOADING',
             onClick: () => { void controller.select(item.proposalRef.proposalId) },
-          }, `${item.kind} · ${item.name} · ${item.persistenceScope} · ${describeProposalListItem(item)}`),
+          },
+          createElement('span', { className: css.proposalName }, item.name),
+          createElement('span', { className: css.proposalMeta },
+            `${item.kind} · ${item.persistenceScope} · ${describeProposalListItem(item)}`,
+          )),
         )),
       ),
-      createElement('div', { className: css.detail },
+      createElement('section', { className: css.detail, 'aria-label': '技能草稿详情' },
         !selectedActionable || state.detailPhase === 'IDLE'
           ? createElement('p', null, '选择一项查看审核事实。')
           : null,
@@ -613,7 +628,7 @@ export function LearningFailureSection(props: {
     }).catch(() => { setPhase('ERROR') }).finally(() => { setPending(undefined) })
   }
   if (learningActions.size === 0) return createElement(Fragment)
-  return createElement('section', { className: css.sectionBody, 'aria-label': '学习失败恢复' },
+  return createElement('section', { className: css.attentionGroup, 'aria-label': '学习失败恢复' },
     createElement('div', { className: css.toolbar },
       createElement('strong', null, `学习失败 · ${String(learningActions.size)} 项`),
       createElement(Button, {
