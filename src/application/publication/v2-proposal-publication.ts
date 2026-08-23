@@ -34,7 +34,7 @@ export type V2ProposalPublicationOutcome =
   // is outcome-unknown: the write may have completed before exact readback.
   | { readonly status: 'STALE' | 'UNAVAILABLE' | 'CONFLICT' }
 
-interface PublicationInput {
+export interface V2ProposalPublicationInput {
   readonly lineage: NativeProposalLineageV2
   readonly proposal: NativeProposalRevisionV2
   readonly proposalRef: V2ProposalRef
@@ -43,8 +43,8 @@ interface PublicationInput {
 }
 
 export interface V2ProposalPublicationOptions {
-  revalidate(input: PublicationInput): Promise<V2ProposalReviewRevalidation>
-  publish(input: PublicationInput & { readonly attemptId: string }): Promise<unknown>
+  revalidate(input: V2ProposalPublicationInput): Promise<V2ProposalReviewRevalidation>
+  publish(input: V2ProposalPublicationInput & { readonly attemptId: string }): Promise<unknown>
   readonly now?: () => string
 }
 
@@ -192,7 +192,7 @@ export class V2ProposalPublicationCoordinator {
     ) throw new V2ProposalPublicationError('INVALID_PUBLICATION_STATE')
   }
 
-  #input(lineage: NativeProposalLineageV2, proposalRef: V2ProposalRef): PublicationInput {
+  #input(lineage: NativeProposalLineageV2, proposalRef: V2ProposalRef): V2ProposalPublicationInput {
     const intent = ExperienceIntentV2Schema.safeParse(this.#intents.get(lineage.ownerIntentId))
     const batch = intent.success
       ? SessionBatchV2Schema.safeParse(this.#batches.get(intent.data.batchId))
@@ -242,7 +242,7 @@ export class V2ProposalPublicationCoordinator {
     })
   }
 
-  async #executePrepared(input: PublicationInput, attemptId: string): Promise<V2ProposalPublicationResult> {
+  async #executePrepared(input: V2ProposalPublicationInput, attemptId: string): Promise<V2ProposalPublicationResult> {
     const outcome = publicationOutcome(await this.options.publish({ ...input, attemptId }))
     if (outcome.status !== 'PUBLISHED') {
       if (outcome.status === 'STALE' || outcome.status === 'CONFLICT') {

@@ -17,6 +17,7 @@ import {
 } from '../src/domain/v2/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
+import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 
 const NOW = Date.parse('2026-08-22T01:00:00.000Z')
 
@@ -72,10 +73,13 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
     read: async ({ candidateId }: { candidateId: string }) => {
       const item = summaries.find(value => value.candidateId === candidateId)
       const content = bodies.get(candidateId)
-      return item === undefined || content === undefined ? undefined : { ...item, content }
+      return item === undefined || content === undefined
+        ? undefined
+        : { ...item, content, skillBytesDigest: sha256Utf8(`exact:${content}`) }
     },
   }
   await domain.table('experience_intents').put(owned.intentId, owned)
+  await domain.table('turn_observations').put(fixture.turnObservation.observationId, fixture.turnObservation)
   const batch = SessionBatchV2Schema.parse(fixture.sessionBatch)
   await domain.table('session_batches').put(batch.batchId, batch)
   await new CompleteCatalogRecallWorker(domain, {

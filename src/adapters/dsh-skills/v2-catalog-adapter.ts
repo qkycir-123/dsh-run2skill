@@ -42,12 +42,18 @@ const runtimeDefinitionSchema = runtimeSummarySchema.safeExtend({ content: z.str
 type RuntimeSummary = z.infer<typeof runtimeSummarySchema>
 
 type OwnershipFileRead =
-  | { readonly status: 'READ'; readonly name: string; readonly bodyDigest: string }
+  | {
+      readonly status: 'READ'
+      readonly name: string
+      readonly bodyDigest: string
+      readonly skillBytesDigest: string
+    }
   | { readonly status: 'NO_MATCH' | 'UNAVAILABLE' }
 
 interface OwnershipLocatedFile {
   readonly target: string
   readonly bodyDigest: string
+  readonly skillBytesDigest: string
 }
 
 type OwnershipDirectoryIndex = ReadonlyMap<string, OwnershipLocatedFile | null>
@@ -590,9 +596,15 @@ export class DshV2CatalogAdapter<TView extends object> {
     } catch (error) {
       return { status: fileAbsent(error) ? 'NO_MATCH' : 'UNAVAILABLE' }
     }
-    const parsed = parseDshSkillFileForOwnership(Buffer.concat(chunks, candidateBytes).toString('utf8'))
+    const exactSkillBytes = Buffer.concat(chunks, candidateBytes).toString('utf8')
+    const parsed = parseDshSkillFileForOwnership(exactSkillBytes)
     if (parsed === undefined) return { status: 'NO_MATCH' }
-    return { status: 'READ', name: parsed.name, bodyDigest: sha256Utf8(parsed.body) }
+    return {
+      status: 'READ',
+      name: parsed.name,
+      bodyDigest: sha256Utf8(parsed.body),
+      skillBytesDigest: sha256Utf8(exactSkillBytes),
+    }
   }
 
   async #readExactOwnershipFile(
@@ -604,7 +616,7 @@ export class DshV2CatalogAdapter<TView extends object> {
   ): Promise<OwnershipLocatedFile | undefined> {
     const read = await this.#readOwnershipFile(target, observeBytes, observeCandidateFile, fileReads)
     return read.status === 'READ' && read.name === expectedName
-      ? { target, bodyDigest: read.bodyDigest }
+      ? { target, bodyDigest: read.bodyDigest, skillBytesDigest: read.skillBytesDigest }
       : undefined
   }
 
@@ -660,7 +672,9 @@ export class DshV2CatalogAdapter<TView extends object> {
         if (read.status === 'READ') {
           index.set(
             read.name,
-            index.has(read.name) ? null : { target, bodyDigest: read.bodyDigest },
+            index.has(read.name)
+              ? null
+              : { target, bodyDigest: read.bodyDigest, skillBytesDigest: read.skillBytesDigest },
           )
         }
       }
@@ -682,8 +696,10 @@ export class DshV2CatalogAdapter<TView extends object> {
     const candidate = before.candidates.get(candidateId)
     if (candidate === undefined) return undefined
     let content: string | undefined
+    let skillBytesDigest: string | undefined
     if (candidate.kind === 'PENDING') {
       content = candidate.entry.capability === 'FULL_BODY' ? candidate.entry.exactSkillBytes : undefined
+      if (content !== undefined) skillBytesDigest = sha256Utf8(content)
     } else {
       let raw: unknown
       try {
@@ -719,6 +735,40 @@ export class DshV2CatalogAdapter<TView extends object> {
       }
       if (canonicalJson(loadedSummary) !== canonicalJson(candidate.summary)) return undefined
       content = definition.data.content
+      if (candidate.summary.writable) {
+        let totalBytes = 0
+        let candidateFiles = 0
+        const exactPath = definition.data.path ?? candidate.raw.path
+        const exact = exactPath === undefined
+          ? candidate.raw.resourceBase?.kind === 'directory'
+            ? await this.#discoverOwnershipFile(
+                candidate.raw.resourceBase.path,
+                candidate.raw.name,
+                bytes => {
+                  if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
+                  totalBytes += bytes
+                  return true
+                },
+                () => true,
+                () => ++candidateFiles <= this.#ownershipPolicy.maxCandidateFiles,
+                new Map(),
+                new Map(),
+              )
+            : undefined
+          : await this.#readExactOwnershipFile(
+              exactPath,
+              candidate.raw.name,
+              bytes => {
+                if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
+                totalBytes += bytes
+                return true
+              },
+              () => ++candidateFiles <= this.#ownershipPolicy.maxCandidateFiles,
+              new Map(),
+            )
+        if (exact === undefined || exact.bodyDigest !== sha256Utf8(content)) return undefined
+        skillBytesDigest = exact.skillBytesDigest
+      }
     }
     if (content === undefined) return undefined
     const after = await this.#capture(batch, intent, undefined, view)
@@ -729,7 +779,11 @@ export class DshV2CatalogAdapter<TView extends object> {
       candidate.kind === 'PENDING'
       && (afterCandidate.kind !== 'PENDING' || afterCandidate.entry.bodyDigest !== candidate.entry.bodyDigest)
     ) return undefined
-    return { ...candidate.summary, content }
+    return {
+      ...candidate.summary,
+      content,
+      ...(skillBytesDigest === undefined ? {} : { skillBytesDigest }),
+    }
   }
 
   #incomplete(pending?: ReturnType<typeof derivePendingProposalCatalogV2>): CapturedCatalog {

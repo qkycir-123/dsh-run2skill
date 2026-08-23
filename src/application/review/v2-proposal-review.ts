@@ -92,6 +92,12 @@ function immutableProposalFacts(lineage: NativeProposalLineageV2, proposal: Nati
       ...(proposal.targetIdentityDigest === undefined
         ? {}
         : { targetIdentityDigest: proposal.targetIdentityDigest }),
+      ...(proposal.baseSkillBytesDigest === undefined
+        ? {}
+        : { baseSkillBytesDigest: proposal.baseSkillBytesDigest }),
+      ...(proposal.projectScopeBinding === undefined
+        ? {}
+        : { projectScopeBinding: proposal.projectScopeBinding }),
       createdAt: proposal.createdAt,
     },
   }
