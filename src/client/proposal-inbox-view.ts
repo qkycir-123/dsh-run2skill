@@ -229,6 +229,7 @@ export function ProposalInboxPanel(props: {
       onApprove: () => { void controller.mutate('APPROVE') },
       onReject: () => { props.setRejectConfirm(true) },
       onRetry: () => { void controller.mutate('RETRY') },
+      onRefresh: () => { void controller.mutate('REFRESH') },
       onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD') },
     }),
     createElement('div', { 'aria-live': 'polite', 'aria-atomic': true }, state.announcement),
@@ -250,6 +251,15 @@ export function ProposalInboxPanel(props: {
 
 export function factsFromAction(detail: ProposalDetail): string {
   const action = detail.proposal.actionBinding
+  if (action === undefined) {
+    if (detail.publicationOutcome === 'NEEDS_REFRESH') {
+      return '这份草稿的保存目标已失效；请生成新草稿后重新审核。'
+    }
+    if (detail.publicationOutcome === 'PUBLISH_FAILED') {
+      return '这份草稿的保存目标暂时不可确认；请等待目录恢复后重试保存。'
+    }
+    return '这份草稿的保存目标暂时不可确认；请等待目录恢复后重新打开详情。'
+  }
   if (action.kind === 'CREATE') {
     return [
       `Skill 存储规则版本：${action.rootBinding.rootContractVersion}`,
@@ -290,8 +300,12 @@ export function factsFromAction(detail: ProposalDetail): string {
 export function proposalDetailAction(
   detail: Pick<ProposalDetail, 'reviewDecision' | 'processingState' | 'publicationOutcome'>,
   mutationPending: boolean,
-): 'REVIEW' | 'RETRY_PUBLICATION' | 'NONE' {
+): 'REVIEW' | 'REFRESH' | 'RETRY_PUBLICATION' | 'NONE' {
   if (mutationPending) return 'NONE'
+  if (
+    detail.processingState === 'NEEDS_ATTENTION'
+    && detail.publicationOutcome === 'NEEDS_REFRESH'
+  ) return 'REFRESH'
   if (
     detail.reviewDecision === 'PENDING'
     && detail.processingState === 'READY_FOR_REVIEW'
@@ -313,6 +327,7 @@ export function ProposalDetailView(props: {
   readonly onApprove: () => void
   readonly onReject: (trigger?: HTMLButtonElement) => void
   readonly onRetry: () => void
+  readonly onRefresh: () => void
   readonly onConfirmDiscard: () => void
 }): ReactElement {
   const { detail, mutationPending } = props
@@ -320,10 +335,10 @@ export function ProposalDetailView(props: {
   const action = proposalDetailAction(detail, mutationPending)
   const actionable = action === 'REVIEW'
   const coordinate = detail.sessionCoordinate
-  const baseBytes = proposal.actionBinding.kind === 'MERGE'
+  const baseBytes = proposal.actionBinding?.kind === 'MERGE'
     ? proposal.actionBinding.baseBinding.exactBytes
     : undefined
-  const coveringBytes = proposal.actionBinding.kind === 'DISCARD'
+  const coveringBytes = proposal.actionBinding?.kind === 'DISCARD'
     ? proposal.actionBinding.coveringCandidateBinding.content
     : undefined
   const diff = baseBytes === undefined ? [] : makeExactLineDiff(baseBytes, proposal.exactSkillBytes)
@@ -415,6 +430,10 @@ export function ProposalDetailView(props: {
         ? createElement(Button, {
             variant: 'primary', disabled: mutationPending, onClick: props.onRetry,
           }, '重试保存')
+        : action === 'REFRESH'
+          ? createElement(Button, {
+              variant: 'primary', disabled: mutationPending, onClick: props.onRefresh,
+            }, '生成新草稿')
         : proposal.kind === 'DISCARD'
         ? createElement(Fragment, null,
             createElement(Button, {

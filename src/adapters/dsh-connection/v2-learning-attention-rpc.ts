@@ -46,6 +46,7 @@ const dismissRequest = z.object({
   action: AttentionActionIdentityV1Schema,
   confirm: z.literal(true),
 }).strict()
+const retryRequest = dismissRequest.omit({ confirm: true })
 
 type Subject =
   | { readonly kind: 'BATCH'; readonly batch: SessionBatchV2 }
@@ -75,18 +76,27 @@ function failure(value: Subject): string {
             : 'INTENT_NEEDS_ATTENTION'
 }
 
-function action(value: Subject, scope: 'PROJECT' | 'USER'): ProjectedAttentionAction {
-  const revision = value.kind === 'BATCH' ? value.batch.revision : value.intent.revision
+function action(
+  value: Subject,
+  scope: 'PROJECT' | 'USER',
+  override?: { readonly revision: number; readonly reasonCode: string; readonly coveredDispute?: boolean },
+): ProjectedAttentionAction {
+  const revision = override?.revision ?? (value.kind === 'BATCH' ? value.batch.revision : value.intent.revision)
   const id = value.kind === 'BATCH' ? value.batch.batchId : value.intent.intentId
-  const reasonCode = failure(value)
+  const reasonCode = override?.reasonCode ?? failure(value)
   const subject = subjectId(value.kind, id)
+  const coveredDispute = override?.coveredDispute ?? (
+    value.kind === 'INTENT'
+    && value.intent.status === 'COVERED_NEEDS_CONFIRMATION'
+    && !value.intent.coverage.retryUsed
+  )
   return {
     actionKey: `act_${hash(['run2skill-v2-learning-action', subject, String(revision), reasonCode])}`,
     subjectId: subject,
-    kind: 'DISMISS_LEARNING',
+    kind: coveredDispute ? 'RETRY_LEARNING' : 'DISMISS_LEARNING',
     reasonCode,
     scope,
-    availableActions: ['DISMISS'],
+    availableActions: coveredDispute ? ['RETRY', 'DISMISS'] : ['DISMISS'],
     createdAt: value.kind === 'BATCH' ? value.batch.createdAt : value.intent.createdAt,
     updatedAt: value.kind === 'BATCH' ? value.batch.updatedAt : value.intent.updatedAt,
   }
@@ -158,7 +168,7 @@ export class V2LearningAttentionService {
         return fallback === undefined ? error('bad-request') : await fallback(endpoint, payload, signal)
       }
       if (!fits(payload) || signal.aborted) return signal.aborted ? error('cancelled') : error('bad-request')
-      if (endpoint === V2_LEARNING_ISSUES_RETRY_ENDPOINT) return error('invalid-state')
+      if (endpoint === V2_LEARNING_ISSUES_RETRY_ENDPOINT) return await this.#retry(payload)
       if (endpoint === V2_LEARNING_ISSUES_LIST_ENDPOINT) return await this.#list(payload)
       return await this.#dismiss(payload)
     }
@@ -169,7 +179,7 @@ export class V2LearningAttentionService {
     if (journal?.kind !== 'USER_ACTION') return
     const intent = ExperienceIntentV2Schema.safeParse(this.#intents.get(journal.ownerId))
     if (intent.success && intent.data.status === 'DISCARDED') await this.#finalizeIntentDismiss(intent.data)
-    else await this.#global.runExclusive(async current => {
+    else if (intent.success) await this.#global.runExclusive(async current => {
       if (current.proposalCatalogMutationJournal?.kind !== 'USER_ACTION') return { value: undefined }
       const { proposalCatalogMutationJournal: _journal, ...stable } = current
       return { value: undefined, global: stable }
@@ -253,6 +263,90 @@ export class V2LearningAttentionService {
       return { ok: true, value: {
         apiVersion: 1, workItemId: projected.subjectId, workItemRevision: revision + 1,
         changed: true, processingState: 'TERMINAL', disposition: 'IGNORED',
+      } }
+    } catch {
+      return error('conflict')
+    }
+  }
+
+  async #retry(payload: unknown): Promise<ObserveRpcResult<unknown>> {
+    const request = retryRequest.safeParse(payload)
+    if (!request.success) return error('bad-request')
+    try {
+      const subject = this.#find(request.data.workItemId)
+      if (subject?.kind !== 'INTENT') throw new CurrentScopeAuthorizationError('ACTION_STALE')
+      const current = subject.intent
+      const alreadyAuthorized = current.status === 'COVERAGE_RETRY_AUTHORIZED'
+        && current.coverage.retryUsed
+        && current.revision === request.data.workItemRevision + 1
+        && current.reasonReceipts.some(receipt => (
+          receipt.revision === current.revision && receipt.reasonCode === 'DISPUTE_COVERAGE'
+        ))
+      if (alreadyAuthorized) {
+        const original = action(
+          { kind: 'INTENT', intent: { ...current, status: 'COVERED_NEEDS_CONFIRMATION' } },
+          current.persistenceScope,
+          {
+            revision: request.data.workItemRevision,
+            reasonCode: 'COVERED_NEEDS_CONFIRMATION',
+            coveredDispute: true,
+          },
+        )
+        if (
+          original.actionKey !== request.data.action.actionKey
+          || original.subjectId !== request.data.action.subjectId
+          || original.kind !== request.data.action.kind
+        ) throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        return { ok: true, value: {
+          apiVersion: 1,
+          workItemId: request.data.workItemId,
+          workItemRevision: current.revision,
+          changed: false,
+          processingState: 'CAPTURED',
+          disposition: 'RETRY_QUEUED',
+        } }
+      }
+      const projected = (await this.project(request.data.currentScope)).find(candidate => (
+        candidate.actionKey === request.data.action.actionKey
+        && candidate.subjectId === request.data.action.subjectId
+        && candidate.kind === request.data.action.kind
+      ))
+      if (
+        projected === undefined
+        || projected.kind !== 'RETRY_LEARNING'
+        || !projected.availableActions.includes('RETRY')
+        || current.revision !== request.data.workItemRevision
+        || current.status !== 'COVERED_NEEDS_CONFIRMATION'
+        || current.coverage.retryUsed
+      ) throw new CurrentScopeAuthorizationError('ACTION_STALE')
+      const updated = await this.#intents.update(current.intentId, raw => {
+        const intent = ExperienceIntentV2Schema.parse(raw)
+        if (
+          intent.revision !== current.revision
+          || intent.status !== 'COVERED_NEEDS_CONFIRMATION'
+          || intent.coverage.retryUsed
+        ) throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        const revision = intent.revision + 1
+        return ExperienceIntentV2Schema.parse({
+          ...intent,
+          revision,
+          status: 'COVERAGE_RETRY_AUTHORIZED',
+          coverage: { ...intent.coverage, state: 'ANALYZING', retryUsed: true },
+          reasonReceipts: [...intent.reasonReceipts, {
+            revision,
+            reasonCode: 'DISPUTE_COVERAGE',
+            recordedAt: this.now(),
+          }],
+          updatedAt: this.now(),
+        })
+      })
+      return { ok: true, value: {
+        apiVersion: 1,
+        workItemId: request.data.workItemId,
+        workItemRevision: updated.revision,
+        changed: true,
+        processingState: 'CAPTURED',
+        disposition: 'RETRY_QUEUED',
       } }
     } catch {
       return error('conflict')

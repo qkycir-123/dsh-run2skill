@@ -165,6 +165,11 @@ describe('Proposal Inbox client', () => {
       processingState: 'NEEDS_ATTENTION',
       publicationOutcome: 'PUBLISH_FAILED',
     }, false)).toBe('RETRY_PUBLICATION')
+    expect(proposalDetailAction({
+      reviewDecision: 'PENDING',
+      processingState: 'NEEDS_ATTENTION',
+      publicationOutcome: 'NEEDS_REFRESH',
+    }, false)).toBe('REFRESH')
   })
 
   it('never exposes absolute Workspace, DSH Home, root, or Skill target paths in review facts', () => {
@@ -551,6 +556,39 @@ describe('Proposal Inbox client', () => {
     mismatched.value.proposal.kind = 'MERGE'
 
     expect(parseProposalDetail(mismatched)).toBeUndefined()
+  })
+
+  it('accepts an evidence-only stale detail but still requires a binding for an approvable Proposal', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const staged = await new ProposalReviewStore(domain).stage(
+      item.workItemId,
+      item.revision,
+      makeCreateProposalSnapshot(item),
+    )
+    const { host, scopeAccess } = await securedReview(domain)
+    const response = await host('proposals/get', {
+      apiVersion: 1,
+      currentScope,
+      action: scopeAccess().actions[0],
+      proposalId: staged.item.review!.proposal.proposalId,
+    }, new AbortController().signal)
+    const withoutBinding = structuredClone(response) as {
+      value: {
+        processingState: 'READY_FOR_REVIEW' | 'NEEDS_ATTENTION'
+        publicationOutcome: 'PENDING_REVIEW' | 'NEEDS_REFRESH'
+        proposal: { actionBinding?: unknown }
+      }
+    }
+    delete withoutBinding.value.proposal.actionBinding
+    expect(parseProposalDetail(withoutBinding)).toBeUndefined()
+
+    withoutBinding.value.processingState = 'NEEDS_ATTENTION'
+    withoutBinding.value.publicationOutcome = 'NEEDS_REFRESH'
+    const stale = parseProposalDetail(withoutBinding)
+    expect(stale).toBeDefined()
+    expect(factsFromAction(stale!)).toContain('保存目标已失效')
   })
 
   it('projects review detail without any absolute Workspace, root, or Skill target path', async () => {

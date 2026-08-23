@@ -1,9 +1,9 @@
-import { join } from 'node:path'
 import type { V2ProposalPublicationInput } from '../../application/publication/index.js'
+import { ExperienceRecordV1Schema } from '../../domain/learn/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import type { RootBindingV2 } from '../../domain/review/index.js'
-import { readPublicationText } from '../dsh-publication/filesystem-cas.mjs'
+import { TurnObservationV2Schema, type TurnObservationV2 } from '../../domain/v2/index.js'
 import type { V2DshPublicationBindingPort } from '../dsh-publication/v2-proposal-filesystem.js'
 import { safeProposalSchema } from './proposal-review-rpc.js'
 import type { V2CompatibleProposalPresentation } from './v2-proposal-rpc.js'
@@ -20,6 +20,7 @@ export class V2ProposalPresentationError extends Error {
 export interface V2CompatibleProposalPresenterOptions<TView extends object> {
   readonly bindings: V2DshPublicationBindingPort<TView>
   readonly sessionCoordinate: (input: V2ProposalPublicationInput) => SessionCoordinate | undefined
+  readonly observation: (observationId: string) => TurnObservationV2 | undefined
 }
 
 function safeRootBinding(binding: RootBindingV2) {
@@ -42,21 +43,59 @@ function syntheticId(prefix: 'lp' | 'exp', intentId: string): string {
 export class V2CompatibleProposalPresenter<TView extends object> {
   constructor(private readonly options: V2CompatibleProposalPresenterOptions<TView>) {}
 
-  async present(input: V2ProposalPublicationInput): Promise<V2CompatibleProposalPresentation> {
-    const coordinate = this.options.sessionCoordinate(input)
-    if (coordinate === undefined) throw new V2ProposalPresentationError('UNAVAILABLE')
+  async present(
+    input: V2ProposalPublicationInput & { readonly allowUnresolvedBinding?: boolean },
+  ): Promise<V2CompatibleProposalPresentation> {
+    const observations = input.intent.evidenceRefs.map(reference => {
+      const parsed = TurnObservationV2Schema.safeParse(this.options.observation(reference.observationId))
+      if (!parsed.success) throw new V2ProposalPresentationError('UNAVAILABLE')
+      const observation = parsed.data
+      if (
+        observation.sessionLifecycleKey !== reference.sessionLifecycleKey
+        || observation.turnEndSeq !== reference.turnEndSeq
+        || observation.evidenceDigest !== reference.evidenceDigest
+        || observation.sessionLifecycleKey !== input.intent.sessionLifecycleKey
+      ) throw new V2ProposalPresentationError('STALE')
+      if (
+        input.intent.persistenceScope === 'PROJECT'
+        && (
+          observation.scopeBinding.status !== 'PROJECT'
+          || input.proposal.projectScopeBinding === undefined
+          || observation.scopeBinding.workspaceId !== input.proposal.projectScopeBinding.workspaceId
+          || observation.scopeBinding.scopeIdentityDigest !== input.proposal.projectScopeBinding.scopeIdentityDigest
+        )
+      ) throw new V2ProposalPresentationError('STALE')
+      return observation
+    })
+    const latestObservation = observations.reduce((latest, observation) => (
+      observation.turnEndSeq > latest.turnEndSeq ? observation : latest
+    ))
+    const coordinate = this.options.sessionCoordinate(input) ?? {
+      rootSessionId: input.batch.sessionLifecycleKey,
+      sessionCreatedAt: 0,
+      turn: latestObservation.turn,
+      turnEndSeq: latestObservation.turnEndSeq,
+    }
+    const evidenceRefs = [...new Map(
+      observations
+        .flatMap(observation => observation.directUserEvidence)
+        .map(evidence => [`${String(evidence.messageSeq)}\0${evidence.excerptDigest}`, evidence]),
+    ).values()].slice(0, 4)
+    if (evidenceRefs.length === 0) throw new V2ProposalPresentationError('UNAVAILABLE')
     let resolved
     try {
       resolved = await this.options.bindings.resolve(input)
     } catch {
-      throw new V2ProposalPresentationError('UNAVAILABLE')
+      if (input.allowUnresolvedBinding !== true) throw new V2ProposalPresentationError('UNAVAILABLE')
     }
-    if (resolved.status !== 'READY') {
+    if (resolved !== undefined && resolved.status !== 'READY' && input.allowUnresolvedBinding !== true) {
       throw new V2ProposalPresentationError(resolved.status === 'STALE' ? 'STALE' : 'UNAVAILABLE')
     }
-    const rootBinding = safeRootBinding(resolved.rootBinding)
+    const rootBinding = resolved?.status === 'READY' ? safeRootBinding(resolved.rootBinding) : undefined
     let actionBinding
-    if (input.proposal.action === 'CREATE') {
+    if (rootBinding === undefined) {
+      actionBinding = undefined
+    } else if (input.proposal.action === 'CREATE') {
       actionBinding = {
         kind: 'CREATE' as const,
         rootBinding,
@@ -65,29 +104,21 @@ export class V2CompatibleProposalPresenter<TView extends object> {
       }
     } else {
       const candidateKey = input.intent.coverage.targetCandidateId
-      if (candidateKey === undefined || input.proposal.baseSkillBytesDigest === undefined) {
+      if (
+        candidateKey === undefined
+        || input.proposal.baseSkillBytes === undefined
+        || input.proposal.baseSkillBytesDigest === undefined
+        || sha256Utf8(input.proposal.baseSkillBytes) !== input.proposal.baseSkillBytesDigest
+      ) {
         throw new V2ProposalPresentationError('STALE')
       }
-      let base
-      try {
-        base = await readPublicationText(
-          join(resolved.rootBinding.declaredRootPath, input.proposal.body.name, 'SKILL.md'),
-          64 * 1024,
-        )
-      } catch {
-        throw new V2ProposalPresentationError('UNAVAILABLE')
-      }
-      if (
-        base.status !== 'AVAILABLE'
-        || sha256Utf8(base.text) !== input.proposal.baseSkillBytesDigest
-      ) throw new V2ProposalPresentationError('STALE')
       actionBinding = {
         kind: 'MERGE' as const,
         rootBinding,
         targetBinding: { skillName: input.proposal.body.name },
         baseBinding: {
           candidateKey,
-          exactBytes: base.text,
+          exactBytes: input.proposal.baseSkillBytes,
           bytesDigest: input.proposal.baseSkillBytesDigest,
           observedAt: input.proposal.createdAt,
         },
@@ -114,13 +145,23 @@ export class V2CompatibleProposalPresenter<TView extends object> {
         supportingExperienceIds: [syntheticId('exp', input.intent.intentId)],
         catalogObservationDigest: input.proposal.runtimeCatalogDigest,
         curationRationale: input.intent.applicabilitySummary,
-        actionBinding,
+        ...(actionBinding === undefined ? {} : { actionBinding }),
         proposalId: input.proposal.proposalId,
         digest: input.proposalRef.digest,
       }),
       sessionCoordinate: coordinate,
-      evidenceRefs: [],
-      experiences: [],
+      evidenceRefs,
+      experiences: [ExperienceRecordV1Schema.parse({
+        experienceId: syntheticId('exp', input.intent.intentId),
+        type: input.intent.experienceType,
+        lesson: input.intent.applicabilitySummary,
+        persistenceScope: input.intent.persistenceScope,
+        evidenceStrength: 'HIGH',
+        supportingEvidence: evidenceRefs.map(evidence => ({
+          messageSeq: evidence.messageSeq,
+          excerptDigest: evidence.excerptDigest,
+        })),
+      })],
     }
   }
 }

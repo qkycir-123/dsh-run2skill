@@ -89,13 +89,14 @@ describe('v2 Proposal Catalog revalidator', () => {
     const seeded = fixture()
     const candidateId = `cand_${'e'.repeat(64)}`
     const content = '# Existing Skill\n'
-    const exactDigest = 'f'.repeat(64)
+    const exactDigest = sha256Utf8(content)
     const mergeInput = {
       ...seeded.input,
       proposal: {
         ...seeded.input.proposal,
         action: 'MERGE',
         targetIdentityDigest: sha256Utf8(content),
+        baseSkillBytes: content,
         baseSkillBytesDigest: exactDigest,
       },
       intent: {

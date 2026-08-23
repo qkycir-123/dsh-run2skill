@@ -30,8 +30,16 @@ export const CurrentScopeV1Schema = z.discriminatedUnion('kind', [
 export const AttentionActionIdentityV1Schema = z.object({
   actionKey: actionKeySchema,
   subjectId: workItemId,
-  kind: z.enum(['REVIEW_PROPOSAL', 'RETRY_PUBLICATION', 'RETRY_LEARNING', 'DISMISS_LEARNING']),
+  kind: z.enum(['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION', 'RETRY_LEARNING', 'DISMISS_LEARNING']),
   proposalRef: proposalRefSchema.optional(),
+}).strict()
+
+export const AttentionActionV1Schema = AttentionActionIdentityV1Schema.extend({
+  reasonCode: identity,
+  scope: z.enum(['PROJECT', 'USER']),
+  availableActions: z.array(identity).max(4),
+  createdAt: z.string().datetime({ offset: true }),
+  updatedAt: z.string().datetime({ offset: true }),
 }).strict()
 
 export const AuthoritativeActionCursorV1Schema = z.string()

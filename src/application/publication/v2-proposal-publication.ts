@@ -297,10 +297,41 @@ export class V2ProposalPublicationCoordinator {
         publicationAttemptedAt: _attempted,
         ...base
       } = latest
+      const skillRevisions = [...current.skillRevisions]
+      if (latest.action === 'MERGE') {
+        if (latest.baseSkillBytes === undefined || latest.baseSkillBytesDigest === undefined) {
+          throw new V2ProposalPublicationError('PUBLICATION_INPUT_UNAVAILABLE')
+        }
+        const currentSkill = skillRevisions.at(-1)
+        if (currentSkill === undefined) {
+          skillRevisions.push({
+            revision: 1,
+            origin: 'ADOPTED_BASE',
+            exactSkillBytes: latest.baseSkillBytes,
+            skillBytesDigest: latest.baseSkillBytesDigest,
+            committedAt: publishedAt,
+          })
+        } else if (
+          currentSkill.exactSkillBytes !== latest.baseSkillBytes
+          || currentSkill.skillBytesDigest !== latest.baseSkillBytesDigest
+        ) {
+          throw new V2ProposalPublicationError('PUBLICATION_INPUT_UNAVAILABLE')
+        }
+      }
+      skillRevisions.push({
+        revision: skillRevisions.length + 1,
+        origin: 'RUN2SKILL',
+        proposalId: latest.proposalId,
+        exactSkillBytes: latest.body.exactSkillBytes,
+        skillBytesDigest: latest.body.skillBytesDigest,
+        committedAt: publishedAt,
+      })
       return {
         ...current,
         revision: current.revision + 1,
         state: 'PUBLISHED',
+        currentSkillRevision: skillRevisions.length,
+        skillRevisions,
         updatedAt: publishedAt,
         proposalRevisions: [
           ...current.proposalRevisions.slice(0, -1),

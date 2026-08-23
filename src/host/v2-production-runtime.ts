@@ -195,6 +195,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     if (activation.status !== 'COMPLETE') throw new Error('V2_ACTIVATION_INCOMPLETE')
     await this.purge.recover()
     await this.attention.recover()
+    await this.proposals.refreshes.recover()
     await this.proposals.reviews.recover()
     await this.proposals.publications.recover()
     await this.pipeline.start()

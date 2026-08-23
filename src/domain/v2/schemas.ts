@@ -910,6 +910,7 @@ const SealedGenerationResultV2Schema = z.object({
   action: z.enum(['CREATE', 'MERGE']),
   body: SealedSkillBodyV2Schema,
   targetDigest: sha256Hex,
+  baseSkillBytes: utf8Limited(64 * 1024).optional(),
   baseSkillBytesDigest: sha256Hex.optional(),
   inputDigest: sha256Hex,
   runtimeCatalogDigest: sha256Hex,
@@ -921,11 +922,14 @@ const SealedGenerationResultV2Schema = z.object({
   mutationReceiptDigest: sha256Hex,
   receiptDigest: sha256Hex,
 }).strict().superRefine((value, context) => {
-  if (value.action === 'MERGE' && value.baseSkillBytesDigest === undefined) {
-    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'MERGE result requires the exact Base Skill bytes digest' })
+  if (value.action === 'MERGE' && (value.baseSkillBytes === undefined || value.baseSkillBytesDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'MERGE result requires the exact Base Skill bytes and digest' })
   }
-  if (value.action === 'CREATE' && value.baseSkillBytesDigest !== undefined) {
-    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'CREATE result cannot retain a Base Skill bytes digest' })
+  if (value.action === 'CREATE' && (value.baseSkillBytes !== undefined || value.baseSkillBytesDigest !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'CREATE result cannot retain Base Skill bytes' })
+  }
+  if (value.baseSkillBytes !== undefined && value.baseSkillBytesDigest !== sha256Utf8(value.baseSkillBytes)) {
+    context.addIssue({ code: 'custom', path: ['baseSkillBytesDigest'], message: 'Base Skill bytes digest does not match immutable bytes' })
   }
 })
 
@@ -2109,12 +2113,13 @@ const NativeProposalRevisionV2Schema = z.object({
   catalogMutationReceiptDigest: sha256Hex,
   catalogEpoch: safeNonNegativeInteger,
   targetIdentityDigest: sha256Hex.optional(),
+  baseSkillBytes: utf8Limited(64 * 1024).optional(),
   baseSkillBytesDigest: sha256Hex.optional(),
   projectScopeBinding: z.object({
     workspaceId: identity,
     scopeIdentityDigest: sha256Hex,
   }).strict().optional(),
-  state: z.enum(['ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
+  state: z.enum(['ACTIVE_PROPOSAL', 'SUPERSEDED', 'PUBLISHED', 'TERMINAL']),
   reviewDecision: z.enum(['APPROVED', 'REJECTED']).optional(),
   reviewedAt: isoDateTime.optional(),
   reviewReceiptDigest: sha256Hex.optional(),
@@ -2174,8 +2179,24 @@ const NativeProposalRevisionV2Schema = z.object({
   if (publicationSuccessCount > 0 && (hasPublicationFailure || value.reviewDecision !== 'APPROVED' || value.state !== 'PUBLISHED')) {
     context.addIssue({ code: 'custom', path: ['publicationReceiptDigest'], message: 'Publication success requires one approved published Proposal and no failure' })
   }
-  if (hasPublicationFailure && (value.reviewDecision !== 'APPROVED' || value.state !== 'ACTIVE_PROPOSAL')) {
-    context.addIssue({ code: 'custom', path: ['publicationFailureCode'], message: 'Publication failure must keep one approved active Proposal' })
+  if (hasPublicationFailure && (value.reviewDecision !== 'APPROVED' || !['ACTIVE_PROPOSAL', 'SUPERSEDED'].includes(value.state))) {
+    context.addIssue({ code: 'custom', path: ['publicationFailureCode'], message: 'Publication failure must remain on its approved Proposal revision' })
+  }
+})
+
+const NativeSkillRevisionV2Schema = z.object({
+  revision: positiveSafeInteger,
+  origin: z.enum(['ADOPTED_BASE', 'RUN2SKILL']),
+  proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/).optional(),
+  exactSkillBytes: utf8Limited(64 * 1024),
+  skillBytesDigest: sha256Hex,
+  committedAt: isoDateTime,
+}).strict().superRefine((value, context) => {
+  if (value.skillBytesDigest !== sha256Utf8(value.exactSkillBytes)) {
+    context.addIssue({ code: 'custom', path: ['skillBytesDigest'], message: 'Skill revision digest does not match immutable bytes' })
+  }
+  if ((value.origin === 'RUN2SKILL') !== (value.proposalId !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['proposalId'], message: 'Only Run2skill revisions bind a Proposal id' })
   }
 })
 
@@ -2185,12 +2206,14 @@ const NativeProposalLineageV2Schema = z.object({
   lineageId: z.string().regex(/^lin_[a-f0-9]{64}$/),
   persistenceScope: PersistenceScopeV2Schema,
   origin: z.literal('RUN2SKILL_V2'),
-  state: z.enum(['RESERVED', 'ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
+  state: z.enum(['RESERVED', 'REFRESHING', 'ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
   behaviorSignature: sha256Hex,
   ownerIntentId: z.string().regex(/^intent_[a-f0-9]{64}$/),
   ownerIntentRevision: positiveSafeInteger,
   currentProposalRevision: safeNonNegativeInteger,
   proposalRevisions: z.array(NativeProposalRevisionV2Schema).max(64),
+  currentSkillRevision: safeNonNegativeInteger.default(0),
+  skillRevisions: z.array(NativeSkillRevisionV2Schema).max(128).default([]),
   createdAt: isoDateTime,
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
@@ -2204,11 +2227,29 @@ const NativeProposalLineageV2Schema = z.object({
     if (
       revision.revision !== index + 1
     ) context.addIssue({ code: 'custom', path: ['proposalRevisions', index], message: 'Native Proposal revision is outside Lineage ownership' })
+    if (revision.action === 'MERGE' && (
+      revision.baseSkillBytes === undefined
+      || revision.baseSkillBytesDigest !== sha256Utf8(revision.baseSkillBytes)
+    )) context.addIssue({ code: 'custom', path: ['proposalRevisions', index], message: 'MERGE Proposal requires exact immutable Base Skill bytes' })
+    if (revision.action === 'CREATE' && (
+      revision.baseSkillBytes !== undefined || revision.baseSkillBytesDigest !== undefined
+    )) context.addIssue({ code: 'custom', path: ['proposalRevisions', index], message: 'CREATE Proposal cannot retain Base Skill bytes' })
+  })
+  if (value.currentSkillRevision !== value.skillRevisions.length) {
+    context.addIssue({ code: 'custom', path: ['currentSkillRevision'], message: 'Native lineage must retain complete consecutive Skill revisions' })
+  }
+  value.skillRevisions.forEach((revision, index) => {
+    if (revision.revision !== index + 1) {
+      context.addIssue({ code: 'custom', path: ['skillRevisions', index], message: 'Skill revision is outside Lineage ownership' })
+    }
   })
   if (value.state === 'RESERVED' && value.proposalRevisions.length !== 0) {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Reserved lineage cannot contain a Proposal body' })
   }
-  if (value.state !== 'RESERVED' && (
+  if (value.state === 'REFRESHING' && value.proposalRevisions.at(-1)?.state !== 'SUPERSEDED') {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Refreshing lineage must retain one superseded latest Proposal revision' })
+  }
+  if (!['RESERVED', 'REFRESHING'].includes(value.state) && (
     value.proposalRevisions.length === 0 || value.proposalRevisions.at(-1)?.state !== value.state
   )) {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Active native lineage requires a matching immutable Proposal revision' })
@@ -2220,11 +2261,21 @@ const NativeProposalLineageV2Schema = z.object({
   if (latestRevision?.projectScopeBinding !== undefined && value.persistenceScope !== 'PROJECT') {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Only PROJECT Proposal may retain a Workspace scope binding' })
   }
-  if (latestRevision?.action === 'MERGE' && latestRevision.baseSkillBytesDigest === undefined) {
-    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'MERGE Proposal requires the exact reviewed Base Skill bytes digest' })
+  if (latestRevision?.action === 'MERGE' && (
+    latestRevision.baseSkillBytes === undefined || latestRevision.baseSkillBytesDigest === undefined
+  )) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'MERGE Proposal requires the exact reviewed Base Skill bytes and digest' })
   }
-  if (latestRevision?.action === 'CREATE' && latestRevision.baseSkillBytesDigest !== undefined) {
-    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'CREATE Proposal cannot retain a Base Skill bytes digest' })
+  if (latestRevision?.action === 'CREATE' && (
+    latestRevision.baseSkillBytes !== undefined || latestRevision.baseSkillBytesDigest !== undefined
+  )) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'CREATE Proposal cannot retain Base Skill bytes' })
+  }
+  if (
+    latestRevision?.baseSkillBytes !== undefined
+    && latestRevision.baseSkillBytesDigest !== sha256Utf8(latestRevision.baseSkillBytes)
+  ) {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Proposal Base Skill bytes digest does not match immutable bytes' })
   }
   if (
     latestRevision !== undefined
@@ -2238,6 +2289,16 @@ const NativeProposalLineageV2Schema = z.object({
   }
   if (value.state === 'PUBLISHED' && latestRevision?.reviewDecision !== 'APPROVED') {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Published native Proposal requires an approval decision' })
+  }
+  const latestSkillRevision = value.skillRevisions.at(-1)
+  if (value.state === 'PUBLISHED' && (
+    latestSkillRevision === undefined
+    || latestSkillRevision.origin !== 'RUN2SKILL'
+    || latestSkillRevision.proposalId !== latestRevision?.proposalId
+    || latestSkillRevision.exactSkillBytes !== latestRevision?.body.exactSkillBytes
+    || latestSkillRevision.skillBytesDigest !== latestRevision?.body.skillBytesDigest
+  )) {
+    context.addIssue({ code: 'custom', path: ['skillRevisions'], message: 'Published lineage must end at the exact published Proposal body' })
   }
   if (value.state === 'TERMINAL' && latestRevision?.reviewDecision !== 'REJECTED') {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Terminal native Proposal requires a rejection decision' })

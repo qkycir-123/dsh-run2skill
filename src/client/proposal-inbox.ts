@@ -20,6 +20,7 @@ const endpoint = {
   approve: 'proposals/approve',
   reject: 'proposals/reject',
   retry: 'proposals/retry',
+  refresh: 'proposals/refresh',
   confirmDiscard: 'coverage/confirm-discard',
 } as const
 
@@ -72,9 +73,17 @@ export interface ProposalDetail {
   }
   readonly evidenceRefs: readonly EvidenceRef[]
   readonly experiences: readonly ExperienceRecordV1[]
+  readonly action?: ProposalAttentionAction
 }
 
-export type ProposalMutation = 'APPROVE' | 'REJECT' | 'RETRY' | 'CONFIRM_DISCARD'
+export interface ProposalAttentionAction {
+  readonly actionKey: string
+  readonly subjectId: string
+  readonly kind: 'REVIEW_PROPOSAL' | 'REFRESH_PROPOSAL' | 'RETRY_PUBLICATION'
+  readonly proposalRef: ProposalRefV1
+}
+
+export type ProposalMutation = 'APPROVE' | 'REJECT' | 'REFRESH' | 'RETRY' | 'CONFIRM_DISCARD'
 
 export function describeProposalOutcome(detail: Pick<ProposalDetail, 'processingState' | 'publicationOutcome'>): string {
   if (detail.publicationOutcome === 'PUBLISHED') return 'Skill 已保存，DSH 已确认可以使用'
@@ -150,7 +159,7 @@ export interface ProposalScopeAccess {
   readonly actions: readonly {
     readonly actionKey: string
     readonly subjectId: string
-    readonly kind: 'REVIEW_PROPOSAL' | 'RETRY_PUBLICATION'
+    readonly kind: 'REVIEW_PROPOSAL' | 'REFRESH_PROPOSAL' | 'RETRY_PUBLICATION'
     readonly proposalRef: ProposalRefV1
   }[]
 }
@@ -174,7 +183,7 @@ export interface SafeProposalDetail {
   readonly supportingExperienceIds: readonly string[]
   readonly catalogObservationDigest: string
   readonly curationRationale: string
-  readonly actionBinding:
+  readonly actionBinding?:
     | {
         readonly kind: 'CREATE'
         readonly rootBinding: SafeRootBinding
@@ -380,7 +389,7 @@ export class ProposalInboxController {
     await this.whenIdle()
     const detail = this.#state.detail
     if (this.#disposed || detail === undefined || this.#state.mutationPending) return
-    const proposalRef: ProposalRefV1 = {
+    const proposalRef: ProposalRefV1 = detail.action?.proposalRef ?? {
       proposalId: detail.proposal.proposalId,
       revision: detail.proposal.revision,
       digest: detail.proposal.digest,
@@ -389,16 +398,19 @@ export class ProposalInboxController {
       ? endpoint.approve
       : action === 'REJECT'
         ? endpoint.reject
-        : action === 'RETRY'
-          ? endpoint.retry
-          : endpoint.confirmDiscard
+        : action === 'REFRESH'
+          ? endpoint.refresh
+          : action === 'RETRY'
+            ? endpoint.retry
+            : endpoint.confirmDiscard
     const request = {
       apiVersion: 1 as const,
       workItemId: detail.workItemId,
       workItemRevision: detail.workItemRevision,
       proposalRef,
       currentScope: this.#scopeAccess().currentScope,
-      action: this.#scopeAccess().actions.find(candidate => candidate.proposalRef.proposalId === proposalRef.proposalId),
+      action: detail.action
+        ?? this.#scopeAccess().actions.find(candidate => candidate.proposalRef.proposalId === proposalRef.proposalId),
       ...(action === 'REJECT' ? { confirm: true as const } : {}),
     }
     await this.#execute(async signal => {

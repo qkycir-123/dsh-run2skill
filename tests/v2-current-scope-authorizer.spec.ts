@@ -113,7 +113,36 @@ describe('v2 current-scope Action Queue authorization', () => {
     const refresh = await authorizer.project(domain, {
       kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
     })
-    expect(refresh).toEqual([])
+    expect(refresh).toMatchObject([{
+      kind: 'REFRESH_PROPOSAL', reasonCode: 'PUBLICATION_CONFLICT', availableActions: ['REFRESH'],
+    }])
+  })
+
+  it('does not offer a second stale refresh after the Intent already used its one refresh', async () => {
+    const { domain, fixture } = await seed()
+    const active = ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)
+    if (active.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    const latest = active.proposalRevisions.at(-1)!
+    await domain.table('proposal_lineages').put(active.lineageId, ProposalLineageV2Schema.parse({
+      ...active,
+      revision: active.revision + 1,
+      currentProposalRevision: 2,
+      proposalRevisions: [{ ...latest, state: 'SUPERSEDED' }, {
+        ...latest,
+        revision: 2,
+        proposalId: `prop_${'4'.repeat(64)}`,
+        reviewFailureCode: 'CATALOG_CHANGED',
+        reviewAttemptedAt: '2026-08-23T00:01:00.000Z',
+      }],
+      updatedAt: '2026-08-23T00:01:00.000Z',
+    }))
+    const authorizer = new V2CurrentScopeAuthorizer(async workspaceId => ({
+      workspaceId, canonicalPath: 'D:\\repo',
+    }))
+
+    await expect(authorizer.project(domain, {
+      kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
+    })).resolves.toEqual([])
   })
 
   it('keeps an approved Proposal recoverable before its publication journal exists', async () => {
