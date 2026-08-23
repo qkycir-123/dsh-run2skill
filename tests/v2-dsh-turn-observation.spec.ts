@@ -312,6 +312,34 @@ describe('DSH TurnObservationV2 projection', () => {
     expect(result.observation.toolOutcomeSummary[0]?.outcome).toBe('OUTCOME_UNKNOWN')
   })
 
+  it('accepts the stock DSH session metadata emitted around a real root Turn', async () => {
+    const events = completeTurn('普通请求')
+    events.unshift(
+      { type: 'permission/preset', seq: 0, time: 0, data: { preset: 'workspace-write' } },
+      { type: 'sandbox/mode', seq: 0, time: 0, data: { mode: 'workspace-write' } },
+      { type: 'approval/policy', seq: 0, time: 0, data: { policy: 'ask' } },
+      {
+        type: 'agent/inbox/spliced',
+        seq: 0,
+        time: 0,
+        data: { target: 'next-turn', start: 0, inserted: [] },
+      },
+    )
+    insertTurnEvent(events, 'user/message', {
+      type: 'session/title-llm-request', data: { messageSeqs: [6] },
+    })
+    insertTurnEvent(events, 'session/title-llm-request', {
+      type: 'session/title', data: { title: '真实 DSH 会话', messageSeqs: [6], source: { kind: 'llm' } },
+    })
+    const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation.completeness).toBe('COMPLETE')
+  })
+
   it('refuses to interpret an unknown required DSH event', async () => {
     const events = insertTurnEvent(completeTurn('普通请求'), 'user/message', {
       type: 'plugin/required-context', data: { payload: 'new required semantics' },
