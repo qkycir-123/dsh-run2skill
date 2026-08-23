@@ -68,6 +68,7 @@ export class V2ProposalHostServices<TView extends object> {
     })
     this.publications = new V2ProposalPublicationCoordinator(domain, {
       revalidate: input => revalidator.revalidate(input),
+      recover: input => filesystem.recover(input),
       publish: input => filesystem.publish(input),
       ...(options.now === undefined ? {} : { now: options.now }),
     })

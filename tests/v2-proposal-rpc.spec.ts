@@ -161,6 +161,7 @@ function createHandler(
       ? undefined
       : new V2ProposalPublicationCoordinator(domain, {
           revalidate: async () => currentCatalog(domain as ReturnType<typeof createMemoryRun2skillV2Domain>),
+          recover: published,
           publish: published,
           now: () => NOW,
         }),

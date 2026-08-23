@@ -314,24 +314,70 @@ describe('v2 Proposal publication coordinator', () => {
       },
     }))
     const revalidate = vi.fn(async () => {
-      throw new Error('executing recovery must not compare the post-write Runtime Catalog with the pre-write digest')
+      throw new Error('an existing external attempt must not compare the post-write Runtime Catalog with the pre-write digest')
     })
-    const publish = vi.fn(async input => {
+    const recover = vi.fn(async input => {
       expect(input.attemptId).toBe(mutationId)
       return { status: 'PUBLISHED' as const, externalReceiptDigest: EXTERNAL_RECEIPT }
     })
+    const publish = vi.fn(async () => {
+      throw new Error('executing recovery must not start a second external write')
+    })
     const coordinator = new V2ProposalPublicationCoordinator(seeded.domain, {
       revalidate,
+      recover,
       publish,
       now: () => NOW,
     })
 
     await expect(coordinator.recover()).resolves.toBe('RECOVERED')
     expect(revalidate).not.toHaveBeenCalled()
-    expect(publish).toHaveBeenCalledTimes(1)
+    expect(recover).toHaveBeenCalledTimes(1)
+    expect(publish).not.toHaveBeenCalled()
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
     expect(seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId))
       .toMatchObject({ state: 'PUBLISHED' })
+  })
+
+  it('revalidates before the first external write when an executing journal has no external attempt', async () => {
+    const seeded = await seedApproved()
+    const mutationId = deriveProposalCatalogMutationIdV2({
+      ownerId: seeded.proposalRef.proposalId,
+      kind: 'PUBLICATION',
+      inputCatalogEpoch: 0,
+    })
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...seeded.domain.global.get(),
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId,
+        ownerId: seeded.proposalRef.proposalId,
+        kind: 'PUBLICATION',
+        phase: 'EXECUTING',
+        preparedAt: NOW,
+        executionStartedAt: NOW,
+      },
+    }))
+    const revalidate = vi.fn(async () => ({ status: 'STALE' as const }))
+    const recover = vi.fn(async () => ({ status: 'ABSENT' as const }))
+    const publish = vi.fn(async () => ({ status: 'PUBLISHED' as const, externalReceiptDigest: EXTERNAL_RECEIPT }))
+    const coordinator = new V2ProposalPublicationCoordinator(seeded.domain, {
+      revalidate,
+      recover,
+      publish,
+      now: () => NOW,
+    })
+
+    await expect(coordinator.recover()).resolves.toBe('RECOVERED')
+    expect(recover).toHaveBeenCalledTimes(1)
+    expect(revalidate).toHaveBeenCalledTimes(1)
+    expect(publish).not.toHaveBeenCalled()
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    expect(seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId))
+      .toMatchObject({
+        state: 'ACTIVE_PROPOSAL',
+        proposalRevisions: [{ publicationFailureCode: 'CATALOG_CHANGED' }],
+      })
   })
 
   it('does not replay a prepared publication when recovery Catalog revalidation is stale', async () => {
@@ -371,12 +417,15 @@ describe('v2 Proposal publication coordinator', () => {
 
   it('retains an uncertain external attempt and recovers it with the same attempt id', async () => {
     const seeded = await seedApproved()
-    const publish = vi.fn()
-      .mockResolvedValueOnce({ status: 'UNAVAILABLE' as const })
-      .mockResolvedValueOnce({ status: 'PUBLISHED' as const, externalReceiptDigest: EXTERNAL_RECEIPT })
+    const publish = vi.fn(async (_input: { readonly attemptId: string }) => ({ status: 'UNAVAILABLE' as const }))
+    const recover = vi.fn(async (_input: { readonly attemptId: string }) => ({
+      status: 'PUBLISHED' as const,
+      externalReceiptDigest: EXTERNAL_RECEIPT,
+    }))
     const revalidate = vi.fn(async () => currentCatalog(seeded.domain))
     const coordinator = new V2ProposalPublicationCoordinator(seeded.domain, {
       revalidate,
+      recover,
       publish,
       now: () => NOW,
     })
@@ -398,10 +447,11 @@ describe('v2 Proposal publication coordinator', () => {
     expect(revalidate).toHaveBeenCalledTimes(1)
 
     await expect(coordinator.recover()).resolves.toBe('RECOVERED')
-    expect(publish).toHaveBeenCalledTimes(2)
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(recover).toHaveBeenCalledTimes(1)
     expect(revalidate).toHaveBeenCalledTimes(1)
-    expect(publish.mock.calls[1]?.[0].attemptId).toBe(publish.mock.calls[0]?.[0].attemptId)
-    expect(publish.mock.calls[1]?.[0].attemptId).toBe(retained?.mutationId)
+    expect(recover.mock.calls[0]?.[0].attemptId).toBe(publish.mock.calls[0]?.[0].attemptId)
+    expect(recover.mock.calls[0]?.[0].attemptId).toBe(retained?.mutationId)
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
     expect(seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId))
       .toMatchObject({ state: 'PUBLISHED' })
@@ -447,12 +497,14 @@ describe('v2 Proposal publication coordinator', () => {
       return await durableUpdate(key, transform)
     }
     const attempts: string[] = []
+    const executeAttempt = async (input: { readonly attemptId: string }) => {
+      attempts.push(input.attemptId)
+      return { status: 'PUBLISHED' as const, externalReceiptDigest: EXTERNAL_RECEIPT }
+    }
     const coordinator = new V2ProposalPublicationCoordinator(seeded.domain, {
       revalidate: async () => currentCatalog(seeded.domain),
-      publish: async input => {
-        attempts.push(input.attemptId)
-        return { status: 'PUBLISHED', externalReceiptDigest: EXTERNAL_RECEIPT }
-      },
+      publish: executeAttempt,
+      recover: executeAttempt,
       now: () => NOW,
     })
 

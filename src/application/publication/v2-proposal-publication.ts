@@ -34,6 +34,10 @@ export type V2ProposalPublicationOutcome =
   // is outcome-unknown: the write may have completed before exact readback.
   | { readonly status: 'STALE' | 'UNAVAILABLE' | 'CONFLICT' }
 
+export type V2ProposalPublicationRecoveryOutcome =
+  | V2ProposalPublicationOutcome
+  | { readonly status: 'ABSENT' }
+
 export interface V2ProposalPublicationInput {
   readonly lineage: NativeProposalLineageV2
   readonly proposal: NativeProposalRevisionV2
@@ -44,6 +48,8 @@ export interface V2ProposalPublicationInput {
 
 export interface V2ProposalPublicationOptions {
   revalidate(input: V2ProposalPublicationInput): Promise<V2ProposalReviewRevalidation>
+  /** Recover an existing attempt only. ABSENT must guarantee that no external transaction exists. */
+  recover?(input: V2ProposalPublicationInput & { readonly attemptId: string }): Promise<unknown>
   publish(input: V2ProposalPublicationInput & { readonly attemptId: string }): Promise<unknown>
   readonly now?: () => string
 }
@@ -98,6 +104,17 @@ function publicationOutcome(value: unknown): V2ProposalPublicationOutcome {
     && (record.status === 'STALE' || record.status === 'UNAVAILABLE' || record.status === 'CONFLICT')
   ) return { status: record.status }
   return { status: 'UNAVAILABLE' }
+}
+
+function publicationRecoveryOutcome(value: unknown): V2ProposalPublicationRecoveryOutcome {
+  if (
+    typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && (value as Record<string, unknown>).status === 'ABSENT'
+  ) return { status: 'ABSENT' }
+  return publicationOutcome(value)
 }
 
 /**
@@ -244,6 +261,14 @@ export class V2ProposalPublicationCoordinator {
 
   async #executePrepared(input: V2ProposalPublicationInput, attemptId: string): Promise<V2ProposalPublicationResult> {
     const outcome = publicationOutcome(await this.options.publish({ ...input, attemptId }))
+    return await this.#completeExternalOutcome(input, attemptId, outcome)
+  }
+
+  async #completeExternalOutcome(
+    input: V2ProposalPublicationInput,
+    attemptId: string,
+    outcome: V2ProposalPublicationOutcome,
+  ): Promise<V2ProposalPublicationResult> {
     if (outcome.status !== 'PUBLISHED') {
       if (outcome.status === 'STALE' || outcome.status === 'CONFLICT') {
         const code = outcome.status === 'STALE' ? 'CATALOG_CHANGED' : 'PUBLICATION_CONFLICT'
@@ -367,6 +392,32 @@ export class V2ProposalPublicationCoordinator {
     })
   }
 
+  async #markPrepared(proposalId: string, attemptId: string): Promise<void> {
+    await this.#global.runExclusive(async current => {
+      const journal = current.proposalCatalogMutationJournal
+      if (
+        journal?.kind !== 'PUBLICATION'
+        || journal.ownerId !== proposalId
+        || journal.mutationId !== attemptId
+        || journal.phase !== 'EXECUTING'
+      ) throw new V2ProposalPublicationError('PUBLICATION_RECOVERY_CONFLICT')
+      return {
+        value: undefined,
+        global: {
+          ...current,
+          proposalCatalogMutationJournal: {
+            schemaVersion: 1,
+            mutationId: journal.mutationId,
+            ownerId: journal.ownerId,
+            kind: 'PUBLICATION',
+            phase: 'PREPARED',
+            preparedAt: journal.preparedAt,
+          },
+        },
+      }
+    })
+  }
+
   async #markNeedsRefresh(
     proposalId: string,
     attemptId: string,
@@ -453,8 +504,15 @@ export class V2ProposalPublicationCoordinator {
     this.#assertPublishable(lineage, journal.phase === 'EXECUTING')
     const input = this.#input(lineage, deriveV2ProposalRef(lineage))
     if (journal.phase === 'EXECUTING') {
-      await this.#executePrepared(input, journal.mutationId)
-      return 'RECOVERED'
+      const recovered = publicationRecoveryOutcome(await this.options.recover?.({
+        ...input,
+        attemptId: journal.mutationId,
+      }))
+      if (recovered.status !== 'ABSENT') {
+        await this.#completeExternalOutcome(input, journal.mutationId, recovered)
+        return 'RECOVERED'
+      }
+      await this.#markPrepared(journal.ownerId, journal.mutationId)
     }
     let revalidation: V2ProposalReviewRevalidation
     try {
