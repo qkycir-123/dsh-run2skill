@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DshV2StageLlmClient,
 } from '../src/adapters/dsh-llm/v2-stage-client.js'
@@ -82,6 +82,8 @@ describe('DshV2StageLlmClient', () => {
     })
     expect(llm.calls[0]?.system).toContain('NONE | DEFER | READY')
     expect(llm.calls[0]?.system).toContain('untrusted data')
+    expect(llm.calls[0]?.system).toContain('use only observations[].evidenceDigest')
+    expect(llm.calls[0]?.system).toContain('Never use directUserEvidence[].excerptDigest')
     expect(llm.calls[0]?.system).not.toContain('Skill Markdown')
     expect(llm.calls[0]?.messages[0]?.content[0]?.text).toContain('"batchId"')
   })
@@ -172,6 +174,29 @@ describe('DshV2StageLlmClient', () => {
       expect.objectContaining({ code: 'MODEL_STREAM_FAILED' }),
     )
     expect(llm.calls).toHaveLength(2)
+  })
+
+  it('allows one slow detector call to finish within the two-minute background budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const slowLlm: DshLlmPort = {
+        resolveModelInfo: async () => ({ context: { contextWindow: 32_000 } }),
+        stream: async function * () {
+          await new Promise(resolve => setTimeout(resolve, 90_000))
+          yield * chunks('{"result":"NONE"}')
+        },
+      }
+      const pending = new DshV2StageLlmClient(slowLlm).detect(detectorInput())
+      let settled = false
+      void pending.finally(() => { settled = true })
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await expect(pending).resolves.toEqual({ result: 'NONE' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('returns malformed JSON as untrusted output so the stage worker can record INVALID_OUTPUT', async () => {

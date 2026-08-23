@@ -43,6 +43,98 @@ const detectorOutputSchema = z.discriminatedUnion('result', [
 
 export type BatchDetectorOutput = z.infer<typeof detectorOutputSchema>
 
+const detectorModelFailureCodes = new Set([
+  'INPUT_BUDGET_EXCEEDED',
+  'MODEL_ABORTED',
+  'MODEL_OUTPUT_LIMIT_EXCEEDED',
+  'MODEL_OUTPUT_TRUNCATED',
+  'MODEL_STREAM_FAILED',
+  'MODEL_TERMINAL_INVALID',
+  'MODEL_TIMEOUT',
+])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function detectorModelFailureCode(error: unknown): string {
+  if (!isRecord(error) || typeof error.code !== 'string' || !detectorModelFailureCodes.has(error.code)) {
+    return 'MODEL_CALL_FAILED'
+  }
+  return error.code
+}
+
+function normalizeDetectorEvidenceDigests(
+  value: unknown,
+  observations: readonly TurnObservationV2[],
+): unknown {
+  if (!Array.isArray(value)) return value
+  const observationByDigest = new Map<string, Set<string>>()
+  for (const observation of observations) {
+    for (const evidence of observation.directUserEvidence) {
+      const bound = observationByDigest.get(evidence.excerptDigest) ?? new Set<string>()
+      bound.add(observation.evidenceDigest)
+      observationByDigest.set(evidence.excerptDigest, bound)
+    }
+  }
+  return value.flatMap((digest) => {
+    if (typeof digest !== 'string') return [digest]
+    const bound = observationByDigest.get(digest)
+    return bound === undefined ? [digest] : [...bound].sort()
+  })
+}
+
+/**
+ * Project harmless provider envelope drift onto the owned detector contract.
+ * Unknown evidence remains unknown so the worker's binding guard still fails closed.
+ */
+function normalizeDetectorOutput(
+  raw: unknown,
+  observations: readonly TurnObservationV2[],
+): unknown {
+  if (!isRecord(raw) || typeof raw.result !== 'string') return raw
+  if (raw.result === 'NONE') {
+    if ('carry' in raw || 'intents' in raw) return raw
+    return { result: raw.result }
+  }
+  if (raw.result === 'DEFER') {
+    if ('intents' in raw || !Array.isArray(raw.carry)) return raw
+    return {
+      result: raw.result,
+      carry: raw.carry.map((item) => {
+        if (!isRecord(item)) return item
+        return {
+          summary: item.summary,
+          behaviorSignatureDraft: item.behaviorSignatureDraft,
+          evidenceDigests: normalizeDetectorEvidenceDigests(item.evidenceDigests, observations),
+        }
+      }),
+    }
+  }
+  if (raw.result === 'READY') {
+    if ('carry' in raw || !Array.isArray(raw.intents)) return raw
+    return {
+      result: raw.result,
+      intents: raw.intents.map((item) => {
+        if (!isRecord(item)) return item
+        const completeness = isRecord(item.completeness)
+          ? { status: item.completeness.status, blockers: item.completeness.blockers }
+          : item.completeness
+        return {
+          persistenceScope: item.persistenceScope,
+          experienceType: item.experienceType,
+          applicabilitySummary: item.applicabilitySummary,
+          keySteps: item.keySteps,
+          prohibitions: item.prohibitions,
+          evidenceDigests: normalizeDetectorEvidenceDigests(item.evidenceDigests, observations),
+          completeness,
+        }
+      }),
+    }
+  }
+  return raw
+}
+
 export interface BatchDetectorInput {
   readonly batchId: string
   readonly sessionLifecycleKey: string
@@ -112,12 +204,12 @@ export class BatchDetectorWorker {
     let raw: unknown
     try {
       raw = await this.#client.detect(claimed.input)
-    } catch {
-      await this.#commitAttention(claimed, 'FAILED', 'MODEL_CALL_FAILED')
+    } catch (error) {
+      await this.#commitAttention(claimed, 'FAILED', detectorModelFailureCode(error))
       return 'PROCESSED'
     }
     const outputDigest = this.#outputDigest(raw)
-    const parsed = detectorOutputSchema.safeParse(raw)
+    const parsed = detectorOutputSchema.safeParse(normalizeDetectorOutput(raw, claimed.observations))
     if (!parsed.success || !this.#evidenceIsBound(parsed.data, claimed)) {
       await this.#commitAttention(claimed, 'SUCCEEDED', 'INVALID_DETECTOR_OUTPUT', outputDigest)
       return 'PROCESSED'
