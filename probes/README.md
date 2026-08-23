@@ -42,6 +42,17 @@ powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 - Windows 与 Linux/WSL 上的原子发布和崩溃恢复；
 - 真实候选 tarball 的 add、disable、upgrade、uninstall 和 Web Client 生命周期。
 
+发布稳定版时，把已经完成候选内容扫描、并将用于 npm 与 GitHub Release 的同一个 tarball 传给安装生命周期 runner：
+
+```powershell
+powershell -File probes/run-install-lifecycle-probe.ps1 `
+  -DshSource <dsh-source> `
+  -ReleaseCandidateTarball <dsh-run2skill-0.2.0.tgz> `
+  -ReleaseCandidateSha256 <sha256>
+```
+
+runner 会从 npm 下载已发布的 `0.1.1-alpha`（固定 SHA-256 `c674dad6102426054d59a2843270ee86aecd36789e83604c02dd6efd345fbb26`），再用传入的精确候选文件验证 `0.1.1-alpha → 0.2.0`。它会检查旧 v1 数据未被改写、v2 fresh activation 未迁移旧中间项、原生 Skill 保留，以及稳定候选卸载后数据仍保留。
+
 此外：
 
 ```bash

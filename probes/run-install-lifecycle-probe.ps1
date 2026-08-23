@@ -2,7 +2,9 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = '141eb6fef83422698aef7a981029e843e8161534'
+  [string]$ExpectedDshHead = '141eb6fef83422698aef7a981029e843e8161534',
+  [string]$ReleaseCandidateTarball,
+  [string]$ReleaseCandidateSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,7 +12,13 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $dshPath = (Resolve-Path $DshSource).Path
 $probe = (Resolve-Path (Join-Path $PSScriptRoot 'install-lifecycle\probe.mjs')).Path
 $candidateProbe = (Resolve-Path (Join-Path $PSScriptRoot 'install-lifecycle\candidate-probe.mjs')).Path
+$releaseUpgradeProbe = (Resolve-Path (Join-Path $PSScriptRoot 'install-lifecycle\release-upgrade-probe.mjs')).Path
 $fixtures = (Resolve-Path (Join-Path $PSScriptRoot 'install-lifecycle\fixtures')).Path
+$hasReleaseCandidate = -not [string]::IsNullOrWhiteSpace($ReleaseCandidateTarball)
+if ($hasReleaseCandidate -ne (-not [string]::IsNullOrWhiteSpace($ReleaseCandidateSha256))) {
+  throw 'ReleaseCandidateTarball and ReleaseCandidateSha256 must be provided together'
+}
+$releaseCandidate = if ($hasReleaseCandidate) { (Resolve-Path $ReleaseCandidateTarball).Path } else { $null }
 $id = "$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $work = Join-Path $repoRoot ".probe-work\install-$id"
 $clone = Join-Path $work 'deepseek-harness'
@@ -20,6 +28,9 @@ $packageArchive = Join-Path $work 'package-archive'
 $packageExtract = Join-Path $work 'package-extract'
 $installLog = Join-Path $work 'pnpm-install.log'
 $buildLog = Join-Path $work 'dsh-build.log'
+$previousReleaseArchive = Join-Path $work 'previous-release-archive'
+$previousReleasePackLog = Join-Path $work 'previous-release-pack.log'
+$releaseUpgrade = Join-Path $work 'release-upgrade'
 $uiProbeFixture = Join-Path $work 'run2skill-ui-probe-fixture.json'
 
 function Assert-DshUnmodified {
@@ -86,6 +97,15 @@ try {
 if ($LASTEXITCODE -ne 0) { throw "Install lifecycle probe failed: $LASTEXITCODE" }
 & node $candidateProbe $clone $candidatePackage $candidateLifecycle $uiProbeFixture
 if ($LASTEXITCODE -ne 0) { throw "Candidate install lifecycle probe failed: $LASTEXITCODE" }
+if ($hasReleaseCandidate) {
+  New-Item -ItemType Directory -Path $previousReleaseArchive | Out-Null
+  & npm pack dsh-run2skill@0.1.1-alpha --pack-destination $previousReleaseArchive *> $previousReleasePackLog
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to download the published 0.1.1-alpha package' }
+  $previousTarballs = @(Get-ChildItem -LiteralPath $previousReleaseArchive -Filter '*.tgz' -File)
+  if ($previousTarballs.Count -ne 1) { throw 'Previous release fetch must produce exactly one tarball' }
+  & node $releaseUpgradeProbe $clone $previousTarballs[0].FullName $releaseCandidate $releaseUpgrade $ReleaseCandidateSha256
+  if ($LASTEXITCODE -ne 0) { throw "Stable release upgrade probe failed: $LASTEXITCODE" }
+}
 
 Assert-DshUnmodified
 Write-Output 'INSTALL_LIFECYCLE_PROBE=PASS'

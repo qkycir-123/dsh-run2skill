@@ -73,7 +73,7 @@
     "pack:check": "pnpm run build && pnpm pack --pack-destination .probe-work/package",
     "verify:candidate": "pnpm run build && pnpm run evaluate && node probes/crash-matrix/probe.mjs . && node probes/candidate/verify.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings src tests probes/candidate probes/support vitest.config.ts tsdown.config.ts",
+    "lint": "oxlint --deny-warnings src tests probes/candidate probes/support probes/install-lifecycle/release-upgrade-probe.mjs vitest.config.ts tsdown.config.ts",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run test:publication"
   },
   "dependencies": {
