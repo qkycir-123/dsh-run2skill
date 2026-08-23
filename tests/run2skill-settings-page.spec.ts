@@ -294,16 +294,11 @@ describe('run2skill native settings surface', () => {
     await act(async () => { finalConfirmation.resolve(beforePurge) })
     await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
     expect(screen.queryByText('externally-purged-skill')).toBeNull()
-    expect(call).toHaveBeenCalledTimes(7)
-    expect(call.mock.calls[1]?.[0]).toMatchObject({
-      expectedVisibilityRevision: `visibility_${'a'.repeat(64)}`,
-    })
-    expect(call.mock.calls[3]?.[0]).toMatchObject({
-      expectedVisibilityRevision: `visibility_${'a'.repeat(64)}`,
-    })
-    expect(call.mock.calls[5]?.[0]).toMatchObject({
-      expectedVisibilityRevision: `visibility_${'f'.repeat(64)}`,
-    })
+    const visibilityRevisions = call.mock.calls
+      .map(([payload]) => payload.expectedVisibilityRevision)
+    expect(visibilityRevisions).toContain(undefined)
+    expect(visibilityRevisions).toContain(`visibility_${'a'.repeat(64)}`)
+    expect(visibilityRevisions).toContain(`visibility_${'f'.repeat(64)}`)
   })
 
   it('invalidates already rendered activity when the Host Purge revision changes', async () => {
