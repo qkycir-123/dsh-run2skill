@@ -132,7 +132,7 @@ export function deriveGenerationBarrierReceiptDigestV2(facts: {
 
 export function deriveProposalCatalogMutationIdV2(facts: {
   readonly ownerId: string
-  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'PUBLICATION' | 'PURGE'
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE'
   readonly inputCatalogEpoch: number
 }): `pcm_${string}` {
   return `pcm_${sha256Utf8(canonicalJson(facts))}`
@@ -141,7 +141,7 @@ export function deriveProposalCatalogMutationIdV2(facts: {
 export function deriveProposalCatalogMutationReceiptDigestV2(facts: {
   readonly mutationId: string
   readonly ownerId: string
-  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'PUBLICATION' | 'PURGE'
+  readonly kind: 'PROPOSAL' | 'GENERATION_RESULT' | 'BARRIER' | 'LEGACY' | 'REVIEW' | 'PUBLICATION' | 'PURGE'
   readonly outcomeCatalogEpoch: number
 }): string {
   return sha256Utf8(canonicalJson(facts))
@@ -152,6 +152,7 @@ export type ProposalCatalogMutationKindV2 =
   | 'GENERATION_RESULT'
   | 'BARRIER'
   | 'LEGACY'
+  | 'REVIEW'
   | 'PUBLICATION'
   | 'PURGE'
 
@@ -184,6 +185,25 @@ export function deriveProposalCatalogMutationAnchorV2(
       outcomeCatalogEpoch,
     }),
   }
+}
+
+export function deriveProposalReviewReceiptDigestV2(facts: {
+  readonly proposalRef: {
+    readonly proposalId: string
+    readonly revision: number
+    readonly digest: string
+  }
+  readonly decision: 'APPROVED' | 'REJECTED'
+  readonly reviewedAt: string
+  readonly reviewCatalog?: {
+    readonly status: 'CURRENT'
+    readonly runtimeCatalogDigest: string
+    readonly pendingCatalogDigest: string
+    readonly catalogEpoch: number
+    readonly catalogMutationReceiptDigest: string
+  } | undefined
+}): string {
+  return sha256Utf8(canonicalJson(facts))
 }
 
 export function deriveProposalCatalogGenesisAnchorV2(): {
@@ -2063,10 +2083,47 @@ const NativeProposalRevisionV2Schema = z.object({
   catalogEpoch: safeNonNegativeInteger,
   targetIdentityDigest: sha256Hex.optional(),
   state: z.enum(['ACTIVE_PROPOSAL', 'PUBLISHED', 'TERMINAL']),
+  reviewDecision: z.enum(['APPROVED', 'REJECTED']).optional(),
+  reviewedAt: isoDateTime.optional(),
   reviewReceiptDigest: sha256Hex.optional(),
+  reviewCatalog: z.object({
+    status: z.literal('CURRENT'),
+    runtimeCatalogDigest: sha256Hex,
+    pendingCatalogDigest: sha256Hex,
+    catalogEpoch: safeNonNegativeInteger,
+    catalogMutationReceiptDigest: sha256Hex,
+  }).strict().optional(),
+  reviewFailureCode: z.enum(['CATALOG_CHANGED', 'CATALOG_UNAVAILABLE']).optional(),
+  reviewAttemptedAt: isoDateTime.optional(),
   publicationReceiptDigest: sha256Hex.optional(),
   createdAt: isoDateTime,
-}).strict()
+}).strict().superRefine((value, context) => {
+  const hasFailure = value.reviewFailureCode !== undefined || value.reviewAttemptedAt !== undefined
+  if ((value.reviewFailureCode === undefined) !== (value.reviewAttemptedAt === undefined)) {
+    context.addIssue({ code: 'custom', path: ['reviewFailureCode'], message: 'Review failure requires an exact attempt time' })
+  }
+  if (value.reviewDecision === undefined) {
+    if (value.reviewedAt !== undefined || value.reviewReceiptDigest !== undefined || value.reviewCatalog !== undefined) {
+      context.addIssue({ code: 'custom', path: ['reviewDecision'], message: 'Review receipt facts require a decision' })
+    }
+  } else {
+    if (value.reviewedAt === undefined || value.reviewReceiptDigest === undefined || hasFailure) {
+      context.addIssue({ code: 'custom', path: ['reviewDecision'], message: 'Review decision requires one successful receipt and no failure' })
+    }
+    if (value.reviewDecision === 'APPROVED' && value.reviewCatalog === undefined) {
+      context.addIssue({ code: 'custom', path: ['reviewCatalog'], message: 'Approval requires a complete Catalog revalidation' })
+    }
+    if (value.reviewDecision === 'REJECTED' && value.reviewCatalog !== undefined) {
+      context.addIssue({ code: 'custom', path: ['reviewCatalog'], message: 'Rejection does not carry an approval Catalog' })
+    }
+  }
+  if (value.reviewDecision === 'REJECTED' && value.state !== 'TERMINAL') {
+    context.addIssue({ code: 'custom', path: ['state'], message: 'Rejected Proposal must be terminal' })
+  }
+  if (value.reviewDecision === 'APPROVED' && value.state === 'TERMINAL') {
+    context.addIssue({ code: 'custom', path: ['state'], message: 'Approved Proposal cannot be terminal before publication' })
+  }
+})
 
 const NativeProposalLineageV2Schema = z.object({
   schemaVersion: z.literal(1),
@@ -2112,6 +2169,12 @@ const NativeProposalLineageV2Schema = z.object({
   }
   if (value.state === 'PUBLISHED' && latestRevision?.reviewReceiptDigest === undefined) {
     context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Published native Proposal requires an approval receipt' })
+  }
+  if (value.state === 'PUBLISHED' && latestRevision?.reviewDecision !== 'APPROVED') {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Published native Proposal requires an approval decision' })
+  }
+  if (value.state === 'TERMINAL' && latestRevision?.reviewDecision !== 'REJECTED') {
+    context.addIssue({ code: 'custom', path: ['proposalRevisions'], message: 'Terminal native Proposal requires a rejection decision' })
   }
 })
 
@@ -2299,14 +2362,14 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
   schemaVersion: z.literal(1),
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   ownerId: identity,
-  kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'PUBLICATION', 'PURGE']),
+  kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
   phase: z.literal('PREPARED'),
   preparedAt: isoDateTime,
 }).strict()
 
 const ProposalCatalogLastMutationV2Schema = z.object({
   epoch: safeNonNegativeInteger,
-  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'PUBLICATION', 'PURGE']),
+  kind: z.enum(['GENESIS', 'PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
   ownerId: identity,
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   digest: sha256Hex,
