@@ -97,9 +97,42 @@ describe('v2 Proposal review coordinator', () => {
 
     await expect(coordinator.approve({
       lineageId: approved.lineage.lineageId,
-      expectedLineageRevision: approved.lineage.revision,
+      expectedLineageRevision: seeded.lineage.revision,
       proposalRef: seeded.proposalRef,
     })).resolves.toMatchObject({ changed: false, state: 'APPROVED' })
+  })
+
+  it('recovers an approved journal when the original request is retried after finalize failures', async () => {
+    const seeded = await seed()
+    const durableSet = seeded.domain.global.set.bind(seeded.domain.global)
+    let remainingFinalizeFailures = 2
+    seeded.domain.global.set = async value => {
+      if (
+        remainingFinalizeFailures > 0
+        && seeded.domain.global.get().proposalCatalogMutationJournal?.kind === 'REVIEW'
+        && value.proposalCatalogMutationJournal === undefined
+      ) {
+        remainingFinalizeFailures -= 1
+        throw new Error('synthetic review finalize failure')
+      }
+      await durableSet(value)
+    }
+    const coordinator = new V2ProposalReviewCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      now: () => NOW,
+    })
+    const request = {
+      lineageId: seeded.lineage.lineageId,
+      expectedLineageRevision: seeded.lineage.revision,
+      proposalRef: seeded.proposalRef,
+    }
+
+    await expect(coordinator.approve(request)).rejects.toThrow('synthetic review finalize failure')
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toMatchObject({ kind: 'REVIEW' })
+
+    await expect(coordinator.approve(request)).resolves.toMatchObject({ changed: false, state: 'APPROVED' })
+    expect(seeded.domain.global.get().proposalCatalogEpoch).toBe(0)
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
   })
 
   it('does not approve when the Catalog changes after revalidation', async () => {
@@ -225,7 +258,7 @@ describe('v2 Proposal review coordinator', () => {
 
     await expect(coordinator.reject({
       lineageId: rejected.lineageId,
-      expectedLineageRevision: rejected.revision,
+      expectedLineageRevision: seeded.lineage.revision,
       proposalRef: seeded.proposalRef,
     })).resolves.toMatchObject({ changed: false, state: 'REJECTED' })
     expect(seeded.domain.global.get()).toMatchObject({

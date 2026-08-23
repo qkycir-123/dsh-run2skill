@@ -149,10 +149,17 @@ export class V2ProposalReviewCoordinator {
 
   approve(request: V2ProposalReviewRequest): Promise<V2ProposalReviewResult> {
     return this.#serialize(async () => {
-      const lineage = this.#required(request)
+      const lineage = this.#matchingLineage(request)
       const state = reviewState(lineage)
-      if (state === 'APPROVED') return { changed: false, state, lineage }
+      if (state === 'APPROVED') {
+        const journal = this.#global.get().proposalCatalogMutationJournal
+        if (journal?.kind === 'REVIEW' && journal.ownerId === request.proposalRef.proposalId) {
+          await this.#recoverReviewJournal()
+        }
+        return { changed: false, state, lineage }
+      }
       if (state === 'REJECTED') throw new V2ProposalReviewError('INVALID_REVIEW_STATE')
+      this.#assertExpectedRevision(lineage, request)
       const proposal = lineage.proposalRevisions.at(-1)!
       const intent = ExperienceIntentV2Schema.safeParse(this.#intents.get(lineage.ownerIntentId))
       const batch = intent.success
@@ -217,7 +224,7 @@ export class V2ProposalReviewCoordinator {
 
   reject(request: V2ProposalReviewRequest): Promise<V2ProposalReviewResult> {
     return this.#serialize(async () => {
-      const lineage = this.#required(request)
+      const lineage = this.#matchingLineage(request)
       const state = reviewState(lineage)
       if (state === 'REJECTED') {
         const journal = this.#global.get().proposalCatalogMutationJournal
@@ -227,6 +234,7 @@ export class V2ProposalReviewCoordinator {
         return { changed: false, state, lineage }
       }
       if (state === 'APPROVED') throw new V2ProposalReviewError('INVALID_REVIEW_STATE')
+      this.#assertExpectedRevision(lineage, request)
       await this.#prepareRejection(request.proposalRef.proposalId)
       let updated: NativeProposalLineageV2
       try {
@@ -277,18 +285,24 @@ export class V2ProposalReviewCoordinator {
     return this.#serialize(async () => await this.#recoverReviewJournal())
   }
 
-  #required(request: V2ProposalReviewRequest): NativeProposalLineageV2 {
+  #matchingLineage(request: V2ProposalReviewRequest): NativeProposalLineageV2 {
     const parsed = ProposalLineageV2Schema.safeParse(this.#lineages.get(request.lineageId))
     if (!parsed.success || parsed.data.origin !== 'RUN2SKILL_V2') {
       throw new V2ProposalReviewError('REVIEW_LINEAGE_NOT_FOUND')
-    }
-    if (parsed.data.revision !== request.expectedLineageRevision) {
-      throw new V2ProposalReviewError('REVIEW_REVISION_CONFLICT')
     }
     if (!sameRef(deriveV2ProposalRef(parsed.data), request.proposalRef)) {
       throw new V2ProposalReviewError('STALE_PROPOSAL_REF')
     }
     return parsed.data
+  }
+
+  #assertExpectedRevision(
+    lineage: NativeProposalLineageV2,
+    request: V2ProposalReviewRequest,
+  ): void {
+    if (lineage.revision !== request.expectedLineageRevision) {
+      throw new V2ProposalReviewError('REVIEW_REVISION_CONFLICT')
+    }
   }
 
   async #updateExpected(
