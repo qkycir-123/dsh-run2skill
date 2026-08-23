@@ -4,6 +4,7 @@ import {
   type GlobalV1,
 } from '../../domain/observe/schemas.js'
 import { LineageV1Schema } from '../../domain/publication/index.js'
+import { emptyRecentSkillActivityIndex } from '../../domain/activity/index.js'
 
 export const RUN2SKILL_ALPHA_SCHEMA_CONTRACT = Object.freeze({
   release: '0.1.1-alpha',
@@ -23,6 +24,7 @@ export function createInitialGlobalV1(): GlobalV1 {
     health: { counts: {} },
     recovery: { recoveryLag: false },
     checkpoint: { dirty: false, pendingSessionCount: 0 },
+    recentSkillActivity: emptyRecentSkillActivityIndex(),
   }
 }
 

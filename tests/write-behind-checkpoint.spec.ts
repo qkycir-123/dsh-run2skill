@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deriveSessionLifecycleKeyFromFacts } from '../src/domain/observe/identity.js'
 import { WriteBehindCheckpoint } from '../src/application/capture/write-behind-checkpoint.js'
+import { deriveRecentSkillActivityId } from '../src/domain/activity/index.js'
 import { createMemoryRun2skillDomain } from './support/memory-run2skill-domain.js'
 
 const session = {
@@ -50,6 +51,31 @@ describe('WriteBehindCheckpoint', () => {
 
     expect(await checkpoint.flushIfDue()).toBe(true)
     expect(domain.writeLog).toEqual(['global', 'global'])
+  })
+
+  it('preserves activity committed after activation when a stale checkpoint flushes', async () => {
+    const domain = createMemoryRun2skillDomain()
+    const checkpoint = new WriteBehindCheckpoint(domain, { now: () => 0, turnBatch: 1 })
+    await checkpoint.activate([session])
+    const workItemId = `wi_${'b'.repeat(64)}`
+    const attemptId = `pub-${'c'.repeat(64)}`
+    const activity = {
+      schemaVersion: 1 as const,
+      activityId: deriveRecentSkillActivityId({ workItemId, attemptId }),
+      workItemId,
+      skillName: 'checkpoint-safe',
+      operation: 'CREATED' as const,
+      scope: 'PROJECT' as const,
+      occurredAt: '2026-08-22T12:00:00.000Z',
+    }
+    await domain.global.set({
+      ...domain.global.get(),
+      recentSkillActivity: { schemaVersion: 1, items: [activity] },
+    })
+
+    await checkpoint.observeCompletedRoot({ ...session, durableNextSeq: 12, observedTailSeq: 11 })
+
+    expect(domain.global.get().recentSkillActivity?.items).toEqual([activity])
   })
 
   it('ignores duplicate and stale progress without dirtying or regressing the checkpoint', async () => {

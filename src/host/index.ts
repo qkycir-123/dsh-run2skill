@@ -30,6 +30,7 @@ import { createProposalReviewRpcHandler } from '../adapters/dsh-connection/propo
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
 import { createAttentionRpcHandler } from '../adapters/dsh-connection/attention-rpc.js'
 import { createLearningAttentionRpcHandler } from '../adapters/dsh-connection/learning-attention-rpc.js'
+import { createRecentSkillActivityRpcHandler } from '../adapters/dsh-connection/recent-skill-activity-rpc.js'
 import { CurrentScopeAuthorizer } from '../adapters/dsh-connection/current-scope-authorizer.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
 import { DurableCaptureStore } from '../adapters/dsh-storage/durable-capture-store.js'
@@ -716,24 +717,28 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   const disposeRpc = registerObserveSummaryRpc(
     context.connection,
     readSummary,
-    createAttentionRpcHandler(
+    createRecentSkillActivityRpcHandler(
       () => factory.currentDomain,
-      notices,
       resolveCurrentWorkspace,
-      createLearningAttentionRpcHandler(
+      createAttentionRpcHandler(
         () => factory.currentDomain,
-        createPurgeRpcHandler(
-          () => factory.currentPurgeService,
-          reviewRpc,
-          { runMutation: operation => mutationGate.run(operation) },
+        notices,
+        resolveCurrentWorkspace,
+        createLearningAttentionRpcHandler(
+          () => factory.currentDomain,
+          createPurgeRpcHandler(
+            () => factory.currentPurgeService,
+            reviewRpc,
+            { runMutation: operation => mutationGate.run(operation) },
+          ),
+          {
+            authorizer: currentScopeAuthorizer,
+            onRetry: () => { factory.wakeLearning() },
+            visibility: domain => new PurgeVisibility(domain),
+            runMutation: operation => mutationGate.run(operation),
+            diagnostics: () => factory.currentDiagnosticStore,
+          },
         ),
-        {
-          authorizer: currentScopeAuthorizer,
-          onRetry: () => { factory.wakeLearning() },
-          visibility: domain => new PurgeVisibility(domain),
-          runMutation: operation => mutationGate.run(operation),
-          diagnostics: () => factory.currentDiagnosticStore,
-        },
       ),
     ),
   )
