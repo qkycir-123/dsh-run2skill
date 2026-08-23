@@ -390,7 +390,7 @@ describe('v2 generation lease worker', () => {
     ])
   })
 
-  it('appends a refreshed Proposal revision while retaining the superseded draft', async () => {
+  it('appends a refreshed Proposal revision and preserves the superseded draft during crash rollback', async () => {
     const seeded = await seedAuthorized()
     const firstWorker = generationWorker(seeded, { catalog: seeded.catalog, generator: generator(), now: () => NOW })
     await firstWorker.runOnce()
@@ -476,11 +476,13 @@ describe('v2 generation lease worker', () => {
 
     const secondWorker = generationWorker(seeded, { catalog: seeded.catalog, generator: generator(), now: () => NOW + 1_000 })
     await secondWorker.runOnce()
-    await exposeSealedResultForRevalidation(seeded)
+    const refreshedResultGlobal = seeded.domain.global.get()
+    const { result: refreshedResult } = await exposeSealedResultForRevalidation(seeded)
     await secondWorker.runOnce()
     await secondWorker.runOnce()
 
     const lineage = ProposalLineageV2Schema.parse(seeded.domain.proposalLineages.get(stale.lineageId))
+    if (lineage.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
     expect(lineage).toMatchObject({
       origin: 'RUN2SKILL_V2',
       state: 'ACTIVE_PROPOSAL',
@@ -490,9 +492,57 @@ describe('v2 generation lease worker', () => {
         expect.objectContaining({ revision: 2, state: 'ACTIVE_PROPOSAL' }),
       ],
     })
-    expect(new Set(lineage.origin === 'RUN2SKILL_V2'
-      ? lineage.proposalRevisions.map(proposal => proposal.proposalId)
-      : []).size).toBe(2)
+    expect(new Set(lineage.proposalRevisions.map(proposal => proposal.proposalId)).size).toBe(2)
+
+    const ready = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    const proposalAuthorized = ExperienceIntentV2Schema.parse({
+      ...ready,
+      revision: lineage.ownerIntentRevision,
+      status: 'GENERATING',
+      generation: {
+        ...ready.generation,
+        state: 'PROPOSAL_COMMIT_AUTHORIZED',
+        receipts: ready.generation.receipts.slice(0, 5),
+      },
+    })
+    await seeded.domain.table('experience_intents').put(proposalAuthorized.intentId, proposalAuthorized)
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...refreshedResultGlobal,
+      proposalGenerationLease: {
+        ...refreshedResultGlobal.proposalGenerationLease!,
+        proposalAuthorizationReceiptDigest: proposalAuthorized.generation.receipts[4]!.digest,
+        state: 'PROPOSAL_COMMIT_AUTHORIZED',
+      },
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId: deriveProposalCatalogMutationIdV2({
+          ownerId: proposalAuthorized.generation.proposalId!,
+          kind: 'PROPOSAL',
+          inputCatalogEpoch: refreshedResult.outcomeCatalogEpoch,
+        }),
+        ownerId: proposalAuthorized.generation.proposalId!,
+        kind: 'PROPOSAL',
+        phase: 'PREPARED',
+        preparedAt: new Date(NOW).toISOString(),
+      },
+    }))
+    seeded.setQuiescence('STALE')
+
+    await generationWorker(seeded, {
+      catalog: seeded.catalog, generator: generator(), now: () => NOW + 2_000,
+    }).recover()
+
+    const retained = ProposalLineageV2Schema.parse(seeded.domain.proposalLineages.get(stale.lineageId))
+    expect(retained).toMatchObject({
+      origin: 'RUN2SKILL_V2',
+      state: 'REFRESHING',
+      currentProposalRevision: 1,
+      proposalRevisions: [expect.objectContaining({ revision: 1, state: 'SUPERSEDED' })],
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    expect(seeded.domain.experienceIntents.get(seeded.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', generation: { state: 'NEEDS_ATTENTION', reasonCode: 'STALE_RESULT' },
+    })
   })
 
   it('does not commit a Proposal when external Pending Catalog membership changed after generation', async () => {

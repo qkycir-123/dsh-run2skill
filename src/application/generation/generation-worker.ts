@@ -1413,11 +1413,36 @@ export class GenerationWorker {
   ): Promise<void> {
     const stored = ProposalLineageV2Schema.safeParse(this.#lineages.get(expectedLineage.lineageId))
     if (stored.success && canonicalJson(stored.data) === canonicalJson(expectedLineage)) {
-      if (replacedLineage === undefined) await this.#lineages.delete(expectedLineage.lineageId)
-      else await this.#lineages.put(expectedLineage.lineageId, replacedLineage)
+      const predecessor = replacedLineage ?? this.#refreshingPredecessor(expectedLineage)
+      if (predecessor === undefined) await this.#lineages.delete(expectedLineage.lineageId)
+      else await this.#lineages.put(expectedLineage.lineageId, predecessor)
     }
     await this.#abandonProposalJournal(mutationId)
     await this.#markStaleResult(intent.intentId, intent.generation.leaseId!)
+  }
+
+  #refreshingPredecessor(
+    expectedLineage: z.infer<typeof ProposalLineageV2Schema>,
+  ): z.infer<typeof ProposalLineageV2Schema> | undefined {
+    if (
+      expectedLineage.origin !== 'RUN2SKILL_V2'
+      || expectedLineage.currentProposalRevision <= 1
+    ) return undefined
+    const proposalRevisions = expectedLineage.proposalRevisions.slice(0, -1)
+    const latest = proposalRevisions.at(-1)
+    if (latest?.state !== 'SUPERSEDED') return undefined
+    return ProposalLineageV2Schema.parse({
+      ...expectedLineage,
+      revision: expectedLineage.revision - 1,
+      state: 'REFRESHING',
+      ownerIntentRevision: latest.ownerIntentRevision,
+      currentProposalRevision: proposalRevisions.length,
+      proposalRevisions,
+      updatedAt: latest.publicationAttemptedAt
+        ?? latest.reviewAttemptedAt
+        ?? latest.reviewedAt
+        ?? latest.createdAt,
+    })
   }
 
   async #recoverPreparedProposal(intent: ExperienceIntentV2, mutationId: string): Promise<void> {

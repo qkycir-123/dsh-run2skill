@@ -10,7 +10,11 @@ import {
 } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { createV2ProposalRpcHandler } from '../src/adapters/dsh-connection/v2-proposal-rpc.js'
 import { V2ProposalPublicationCoordinator } from '../src/application/publication/index.js'
-import { V2ProposalRefreshCoordinator, V2ProposalReviewCoordinator } from '../src/application/review/index.js'
+import {
+  V2ProposalRefreshCoordinator,
+  V2ProposalReviewCoordinator,
+  deriveV2ProposalRef,
+} from '../src/application/review/index.js'
 import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
@@ -362,6 +366,33 @@ describe('v2 Proposal RPC compatibility bridge', () => {
     }, new AbortController().signal)).resolves.toMatchObject({
       ok: true, value: { actions: [] },
     })
+  })
+
+  it('rejects a second stale refresh before writing a journal or superseding the Proposal', async () => {
+    const seeded = await seed()
+    const stale = ProposalLineageV2Schema.parse({
+      ...seeded.lineage,
+      revision: seeded.lineage.revision + 1,
+      currentProposalRevision: 2,
+      proposalRevisions: [{ ...seeded.lineage.proposalRevisions[0]!, state: 'SUPERSEDED' }, {
+        ...seeded.lineage.proposalRevisions[0]!,
+        revision: 2,
+        proposalId: `prop_${'4'.repeat(64)}`,
+        reviewFailureCode: 'CATALOG_CHANGED',
+        reviewAttemptedAt: NOW,
+      }],
+      updatedAt: NOW,
+    })
+    if (stale.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    await seeded.domain.table('proposal_lineages').put(stale.lineageId, stale)
+
+    await expect(new V2ProposalRefreshCoordinator(seeded.domain, { now: () => NOW }).refresh({
+      lineageId: stale.lineageId,
+      expectedLineageRevision: stale.revision,
+      proposalRef: deriveV2ProposalRef(stale),
+    })).rejects.toMatchObject({ code: 'INVALID_REFRESH_STATE' })
+    expect(seeded.domain.proposalLineages.get(stale.lineageId)).toEqual(stale)
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
   })
 
   it('approves once, requests publication with the durable new revision, and rejects the stale action', async () => {

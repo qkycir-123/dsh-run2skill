@@ -68,6 +68,7 @@ function projectLineage(lineage: NativeLineage): ProjectedV2AttentionAction | un
   if (proposal.reviewDecision === undefined) {
     const reasonCode = proposal.reviewFailureCode ?? 'PROPOSAL_READY'
     if (proposal.reviewFailureCode === 'CATALOG_CHANGED') {
+      if (lineage.currentProposalRevision > 1) return undefined
       return {
         ...common,
         actionKey: actionKey(lineage, 'REFRESH_PROPOSAL', reasonCode),
@@ -86,6 +87,7 @@ function projectLineage(lineage: NativeLineage): ProjectedV2AttentionAction | un
   }
   const failure = proposal.publicationFailureCode
   if (failure === 'CATALOG_CHANGED' || failure === 'PUBLICATION_CONFLICT') {
+    if (lineage.currentProposalRevision > 1) return undefined
     return {
       ...common,
       actionKey: actionKey(lineage, 'REFRESH_PROPOSAL', failure),

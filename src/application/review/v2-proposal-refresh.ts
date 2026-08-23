@@ -52,7 +52,9 @@ function sameRef(left: V2ProposalRef, right: V2ProposalRef): boolean {
 
 function refreshable(lineage: NativeLineage): boolean {
   const proposal = lineage.proposalRevisions.at(-1)
-  return lineage.state === 'ACTIVE_PROPOSAL' && proposal !== undefined && (
+  return lineage.state === 'ACTIVE_PROPOSAL'
+    && lineage.currentProposalRevision === 1
+    && proposal !== undefined && (
     (proposal.reviewDecision === undefined && proposal.reviewFailureCode === 'CATALOG_CHANGED')
     || (proposal.reviewDecision === 'APPROVED' && (
       proposal.publicationFailureCode === 'CATALOG_CHANGED'
