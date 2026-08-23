@@ -14,7 +14,7 @@ import {
 export const ATTENTION_ENDPOINT = 'attention'
 
 const identity = z.string().min(1).max(256)
-const requestSchema = z.object({
+export const attentionRequestSchema = z.object({
   apiVersion: z.literal(1),
   currentScope: CurrentScopeV1Schema,
   sessionId: identity.optional(),
@@ -40,7 +40,7 @@ export function createAttentionRpcHandler(
     if (endpoint !== ATTENTION_ENDPOINT) {
       return fallback === undefined ? badRequest() : await fallback(endpoint, payload, signal)
     }
-    const parsed = requestSchema.safeParse(payload)
+    const parsed = attentionRequestSchema.safeParse(payload)
     if (!parsed.success) return badRequest()
     if (signal.aborted) {
       return { ok: false, error: { code: 'cancelled', message: 'attention request cancelled', details: {} } }
