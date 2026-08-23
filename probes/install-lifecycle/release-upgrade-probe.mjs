@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { createServer as createHttpServer } from 'node:http'
+import { createRequire } from 'node:module'
 import { createServer as createNetServer } from 'node:net'
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -23,6 +25,7 @@ const work = resolve(workArg)
 const home = join(work, 'dsh-home')
 const workspace = join(work, 'workspace')
 const profile = join(home, 'profiles', 'web')
+const storageDirectory = join(home, 'storages')
 const manifestPath = join(profile, 'package.json')
 const installedManifestPath = join(profile, 'node_modules', 'dsh-run2skill', 'package.json')
 const skillPath = join(home, 'skills', 'retained-release-skill', 'SKILL.md')
@@ -99,6 +102,36 @@ async function reservePort() {
   })
 }
 
+async function startProbeProvider() {
+  const server = createHttpServer((request, response) => {
+    request.resume()
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end([
+        'data: {"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":""}}]}',
+        'data: {"choices":[{"delta":{"content":"done"}}]}',
+        'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}',
+        'data: [DONE]',
+        '',
+      ].join('\n\n'))
+    })
+  })
+  await new Promise((resolveListen, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolveListen)
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    throw new Error('release upgrade controlled provider did not bind a TCP port')
+  }
+  return { server, baseUrl: `http://127.0.0.1:${String(address.port)}` }
+}
+
+async function closeServer(server) {
+  if (!server.listening) return
+  await new Promise((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose()))
+}
+
 async function stop(child) {
   const hasExited = () => child.exitCode !== null || child.signalCode !== null
   if (hasExited()) return
@@ -119,15 +152,67 @@ async function waitForOutputClose(stream) {
   if (!closed || !stream.closed) throw new Error('release upgrade Web output did not close')
 }
 
-async function observeWeb(expectCurrentRpc) {
+const requireFromWeb = createRequire(join(clone, 'apps', 'web', 'package.json'))
+const { chromium } = requireFromWeb('playwright')
+
+async function browserExecutable() {
+  const candidates = [
+    chromium.executablePath(),
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  ]
+  for (const path of candidates) {
+    try { await access(path); return path } catch { /* continue */ }
+  }
+  throw new Error('No Chromium-compatible browser executable is installed')
+}
+
+async function waitForAlphaSessionState() {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    try {
+      const v1Name = (await readdir(storageDirectory)).find(name => /^run2skill_v1.*\.json$/u.test(name))
+      if (v1Name !== undefined) {
+        const v1 = JSON.parse(await readFile(join(storageDirectory, v1Name), 'utf8'))
+        if (Object.keys(v1.global?.sessions ?? {}).length > 0) return
+      }
+    } catch { /* wait for the Alpha observer checkpoint */ }
+    await delay(100)
+  }
+  throw new Error('0.1.1-alpha did not checkpoint its controlled session state')
+}
+
+async function waitForV2MigrationCommit() {
+  const v2Path = join(storageDirectory, 'run2skill_v2.json')
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    try {
+      const v2 = JSON.parse(await readFile(v2Path, 'utf8'))
+      if (v2.global?.migration?.phase === 'COMMITTED') return
+    } catch { /* wait for the stable migration checkpoint */ }
+    await delay(100)
+  }
+  throw new Error('0.2.0 did not commit its v2 migration state')
+}
+
+async function observeWeb(expectCurrentRpc, createAlphaState = false) {
   const port = await reservePort()
   const base = `http://127.0.0.1:${String(port)}`
+  const provider = createAlphaState ? await startProbeProvider() : undefined
+  const childEnv = provider === undefined
+    ? env
+    : {
+        ...env,
+        [['DEEPSEEK', 'API', 'KEY'].join('_')]: ['run2skill', 'controlled', 'release', 'probe'].join('-'),
+        [['DEEPSEEK', 'BASE', 'URL'].join('_')]: provider.baseUrl,
+      }
   const child = spawn(process.execPath, [bin, ...dshWebArgs(port, supportsNoOpen(webHelp))], {
-    cwd: workspace, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: workspace, env: childEnv, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let logs = ''
   child.stdout.on('data', chunk => { logs += chunk.toString() })
   child.stderr.on('data', chunk => { logs += chunk.toString() })
+  let browser
   try {
     const deadline = Date.now() + 60_000
     let html
@@ -156,10 +241,56 @@ async function observeWeb(expectCurrentRpc) {
       assert.equal(rpc.status, 200)
       const body = await rpc.json()
       assert.equal(body.result?.ok, true)
+      if (!createAlphaState) await waitForV2MigrationCommit()
+    }
+    if (createAlphaState) {
+      const workspaceResponse = await fetch(`${base}/api/workspace.create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request', rpcId: 'release-ui-workspace', method: 'workspace.create', payload: { path: workspace },
+        }),
+      })
+      const workspaceBody = await workspaceResponse.json()
+      assert.equal(workspaceBody.result?.ok, true, 'release probe could not register its disposable workspace')
+      const sessionResponse = await fetch(`${base}/api/session.create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request', rpcId: 'release-ui-session', method: 'session.create', payload: { cwd: workspace },
+        }),
+      })
+      const sessionBody = await sessionResponse.json()
+      assert.equal(sessionBody.result?.ok, true, 'release probe could not create a DSH session')
+
+      browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
+      const page = await browser.newPage()
+      await page.goto(`${base}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      const onboarding = page.locator('[class*="onboardingOverlay"]')
+      if (await onboarding.count() > 0) {
+        await onboarding.getByRole('button').click()
+        await onboarding.waitFor({ state: 'detached', timeout: 15_000 })
+      }
+      const acknowledgeNotice = page.getByRole('button', { name: /^(Continue|继续)$/ })
+      if (await acknowledgeNotice.waitFor({ timeout: 10_000 }).then(() => true, () => false)) {
+        const noticeDialog = page.getByRole('dialog').filter({ has: acknowledgeNotice })
+        await acknowledgeNotice.click()
+        await noticeDialog.waitFor({ state: 'detached', timeout: 15_000 })
+      }
+      const deferSetup = page.getByRole('button', { name: /^(Configure later|稍后配置)$/ })
+      if (await deferSetup.waitFor({ timeout: 10_000 }).then(() => true, () => false)) {
+        const setupDialog = page.getByRole('dialog').filter({ has: deferSetup })
+        await deferSetup.click()
+        await setupDialog.waitFor({ state: 'detached', timeout: 15_000 })
+      }
+      await page.getByRole('button', { name: /^(?:New session|新.*会话)$/ }).last().click()
+      await page.locator('textarea').last().fill('run2skill controlled release upgrade draft')
+      await page.locator('textarea').last().press('Enter')
+      await waitForAlphaSessionState()
     }
   } finally {
+    await browser?.close()
     await stop(child)
     await Promise.all([waitForOutputClose(child.stdout), waitForOutputClose(child.stderr)])
+    if (provider !== undefined) await closeServer(provider.server)
   }
   assert.equal(
     isSafeDiagnosticOutput(logs),
@@ -171,12 +302,14 @@ async function observeWeb(expectCurrentRpc) {
 console.log('CP_RELEASE_UPGRADE_STAGE=install-0.1.1-alpha')
 await dsh(['plugin', '--profile', 'web', 'add', previousArchive])
 assert.equal(await installedVersion(), '0.1.1-alpha')
-await observeWeb(true)
-const storageDirectory = join(home, 'storages')
+await observeWeb(true, true)
 const v1Name = (await readdir(storageDirectory)).find(name => /^run2skill_v1.*\.json$/u.test(name))
 assert.ok(v1Name, '0.1.1-alpha did not create its v1 storage domain')
 const v1Path = join(storageDirectory, v1Name)
 const v1Before = await readFile(v1Path)
+const v1 = JSON.parse(v1Before.toString('utf8'))
+const v1SessionKeys = Object.keys(v1.global?.sessions ?? {})
+assert.ok(v1SessionKeys.length > 0, '0.1.1-alpha did not retain its controlled session state')
 
 console.log('CP_RELEASE_UPGRADE_STAGE=upgrade-0.2.0')
 await dsh(['plugin', '--profile', 'web', 'add', candidateArchive])
@@ -191,6 +324,11 @@ assert.equal(v2.global?.migration?.phase, 'COMMITTED')
 assert.equal(v2.global?.migration?.counts?.workItems, 0)
 assert.equal(v2.global?.migration?.counts?.lineages, 0)
 assert.equal(Object.keys(v2.tables?.legacy_items ?? {}).length, 0)
+assert.equal(
+  v1SessionKeys.every(key => Object.hasOwn(v2.global?.activation?.observerStartWatermarks ?? {}, key)),
+  true,
+  '0.2.0 migration did not retain every checkpointed Alpha session watermark',
+)
 assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
 
 console.log('CP_RELEASE_UPGRADE_STAGE=uninstall-0.2.0')
