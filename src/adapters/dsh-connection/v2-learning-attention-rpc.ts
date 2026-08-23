@@ -243,12 +243,7 @@ export class V2LearningAttentionService {
         throw new CurrentScopeAuthorizationError('ACTION_STALE')
       }
       if (subject.kind === 'BATCH') {
-        if (this.#global.get().purgeJournal !== undefined) throw new CurrentScopeAuthorizationError('ACTION_STALE')
-        const current = this.#batches.get(subject.batch.batchId)
-        if (current?.revision !== revision || current.state !== 'NEEDS_ATTENTION') {
-          throw new CurrentScopeAuthorizationError('ACTION_STALE')
-        }
-        await this.#batches.delete(subject.batch.batchId)
+        await this.#dismissBatch(subject.batch)
         return { ok: true, value: {
           apiVersion: 1, workItemId: projected.subjectId, workItemRevision: revision,
           changed: true, processingState: 'TERMINAL', disposition: 'IGNORED',
@@ -262,6 +257,37 @@ export class V2LearningAttentionService {
     } catch {
       return error('conflict')
     }
+  }
+
+  async #dismissBatch(expected: SessionBatchV2): Promise<void> {
+    await this.#global.runExclusive(async current => {
+      if (current.purgeJournal !== undefined) throw new CurrentScopeAuthorizationError('ACTION_STALE')
+      const batch = this.#batches.get(expected.batchId)
+      if (batch?.revision !== expected.revision || batch.state !== 'NEEDS_ATTENTION') {
+        throw new CurrentScopeAuthorizationError('ACTION_STALE')
+      }
+      const cursor = current.sessions[expected.sessionLifecycleKey]
+      if (cursor?.activeBatchId !== expected.batchId) return { value: undefined }
+      const { activeBatchId: _activeBatchId, ...stableCursor } = cursor
+      return {
+        value: undefined,
+        global: {
+          ...current,
+          sessions: {
+            ...current.sessions,
+            [expected.sessionLifecycleKey]: {
+              ...stableCursor,
+              detectedThroughTurnEndSeq: Math.max(
+                stableCursor.detectedThroughTurnEndSeq,
+                expected.lastTurnEndSeq,
+              ),
+              updatedAt: this.now(),
+            },
+          },
+        },
+      }
+    })
+    await this.#batches.delete(expected.batchId)
   }
 
   async #dismissIntent(expected: ExperienceIntentV2): Promise<void> {

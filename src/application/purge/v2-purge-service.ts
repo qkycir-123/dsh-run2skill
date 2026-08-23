@@ -188,12 +188,19 @@ export class V2PurgeService {
     const global = this.domain.global.get()
     return global.proposalGenerationLease !== undefined
       || global.proposalCatalogMutationJournal !== undefined
+      || [...this.domain.table('session_batches').entries()]
+        .some(([, batch]) => batch.state === 'DETECTION_CLAIMED')
   }
 
   async #begin(purgeId: string, hideBefore: string): Promise<void> {
     const accepted = await this.#global.runExclusive(async current => {
       if (current.purgeJournal !== undefined) return { value: current.purgeJournal.purgeId === purgeId }
-      if (current.proposalGenerationLease !== undefined || current.proposalCatalogMutationJournal !== undefined) {
+      if (
+        current.proposalGenerationLease !== undefined
+        || current.proposalCatalogMutationJournal !== undefined
+        || [...this.domain.table('session_batches').entries()]
+          .some(([, batch]) => batch.state === 'DETECTION_CLAIMED')
+      ) {
         return { value: false }
       }
       return {

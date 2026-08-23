@@ -110,6 +110,64 @@ describe('v2 production Host runtime', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
+  it('does not acknowledge a live Turn before its exact turn/end is durable', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const header: DshSessionHeader = {
+      version: 1,
+      id: 'lagging-persistence-session',
+      createdAt: 1_725_050_000_000,
+      cwd: 'D:/workspace',
+    }
+    const events: DshSessionEvent[] = [
+      { type: 'turn/start', seq: 0, time: header.createdAt + 1, data: { turn: 0 } },
+      { type: 'turn/end', seq: 1, time: header.createdAt + 2, data: { turn: 0, reason: { kind: 'completed' } } },
+    ]
+    let durable = false
+    let snapshotVisible = false
+    const runtime = new DshV2ProductionRuntime(domain, {
+      persistence: {
+        listSnapshots: async () => snapshotVisible ? [{ header, revision: 'rev-1' }] : [],
+        readFrom: async (_id, fromSeq) => ({
+          meta: header,
+          events: durable ? events.filter(event => event.seq >= fromSeq) : [],
+        }),
+      },
+      sessions: { get: () => undefined },
+      agents: { get: () => undefined },
+      llm: {
+        resolveModelInfo: async () => ({ context: { contextWindow: 16_384 } }),
+        stream: async function * () { yield { type: 'finish' as const, reason: { kind: 'stop' } } },
+      },
+      skills: { snapshot: async () => ({ complete: true, skills: [] }), get: async () => undefined },
+      workspace: { resolve: async () => ({ status: 'BOUND', workspaceId: 'workspace-1', canonicalPath: 'D:/workspace' }) },
+      resolveWorkspace: async workspaceId => ({ workspaceId, canonicalPath: 'D:/workspace' }),
+      notices: new RuntimeNotices(),
+      resolveSession: () => undefined,
+      resolveSessionByView: () => undefined,
+      now: () => header.createdAt + 100,
+    })
+
+    await runtime.start()
+    const candidate = {
+      header,
+      turn: 0,
+      turnStartSeq: 0,
+      turnEndSeq: 1,
+      directUserMessages: [],
+    }
+    await expect(runtime.processCandidate(candidate)).rejects.toThrow('TURN_NOT_DURABLE')
+    expect(domain.turnObservations.size).toBe(0)
+
+    durable = true
+    await expect(runtime.processCandidate(candidate)).rejects.toThrow('TURN_NOT_CAPTURED')
+    expect(domain.turnObservations.size).toBe(0)
+
+    snapshotVisible = true
+    await runtime.processCandidate(candidate)
+    expect(domain.turnObservations.size).toBe(1)
+    await runtime.close()
+  })
+
   it('keeps turns 1-4 model-free and makes exactly one detector call at turn 5', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const header: DshSessionHeader = {

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createV2RecentSkillActivityRpcHandler } from '../src/adapters/dsh-connection/v2-recent-skill-activity-rpc.js'
 import { V2PurgeService } from '../src/application/purge/index.js'
+import { BatchDetectorWorker } from '../src/application/detection/index.js'
 import { V2ProposalPublicationCoordinator } from '../src/application/publication/index.js'
 import { V2ProposalReviewCoordinator, deriveV2ProposalRef } from '../src/application/review/index.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
@@ -148,5 +149,61 @@ describe('v2 settings Host surfaces', () => {
     await expect(service.confirm(preview.previewId, preview.digest, { scope: 'ALL' }))
       .rejects.toMatchObject({ code: 'PURGE_PREVIEW_STALE' })
     expect(domain.turnObservations.size).toBe(1)
+  })
+
+  it('rejects clear-all while a detector owns a claimed batch', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const fixture = createMinimalV2Fixtures()
+    await domain.table('turn_observations').put(fixture.turnObservation.observationId, fixture.turnObservation)
+    await domain.table('session_batches').put(
+      fixture.sessionBatch.batchId,
+      SessionBatchV2Schema.parse(fixture.sessionBatch),
+    )
+    await domain.global.set({
+      ...domain.global.get(),
+      sessions: {
+        [fixture.sessionBatch.sessionLifecycleKey]: {
+          observedThroughTurnEndSeq: fixture.sessionBatch.lastTurnEndSeq,
+          detectedThroughTurnEndSeq: 0,
+          activeBatchId: fixture.sessionBatch.batchId,
+          lastActivityAt: fixture.turnObservation.observedAt,
+          openExperienceCarry: [],
+          updatedAt: fixture.sessionBatch.updatedAt,
+        },
+      },
+    })
+    let release!: () => void
+    const detectorFinished = new Promise<void>(resolve => { release = resolve })
+    const detector = new BatchDetectorWorker(domain, {
+      client: {
+        detect: async () => {
+          await detectorFinished
+          return {
+            result: 'READY',
+            intents: [{
+              persistenceScope: 'PROJECT',
+              experienceType: 'WORKFLOW',
+              applicabilitySummary: '可复用流程',
+              keySteps: ['执行步骤'],
+              prohibitions: [],
+              evidenceDigests: [fixture.turnObservation.evidenceDigest],
+              completeness: { status: 'COMPLETE', blockers: [] },
+            }],
+          }
+        },
+      },
+    })
+    const running = detector.runOnce()
+    await vi.waitFor(() => expect(domain.sessionBatches.get(fixture.sessionBatch.batchId)?.state).toBe('DETECTION_CLAIMED'))
+    const service = new V2PurgeService(domain, () => Date.parse('2026-08-24T00:00:00.000Z'))
+    const preview = await service.preview('ALL')
+
+    await expect(service.confirm(preview.previewId, preview.digest, { scope: 'ALL' }))
+      .rejects.toMatchObject({ code: 'PURGE_BUSY' })
+    release()
+    await running
+    expect(domain.turnObservations.size).toBe(1)
+    expect(domain.sessionBatches.size).toBe(1)
+    expect(domain.experienceIntents.size).toBe(1)
   })
 })

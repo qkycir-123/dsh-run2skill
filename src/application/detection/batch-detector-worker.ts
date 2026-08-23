@@ -169,6 +169,7 @@ export class BatchDetectorWorker {
 
   #claimNext(): Promise<ClaimedBatch | RejectedBatch | undefined> {
     return this.#global.runExclusive<ClaimedBatch | RejectedBatch | undefined>(async current => {
+      if (current.purgeJournal !== undefined) return { value: undefined }
       const batch = [...this.#batches.entries()]
         .map(([, value]) => SessionBatchV2Schema.parse(value))
         .filter(value => value.state === 'FROZEN' && this.#permitBatch(value))

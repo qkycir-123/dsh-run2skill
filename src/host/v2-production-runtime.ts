@@ -26,6 +26,7 @@ import { V2ProposalHostServices } from './v2-proposal-services.js'
 import { V2PurgeService } from '../application/purge/index.js'
 import { V2LearningAttentionService } from '../adapters/dsh-connection/v2-learning-attention-rpc.js'
 import type { CurrentWorkspaceResolver } from '../adapters/dsh-connection/current-scope-authorizer.js'
+import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
 
 export interface V2ProductionHostSession<TView extends object> {
   readonly header: DshSessionHeader
@@ -198,11 +199,27 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     await this.pipeline.start()
   }
 
-  async processCandidate(_candidate: TurnIngressCandidate): Promise<void> {
+  async processCandidate(candidate: TurnIngressCandidate): Promise<void> {
+    const durable = await this.options.persistence.readFrom(candidate.header.id, candidate.turnEndSeq)
+    const turnEnd = durable.events.find(event => (
+      event.seq === candidate.turnEndSeq && event.type === 'turn/end'
+    ))
+    if (turnEnd === undefined) throw new Error('TURN_NOT_DURABLE')
+    const sessionLifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: candidate.header.id,
+      sessionCreatedAt: candidate.header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(candidate.header.cwd),
+    })
     while (true) {
       const result = await this.scanner.scanBatch()
       if (result.status === 'UNAVAILABLE') throw new Error(result.healthCode)
-      if (result.status === 'COMPLETE') return
+      if (result.status === 'COMPLETE') {
+        const cursor = this.#domain.global.get().sessions[sessionLifecycleKey]
+        if (cursor === undefined || cursor.observedThroughTurnEndSeq < candidate.turnEndSeq) {
+          throw new Error('TURN_NOT_CAPTURED')
+        }
+        return
+      }
       await new Promise(resolve => setTimeout(resolve, 0))
     }
   }

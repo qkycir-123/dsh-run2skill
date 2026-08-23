@@ -97,6 +97,19 @@ describe('v2 learning Attention RPC', () => {
       state: 'NEEDS_ATTENTION',
     })
     await domain.table('session_batches').put(batch.batchId, batch)
+    await domain.global.set({
+      ...domain.global.get(),
+      sessions: {
+        [batch.sessionLifecycleKey]: {
+          observedThroughTurnEndSeq: batch.lastTurnEndSeq,
+          detectedThroughTurnEndSeq: 0,
+          activeBatchId: batch.batchId,
+          lastActivityAt: batch.updatedAt,
+          openExperienceCarry: [],
+          updatedAt: batch.updatedAt,
+        },
+      },
+    })
     const service = new V2LearningAttentionService(
       domain,
       async workspaceId => ({ workspaceId, canonicalPath: 'D:/workspace' }),
@@ -114,5 +127,9 @@ describe('v2 learning Attention RPC', () => {
 
     expect(response).toMatchObject({ ok: true, value: { disposition: 'IGNORED' } })
     expect(domain.sessionBatches.has(batch.batchId)).toBe(false)
+    expect(domain.global.get().sessions[batch.sessionLifecycleKey]).toMatchObject({
+      detectedThroughTurnEndSeq: batch.lastTurnEndSeq,
+    })
+    expect(domain.global.get().sessions[batch.sessionLifecycleKey]?.activeBatchId).toBeUndefined()
   })
 })
