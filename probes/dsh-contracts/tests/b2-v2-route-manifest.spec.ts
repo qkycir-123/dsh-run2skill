@@ -8,10 +8,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DshV2RouteSnapshotAdapter } from '../src/adapters/dsh-llm/v2-route-snapshot.js'
+import { DshV2CatalogAdapter } from '../src/adapters/dsh-skills/v2-catalog-adapter.js'
+import { DshV2OwnershipObservationAdapter } from '../src/adapters/dsh-skills/v2-ownership-observation.js'
 import { DshV2RootManifestAdapter } from '../src/adapters/dsh-skills/v2-root-manifest.js'
-import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
-import type { TurnObservationV2 } from '../src/domain/v2/index.js'
+import { ExperienceIntentV2Schema, SessionBatchV2Schema, type TurnObservationV2 } from '../src/domain/v2/index.js'
+import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
+import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
+import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
 const temporaryDirectories: string[] = []
 afterEach(async () => {
@@ -26,6 +30,28 @@ async function writeSkill(root: string, name: string, description: string): Prom
   ].join('\n'), 'utf8')
 }
 
+async function writeFlatSkill(root: string, name: string, description: string, fileName = name): Promise<void> {
+  await mkdir(root, { recursive: true })
+  await writeFile(join(root, `${fileName}.md`), [
+    '---', `name: ${name}`, `description: ${description}`, '---', '', `# ${name}`, '',
+  ].join('\n'), 'utf8')
+}
+
+async function waitForSkill(
+  registry: Context['skills'],
+  name: string,
+  view: { readonly cwd: string },
+): Promise<Awaited<ReturnType<Context['skills']['get']>>> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const snapshot = await registry.snapshot(view)
+    const definition = await registry.get(name, view)
+    if (snapshot.complete && definition !== undefined) return definition
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  throw new Error(`timed out waiting for ${name}`)
+}
+
 describe('B2 v2 frozen route and ownership manifest on real DSH services', () => {
   it('reads exact LLM capacity without streaming and sees a shadowed filesystem candidate', async () => {
     const base = await mkdtemp(join(tmpdir(), 'dsh-run2skill-b2-v2-facts-'))
@@ -37,6 +63,9 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
     const bundled = join(base, 'bundled')
     await mkdir(join(project, '.git'), { recursive: true })
     await writeSkill(join(project, '.dsh', 'skills'), 'same-skill', 'Project winner')
+    await writeFlatSkill(
+      join(project, '.dsh', 'skills'), 'flat-probe', 'Renamed flat project winner', 'legacy-filename',
+    )
     await writeSkill(join(dshHome, 'skills'), 'user-only', 'User Skill')
     await writeSkill(custom, 'custom-only', 'Custom Skill')
     await writeSkill(bundled, 'bundled-only', 'Bundled Skill')
@@ -74,16 +103,21 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       expect(streamed).toBe(false)
 
       const view = { cwd: project }
-      const runtimeCatalog = {
-        observeRuntimeCatalog: async () => {
-          const first = await ctx.skills.snapshot(view)
-          const second = await ctx.skills.snapshot(view)
-          return {
-            complete: first.complete && second.complete && canonicalJson(first.skills) === canonicalJson(second.skills),
-            runtimeCatalogDigest: sha256Utf8(canonicalJson(first.skills)),
-          }
-        },
-      }
+      const runtimeCatalog = new DshV2CatalogAdapter(createMemoryRun2skillV2Domain(), {
+        registry: ctx.skills,
+        resolveView: key => key === 'sl_probe' ? view : undefined,
+        resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+          ? {
+              scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+              canonicalRootPath: join(project, '.dsh', 'skills'),
+            }
+          : summary.source === 'user-dsh'
+            ? {
+                scope: 'USER', expectedProvider: 'filesystem', expectedSource: 'user-dsh',
+                canonicalRootPath: join(dshHome, 'skills'),
+              }
+            : undefined,
+      })
       const manifest = new DshV2RootManifestAdapter({
         resolveSession: () => ({
           cwd: project,
@@ -99,6 +133,17 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       })
       const before = await manifest.capture('sl_probe')
       expect(before.complete).toBe(true)
+      expect(before.ownershipCandidates).toHaveLength(5)
+      expect(before.ownershipCandidates?.find(candidate => candidate.name === 'same-skill')).toMatchObject({
+        provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: true,
+      })
+      expect(before.ownershipCandidates?.find(candidate => candidate.name === 'flat-probe')).toMatchObject({
+        provider: 'filesystem', source: 'project-dsh', scope: 'PROJECT', writable: false,
+        bodyDigest: sha256Utf8('# flat-probe'),
+      })
+      expect(before.ownershipCandidates?.every(candidate => /^[a-f0-9]{64}$/u.test(candidate.bodyDigest))).toBe(true)
+      expect(before.ownershipCandidates?.some(candidate => candidate.targetPathDigest !== undefined)).toBe(true)
+      expect(JSON.stringify(before)).not.toContain(base)
 
       await writeSkill(join(project, '.agents', 'skills'), 'same-skill', 'Shadowed Agent copy')
       const after = await manifest.capture('sl_probe')
@@ -109,6 +154,146 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
       await filesystemFiber.dispose()
       await skillsFiber.dispose()
       await llmFiber.dispose()
+    }
+  })
+
+  it('binds a real filesystem write to the frontmatter-stripped DSH readback body', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'dsh-run2skill-b2-v2-ownership-'))
+    temporaryDirectories.push(base)
+    const project = join(base, 'project')
+    const dshHome = join(base, 'dsh-home')
+    const agentsHome = join(base, 'agents-home')
+    await mkdir(join(project, '.git'), { recursive: true })
+
+    const ctx = new Context()
+    const skillsFiber = await ctx.plugin(SkillRegistry)
+    const filesystemFiber = await ctx.plugin(SkillFileSystem, {
+      dshHome, agentsHome, watch: true,
+      watchUsePolling: true, watchStabilityThresholdMs: 20, watchPollIntervalMs: 10,
+    })
+    try {
+      const fixture = createMinimalV2Fixtures()
+      const intent = ExperienceIntentV2Schema.parse(fixture.experienceIntent)
+      const lifecycleKey = intent.sessionLifecycleKey
+      const view = { cwd: project }
+      const runtimeCatalog = new DshV2CatalogAdapter(createMemoryRun2skillV2Domain(), {
+        registry: ctx.skills,
+        resolveView: key => key === lifecycleKey ? view : undefined,
+        resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+          ? {
+              scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+              canonicalRootPath: join(project, '.dsh', 'skills'),
+            }
+          : undefined,
+      })
+      const manifest = new DshV2RootManifestAdapter({
+        resolveSession: () => ({
+          cwd: project,
+          configuration: {
+            profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true,
+            customSkillDirs: [], configuredDshHome: dshHome, configuredAgentsHome: agentsHome,
+          },
+        }),
+        runtimeCatalog,
+        environment: {},
+        homeDirectory: () => join(base, 'unused-home'),
+        now: () => Date.parse('2026-08-22T00:00:00.000Z'),
+      })
+      const baseline = await manifest.capture(lifecycleKey)
+      expect(baseline).toMatchObject({ complete: true, ownershipCandidates: [] })
+      const batch = SessionBatchV2Schema.parse({ ...fixture.sessionBatch, batchManifestBaseline: baseline })
+      const body = [
+        '# Agent-owned workflow', '', intent.applicabilitySummary, '',
+        ...intent.keySteps.flatMap(step => [step, '']),
+        ...intent.prohibitions.flatMap(prohibition => [prohibition, '']),
+      ].join('\n').trim()
+      const raw = [
+        '---', 'name: agent-owned-workflow', 'description: Agent-owned fixture workflow.', '---', '', body, '',
+      ].join('\n')
+      const target = join(project, '.dsh', 'skills', 'agent-owned-workflow', 'SKILL.md')
+      await mkdir(join(project, '.dsh', 'skills', 'agent-owned-workflow'), { recursive: true })
+      await writeFile(target, raw, 'utf8')
+      const loaded = await waitForSkill(ctx.skills, 'agent-owned-workflow', view)
+      expect(loaded?.content).toBe(body)
+
+      const header: DshSessionHeader = { version: 1, id: 'session-v2', createdAt: 100, cwd: project }
+      const events: DshSessionEvent[] = [
+        { type: 'turn/start', seq: 1, time: 1, data: { turn: 2 } },
+        { type: 'tool/call', seq: 3, time: 3, data: {
+          turn: 2, step: 1, callId: 'call-write-skill', name: 'write',
+          arguments: JSON.stringify({ file_path: target, content: raw }),
+        } },
+        { type: 'tool/result', seq: 4, time: 4, data: {
+          turn: 2, step: 1,
+          message: {
+            role: 'user', source: { kind: 'tool', callId: 'call-write-skill' },
+            content: [{ type: 'tool-result', toolCallId: 'call-write-skill', isError: false, content: [] }],
+          },
+        } },
+        { type: 'turn/end', seq: 8, time: 8, data: { turn: 2, reason: { kind: 'completed' } } },
+      ]
+      const ownership = new DshV2OwnershipObservationAdapter({
+        persistence: {
+          listSnapshots: async () => [{ header, revision: 'jsonl:8' }],
+          readFrom: async () => ({ meta: header, events }),
+        },
+        resolveSession: key => key === lifecycleKey ? { header } : undefined,
+        manifest,
+      })
+      const observed = await ownership.observe({ batch, intent, inputDigest: 'd'.repeat(64) })
+      expect(observed).toMatchObject({
+        status: 'OBSERVED', catalogComplete: true, toolEvidenceComplete: true,
+        agentActivity: 'WRITE_SUCCEEDED',
+        changedCandidates: [{
+          bodyDigest: sha256Utf8(body), exactReadbackComplete: true,
+          writeAttribution: 'AGENT_WRITE_SUCCEEDED', intentBinding: 'MATCH',
+        }],
+      })
+    } finally {
+      await filesystemFiber.dispose()
+      await skillsFiber.dispose()
+    }
+  })
+
+  it('fails ownership closed when a root SKILL.md is shadowed by a same-name flat winner', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'dsh-run2skill-b2-v2-duplicate-flat-'))
+    temporaryDirectories.push(base)
+    const project = join(base, 'project')
+    const dshHome = join(base, 'dsh-home')
+    const agentsHome = join(base, 'agents-home')
+    const skillRoot = join(project, '.dsh', 'skills')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await mkdir(skillRoot, { recursive: true })
+    const skillFile = (body: string) => [
+      '---', 'name: duplicate-skill', 'description: Duplicate fixture.', '---', '', body, '',
+    ].join('\n')
+    await writeFile(join(skillRoot, 'legacy.md'), skillFile('# Runtime winner body'), 'utf8')
+    await writeFile(join(skillRoot, 'SKILL.md'), skillFile('# Shadowed bundle body'), 'utf8')
+
+    const ctx = new Context()
+    const skillsFiber = await ctx.plugin(SkillRegistry)
+    const filesystemFiber = await ctx.plugin(SkillFileSystem, { dshHome, agentsHome, watch: false })
+    try {
+      const view = { cwd: project }
+      const snapshot = await ctx.skills.snapshot(view)
+      expect(snapshot.complete).toBe(true)
+      expect((await ctx.skills.get('duplicate-skill', view))?.content).toBe('# Runtime winner body')
+
+      const runtimeCatalog = new DshV2CatalogAdapter(createMemoryRun2skillV2Domain(), {
+        registry: ctx.skills,
+        resolveView: key => key === 'sl_duplicate' ? view : undefined,
+        resolveStockWritableRoot: summary => summary.source === 'project-dsh'
+          ? {
+              scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+              canonicalRootPath: skillRoot,
+            }
+          : undefined,
+      })
+      await expect(runtimeCatalog.observeOwnershipCatalog('sl_duplicate'))
+        .resolves.toMatchObject({ complete: false, candidates: [] })
+    } finally {
+      await filesystemFiber.dispose()
+      await skillsFiber.dispose()
     }
   })
 })

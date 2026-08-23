@@ -320,16 +320,18 @@ export class AgentFirstOwnershipCoordinator {
       && evidence.endManifest.runtimeCatalogDigest === batch.batchManifestBaseline.runtimeCatalogDigest
     )
     if (manifestUnchanged) {
-      if (evidence.changedCandidates.length > 0 || evidence.agentActivity !== 'NONE') {
+      if (evidence.changedCandidates.length === 0 && evidence.agentActivity === 'NONE') {
+        return { state: 'RUN2SKILL_OWNED', reasonCode: 'NO_AGENT_SKILL_ACTIVITY' }
+      }
+      if (evidence.agentActivity !== 'WRITE_SUCCEEDED') {
         return { state: 'NEEDS_CONFIRMATION', reasonCode: 'OBSERVATION_CONTRADICTORY' }
       }
-      return { state: 'RUN2SKILL_OWNED', reasonCode: 'NO_AGENT_SKILL_ACTIVITY' }
     }
 
-    if (evidence.changedCandidates.length === 0) {
+    if (!manifestUnchanged && evidence.changedCandidates.length === 0) {
       return { state: 'NEEDS_CONFIRMATION', reasonCode: 'MANIFEST_CHANGE_UNATTRIBUTED' }
     }
-    if (evidence.agentActivity !== 'WRITE_SUCCEEDED') {
+    if (!manifestUnchanged && evidence.agentActivity !== 'WRITE_SUCCEEDED') {
       return { state: 'NEEDS_CONFIRMATION', reasonCode: 'MANIFEST_CHANGE_UNATTRIBUTED' }
     }
     const matches = evidence.changedCandidates.filter(candidate => (
