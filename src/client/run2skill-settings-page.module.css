@@ -37,6 +37,13 @@
   display: grid;
   gap: 18px;
   padding: 12px 24px 24px 56px;
+  container-type: inline-size;
+}
+
+.attentionGroup {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
 }
 
 .empty {
@@ -85,17 +92,66 @@
   gap: 8px;
 }
 
+.proposalToolbar {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.proposalToolbar > :first-child {
+  width: 100%;
+}
+
+.proposalToolbarCompact {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.proposalToolbarCompact > :first-child {
+  width: auto;
+}
+
 .proposalLayout {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.6fr);
-  gap: 20px;
+  grid-template-columns: 1fr;
+  gap: 12px;
 }
 
 .proposalListButton {
   width: 100%;
+  height: auto;
+  min-height: 48px;
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 10px;
   text-align: start;
   white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.proposalListButton[aria-current='true'] {
+  border-color: var(--dsw-alias-brand-primary);
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: inset 3px 0 var(--dsw-alias-brand-primary);
+}
+
+.proposalName {
+  max-width: 100%;
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.proposalMeta {
+  max-width: 100%;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .detail {
@@ -106,6 +162,28 @@
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
   background: var(--dsw-alias-bg-layer-2);
+}
+
+.detail > :first-child {
+  margin-top: 0;
+}
+
+.detailFacts {
+  display: grid;
+  grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0 0 20px;
+}
+
+.detailFacts dt {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.detailFacts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .detail pre {
@@ -168,11 +246,29 @@
   margin: 0;
 }
 
-@media (max-width: 720px) {
+@container (min-width: 760px) {
   .proposalLayout {
+    grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.6fr);
+    gap: 20px;
+  }
+}
+
+@container (max-width: 420px) {
+  .proposalToolbar,
+  .detailFacts {
     grid-template-columns: 1fr;
   }
 
+  .proposalToolbar > :last-child {
+    justify-self: start;
+  }
+
+  .detailFacts dt:not(:first-child) {
+    margin-top: 8px;
+  }
+}
+
+@media (max-width: 720px) {
   .sectionBody {
     padding: 8px 18px 20px;
   }
