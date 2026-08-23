@@ -64,7 +64,22 @@ const SUPPORTED_TURN_EVENTS = new Set([
   'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
   'request/context', 'session/end-seed',
 ])
-const MAX_ASSISTANT_EVIDENCE_BYTES = 32 * 1024 * 1024
+
+interface OwnershipObservationPolicy {
+  readonly readLookbehindSeqs: number
+  readonly maxReadEvents: number
+  readonly maxWindowEvents: number
+  readonly maxEvidenceBytes: number
+  readonly maxAnalysisMs: number
+}
+
+const DEFAULT_OWNERSHIP_OBSERVATION_POLICY: OwnershipObservationPolicy = Object.freeze({
+  readLookbehindSeqs: 10_000,
+  maxReadEvents: 20_000,
+  maxWindowEvents: 10_000,
+  maxEvidenceBytes: 64 * 1024 * 1024,
+  maxAnalysisMs: 500,
+})
 
 export interface DshV2OwnershipObservationAdapterOptions {
   readonly persistence: SessionPersistencePort
@@ -73,6 +88,7 @@ export interface DshV2OwnershipObservationAdapterOptions {
     capture(sessionLifecycleKey: string): Promise<SessionBatchV2['batchManifestBaseline']>
   }
   readonly now?: () => number
+  readonly internalPolicy?: Partial<OwnershipObservationPolicy>
 }
 
 interface ParsedWrite {
@@ -123,29 +139,55 @@ function exactSnapshot(
   return matches.length === 1 ? matches[0] : undefined
 }
 
-function batchWindow(events: readonly DshSessionEvent[], batch: SessionBatchV2): readonly DshSessionEvent[] | undefined {
-  const ordered = [...events].sort((left, right) => left.seq - right.seq)
-  if (ordered.some((event, index) => index > 0 && event.seq <= ordered[index - 1]!.seq)) return undefined
+function batchWindow(
+  events: readonly DshSessionEvent[],
+  batch: SessionBatchV2,
+  policy: OwnershipObservationPolicy,
+  deadline: number,
+): readonly DshSessionEvent[] | undefined {
+  if (events.length > policy.maxReadEvents) return undefined
+  for (let index = 1; index < events.length; index += 1) {
+    if (Date.now() > deadline || events[index]!.seq <= events[index - 1]!.seq) return undefined
+  }
+  const firstEndIndex = events.findIndex(event => (
+    event.seq === batch.firstTurnEndSeq && event.type === 'turn/end'
+  ))
+  const lastEndIndex = events.findIndex(event => (
+    event.seq === batch.lastTurnEndSeq && event.type === 'turn/end'
+  ))
+  if (firstEndIndex < 0 || lastEndIndex < firstEndIndex) return undefined
+  let firstStartIndex: number | undefined
+  for (let index = firstEndIndex - 1; index >= 0; index -= 1) {
+    if (Date.now() > deadline) return undefined
+    const event = events[index]!
+    if (event.type === 'turn/end') return undefined
+    if (event.type === 'turn/start') {
+      firstStartIndex = index
+      break
+    }
+  }
+  if (firstStartIndex === undefined) return undefined
+  const window = events.slice(firstStartIndex, lastEndIndex + 1)
+  if (window.length > policy.maxWindowEvents) return undefined
   let openStart: number | undefined
-  let firstStart: number | undefined
   const ends = new Set<number>()
-  for (const event of ordered) {
+  for (const event of window) {
+    if (Date.now() > deadline) return undefined
     if (event.type === 'turn/start') {
       if (openStart !== undefined) return undefined
       openStart = event.seq
     } else if (event.type === 'turn/end') {
       if (openStart === undefined) return undefined
       ends.add(event.seq)
-      if (event.seq === batch.firstTurnEndSeq) firstStart = openStart
       openStart = undefined
     }
   }
   if (
-    firstStart === undefined
+    openStart !== undefined
+    || !ends.has(batch.firstTurnEndSeq)
     || !ends.has(batch.lastTurnEndSeq)
     || batch.observationManifest.some(item => !ends.has(item.turnEndSeq))
   ) return undefined
-  const window = ordered.filter(event => event.seq >= firstStart! && event.seq <= batch.lastTurnEndSeq)
   if (window.some(event => !SUPPORTED_TURN_EVENTS.has(event.type) && event.ignorable !== true)) return undefined
   return window
 }
@@ -236,19 +278,24 @@ function analyzeTools(
   events: readonly DshSessionEvent[],
   cwd: string | undefined,
   knownSkillTargetDigests: ReadonlySet<string>,
+  policy: OwnershipObservationPolicy,
+  deadline: number,
 ): ToolEvidence {
   const calls = new Map<string, { readonly seq: number; readonly data: z.infer<typeof toolCallSchema> }>()
   const results = new Map<string, { readonly seq: number; readonly data: z.infer<typeof toolResultSchema> }>()
   let activity: ToolEvidence['activity'] = 'NONE'
   let unattributedBodyEvidence = false
+  let evidenceBytes = 0
   for (const event of events) {
+    if (Date.now() > deadline) {
+      return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+    }
     if (event.type === 'assistant/message') {
       const parsed = assistantMessageSchema.safeParse(event.data)
       if (!parsed.success) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
       }
       const text: string[] = []
-      let textBytes = 0
       for (const block of parsed.data.message.content) {
         if (typeof block !== 'object' || block === null || !('type' in block) || block.type !== 'text') continue
         const parsedText = textContentSchema.safeParse(block)
@@ -256,10 +303,10 @@ function analyzeTools(
           return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
         }
         const blockBytes = Buffer.byteLength(parsedText.data.text, 'utf8')
-        if (blockBytes > MAX_ASSISTANT_EVIDENCE_BYTES - textBytes) {
+        if (blockBytes > policy.maxEvidenceBytes - evidenceBytes) {
           return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
         }
-        textBytes += blockBytes
+        evidenceBytes += blockBytes
         text.push(parsedText.data.text)
       }
       const bodyEvidence = skillBodyEvidence(text.join('\n'))
@@ -274,6 +321,11 @@ function analyzeTools(
       if (!parsed.success || calls.has(parsed.data.callId)) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
       }
+      const argumentBytes = Buffer.byteLength(parsed.data.arguments, 'utf8')
+      if (argumentBytes > policy.maxEvidenceBytes - evidenceBytes) {
+        return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+      }
+      evidenceBytes += argumentBytes
       calls.set(parsed.data.callId, { seq: event.seq, data: parsed.data })
     } else if (event.type === 'tool/result') {
       const parsed = toolResultSchema.safeParse(event.data)
@@ -293,6 +345,9 @@ function analyzeTools(
 
   const writes: ParsedWrite[] = []
   for (const [callId, observedCall] of calls) {
+    if (Date.now() > deadline) {
+      return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+    }
     const observedResult = results.get(callId)!
     const call = observedCall.data
     const result = observedResult.data
@@ -380,9 +435,14 @@ function containsIntentContract(content: string, intent: ExperienceIntentV2): bo
  */
 export class DshV2OwnershipObservationAdapter implements OwnershipObservationPort {
   readonly #now: () => number
+  readonly #policy: OwnershipObservationPolicy
 
   constructor(private readonly options: DshV2OwnershipObservationAdapterOptions) {
     this.#now = options.now ?? Date.now
+    this.#policy = { ...DEFAULT_OWNERSHIP_OBSERVATION_POLICY, ...options.internalPolicy }
+    if (!Object.values(this.#policy).every(value => Number.isSafeInteger(value) && value > 0)) {
+      throw new TypeError('Invalid ownership observation policy')
+    }
   }
 
   async observe(input: {
@@ -396,9 +456,12 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
       const beforeList = await this.options.persistence.listSnapshots()
       const before = exactSnapshot(beforeList, session.header)
       if (before === undefined) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
-      const log = await this.options.persistence.readFrom(session.header.id, 0)
+      const fromSeq = Math.max(0, input.batch.firstTurnEndSeq - this.#policy.readLookbehindSeqs)
+      const log = await this.options.persistence.readFrom(session.header.id, fromSeq)
       if (!sameHeader(log.meta, session.header)) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
-      const window = batchWindow(log.events, input.batch)
+      const window = batchWindow(
+        log.events, input.batch, this.#policy, Date.now() + this.#policy.maxAnalysisMs,
+      )
       if (window === undefined) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
 
       const end = await this.options.manifest.capture(input.batch.sessionLifecycleKey)
@@ -418,7 +481,13 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         [...(baselineCandidates ?? []), ...(endCandidates ?? [])]
           .flatMap(candidate => candidate.targetPathDigest === undefined ? [] : [candidate.targetPathDigest]),
       )
-      const toolEvidence = analyzeTools(window, session.header.cwd, knownSkillTargetDigests)
+      const toolEvidence = analyzeTools(
+        window,
+        session.header.cwd,
+        knownSkillTargetDigests,
+        this.#policy,
+        Date.now() + this.#policy.maxAnalysisMs,
+      )
       const changes = catalogComplete ? changedCandidates(baselineCandidates, endCandidates) : []
       const changedCandidateIds = new Set(changes.map(({ baseline, end: current }) => (
         current ?? baseline!

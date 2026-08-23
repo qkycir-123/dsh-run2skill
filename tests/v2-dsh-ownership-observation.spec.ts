@@ -4,8 +4,9 @@ import {
   deriveOwnershipTargetPathDigest,
 } from '../src/adapters/dsh-skills/v2-ownership-observation.js'
 import { AgentFirstOwnershipCoordinator } from '../src/application/ownership/index.js'
+import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
-import { SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import { deriveSessionBatchIdV2, SessionBatchV2Schema } from '../src/domain/v2/index.js'
 import type { DshSessionEvent, DshSessionHeader, SessionPersistenceSnapshot } from '../src/adapters/dsh-session/types.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -54,22 +55,38 @@ function harness(options: {
   readonly endCandidates?: readonly ReturnType<typeof candidate>[]
   readonly between?: readonly DshSessionEvent[]
   readonly snapshots?: readonly SessionPersistenceSnapshot[][]
+  readonly seqOffset?: number
+  readonly onReadFrom?: (fromSeq: number) => void
 }) {
   const fixture = createMinimalV2Fixtures()
+  const seqOffset = options.seqOffset ?? 0
   const baselineCandidates = [...(options.baselineCandidates ?? [])]
   const endCandidates = [...(options.endCandidates ?? [])]
   const manifestUnchanged = JSON.stringify(baselineCandidates) === JSON.stringify(endCandidates)
+  const observationManifest = fixture.sessionBatch.observationManifest.map(entry => ({
+    ...entry, turnEndSeq: entry.turnEndSeq + seqOffset,
+  }))
+  const batchFacts = {
+    sessionLifecycleKey: fixture.sessionBatch.sessionLifecycleKey,
+    firstTurnEndSeq: fixture.sessionBatch.firstTurnEndSeq + seqOffset,
+    lastTurnEndSeq: fixture.sessionBatch.lastTurnEndSeq + seqOffset,
+    detectorPolicyVersion: fixture.sessionBatch.detectorPolicyVersion,
+  }
   const batch = SessionBatchV2Schema.parse({
     ...fixture.sessionBatch,
+    ...batchFacts,
+    batchId: deriveSessionBatchIdV2(batchFacts),
+    observationManifest,
+    observationManifestDigest: sha256Utf8(canonicalJson(observationManifest)),
     batchManifestBaseline: {
       ...fixture.sessionBatch.batchManifestBaseline,
       ownershipCandidates: baselineCandidates,
     },
   })
   const events = [
-    event('turn/start', 1, { turn: 2 }),
-    ...(options.between ?? []),
-    event('turn/end', 8, { turn: 2, reason: { kind: 'completed' } }),
+    event('turn/start', 1 + seqOffset, { turn: 2 }),
+    ...(options.between ?? []).map(item => ({ ...item, seq: item.seq + seqOffset })),
+    event('turn/end', 8 + seqOffset, { turn: 2, reason: { kind: 'completed' } }),
   ]
   let snapshotRead = 0
   const adapter = new DshV2OwnershipObservationAdapter({
@@ -78,7 +95,10 @@ function harness(options: {
         const values = options.snapshots ?? [[{ header, revision: 'jsonl:8' }]]
         return values[Math.min(snapshotRead++, values.length - 1)]!
       },
-      async readFrom() { return { meta: header, events } },
+      async readFrom(_sessionId, fromSeq) {
+        options.onReadFrom?.(fromSeq)
+        return { meta: header, events }
+      },
     },
     resolveSession: key => key === batch.sessionLifecycleKey ? { header } : undefined,
     manifest: {
@@ -126,6 +146,21 @@ async function decideWithRealAdapter(
 }
 
 describe('real DSH Agent-first ownership observation adapter', () => {
+  it('reads only a bounded suffix for a late SessionBatch', async () => {
+    let observedFromSeq = -1
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      seqOffset: 20_000,
+      onReadFrom: fromSeq => { observedFromSeq = fromSeq },
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({ status: 'OBSERVED', agentActivity: 'NONE' })
+    expect(observedFromSeq).toBeGreaterThan(0)
+    expect(observedFromSeq).toBeLessThanOrEqual(observed.batch.firstTurnEndSeq)
+  })
+
   it('proves no Agent Skill activity from a stable unchanged manifest and complete tool evidence', async () => {
     const ordinaryPath = 'D:\\repo\\game\\index.html'
     const { adapter, batch, intent } = harness({
