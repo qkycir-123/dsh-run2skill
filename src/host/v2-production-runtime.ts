@@ -27,6 +27,7 @@ import { V2PurgeService } from '../application/purge/index.js'
 import { V2LearningAttentionService } from '../adapters/dsh-connection/v2-learning-attention-rpc.js'
 import type { CurrentWorkspaceResolver } from '../adapters/dsh-connection/current-scope-authorizer.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
+import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 
 export interface V2ProductionHostSession<TView extends object> {
   readonly header: DshSessionHeader
@@ -200,6 +201,9 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
   }
 
   async processCandidate(candidate: TurnIngressCandidate): Promise<void> {
+    const classification = classifySessionRoot(candidate.header)
+    if (classification.status === 'CHILD') return
+    if (classification.status === 'UNAVAILABLE') throw new Error(classification.healthCode)
     const durable = await this.options.persistence.readFrom(candidate.header.id, candidate.turnEndSeq)
     const turnEnd = durable.events.find(event => (
       event.seq === candidate.turnEndSeq && event.type === 'turn/end'

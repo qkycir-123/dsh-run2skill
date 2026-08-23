@@ -106,6 +106,20 @@ describe('v2 production Host runtime', () => {
     expect(domain.turnObservations.size).toBe(1)
     expect(domain.sessionBatches.size).toBe(0)
     expect(llmStream).not.toHaveBeenCalled()
+    await expect(runtime.processCandidate({
+      header: {
+        ...header,
+        id: 'production-child-session',
+        parentSession: header.id,
+        origin: 'subagent',
+        delegationDepth: 1,
+      },
+      turn: 0,
+      turnEndSeq: 4,
+      turnStartSeq: 0,
+      directUserMessages: [],
+    })).resolves.toBeUndefined()
+    expect(domain.turnObservations.size).toBe(1)
     await runtime.close()
     expect(close).toHaveBeenCalledOnce()
   })
