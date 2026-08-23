@@ -12,6 +12,7 @@ import type {
 import { RuntimeNotices } from '../src/application/capture/runtime-notices.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
+import { GAP_SCAN_MAX_EVENTS } from '../src/application/capture/bounded-gap-scanner.js'
 
 const CREATED_AT = 1_725_000_000_000
 
@@ -144,7 +145,7 @@ describe('DshV2GapScanner', () => {
     await expect(scanner.scanBatch()).resolves.toMatchObject({
       status: 'COMPLETE', processedSessions: 1, processedEvents: 5,
     })
-    expect(persisted.readCalls).toEqual([5])
+    expect(persisted.readCalls).toEqual([0])
     expect(prepareSessionWindow).toHaveBeenCalledTimes(1)
     expect(observeTurn).toHaveBeenCalledTimes(1)
     expect(observeTurn).toHaveBeenCalledWith(
@@ -212,4 +213,125 @@ describe('DshV2GapScanner', () => {
       detectedThroughTurnEndSeq: 4,
     })
   })
+
+  it('fails closed when a changed durable log no longer matches the committed v2 prefix', async () => {
+    const persisted = persistenceFixture([...turn(0, 0), ...turn(5, 1)])
+    const domain = createMemoryRun2skillV2Domain()
+    const reader = new DshSessionGapReader(persisted)
+    await activateFreshRun2skillV2(domain, reader, {
+      now: () => new Date(CREATED_AT + 100).toISOString(),
+    })
+    persisted.events = [...turn(0, 0), ...turn(5, 99)]
+    persisted.revision = 'rev-rewritten'
+    const observeTurn = vi.fn(async () => ({ status: 'OBSERVED' as const }))
+    const scanner = new DshV2GapScanner(reader, domain, {
+      prepareSessionWindow: async () => undefined,
+      observeTurn,
+    }, {
+      resolve: async () => ({ status: 'UNAVAILABLE' }),
+    }, new RuntimeNotices({ now: () => CREATED_AT + 200 }), {
+      now: () => CREATED_AT + 200,
+      heapUsed: () => 100,
+    })
+
+    await expect(scanner.scanBatch()).resolves.toMatchObject({
+      status: 'UNAVAILABLE', healthCode: 'SESSION_LOG_ROLLBACK',
+    })
+    expect(observeTurn).not.toHaveBeenCalled()
+  })
+
+  it('returns MORE when the time slice ends before all changed Sessions are visited', async () => {
+    const first = header('session-a')
+    const second = header('session-b')
+    const entries = [
+      { header: first, revision: 'rev-1', events: turn(0, 0) },
+      { header: second, revision: 'rev-1', events: turn(0, 0) },
+    ]
+    const persistence: SessionPersistencePort = {
+      listSnapshots: async () => entries.map(({ header: value, revision }) => ({ header: value, revision })),
+      readFrom: async (sessionId, fromSeq) => {
+        const entry = entries.find(item => item.header.id === sessionId)!
+        return { meta: entry.header, events: entry.events.filter(event => event.seq >= fromSeq) }
+      },
+    }
+    const domain = createMemoryRun2skillV2Domain()
+    const reader = new DshSessionGapReader(persistence)
+    await activateFreshRun2skillV2(domain, reader, {
+      now: () => new Date(CREATED_AT + 100).toISOString(),
+    })
+    entries[0]!.events.push(...turn(5, 1))
+    entries[1]!.events.push(...turn(5, 1))
+    entries[0]!.revision = 'rev-2'
+    entries[1]!.revision = 'rev-2'
+    let ticks = 0
+    const observeTurn = vi.fn(async (_header: DshSessionHeader, _events: readonly DshSessionEvent[], turnEndSeq: number) => {
+      const key = lifecycleKeyFor(_header)
+      const global = domain.global.get()
+      await domain.global.set({
+        ...global,
+        sessions: {
+          ...global.sessions,
+          [key]: { ...global.sessions[key]!, observedThroughTurnEndSeq: turnEndSeq, updatedAt: new Date(CREATED_AT + 200).toISOString() },
+        },
+      })
+      return { status: 'OBSERVED' as const }
+    })
+    const scanner = new DshV2GapScanner(reader, domain, {
+      prepareSessionWindow: async () => undefined,
+      observeTurn,
+    }, {
+      resolve: async () => ({ status: 'UNAVAILABLE' }),
+    }, new RuntimeNotices({ now: () => CREATED_AT + 200 }), {
+      now: () => (ticks++ === 0 ? 0 : 51),
+      heapUsed: () => 100,
+      activationFenceTime: 0,
+    })
+
+    await expect(scanner.scanBatch()).resolves.toMatchObject({ status: 'MORE', processedSessions: 1 })
+    expect(observeTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a partial cursor when its Session disappears from durable snapshots', async () => {
+    const events: DshSessionEvent[] = [
+      { type: 'turn/start', seq: 0, time: CREATED_AT, data: { turn: 0 } },
+      ...Array.from({ length: GAP_SCAN_MAX_EVENTS }, (_, index): DshSessionEvent => ({
+        type: 'assistant/chunk', seq: index + 1, time: CREATED_AT + index + 1, data: {},
+      })),
+      {
+        type: 'turn/end', seq: GAP_SCAN_MAX_EVENTS + 1, time: CREATED_AT + GAP_SCAN_MAX_EVENTS + 1,
+        data: { turn: 0, reason: { kind: 'completed' } },
+      },
+    ]
+    let present = false
+    const persistence: SessionPersistencePort = {
+      listSnapshots: async () => present ? [{ header: header(), revision: 'rev-long' }] : [],
+      readFrom: async (_sessionId, fromSeq) => ({ meta: header(), events: events.filter(event => event.seq >= fromSeq) }),
+    }
+    const domain = createMemoryRun2skillV2Domain()
+    const scanner = new DshV2GapScanner(new DshSessionGapReader(persistence), domain, {
+      prepareSessionWindow: async () => undefined,
+      observeTurn: async () => ({ status: 'OBSERVED' as const }),
+    }, {
+      resolve: async () => ({ status: 'UNAVAILABLE' }),
+    }, new RuntimeNotices({ now: () => CREATED_AT + 200 }), {
+      now: () => CREATED_AT + 200,
+      heapUsed: () => 100,
+      activationFenceTime: CREATED_AT - 1,
+    })
+    await scanner.ensureActivated()
+    present = true
+    await expect(scanner.scanBatch()).resolves.toMatchObject({ status: 'MORE' })
+    present = false
+    await expect(scanner.scanBatch()).resolves.toMatchObject({
+      status: 'COMPLETE', processedSessions: 0, processedEvents: 0,
+    })
+  })
 })
+
+function lifecycleKeyFor(value: DshSessionHeader): string {
+  return deriveSessionLifecycleKey({
+    rootSessionId: value.id,
+    sessionCreatedAt: value.createdAt,
+    sessionCwdDigest: deriveSessionCwdDigest(value.cwd),
+  })
+}

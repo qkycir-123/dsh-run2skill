@@ -118,6 +118,10 @@ export class SessionBatchCoordinator {
       const nextCursor: SessionCursorV2 = {
         observedThroughTurnEndSeq: cursor?.observedThroughTurnEndSeq ?? 0,
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
+        ...(cursor?.headerRevision === undefined ? {} : { headerRevision: cursor.headerRevision }),
+        ...(cursor?.observedLogPrefixDigest === undefined
+          ? {}
+          : { observedLogPrefixDigest: cursor.observedLogPrefixDigest }),
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
         ...(cursor?.lastActivityAt === undefined ? {} : { lastActivityAt: cursor.lastActivityAt }),
         batchManifestBaseline: baseline,
@@ -160,6 +164,10 @@ export class SessionBatchCoordinator {
       const nextCursor: SessionCursorV2 = {
         observedThroughTurnEndSeq: Math.max(cursor?.observedThroughTurnEndSeq ?? 0, observation.turnEndSeq),
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
+        ...(cursor?.headerRevision === undefined ? {} : { headerRevision: cursor.headerRevision }),
+        ...(cursor?.observedLogPrefixDigest === undefined
+          ? {}
+          : { observedLogPrefixDigest: cursor.observedLogPrefixDigest }),
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
         lastActivityAt: latestIso(cursor?.lastActivityAt, observation.observedAt),
         ...(baseline === undefined ? {} : { batchManifestBaseline: baseline }),
@@ -276,6 +284,10 @@ export class SessionBatchCoordinator {
           existing?.detectedThroughTurnEndSeq ?? 0,
           detectedBySession.get(lifecycleKey) ?? 0,
         ),
+        ...(existing?.headerRevision === undefined ? {} : { headerRevision: existing.headerRevision }),
+        ...(existing?.observedLogPrefixDigest === undefined
+          ? {}
+          : { observedLogPrefixDigest: existing.observedLogPrefixDigest }),
         ...(existing?.activeBatchId === undefined ? {} : { activeBatchId: existing.activeBatchId }),
         lastActivityAt: latestIso(existing?.lastActivityAt, tail.observedAt),
         ...(existing?.batchManifestBaseline === undefined

@@ -14,11 +14,13 @@ import {
   deriveLegacyPendingProposalCatalogV2,
 } from '../../domain/v2/index.js'
 import type { Run2skillV2Domain } from '../dsh-storage/v2-types.js'
+import { Run2skillV2GlobalStore } from '../dsh-storage/v2-global-store.js'
 import { classifySessionRoot } from './observation.js'
 import type { DshSessionEvent, DshSessionHeader } from './types.js'
 import type { DshSessionGapReader } from './gap-reader.js'
 
 const EMPTY_COUNTS = Object.freeze({ workItems: 0, lineages: 0, activeLegacyProposals: 0 })
+const LOG_PREFIX_GENESIS = sha256Utf8(canonicalJson({ contract: 'dsh-session-log-prefix-v1' }))
 
 interface RootSnapshot {
   readonly header: DshSessionHeader
@@ -62,6 +64,21 @@ function assertContiguous(events: readonly DshSessionEvent[], fromSeq: number): 
   for (let index = 0; index < events.length; index += 1) {
     if (events[index]?.seq !== fromSeq + index) throw new Error('SESSION_LOG_UNAVAILABLE')
   }
+}
+
+function extendLogPrefixDigest(
+  initial: string,
+  events: readonly DshSessionEvent[],
+): string {
+  let digest = initial
+  for (const event of events) digest = sha256Utf8(canonicalJson({ previous: digest, event }))
+  return digest
+}
+
+function logPrefixDigest(events: readonly DshSessionEvent[], throughSeq: number): string | undefined {
+  const prefix = events.filter(event => event.seq <= throughSeq)
+  if (prefix.length !== throughSeq + 1) return undefined
+  return extendLogPrefixDigest(LOG_PREFIX_GENESIS, prefix)
 }
 
 function activationTail(
@@ -165,6 +182,8 @@ export async function activateFreshRun2skillV2(
   const sessions: Record<string, {
     observedThroughTurnEndSeq: number
     detectedThroughTurnEndSeq: number
+    headerRevision: string
+    observedLogPrefixDigest: string
     openExperienceCarry: []
     updatedAt: string
   }> = {}
@@ -186,6 +205,8 @@ export async function activateFreshRun2skillV2(
     sessions[root.lifecycleKey] = {
       observedThroughTurnEndSeq: tail.seq,
       detectedThroughTurnEndSeq: tail.seq,
+      headerRevision: root.revision,
+      observedLogPrefixDigest: logPrefixDigest(read.events, tail.seq)!,
       openExperienceCarry: [],
       updatedAt: committedAt,
     }
@@ -285,20 +306,25 @@ export class DshV2GapScanner {
       this.notices.record({ healthCode, sessionId: 'global' })
       return this.#result('UNAVAILABLE', 0, 0, 0, this.#heapUsed(), healthCode)
     }
+    const rootKeys = new Set(roots.map(root => root.lifecycleKey))
+    for (const key of this.#partial.keys()) if (!rootKeys.has(key)) this.#partial.delete(key)
 
     let processedSessions = 0
     let processedEvents = 0
     let maxReadFromLatencyMs = 0
     let peakHeapBytes = this.#heapUsed()
     const startedAt = this.#now()
+    let visitedRoots = 0
 
     for (const root of roots) {
       if (processedSessions >= GAP_SCAN_MAX_SESSIONS || processedEvents >= GAP_SCAN_MAX_EVENTS) break
       signal?.throwIfAborted()
       const cursor = GlobalV2Schema.parse(this.domain.global.get()).sessions[root.lifecycleKey]
       const fromSeq = cursor === undefined ? 0 : cursor.observedThroughTurnEndSeq + 1
+      const mustValidatePrefix = cursor !== undefined && cursor.headerRevision !== root.revision
+      const readFromSeq = mustValidatePrefix ? 0 : fromSeq
       const readStartedAt = this.#now()
-      const read = await this.reader.readFrom(root.header.id, fromSeq, signal)
+      const read = await this.reader.readFrom(root.header.id, readFromSeq, signal)
       maxReadFromLatencyMs = Math.max(maxReadFromLatencyMs, this.#now() - readStartedAt)
       peakHeapBytes = Math.max(peakHeapBytes, this.#heapUsed())
       if (read.status === 'UNAVAILABLE') {
@@ -309,7 +335,7 @@ export class DshV2GapScanner {
         )
       }
       try {
-        assertContiguous(read.events, fromSeq)
+        assertContiguous(read.events, readFromSeq)
       } catch {
         this.notices.record({ healthCode: 'SESSION_LOG_UNAVAILABLE', sessionId: root.header.id })
         return this.#result(
@@ -317,8 +343,23 @@ export class DshV2GapScanner {
           maxReadFromLatencyMs, peakHeapBytes, 'SESSION_LOG_UNAVAILABLE',
         )
       }
-      if (read.events.length === 0) {
+      if (mustValidatePrefix) {
+        const actual = logPrefixDigest(read.events, cursor.observedThroughTurnEndSeq)
+        if (actual === undefined || actual !== cursor.observedLogPrefixDigest) {
+          this.notices.record({ healthCode: 'SESSION_LOG_ROLLBACK', sessionId: root.header.id })
+          return this.#result(
+            'UNAVAILABLE', processedSessions, processedEvents,
+            maxReadFromLatencyMs, peakHeapBytes, 'SESSION_LOG_ROLLBACK',
+          )
+        }
+      }
+      const scanEvents = mustValidatePrefix
+        ? read.events.filter(event => event.seq >= fromSeq)
+        : read.events
+      visitedRoots += 1
+      if (scanEvents.length === 0) {
         this.#partial.delete(root.lifecycleKey)
+        await this.#updateRecoveryMetadata(root, cursor, read.events, mustValidatePrefix)
         continue
       }
 
@@ -326,13 +367,13 @@ export class DshV2GapScanner {
       const saved = this.#partial.get(root.lifecycleKey)
       const startOffset = saved?.fromSeq === fromSeq ? saved.inspectedEvents : 0
       const remainingBudget = GAP_SCAN_MAX_EVENTS - processedEvents
-      const inspectedThrough = Math.min(read.events.length, startOffset + remainingBudget)
+      const inspectedThrough = Math.min(scanEvents.length, startOffset + remainingBudget)
       processedEvents += inspectedThrough - startOffset
       let turnSliceStart = 0
       for (let index = startOffset; index < inspectedThrough; index += 1) {
-        const event = read.events[index]
+        const event = scanEvents[index]
         if (event?.type !== 'turn/end') continue
-        const turnEvents = read.events.slice(turnSliceStart, index + 1)
+        const turnEvents = scanEvents.slice(turnSliceStart, index + 1)
         await this.sink.prepareSessionWindow(root.lifecycleKey)
         const observed = await this.sink.observeTurn(
           read.header,
@@ -353,16 +394,18 @@ export class DshV2GapScanner {
         turnSliceStart = index + 1
       }
 
-      if (inspectedThrough < read.events.length) {
+      if (inspectedThrough < scanEvents.length) {
         this.#partial.set(root.lifecycleKey, { fromSeq, inspectedEvents: inspectedThrough })
       } else {
         this.#partial.delete(root.lifecycleKey)
       }
+      await this.#updateRecoveryMetadata(root, cursor, read.events, mustValidatePrefix)
       if (this.#now() - startedAt >= GAP_SCAN_TIME_SLICE_MS) break
     }
 
     const partial = [...this.#partial.entries()].sort(([left], [right]) => left.localeCompare(right))[0]
-    if (partial !== undefined || processedSessions >= GAP_SCAN_MAX_SESSIONS || processedEvents >= GAP_SCAN_MAX_EVENTS) {
+    const hasUnvisitedRoots = visitedRoots < roots.length
+    if (partial !== undefined || hasUnvisitedRoots) {
       const [key, progress] = partial ?? [roots.at(-1)?.lifecycleKey ?? 'global', { fromSeq: 0, inspectedEvents: 0 }]
       return {
         status: 'MORE',
@@ -377,6 +420,46 @@ export class DshV2GapScanner {
       'COMPLETE', processedSessions, processedEvents,
       maxReadFromLatencyMs, peakHeapBytes,
     )
+  }
+
+  async #updateRecoveryMetadata(
+    root: RootSnapshot,
+    previous: ReturnType<typeof GlobalV2Schema.parse>['sessions'][string] | undefined,
+    readEvents: readonly DshSessionEvent[],
+    fullRead: boolean,
+  ): Promise<void> {
+    const store = Run2skillV2GlobalStore.for(this.domain)
+    await store.runExclusive(async current => {
+      const cursor = current.sessions[root.lifecycleKey]
+      if (cursor === undefined) return { value: undefined }
+      let digest: string | undefined
+      if (fullRead || previous === undefined) {
+        digest = logPrefixDigest(readEvents, cursor.observedThroughTurnEndSeq)
+      } else if (
+        previous.observedLogPrefixDigest !== undefined
+        && cursor.observedThroughTurnEndSeq >= previous.observedThroughTurnEndSeq
+      ) {
+        digest = extendLogPrefixDigest(
+          previous.observedLogPrefixDigest,
+          readEvents.filter(event => event.seq <= cursor.observedThroughTurnEndSeq),
+        )
+      }
+      if (digest === undefined) return { value: undefined }
+      return {
+        value: undefined,
+        global: {
+          ...current,
+          sessions: {
+            ...current.sessions,
+            [root.lifecycleKey]: {
+              ...cursor,
+              headerRevision: root.revision,
+              observedLogPrefixDigest: digest,
+            },
+          },
+        },
+      }
+    })
   }
 
   #result(

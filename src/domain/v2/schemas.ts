@@ -2288,6 +2288,8 @@ export const MigrationJournalV2Schema = z.discriminatedUnion('phase', [
 const SessionCursorV2Schema = z.object({
   observedThroughTurnEndSeq: safeNonNegativeInteger,
   detectedThroughTurnEndSeq: safeNonNegativeInteger,
+  headerRevision: identity.optional(),
+  observedLogPrefixDigest: sha256Hex.optional(),
   activeBatchId: z.string().regex(/^batch_[a-f0-9]{64}$/).optional(),
   lastActivityAt: isoDateTime.optional(),
   batchManifestBaseline: BatchManifestBaselineV2Schema.extend({
@@ -2296,6 +2298,9 @@ const SessionCursorV2Schema = z.object({
   openExperienceCarry: z.array(OpenExperienceCarryV2Schema).max(RUN2SKILL_V2_LIMITS.maxIntentsPerBatch),
   updatedAt: isoDateTime,
 }).strict().superRefine((value, context) => {
+  if ((value.headerRevision === undefined) !== (value.observedLogPrefixDigest === undefined)) {
+    context.addIssue({ code: 'custom', path: ['headerRevision'], message: 'Session recovery metadata must be complete' })
+  }
   if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
     context.addIssue({ code: 'custom', path: ['detectedThroughTurnEndSeq'], message: 'Detected cursor cannot exceed observed cursor' })
   }
