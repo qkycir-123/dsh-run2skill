@@ -159,6 +159,61 @@ describe('v2 Batch Detector worker', () => {
     })
   })
 
+  it('normalizes safe detector envelope drift and direct-evidence digests without another model call', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const excerptDigest = fixtures.turnObservation.directUserEvidence[0]!.excerptDigest
+    const model = client({
+      result: 'READY',
+      diagnosticNote: 'ignored adapter-only drift',
+      intents: [{
+        persistenceScope: 'PROJECT',
+        experienceType: 'WORKFLOW',
+        applicabilitySummary: '制作网页小游戏时使用这套流程。',
+        keySteps: ['先分析需求', '再设计架构', '编写代码', '最后测试'],
+        prohibitions: ['不得跳过测试'],
+        evidenceDigests: [excerptDigest],
+        completeness: { status: 'COMPLETE', blockers: [], diagnosticNote: 'ignored' },
+        diagnosticNote: 'ignored',
+      }],
+    })
+    const worker = new BatchDetectorWorker(domain, { client: model })
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
+      state: 'COMMITTED_READY',
+      detector: { result: 'READY' },
+    })
+    expect([...domain.experienceIntents.values()][0]).toMatchObject({
+      evidenceDigests: [fixtures.turnObservation.evidenceDigest],
+    })
+  })
+
+  it('still rejects detector evidence that belongs to neither an observation nor its direct evidence', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const model = client({
+      result: 'READY',
+      intents: [{
+        persistenceScope: 'PROJECT',
+        experienceType: 'WORKFLOW',
+        applicabilitySummary: '制作网页小游戏时使用这套流程。',
+        keySteps: ['先分析需求', '再设计架构', '编写代码', '最后测试'],
+        prohibitions: [],
+        evidenceDigests: ['f'.repeat(64)],
+        completeness: { status: 'COMPLETE', blockers: [] },
+      }],
+    })
+    const worker = new BatchDetectorWorker(domain, { client: model })
+
+    await worker.runOnce()
+
+    expect(model.calls).toBe(1)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
+      state: 'NEEDS_ATTENTION', detector: { failureCode: 'INVALID_DETECTOR_OUTPUT' },
+    })
+  })
+
   it('fails closed on invalid output and never spends a second call', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
     const model = client({ result: 'READY', intents: [] })
@@ -262,5 +317,20 @@ describe('v2 Batch Detector worker', () => {
     })
     await worker.runOnce()
     expect(domain.global.get().sessions[fixtures.sessionBatch.sessionLifecycleKey]?.openExperienceCarry).toEqual(carry)
+  })
+
+  it('preserves a bounded model failure code instead of collapsing it to MODEL_CALL_FAILED', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const failure = Object.assign(new Error('timed out'), { code: 'MODEL_TIMEOUT' })
+    const worker = new BatchDetectorWorker(domain, {
+      client: { detect: async () => { throw failure } },
+    })
+
+    await worker.runOnce()
+
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
+      state: 'NEEDS_ATTENTION',
+      detector: { failureCode: 'MODEL_TIMEOUT', calls: [{ failureCode: 'MODEL_TIMEOUT' }] },
+    })
   })
 })

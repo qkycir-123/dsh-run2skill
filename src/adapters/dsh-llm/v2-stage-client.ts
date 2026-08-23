@@ -52,7 +52,9 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
       'NONE schema: {"result":"NONE"}.',
       'DEFER schema: {"result":"DEFER","carry":[{"summary":"string","behaviorSignatureDraft":"64 lowercase hex","evidenceDigests":["64 lowercase hex"]}]}.',
       'READY schema: {"result":"READY","intents":[{"persistenceScope":"PROJECT | USER","experienceType":"WORKFLOW | CONSTRAINT | CORRECTION","applicabilitySummary":"string","keySteps":["string"],"prohibitions":["string"],"evidenceDigests":["64 lowercase hex"],"completeness":{"status":"COMPLETE | INCOMPLETE","blockers":["UPPER_SNAKE_CASE"]}}]}.',
-      'Copy evidence digests exactly. Return at most 3 carry items or intents. This stage must not recall, compare, or generate a Skill.',
+      'For evidenceDigests, use only observations[].evidenceDigest values and copy them exactly.',
+      'Never use directUserEvidence[].excerptDigest values as evidenceDigests.',
+      'Return at most 3 carry items or intents. This stage must not recall, compare, or generate a Skill.',
     ].join('\n'),
   },
   CATALOG_SCAN: {
@@ -89,6 +91,7 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
 })
 
 const OUTPUT_BYTE_RATIO = 4
+const V2_STAGE_CALL_TIMEOUT_MS = 120_000
 
 interface PartialBlock {
   readonly type: string
@@ -191,7 +194,7 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     private readonly llm: DshLlmPort,
     options: DshV2StageLlmClientOptions = {},
   ) {
-    this.#timeoutMs = options.timeoutMs ?? 60_000
+    this.#timeoutMs = options.timeoutMs ?? V2_STAGE_CALL_TIMEOUT_MS
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1) throw new Error('Invalid v2 stage timeout')
   }
 
