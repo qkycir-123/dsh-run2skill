@@ -30,7 +30,7 @@ async function seed(options: { readonly committed?: boolean } = {}) {
   const domain = createMemoryRun2skillV2Domain()
   const fixture = createMinimalV2Fixtures()
   if (options.committed !== false) {
-    const indexKey = deriveBehaviorSignatureIndexKeyV2(
+    const behaviorSignatureSlot = deriveBehaviorSignatureIndexKeyV2(
       fixture.proposalReadyIntent.persistenceScope,
       fixture.proposalReadyIntent.behaviorSignature,
     )
@@ -56,7 +56,7 @@ async function seed(options: { readonly committed?: boolean } = {}) {
         legacyPendingCandidateCount: 0,
       },
       behaviorSignatureIndex: {
-        [indexKey]: {
+        [behaviorSignatureSlot]: {
           schemaVersion: 1,
           persistenceScope: fixture.proposalReadyIntent.persistenceScope,
           behaviorSignature: fixture.proposalReadyIntent.behaviorSignature,
