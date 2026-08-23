@@ -206,6 +206,20 @@ export function deriveProposalReviewReceiptDigestV2(facts: {
   return sha256Utf8(canonicalJson(facts))
 }
 
+export function deriveProposalPublicationReceiptDigestV2(facts: {
+  readonly proposalRef: {
+    readonly proposalId: string
+    readonly revision: number
+    readonly digest: string
+  }
+  readonly reviewReceiptDigest: string
+  readonly attemptId: string
+  readonly externalReceiptDigest: string
+  readonly publishedAt: string
+}): string {
+  return sha256Utf8(canonicalJson(facts))
+}
+
 export function deriveProposalCatalogGenesisAnchorV2(): {
   readonly epoch: 0
   readonly kind: 'GENESIS'
@@ -2095,6 +2109,12 @@ const NativeProposalRevisionV2Schema = z.object({
   }).strict().optional(),
   reviewFailureCode: z.enum(['CATALOG_CHANGED', 'CATALOG_UNAVAILABLE']).optional(),
   reviewAttemptedAt: isoDateTime.optional(),
+  publicationFailureCode: z.enum([
+    'CATALOG_CHANGED', 'CATALOG_UNAVAILABLE', 'PUBLICATION_UNAVAILABLE', 'PUBLICATION_CONFLICT',
+  ]).optional(),
+  publicationAttemptedAt: isoDateTime.optional(),
+  publicationExternalReceiptDigest: sha256Hex.optional(),
+  publishedAt: isoDateTime.optional(),
   publicationReceiptDigest: sha256Hex.optional(),
   createdAt: isoDateTime,
 }).strict().superRefine((value, context) => {
@@ -2122,6 +2142,22 @@ const NativeProposalRevisionV2Schema = z.object({
   }
   if (value.reviewDecision === 'APPROVED' && value.state === 'TERMINAL') {
     context.addIssue({ code: 'custom', path: ['state'], message: 'Approved Proposal cannot be terminal before publication' })
+  }
+  const hasPublicationFailure = value.publicationFailureCode !== undefined || value.publicationAttemptedAt !== undefined
+  if ((value.publicationFailureCode === undefined) !== (value.publicationAttemptedAt === undefined)) {
+    context.addIssue({ code: 'custom', path: ['publicationFailureCode'], message: 'Publication failure requires an exact attempt time' })
+  }
+  const publicationSuccessCount = [
+    value.publicationExternalReceiptDigest, value.publishedAt, value.publicationReceiptDigest,
+  ].filter(item => item !== undefined).length
+  if (publicationSuccessCount !== 0 && publicationSuccessCount !== 3) {
+    context.addIssue({ code: 'custom', path: ['publicationReceiptDigest'], message: 'Publication success requires complete receipt facts' })
+  }
+  if (publicationSuccessCount > 0 && (hasPublicationFailure || value.reviewDecision !== 'APPROVED' || value.state !== 'PUBLISHED')) {
+    context.addIssue({ code: 'custom', path: ['publicationReceiptDigest'], message: 'Publication success requires one approved published Proposal and no failure' })
+  }
+  if (hasPublicationFailure && (value.reviewDecision !== 'APPROVED' || value.state !== 'ACTIVE_PROPOSAL')) {
+    context.addIssue({ code: 'custom', path: ['publicationFailureCode'], message: 'Publication failure must keep one approved active Proposal' })
   }
 })
 
@@ -2363,9 +2399,43 @@ const ProposalCatalogMutationJournalV2Schema = z.object({
   mutationId: z.string().regex(/^pcm_[a-f0-9]{64}$/),
   ownerId: identity,
   kind: z.enum(['PROPOSAL', 'GENERATION_RESULT', 'BARRIER', 'LEGACY', 'REVIEW', 'PUBLICATION', 'PURGE']),
-  phase: z.literal('PREPARED'),
+  phase: z.enum(['PREPARED', 'EXECUTING', 'NEEDS_REFRESH']),
   preparedAt: isoDateTime,
-}).strict()
+  executionStartedAt: isoDateTime.optional(),
+  failureCode: z.enum(['CATALOG_CHANGED', 'PUBLICATION_CONFLICT']).optional(),
+  failedAt: isoDateTime.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.phase === 'EXECUTING' && (value.kind !== 'PUBLICATION' || value.executionStartedAt === undefined)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['executionStartedAt'],
+      message: 'Only an executing publication may retain an external write attempt',
+    })
+  }
+  if (value.phase === 'PREPARED' && value.executionStartedAt !== undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['executionStartedAt'],
+      message: 'A prepared mutation cannot claim an external write attempt',
+    })
+  }
+  const hasFailure = value.failureCode !== undefined || value.failedAt !== undefined
+  if (value.phase === 'NEEDS_REFRESH') {
+    if (value.kind !== 'PUBLICATION' || value.failureCode === undefined || value.failedAt === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['failureCode'],
+        message: 'A publication refresh fence requires one durable terminal failure',
+      })
+    }
+  } else if (hasFailure) {
+    context.addIssue({
+      code: 'custom',
+      path: ['failureCode'],
+      message: 'Only a publication refresh fence may retain a terminal failure',
+    })
+  }
+})
 
 const ProposalCatalogLastMutationV2Schema = z.object({
   epoch: safeNonNegativeInteger,
