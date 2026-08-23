@@ -17,6 +17,7 @@ const expectedPackageFiles = [
   'lib/index.js',
   'LICENSE',
   'package.json',
+  'README.en.md',
   'README.md',
   'THIRD_PARTY_NOTICES.md',
 ]
