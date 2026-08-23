@@ -19,6 +19,10 @@ const MAX_EVIDENCE_BYTES = 512
 const MAX_TOOL_SUMMARIES = 32
 const TRUNCATION_MARKER = '\n…\n'
 const SUPPORTED_TURN_EVENT_TYPES = new Set([
+  'permission/preset',
+  'sandbox/mode',
+  'approval/policy',
+  'agent/inbox/spliced',
   'turn/start',
   'turn/end',
   'step/start',
@@ -31,6 +35,8 @@ const SUPPORTED_TURN_EVENT_TYPES = new Set([
   'todo/write',
   'request/header',
   'request/context',
+  'session/title',
+  'session/title-llm-request',
   'session/end-seed',
 ])
 
