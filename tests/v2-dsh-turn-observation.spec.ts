@@ -340,6 +340,25 @@ describe('DSH TurnObservationV2 projection', () => {
     expect(result.observation.completeness).toBe('COMPLETE')
   })
 
+  it('accepts the stock DSH approval lifecycle emitted during a root Turn', async () => {
+    const events = completeTurn('普通请求')
+    insertTurnEvent(events, 'tool/call', {
+      type: 'approval/asked',
+      data: { id: 'approval-1', toolName: 'write', callId: 'call-1', reason: 'permission' },
+    })
+    insertTurnEvent(events, 'approval/asked', {
+      type: 'approval/decided',
+      data: { id: 'approval-1', outcome: 'approved' },
+    })
+    const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation.completeness).toBe('COMPLETE')
+  })
+
   it('refuses to interpret an unknown required DSH event', async () => {
     const events = insertTurnEvent(completeTurn('普通请求'), 'user/message', {
       type: 'plugin/required-context', data: { payload: 'new required semantics' },
