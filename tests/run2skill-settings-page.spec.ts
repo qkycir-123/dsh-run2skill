@@ -125,6 +125,9 @@ describe('run2skill native settings surface', () => {
     expect(screen.queryByRole('textbox', { name: '筛选技能草稿' })).toBeNull()
     expect(proposalButton.getAttribute('aria-current')).toBeNull()
     expect(proposalButton.querySelectorAll('span')).toHaveLength(2)
+    expect(proposalButton.getAttribute('aria-label')).toContain('新建技能')
+    expect(proposalButton.getAttribute('aria-label')).toContain('仅当前项目可用')
+    expect(proposalButton.textContent).not.toMatch(/CREATE|PROJECT|USER/)
     fireEvent.click(proposalButton)
     await waitFor(() => { expect(proposalButton.getAttribute('aria-current')).toBe('true') })
     const detail = await screen.findByRole('region', { name: '技能草稿详情' })
@@ -304,11 +307,11 @@ describe('run2skill native settings surface', () => {
       currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-a' },
       expectedVisibilityRevision: `visibility_${'a'.repeat(64)}`,
     }, expect.any(AbortSignal))
-    expect(screen.getAllByText('创建')).toHaveLength(2)
-    expect(screen.getByText('更新')).toBeTruthy()
-    expect(screen.getByText('项目')).toBeTruthy()
-    expect(screen.getByText('用户')).toBeTruthy()
-    expect(screen.getByText('project-only').closest('li')?.textContent).not.toContain('项目')
+    expect(screen.getAllByText('新建技能')).toHaveLength(2)
+    expect(screen.getByText('更新技能')).toBeTruthy()
+    expect(screen.getByText('仅当前项目可用')).toBeTruthy()
+    expect(screen.getByText('所有项目可用')).toBeTruthy()
+    expect(screen.getByText('project-only').closest('li')?.textContent).not.toContain('仅当前项目可用')
   })
 
   it('hides the previous scope immediately and ignores its late activity response', async () => {

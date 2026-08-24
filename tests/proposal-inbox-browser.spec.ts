@@ -48,15 +48,21 @@ describe('Proposal Inbox browser accessibility', () => {
     await waitFor(() => { expect(document.activeElement).toBe(close) })
 
     const proposalButton = await screen.findByRole('button', {
-      name: new RegExp(`MERGE .* PROJECT .* 待审核`),
+      name: new RegExp(`更新已有技能 .* 仅当前项目可用 .* 待审核`),
     })
     fireEvent.click(proposalButton)
-    await screen.findByText(staged.item.review!.proposal.digest)
-    expect(screen.getByText('项目工作区')).toBeTruthy()
-    expect(screen.getAllByText(/当前项目（PROJECT）/)).toHaveLength(2)
-    expect(screen.getAllByText(/消息序号/).length).toBeGreaterThan(0)
-    expect(screen.getByText('合并前的 Skill 内容')).toBeTruthy()
-    expect(screen.getByText('内容差异（精确对比）')).toBeTruthy()
+    expect(await screen.findByText(`更新已有技能：${staged.item.review!.proposal.name}`)).toBeTruthy()
+    expect(screen.getByText('仅当前项目可用')).toBeTruthy()
+    expect(screen.getByText('为什么建议保存')).toBeTruthy()
+    expect(screen.getByText('参考的对话内容')).toBeTruthy()
+    expect(screen.getByText('确认要保存的技能说明')).toBeTruthy()
+    expect(screen.getByText('现有技能内容')).toBeTruthy()
+    expect(screen.getByText('将发生的内容变化')).toBeTruthy()
+    expect(proposalButton.textContent).not.toMatch(/MERGE|PROJECT|USER/)
+    const technicalSummary = screen.getByText('技术信息（排查问题时使用）')
+    const technicalDetails = technicalSummary.closest('details')
+    expect(technicalDetails?.hasAttribute('open')).toBe(false)
+    expect(technicalDetails?.textContent).toContain(staged.item.review!.proposal.digest)
     expect(dialog.textContent).not.toMatch(/Workspace|DSH Home|message seq|Evidence|MERGE Base/)
     const reject = screen.getByRole('button', { name: '放弃草稿' })
     reject.focus()
@@ -70,7 +76,7 @@ describe('Proposal Inbox browser accessibility', () => {
     expect(document.activeElement).toBe(reject)
 
     fireEvent.click(screen.getByRole('button', { name: '确认并保存' }))
-    await waitFor(() => { expect(screen.getAllByText('已确认，正在保存')).toHaveLength(1) })
+    await waitFor(() => { expect(screen.getAllByText('已确认，正在保存')).toHaveLength(2) })
     const live = dialog.querySelector('[aria-live="polite"][aria-atomic="true"]')
     expect(live?.textContent).toContain('已确认，正在保存')
 

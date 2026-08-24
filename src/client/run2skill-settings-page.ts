@@ -32,6 +32,8 @@ import {
 } from './automatic-learning-settings.js'
 import {
   ProposalInboxController,
+  describePersistenceScope,
+  describeProposalKind,
   describeProposalListItem,
   type ProposalListItem,
   type ProposalReviewCall,
@@ -246,9 +248,9 @@ export function RecentSkillActivitySection(props: {
       ...visibleState.items.map(item => createElement('li', { className: css.activityItem, key: item.activityId },
         createElement('div', { className: css.activitySummary },
           createElement('strong', null, item.skillName),
-          createElement(Pill, null, item.operation === 'CREATED' ? '创建' : '更新'),
+          createElement(Pill, null, item.operation === 'CREATED' ? '新建技能' : '更新技能'),
           usefulActivityScope(visibleState.items, item)
-            ? createElement(Pill, null, item.scope === 'PROJECT' ? '项目' : '用户')
+            ? createElement(Pill, null, describePersistenceScope(item.scope))
             : null,
         ),
         createElement('time', { dateTime: item.occurredAt, className: css.muted }, formatActivityTime(item.occurredAt)),
@@ -573,13 +575,13 @@ function ProposalSettingsSection(props: {
             variant: 'outline',
             className: css.proposalListButton,
             'aria-current': state.selectedProposalId === item.proposalRef.proposalId ? 'true' : undefined,
-            'aria-label': `${item.name}，${item.kind}，${item.persistenceScope}，${describeProposalListItem(item)}`,
+            'aria-label': `${item.name}，${describeProposalKind(item.kind)}，${describePersistenceScope(item.persistenceScope)}，${describeProposalListItem(item)}`,
             disabled: state.mutationPending || state.detailPhase === 'LOADING',
             onClick: () => { void controller.select(item.proposalRef.proposalId) },
           },
           createElement('span', { className: css.proposalName }, item.name),
           createElement('span', { className: css.proposalMeta },
-            `${item.kind} · ${item.persistenceScope} · ${describeProposalListItem(item)}`,
+            `${describeProposalKind(item.kind)} · ${describePersistenceScope(item.persistenceScope)} · ${describeProposalListItem(item)}`,
           )),
         )),
       ),
@@ -749,7 +751,10 @@ export function LearningFailureSection(props: {
             ),
         item.modelRoute === undefined
           ? null
-          : createElement('p', null, `模型路由：${item.modelRoute.provider} / ${item.modelRoute.model}`),
+          : createElement('details', { className: css.technicalDetails },
+              createElement('summary', null, '本次处理的技术信息'),
+              createElement('p', null, `使用的模型：${item.modelRoute.model}（${item.modelRoute.provider}）`),
+            ),
         createElement('div', { className: css.actions },
           action?.availableActions?.includes('RETRY') === true
             ? createElement(Button, {
@@ -999,7 +1004,7 @@ export function AttentionSettingsSummary(props: {
       value.projectCompleteness === 'UNAVAILABLE'
         ? createElement(Pill, null, '未选择当前项目')
         : value.projectCompleteness === 'UNKNOWN'
-          ? createElement(Pill, null, 'PROJECT 状态未知')
+          ? createElement(Pill, null, '当前项目的待处理状态暂时无法确认')
           : null,
       value.runtimeCompleteness === 'UNKNOWN' ? createElement(Pill, null, '未保存数量未知') : null,
       ...value.runtimeWarnings.map(warning => createElement('span', {

@@ -8,6 +8,8 @@ import { materializeProposalSnapshot } from '../src/domain/review/index.js'
 import {
   ProposalInboxController,
   ProposalTextView,
+  describePersistenceScope,
+  describeProposalKind,
   describeProposalOutcome,
   makeExactLineDiff,
   makeSafeText,
@@ -170,6 +172,14 @@ describe('Proposal Inbox client', () => {
       processingState: 'NEEDS_ATTENTION',
       publicationOutcome: 'NEEDS_REFRESH',
     }, false)).toBe('REFRESH')
+  })
+
+  it('translates internal proposal and save-scope codes into newcomer-friendly labels', () => {
+    expect(describeProposalKind('CREATE')).toBe('新建技能')
+    expect(describeProposalKind('MERGE')).toBe('更新已有技能')
+    expect(describeProposalKind('DISCARD')).toBe('无需新建技能')
+    expect(describePersistenceScope('PROJECT')).toBe('仅当前项目可用')
+    expect(describePersistenceScope('USER')).toBe('所有项目可用')
   })
 
   it('never exposes absolute Workspace, DSH Home, root, or Skill target paths in review facts', () => {

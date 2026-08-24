@@ -14,7 +14,10 @@ import { Button, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ProposalInboxController,
   ProposalTextView,
+  describePersistenceScope,
   describeProposalListItem,
+  describeProposalKind,
+  describeProposalOutcome,
   describeProcessingState,
   describePublicationOutcome,
   describeReviewDecision,
@@ -213,7 +216,7 @@ export function ProposalInboxPanel(props: {
           'aria-current': state.selectedProposalId === item.proposalRef.proposalId ? 'true' : undefined,
           onClick: () => { void controller.select(item.proposalRef.proposalId) },
           className: css.proposalListButton,
-        }, `${item.kind} · ${makeSafeText(item.name)} · ${item.persistenceScope} · ${describeProposalListItem(item)}`),
+        }, `${describeProposalKind(item.kind)} · ${makeSafeText(item.name)} · ${describePersistenceScope(item.persistenceScope)} · ${describeProposalListItem(item)}`),
       )),
     ),
   ),
@@ -297,6 +300,30 @@ export function factsFromAction(detail: ProposalDetail): string {
   ].join('\n')
 }
 
+function describeProposalAction(detail: ProposalDetail): string {
+  const proposal = detail.proposal
+  if (proposal.actionBinding === undefined) return factsFromAction(detail)
+  if (proposal.actionBinding.kind === 'CREATE') {
+    return `确认后会新建技能“${makeSafeText(proposal.name)}”。`
+  }
+  if (proposal.actionBinding.kind === 'MERGE') {
+    return `确认后会把这次经验补充到已有技能“${makeSafeText(proposal.name)}”中。`
+  }
+  return `已有技能“${makeSafeText(proposal.name)}”已包含这次经验，无需重复创建。`
+}
+
+function describeExperienceType(type: ProposalDetail['experiences'][number]['type']): string {
+  if (type === 'CORRECTION') return '纠错经验'
+  if (type === 'CONSTRAINT') return '使用约束'
+  return '操作流程'
+}
+
+function describeResolutionKind(kind: NonNullable<ProposalDetail['proposal']['dshHomeBinding']>['resolutionKind']): string {
+  if (kind === 'CONFIGURATION') return '由 DSH 配置指定'
+  if (kind === 'ENVIRONMENT') return '由运行环境指定'
+  return '使用 DSH 默认位置'
+}
+
 export function proposalDetailAction(
   detail: Pick<ProposalDetail, 'reviewDecision' | 'processingState' | 'publicationOutcome'>,
   mutationPending: boolean,
@@ -344,86 +371,98 @@ export function ProposalDetailView(props: {
   const diff = baseBytes === undefined ? [] : makeExactLineDiff(baseBytes, proposal.exactSkillBytes)
 
   return createElement(Fragment, null,
-    createElement('h3', null, `${proposal.kind}: ${makeSafeText(proposal.name)}`),
+    createElement('h3', null, `${describeProposalKind(proposal.kind)}：${makeSafeText(proposal.name)}`),
     createElement('dl', { className: css.detailFacts },
-      createElement('dt', null, '说明'), createElement('dd', null, makeSafeText(proposal.description)),
-      createElement('dt', null, '何时使用'), createElement('dd', null, makeSafeText(proposal.whenToUse)),
-      createElement('dt', null, '保存范围'), createElement('dd', null,
-        proposal.persistenceScope === 'PROJECT' ? '当前项目（PROJECT）' : '当前用户（USER）',
-      ),
-      createElement('dt', null, '草稿版本'), createElement('dd', null, String(proposal.revision)),
-      createElement('dt', null, '草稿校验值'), createElement('dd', null, proposal.digest),
-      createElement('dt', null, '会话位置'),
-      createElement('dd', null,
-        `${coordinate.rootSessionId} / 回合 ${String(coordinate.turn)} / 消息序号 ${String(coordinate.turnEndSeq)}`,
-      ),
-      proposal.workspaceBinding === undefined
-        ? null
-        : createElement(Fragment, null,
-            createElement('dt', null, '项目工作区'),
-            createElement('dd', null, `当前项目（PROJECT）· ${proposal.workspaceBinding.workspaceId}`),
-          ),
-      proposal.dshHomeBinding === undefined
-        ? null
-        : createElement(Fragment, null,
-            createElement('dt', null, 'DSH 用户目录'),
-            createElement('dd', null, `当前用户（USER）· ${proposal.dshHomeBinding.resolutionKind}`),
-            createElement('dt', null, 'DSH 用户目录校验值'),
-            createElement('dd', null, proposal.dshHomeBinding.identityDigest),
-          ),
-      createElement('dt', null, '审核决定'),
-      createElement('dd', null, describeReviewDecision(detail.reviewDecision)),
-      createElement('dt', null, '处理状态'),
-      createElement('dd', null, describeProcessingState(detail.processingState)),
-      createElement('dt', null, '保存结果'),
-      createElement('dd', null, describePublicationOutcome(detail.publicationOutcome)),
+      createElement('dt', null, '这个技能有什么用'), createElement('dd', null, makeSafeText(proposal.description)),
+      createElement('dt', null, '什么时候会用到'), createElement('dd', null, makeSafeText(proposal.whenToUse)),
+      createElement('dt', null, '保存后在哪里可用'),
+      createElement('dd', null, describePersistenceScope(proposal.persistenceScope)),
+      createElement('dt', null, '当前进度'),
+      createElement('dd', null, describeProposalOutcome(detail)),
     ),
-    createElement('h4', null, '为什么生成这份草稿'),
+    createElement('h4', null, '为什么建议保存'),
     createElement('p', null, makeSafeText(proposal.curationRationale)),
     ...detail.experiences.map(experience => createElement('article', { key: experience.experienceId },
-      createElement('strong', null, `${experience.type} · ${experience.evidenceStrength}`),
+      createElement('strong', null, `${describeExperienceType(experience.type)} · 来自明确表达`),
       createElement('p', null, makeSafeText(experience.lesson)),
     )),
-    createElement('h4', null, '相关对话片段（已过滤）'),
+    createElement('h4', null, '参考的对话内容'),
+    createElement('p', { className: css.muted }, '以下片段来自本次对话，并已过滤不可安全展示的内容。'),
     ...detail.evidenceRefs.map(evidence => createElement('article', { key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}` },
-      createElement('strong', null, `消息序号 ${String(evidence.messageSeq)}${evidence.truncated ? ' · 已截断' : ''}`),
+      createElement('strong', null, evidence.truncated ? '对话片段（内容较长，已节选）' : '对话片段'),
       createElement(ProposalTextView, {
         value: evidence.excerpt,
         mode: 'SAFE',
-        label: `相关对话片段 ${String(evidence.messageSeq)}`,
+        label: '参考的对话内容',
       }),
     )),
-    createElement('h4', null, '保存前核对信息'),
-    createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '保存前核对信息' }),
+    createElement('h4', null, '这次会怎么处理'),
+    createElement('p', null, describeProposalAction(detail)),
+    createElement('details', { className: css.technicalDetails },
+      createElement('summary', null, '技术信息（排查问题时使用）'),
+      createElement('dl', { className: css.detailFacts },
+        createElement('dt', null, '草稿版本'), createElement('dd', null, String(proposal.revision)),
+        createElement('dt', null, '草稿内容指纹'), createElement('dd', null, proposal.digest),
+        createElement('dt', null, '来源会话'),
+        createElement('dd', null,
+          `${coordinate.rootSessionId} / 第 ${String(coordinate.turn)} 回合 / 记录 ${String(coordinate.turnEndSeq)}`,
+        ),
+        proposal.workspaceBinding === undefined
+          ? null
+          : createElement(Fragment, null,
+              createElement('dt', null, '项目标识'),
+              createElement('dd', null, proposal.workspaceBinding.workspaceId),
+            ),
+        proposal.dshHomeBinding === undefined
+          ? null
+          : createElement(Fragment, null,
+              createElement('dt', null, '保存位置识别方式'),
+              createElement('dd', null, describeResolutionKind(proposal.dshHomeBinding.resolutionKind)),
+              createElement('dt', null, '用户技能目录指纹'),
+              createElement('dd', null, proposal.dshHomeBinding.identityDigest),
+            ),
+        createElement('dt', null, '用户决定'),
+        createElement('dd', null, describeReviewDecision(detail.reviewDecision)),
+        createElement('dt', null, '处理进度'),
+        createElement('dd', null, describeProcessingState(detail.processingState)),
+        createElement('dt', null, '保存结果'),
+        createElement('dd', null, describePublicationOutcome(detail.publicationOutcome)),
+      ),
+      createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '保存目标技术信息' }),
+    ),
     createElement('div', { role: 'group', 'aria-label': '内容显示方式', className: css.modeGroup },
       createElement(Pill, {
         'aria-pressed': props.textMode === 'SAFE',
         active: props.textMode === 'SAFE',
         onClick: () => { props.setTextMode('SAFE') },
-      }, '安全视图'),
+      }, '标出隐藏字符'),
       createElement(Pill, {
         'aria-pressed': props.textMode === 'RAW',
         active: props.textMode === 'RAW',
         onClick: () => { props.setTextMode('RAW') },
-      }, '原始内容'),
+      }, '按原文显示'),
     ),
-    createElement('h4', null, '将要保存的完整 SKILL.md'),
+    createElement('h4', null, '确认要保存的技能说明'),
+    createElement('p', { className: css.muted },
+      '这是 Agent 以后会遵循的完整说明。开头是技能名称和设置，标题下方是具体规则。',
+    ),
     createElement(ProposalTextView, {
       value: proposal.exactSkillBytes,
       mode: props.textMode,
-      label: '将要保存的完整 SKILL.md',
+      label: '确认要保存的技能说明',
     }),
     baseBytes === undefined ? null : createElement(Fragment, null,
-      createElement('h4', null, '合并前的 Skill 内容'),
-      createElement(ProposalTextView, { value: baseBytes, mode: props.textMode, label: '合并前的 Skill 内容' }),
-      createElement('h4', null, '内容差异（精确对比）'),
-      createElement('pre', { 'aria-label': '内容差异（精确对比）' },
+      createElement('h4', null, '现有技能内容'),
+      createElement(ProposalTextView, { value: baseBytes, mode: props.textMode, label: '现有技能内容' }),
+      createElement('h4', null, '将发生的内容变化'),
+      createElement('p', { className: css.muted }, '“+”表示新增内容，“-”表示将被替换的内容。'),
+      createElement('pre', { 'aria-label': '将发生的内容变化' },
         diff.map(line => `${line.kind === 'ADD' ? '+' : line.kind === 'REMOVE' ? '-' : ' '} ${makeSafeText(line.text)}`).join('\n'),
       ),
     ),
     coveringBytes === undefined ? null : createElement(Fragment, null,
-      createElement('h4', null, '覆盖已有 Skill 的完整内容'),
-      createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '覆盖已有 Skill 的完整内容' }),
+      createElement('h4', null, '匹配到的已有技能内容'),
+      createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '匹配到的已有技能内容' }),
     ),
     createElement('div', { role: 'group', 'aria-label': '技能草稿操作', className: css.actions },
       action === 'RETRY_PUBLICATION'
