@@ -154,6 +154,40 @@ describe('DshV2StageLlmClient', () => {
     expect(llm.calls.every(call => !('reasoningEffort' in call))).toBe(true)
   })
 
+  it('defaults CREATE proposals to Chinese while preserving the Base Skill language for MERGE', async () => {
+    const proposal = {
+      name: 'safe-workflow',
+      description: '安全工作流。',
+      whenToUse: '在执行这类任务时使用。',
+      content: '# 安全工作流\n\n完成工作。',
+    }
+    const llm = new RecordingLlm([
+      chunks(JSON.stringify(proposal)),
+      chunks(JSON.stringify(proposal)),
+    ])
+    const client = new DshV2StageLlmClient(llm)
+    const intent = {
+      intentId: `intent_${digest('7')}`,
+      persistenceScope: 'PROJECT' as const,
+      experienceType: 'WORKFLOW' as const,
+      applicabilitySummary: 'Apply the safe workflow.',
+      keySteps: ['Analyze', 'Implement', 'Test'],
+      prohibitions: ['Do not skip tests'],
+    }
+
+    await client.generate({
+      action: 'CREATE', intent, inputDigest: digest('8'), route,
+    })
+    await client.generate({
+      action: 'MERGE', intent, targetCandidateId: `cand_${digest('9')}`,
+      baseSkill: '# Existing workflow\n', inputDigest: digest('a'), route,
+    })
+
+    expect(llm.calls[0]?.system).toContain('For CREATE, write description, whenToUse, and content in Simplified Chinese by default')
+    expect(llm.calls[1]?.system).toContain('For MERGE, preserve the primary human language of baseSkill')
+    expect(llm.calls[1]?.system).toContain('Do not translate the existing Skill merely because the new experience uses another language')
+  })
+
   it('accepts one fenced JSON object while ignoring reasoning blocks', async () => {
     const output = { result: 'NONE' }
     const text = `\`\`\`json\n${JSON.stringify(output)}\n\`\`\``

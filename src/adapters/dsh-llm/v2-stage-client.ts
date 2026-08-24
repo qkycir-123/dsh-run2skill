@@ -97,6 +97,16 @@ const EXPLICIT_DETECTION_RULES = [
   'For EXPLICIT, use DEFER only when the observed task or reusable experience is genuinely incomplete; use NONE only when the evidence contains no reusable experience.',
 ].join('\n')
 
+const CREATE_LANGUAGE_RULES = [
+  'For CREATE, write description, whenToUse, and content in Simplified Chinese by default.',
+  'Keep code, commands, identifiers, file paths, and established technical terms unchanged when translation would reduce clarity.',
+].join('\n')
+
+const MERGE_LANGUAGE_RULES = [
+  'For MERGE, preserve the primary human language of baseSkill in description, whenToUse, and content.',
+  'Do not translate the existing Skill merely because the new experience uses another language.',
+].join('\n')
+
 const OUTPUT_BYTE_RATIO = 4
 const V2_STAGE_CALL_TIMEOUT_MS = 120_000
 
@@ -223,7 +233,12 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
   }
 
   generate(input: Parameters<SkillGenerator['generate']>[0]): Promise<unknown> {
-    return this.#call('GENERATION', input, routeOf(input))
+    return this.#call(
+      'GENERATION',
+      input,
+      routeOf(input),
+      input.action === 'CREATE' ? CREATE_LANGUAGE_RULES : MERGE_LANGUAGE_RULES,
+    )
   }
 
   async #call(
