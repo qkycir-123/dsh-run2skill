@@ -28,6 +28,7 @@ import { V2LearningAttentionService } from '../adapters/dsh-connection/v2-learni
 import type { CurrentWorkspaceResolver } from '../adapters/dsh-connection/current-scope-authorizer.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
 import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
+import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
 
 export interface V2ProductionHostSession<TView extends object> {
   readonly header: DshSessionHeader
@@ -49,6 +50,7 @@ export interface DshV2ProductionRuntimeOptions<TView extends object> {
   readonly resolveSession: (sessionLifecycleKey: string) => V2ProductionHostSession<TView> | undefined
   readonly resolveSessionByView: (view: TView) => V2ProductionHostSession<TView> | undefined
   readonly automaticLearning?: () => boolean
+  readonly onSkillMutation?: (target: DshContextFileSystemTarget, version: string) => void
   readonly refreshView?: (view: TView) => TView
   readonly now?: () => number
 }
@@ -192,6 +194,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
               turnEndSeq: input.batch.lastTurnEndSeq,
             }
       },
+      ...(options.onSkillMutation === undefined ? {} : { onSkillMutation: options.onSkillMutation }),
       ...(options.refreshView === undefined ? {} : { refreshView: options.refreshView }),
       ...(options.now === undefined ? {} : { now: () => new Date(options.now!()).toISOString() }),
     })

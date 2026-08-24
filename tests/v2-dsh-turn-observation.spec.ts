@@ -127,6 +127,7 @@ describe('DSH TurnObservationV2 projection', () => {
     expect(TurnObservationV2Schema.parse(result.observation)).toEqual(result.observation)
     expect(result.observation).toMatchObject({
       turn: 1,
+      turnStartSeq: 0,
       turnEndSeq: 8,
       outcomeKind: 'completed',
       completeness: 'COMPLETE',

@@ -39,6 +39,11 @@ const runtimeSummarySchema = z.object({
   source: z.string(),
   provider: z.string(),
   path: z.string().optional(),
+  resourceBase: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('directory'), path: z.string() }).passthrough(),
+    z.object({ kind: z.literal('url'), url: z.string() }).passthrough(),
+    z.object({ kind: z.literal('opaque'), description: z.string() }).passthrough(),
+  ]).optional(),
   invocation: z.object({ modelInvocable: z.boolean(), userInvocable: z.boolean() }).strict().optional(),
 }).passthrough()
 const runtimeSnapshotSchema = z.object({
@@ -66,6 +71,8 @@ export interface V2DshPublicationBindingPort<TView extends object> {
 export interface DshV2ProposalFileSystemOptions<TView extends object> {
   readonly bindings: V2DshPublicationBindingPort<TView>
   readonly registry: DshSkillRegistryPort<TView>
+  /** Mirrors DSH's first-party write/edit notification so the runtime Skill cache is invalidated. */
+  readonly onSkillMutation?: (target: DshContextFileSystemTarget, version: string) => void
   readonly refreshView?: (view: TView) => TView
   readonly readbackAttempts?: number
   readonly wait?: (milliseconds: number) => Promise<void>
@@ -81,6 +88,12 @@ function samePath(left: string | undefined, right: string): boolean {
 function providerJoin(root: string, ...segments: string[]): string {
   const api = /^[a-zA-Z]:[\\/]/u.test(root) || root.includes('\\') ? win32 : posix
   return api.join(root, ...segments)
+}
+
+function summaryMatchesTarget(summary: z.infer<typeof runtimeSummarySchema>, target: string): boolean {
+  if (samePath(summary.path, target)) return true
+  return summary.resourceBase?.kind === 'directory'
+    && samePath(providerJoin(summary.resourceBase.path, 'SKILL.md'), target)
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -357,6 +370,7 @@ export class DshV2ProposalFileSystemAdapter<TView extends object> {
         if (sha256Utf8(currentBytes) !== input.proposal.body.skillBytesDigest) {
           return { status: 'CONFLICT' }
         }
+        this.options.onSkillMutation?.(current.target, current.version)
         if (!await this.#confirmRuntime(
           input,
           binding,
@@ -412,6 +426,7 @@ export class DshV2ProposalFileSystemAdapter<TView extends object> {
         || sha256Utf8(Buffer.from(after.bytes).toString('utf8')) !== input.proposal.body.skillBytesDigest
         || await filesystem.lstat(flatPath, undefined, signal) !== undefined
       ) return { status: 'CONFLICT' }
+      this.options.onSkillMutation?.(after.target, after.version)
       if (!await this.#confirmRuntime(
         input,
         binding,
@@ -471,7 +486,7 @@ export class DshV2ProposalFileSystemAdapter<TView extends object> {
             winners.length === 1
             && winners[0]!.provider === binding.rootBinding.expectedProvider
             && winners[0]!.source === binding.rootBinding.expectedSource
-            && samePath(winners[0]!.path, target)
+            && summaryMatchesTarget(winners[0]!, target)
           ) {
             const definition = runtimeDefinitionSchema.safeParse(
               await this.options.registry.get(input.proposal.body.name, view),

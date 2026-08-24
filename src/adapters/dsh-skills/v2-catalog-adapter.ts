@@ -57,6 +57,7 @@ type OwnershipFileRead =
       readonly status: 'READ'
       readonly name: string
       readonly bodyDigest: string
+      readonly exactSkillBytes: string
       readonly skillBytesDigest: string
     }
   | { readonly status: 'NO_MATCH' | 'UNAVAILABLE' }
@@ -64,12 +65,14 @@ type OwnershipFileRead =
 interface OwnershipLocatedFile {
   readonly target: string
   readonly bodyDigest: string
+  readonly exactSkillBytes: string
   readonly skillBytesDigest: string
 }
 
 interface ContextOwnershipLocatedFile {
   readonly target: DshContextFileSystemTarget
   readonly bodyDigest: string
+  readonly exactSkillBytes: string
   readonly skillBytesDigest: string
 }
 
@@ -745,6 +748,7 @@ export class DshV2CatalogAdapter<TView extends object> {
     return {
       target: stable.target,
       bodyDigest: sha256Utf8(parsed.body),
+      exactSkillBytes,
       skillBytesDigest: sha256Utf8(exactSkillBytes),
     }
   }
@@ -820,6 +824,7 @@ export class DshV2CatalogAdapter<TView extends object> {
       status: 'READ',
       name: parsed.name,
       bodyDigest: sha256Utf8(parsed.body),
+      exactSkillBytes,
       skillBytesDigest: sha256Utf8(exactSkillBytes),
     }
   }
@@ -833,7 +838,7 @@ export class DshV2CatalogAdapter<TView extends object> {
   ): Promise<OwnershipLocatedFile | undefined> {
     const read = await this.#readOwnershipFile(target, observeBytes, observeCandidateFile, fileReads)
     return read.status === 'READ' && read.name === expectedName
-      ? { target, bodyDigest: read.bodyDigest, skillBytesDigest: read.skillBytesDigest }
+      ? { target, bodyDigest: read.bodyDigest, exactSkillBytes: read.exactSkillBytes, skillBytesDigest: read.skillBytesDigest }
       : undefined
   }
 
@@ -891,7 +896,7 @@ export class DshV2CatalogAdapter<TView extends object> {
             read.name,
             index.has(read.name)
               ? null
-              : { target, bodyDigest: read.bodyDigest, skillBytesDigest: read.skillBytesDigest },
+              : { target, bodyDigest: read.bodyDigest, exactSkillBytes: read.exactSkillBytes, skillBytesDigest: read.skillBytesDigest },
           )
         }
       }
@@ -913,10 +918,14 @@ export class DshV2CatalogAdapter<TView extends object> {
     const candidate = before.candidates.get(candidateId)
     if (candidate === undefined) return undefined
     let content: string | undefined
+    let exactSkillBytes: string | undefined
     let skillBytesDigest: string | undefined
     if (candidate.kind === 'PENDING') {
       content = candidate.entry.capability === 'FULL_BODY' ? candidate.entry.exactSkillBytes : undefined
-      if (content !== undefined) skillBytesDigest = sha256Utf8(content)
+      if (content !== undefined) {
+        exactSkillBytes = content
+        skillBytesDigest = sha256Utf8(content)
+      }
     } else {
       let raw: unknown
       try {
@@ -1009,6 +1018,7 @@ export class DshV2CatalogAdapter<TView extends object> {
                 observeCandidateFile,
               )
         if (exact === undefined || exact.bodyDigest !== sha256Utf8(content)) return undefined
+        exactSkillBytes = exact.exactSkillBytes
         skillBytesDigest = exact.skillBytesDigest
       }
     }
@@ -1024,6 +1034,7 @@ export class DshV2CatalogAdapter<TView extends object> {
     return {
       ...candidate.summary,
       content,
+      ...(exactSkillBytes === undefined ? {} : { exactSkillBytes }),
       ...(skillBytesDigest === undefined ? {} : { skillBytesDigest }),
     }
   }

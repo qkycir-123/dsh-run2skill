@@ -301,6 +301,9 @@ export const TurnObservationV2Schema = z.object({
   observationId: z.string().regex(/^obs_[a-f0-9]{64}$/),
   sessionLifecycleKey: z.string().regex(/^sl_[a-f0-9]{64}$/),
   turn: safeNonNegativeInteger,
+  // Added after the published 0.2.0 schema. New observations always write it;
+  // optional input keeps the existing version-1 storage domain readable.
+  turnStartSeq: safeNonNegativeInteger.optional(),
   turnEndSeq: safeNonNegativeInteger,
   turnInstanceDigest: sha256Hex,
   observedAt: isoDateTime,
@@ -327,6 +330,9 @@ export const TurnObservationV2Schema = z.object({
     observedLogPrefixDigest: sha256Hex,
   }).strict().optional(),
 }).strict().superRefine((value, context) => {
+  if (value.turnStartSeq !== undefined && value.turnStartSeq >= value.turnEndSeq) {
+    context.addIssue({ code: 'custom', path: ['turnStartSeq'], message: 'Turn start must precede Turn end' })
+  }
   if (value.observationId !== deriveTurnObservationIdV2(value)) {
     context.addIssue({ code: 'custom', path: ['observationId'], message: 'Observation id does not match facts' })
   }
@@ -413,6 +419,9 @@ export const SessionBatchV2Schema = z.object({
     .max(RUN2SKILL_V2_LIMITS.maxBatchTriggerReasons),
   observationManifest: z.array(z.object({
     observationId: z.string().regex(/^obs_[a-f0-9]{64}$/),
+    // See TurnObservationV2.turnStartSeq. Missing legacy coordinates are read
+    // but must never be guessed by consumers.
+    turnStartSeq: safeNonNegativeInteger.optional(),
     turnEndSeq: safeNonNegativeInteger,
     evidenceDigest: sha256Hex,
     completeness: z.enum(['COMPLETE', 'INCOMPLETE']),
@@ -481,6 +490,11 @@ export const SessionBatchV2Schema = z.object({
     || turnEndSeqs.at(-1) !== value.lastTurnEndSeq
     || turnEndSeqs.some((seq, index) => index > 0 && seq <= turnEndSeqs[index - 1]!)
   ) context.addIssue({ code: 'custom', path: ['observationManifest'], message: 'Batch manifest must be ordered and bind the frozen range' })
+  if (value.observationManifest.some(entry => (
+    entry.turnStartSeq !== undefined && entry.turnStartSeq >= entry.turnEndSeq
+  ))) {
+    context.addIssue({ code: 'custom', path: ['observationManifest'], message: 'Batch manifest Turn starts must precede their Turn ends' })
+  }
   if (value.observationManifestDigest !== sha256Utf8(canonicalJson(value.observationManifest))) {
     context.addIssue({ code: 'custom', path: ['observationManifestDigest'], message: 'Batch observation digest does not match ids' })
   }

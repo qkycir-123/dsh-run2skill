@@ -369,6 +369,7 @@ export class SessionBatchCoordinator {
     }
     const observationManifest = candidate.observations.map(item => ({
       observationId: item.observationId,
+      turnStartSeq: item.turnStartSeq,
       turnEndSeq: item.turnEndSeq,
       evidenceDigest: item.evidenceDigest,
       completeness: item.completeness,

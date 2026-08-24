@@ -21,6 +21,12 @@
       "expectedKinds": ["EXPLICIT_SAVE"]
     },
     {
+      "id": "zh-explicit-save-long-object-before-verb",
+      "sourceKind": "user",
+      "text": "请把当前 normalize-query.mjs 中经过真实测试的 dropKeys 与 dropKeysCaseInsensitive 两项增量规则合并沉淀到已有 normalize-url-query Skill。",
+      "expectedKinds": ["EXPLICIT_SAVE"]
+    },
+    {
       "id": "zh-correction",
       "sourceKind": "user",
       "text": "不对，以后这里必须先校验输入再执行。",

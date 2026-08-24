@@ -104,10 +104,10 @@ function textClauses(
 ): TextClause[] {
   const clauses: TextClause[] = []
   const delimiter = splitContrasts
-    ? /[。！？.!?;；,，]|\b(?:but|instead)\b|而是|但是|—|–/giu
+    ? /[。！？!?;；,，]|\.(?=$|\s)|\b(?:but|instead)\b|而是|但是|—|–/giu
     : splitCommas
-      ? /[。！？.!?;；,，]/gu
-      : /[。！？.!?;；]/gu
+      ? /[。！？!?;；,，]|\.(?=$|\s)/gu
+      : /[。！？!?;；]|\.(?=$|\s)/gu
   let start = 0
   for (const match of text.matchAll(delimiter)) {
     const raw = text.slice(start, match.index)

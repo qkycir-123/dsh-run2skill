@@ -70,8 +70,17 @@ const snapshotSchema = z.object({
 })
 const definitionSchema = summarySchema.safeExtend({
   content: z.string(),
+  exactSkillBytes: z.string().optional(),
   skillBytesDigest: sha256Hex.optional(),
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.exactSkillBytes !== undefined) {
+    if (value.skillBytesDigest === undefined) {
+      context.addIssue({ code: 'custom', path: ['skillBytesDigest'], message: 'Exact Skill bytes require their digest' })
+    } else if (sha256Utf8(value.exactSkillBytes) !== value.skillBytesDigest) {
+      context.addIssue({ code: 'custom', path: ['skillBytesDigest'], message: 'Exact Skill bytes digest does not match bytes' })
+    }
+  }
+})
 const classifierOutputSchema = z.object({
   classifications: z.array(z.object({
     candidateId: identity,

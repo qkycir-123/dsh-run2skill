@@ -2,6 +2,7 @@ import { V2CompatibleProposalPresenter } from '../adapters/dsh-connection/v2-pro
 import { DshV2ProposalFileSystemAdapter } from '../adapters/dsh-publication/v2-proposal-filesystem.js'
 import { DshV2StockPublicationBindingResolver } from '../adapters/dsh-publication/v2-stock-publication-binding.js'
 import type { DshSkillRegistryPort } from '../adapters/dsh-skills/skill-catalog.js'
+import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
 import {
   DshV2CatalogAdapter,
   type DshV2CatalogAdapterOptions,
@@ -38,6 +39,7 @@ export interface V2ProposalHostServicesOptions<TView extends object> {
   readonly sessionCoordinate: (
     input: V2ProposalPublicationInput,
   ) => { readonly rootSessionId: string; readonly sessionCreatedAt: number; readonly turn: number; readonly turnEndSeq: number } | undefined
+  readonly onSkillMutation?: (target: DshContextFileSystemTarget, version: string) => void
   readonly refreshView?: (view: TView) => TView
   readonly now?: () => string
 }
@@ -66,6 +68,7 @@ export class V2ProposalHostServices<TView extends object> {
     const filesystem = new DshV2ProposalFileSystemAdapter({
       bindings,
       registry: options.registry,
+      ...(options.onSkillMutation === undefined ? {} : { onSkillMutation: options.onSkillMutation }),
       ...(options.refreshView === undefined ? {} : { refreshView: options.refreshView }),
     })
     this.reviews = new V2ProposalReviewCoordinator(domain, {

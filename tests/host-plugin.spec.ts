@@ -60,6 +60,7 @@ function services() {
       async standingKeyFor(id?: string) { return { agentPreset: id ?? 'standard' } },
     },
     fs: {},
+    emit() {},
   }
 }
 

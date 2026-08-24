@@ -469,6 +469,7 @@ export async function projectDshTurnObservationV2(
         observationId: deriveTurnObservationIdV2(observed),
         sessionLifecycleKey: observed.sessionLifecycleKey,
         turn: observed.turn,
+        turnStartSeq: observed.turnStartSeq,
         turnEndSeq: observed.turnEndSeq,
         turnInstanceDigest: observed.turnInstanceDigest,
         observedAt: observedAt.toISOString(),

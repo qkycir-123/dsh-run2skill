@@ -72,19 +72,20 @@ const SUPPORTED_TURN_EVENTS = new Set([
   'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
   'request/context', 'session/end-seed',
 ])
+const OWNERSHIP_ANALYSIS_EVENTS = new Set([
+  'assistant/message', 'tool/call', 'tool/result',
+])
 
 interface OwnershipObservationPolicy {
-  readonly readLookbehindSeqs: number
   readonly maxReadEvents: number
-  readonly maxWindowEvents: number
+  readonly maxAnalysisEvents: number
   readonly maxEvidenceBytes: number
   readonly maxAnalysisMs: number
 }
 
 const DEFAULT_OWNERSHIP_OBSERVATION_POLICY: OwnershipObservationPolicy = Object.freeze({
-  readLookbehindSeqs: 10_000,
   maxReadEvents: 20_000,
-  maxWindowEvents: 10_000,
+  maxAnalysisEvents: 10_000,
   maxEvidenceBytes: 64 * 1024 * 1024,
   maxAnalysisMs: 500,
 })
@@ -197,7 +198,6 @@ function batchWindow(
   }
   if (firstStartIndex === undefined) return undefined
   const window = events.slice(firstStartIndex, lastEndIndex + 1)
-  if (window.length > policy.maxWindowEvents) return undefined
   let openStart: number | undefined
   const ends = new Set<number>()
   for (const event of window) {
@@ -218,7 +218,8 @@ function batchWindow(
     || batch.observationManifest.some(item => !ends.has(item.turnEndSeq))
   ) return undefined
   if (window.some(event => !SUPPORTED_TURN_EVENTS.has(event.type) && event.ignorable !== true)) return undefined
-  return window
+  const analysisEvents = window.filter(event => OWNERSHIP_ANALYSIS_EVENTS.has(event.type))
+  return analysisEvents.length <= policy.maxAnalysisEvents ? analysisEvents : undefined
 }
 
 function resultFailed(raw: z.infer<typeof toolResultSchema>): boolean {
@@ -460,10 +461,14 @@ async function analyzeTools(
     activity = 'AMBIGUOUS'
     unattributedBodyEvidence = true
   }
-  // Candidate/root membership is intentionally path-free. An unmatched failed
-  // mutation therefore cannot prove it was outside a custom or bundled Skill
-  // root, so fail closed instead of allowing a second generation channel.
-  if (writes.some(write => write.failed)) activity = 'WRITE_FAILED'
+  // DSH filesystem Skills are Markdown files. A failed mutation of a known or
+  // marker-bearing Skill remains unsafe, as does an unmatched Markdown target
+  // that may live under a custom root. A failed edit of ordinary source such as
+  // .ts/.mjs/.html cannot create a DSH Skill and must not block Run2Skill.
+  if (writes.some(write => (
+    write.failed
+    && (write.skillMarker || write.targetPath?.toLocaleLowerCase('en-US').endsWith('.md') === true)
+  ))) activity = 'WRITE_FAILED'
   return { complete: true, activity, writes, unattributedBodyEvidence }
 }
 
@@ -519,7 +524,10 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
       const beforeList = await this.options.persistence.listSnapshots()
       const before = exactSnapshot(beforeList, input.batch.sessionLifecycleKey, session?.header)
       if (before === undefined) return { status: 'UNAVAILABLE', reasonCode: 'SESSION_SNAPSHOT_UNAVAILABLE' }
-      const fromSeq = Math.max(0, input.batch.firstTurnEndSeq - this.#policy.readLookbehindSeqs)
+      const fromSeq = input.batch.observationManifest[0]!.turnStartSeq
+      if (fromSeq === undefined) {
+        return { status: 'UNAVAILABLE', reasonCode: 'SESSION_WINDOW_INCOMPLETE' }
+      }
       failureCode = 'SESSION_LOG_UNAVAILABLE'
       const log = await this.options.persistence.readFrom(before.header.id, fromSeq)
       if (!sameHeader(log.meta, before.header)) {

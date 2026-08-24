@@ -36,6 +36,7 @@ function observation(options: {
       turnInstanceDigest,
     }),
     turn: options.seq,
+    turnStartSeq: options.seq - 1,
     turnEndSeq: options.seq,
     turnInstanceDigest,
     observedAt: new Date(options.observedAt).toISOString(),
@@ -98,6 +99,13 @@ describe('v2 SessionBatch coordinator', () => {
     expect(latest?.batch).toMatchObject({
       firstTurnEndSeq: 10,
       lastTurnEndSeq: 50,
+      observationManifest: [
+        { turnStartSeq: 9, turnEndSeq: 10 },
+        { turnStartSeq: 19, turnEndSeq: 20 },
+        { turnStartSeq: 29, turnEndSeq: 30 },
+        { turnStartSeq: 39, turnEndSeq: 40 },
+        { turnStartSeq: 49, turnEndSeq: 50 },
+      ],
       triggerReasons: ['THRESHOLD'],
       state: 'FROZEN',
       detector: { result: 'NOT_RUN', calls: [] },
