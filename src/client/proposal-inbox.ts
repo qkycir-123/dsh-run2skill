@@ -95,6 +95,14 @@ export function describePersistenceScope(scope: ProposalListItem['persistenceSco
   return scope === 'PROJECT' ? '仅当前项目可用' : '所有项目可用'
 }
 
+export function describeProposalScope(
+  kind: ProposalListItem['kind'],
+  scope: ProposalListItem['persistenceScope'],
+): string {
+  if (kind !== 'DISCARD') return describePersistenceScope(scope)
+  return scope === 'PROJECT' ? '本次经验来自当前项目' : '本次经验适用于所有项目'
+}
+
 export function describeProposalOutcome(detail: Pick<ProposalDetail, 'processingState' | 'publicationOutcome'>): string {
   if (detail.publicationOutcome === 'PUBLISHED') return 'Skill 已保存，DSH 已确认可以使用'
   if (detail.publicationOutcome === 'DISCARDED') return '技能草稿已放弃，Skill 未更改'

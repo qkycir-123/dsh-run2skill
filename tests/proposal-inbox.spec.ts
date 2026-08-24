@@ -10,6 +10,7 @@ import {
   ProposalTextView,
   describePersistenceScope,
   describeProposalKind,
+  describeProposalScope,
   describeProposalOutcome,
   makeExactLineDiff,
   makeSafeText,
@@ -180,6 +181,9 @@ describe('Proposal Inbox client', () => {
     expect(describeProposalKind('DISCARD')).toBe('无需新建技能')
     expect(describePersistenceScope('PROJECT')).toBe('仅当前项目可用')
     expect(describePersistenceScope('USER')).toBe('所有项目可用')
+    expect(describeProposalScope('CREATE', 'PROJECT')).toBe('仅当前项目可用')
+    expect(describeProposalScope('DISCARD', 'PROJECT')).toBe('本次经验来自当前项目')
+    expect(describeProposalScope('DISCARD', 'USER')).toBe('本次经验适用于所有项目')
   })
 
   it('never exposes absolute Workspace, DSH Home, root, or Skill target paths in review facts', () => {
@@ -188,6 +192,28 @@ describe('Proposal Inbox client', () => {
     const facts = factsFromAction({ proposal } as never)
     expect(facts).toContain(`Skill 名称：${proposal.name}`)
     expect(facts).not.toMatch(/[A-Z]:\\|\/home\/|Declared root|Bundle target|Skill target|Flat target/iu)
+  })
+
+  it('explains a missing user Skill directory without exposing storage codes', () => {
+    const proposal = makeCreateProposalSnapshot(makeLearnedWorkItem())
+    if (proposal.actionBinding.kind !== 'CREATE') throw new Error('expected CREATE fixture')
+    const facts = factsFromAction({
+      proposal: {
+        ...proposal,
+        actionBinding: {
+          ...proposal.actionBinding,
+          rootBinding: {
+            ...proposal.actionBinding.rootBinding,
+            scope: 'USER',
+            expectedSource: 'user-dsh',
+            state: 'ABSENT',
+          },
+        },
+      },
+    } as never)
+    expect(facts).toContain('保存位置：个人 DSH 技能目录（所有项目可用）')
+    expect(facts).toContain('保存目录：尚未建立，保存时会自动创建')
+    expect(facts).not.toMatch(/ABSENT|EXISTING|project-dsh|user-dsh/)
   })
 
   it('gives UNKNOWN, RECOVERING, DEGRADED, and INCOMPATIBLE explicit summary copy', () => {
@@ -299,7 +325,8 @@ describe('Proposal Inbox client', () => {
     expect(controller.snapshot().detail?.proposal.exactSkillBytes)
       .toBe(staged.item.review!.proposal.exactSkillBytes)
     expect(factsFromAction(controller.snapshot().detail!)).toContain('Skill 存储规则版本：stock-dsh-web-default-roots-v1')
-    expect(factsFromAction(controller.snapshot().detail!)).toContain('预期存储方式 / 来源：filesystem / project-dsh')
+    expect(factsFromAction(controller.snapshot().detail!)).toContain('保存位置：当前项目的 DSH 技能目录')
+    expect(factsFromAction(controller.snapshot().detail!)).not.toMatch(/ABSENT|EXISTING|project-dsh|user-dsh/)
 
     await controller.mutate('APPROVE')
     expect(controller.snapshot().announcement).toContain('正在保存')

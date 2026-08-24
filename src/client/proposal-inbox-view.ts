@@ -18,6 +18,7 @@ import {
   describeProposalListItem,
   describeProposalKind,
   describeProposalOutcome,
+  describeProposalScope,
   describeProcessingState,
   describePublicationOutcome,
   describeReviewDecision,
@@ -216,7 +217,7 @@ export function ProposalInboxPanel(props: {
           'aria-current': state.selectedProposalId === item.proposalRef.proposalId ? 'true' : undefined,
           onClick: () => { void controller.select(item.proposalRef.proposalId) },
           className: css.proposalListButton,
-        }, `${describeProposalKind(item.kind)} · ${makeSafeText(item.name)} · ${describePersistenceScope(item.persistenceScope)} · ${describeProposalListItem(item)}`),
+        }, `${describeProposalKind(item.kind)} · ${makeSafeText(item.name)} · ${describeProposalScope(item.kind, item.persistenceScope)} · ${describeProposalListItem(item)}`),
       )),
     ),
   ),
@@ -267,9 +268,9 @@ export function factsFromAction(detail: ProposalDetail): string {
     return [
       `Skill 存储规则版本：${action.rootBinding.rootContractVersion}`,
       `Skill 存储定位器版本：${action.rootBinding.resolverVersion}`,
-      `预期存储方式 / 来源：${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
+      `保存位置：${describeRootSource(action.rootBinding.expectedSource)}`,
       `存储定位规则校验值：${action.rootBinding.resolutionContractDigest}`,
-      `存储目录状态：${action.rootBinding.state}`,
+      `保存目录：${describeRootState(action.rootBinding.state)}`,
       `Skill 名称：${action.targetBinding.skillName}`,
       `Skill 内容校验值：${detail.proposal.skillBytesDigest}`,
       `确认目标不存在的时间：${action.expectedAbsence.observedAt}`,
@@ -282,9 +283,9 @@ export function factsFromAction(detail: ProposalDetail): string {
     return [
       `Skill 存储规则版本：${action.rootBinding.rootContractVersion}`,
       `Skill 存储定位器版本：${action.rootBinding.resolverVersion}`,
-      `预期存储方式 / 来源：${action.rootBinding.expectedProvider} / ${action.rootBinding.expectedSource}`,
+      `保存位置：${describeRootSource(action.rootBinding.expectedSource)}`,
       `存储定位规则校验值：${action.rootBinding.resolutionContractDigest}`,
-      `存储目录状态：${action.rootBinding.state}`,
+      `保存目录：${describeRootState(action.rootBinding.state)}`,
       `现有 Skill 标识：${action.baseBinding.candidateKey}`,
       `Skill 名称：${action.targetBinding.skillName}`,
       `原内容校验值：${action.baseBinding.bytesDigest}`,
@@ -294,10 +295,29 @@ export function factsFromAction(detail: ProposalDetail): string {
   return [
     `匹配到的现有 Skill 标识：${action.coveringCandidateBinding.candidateKey}`,
     `名称：${action.coveringCandidateBinding.name}`,
-    `来源：${action.coveringCandidateBinding.source}`,
+    `已有技能来源：${describeCandidateSource(action.coveringCandidateBinding.source)}`,
     `内容校验值：${action.coveringCandidateBinding.contentDigest}`,
     `确认时间：${action.coveringCandidateBinding.observedAt}`,
   ].join('\n')
+}
+
+function describeRootSource(source: 'project-dsh' | 'user-dsh'): string {
+  return source === 'project-dsh' ? '当前项目的 DSH 技能目录' : '个人 DSH 技能目录（所有项目可用）'
+}
+
+function describeRootState(state: 'EXISTING' | 'ABSENT'): string {
+  return state === 'EXISTING' ? '已存在' : '尚未建立，保存时会自动创建'
+}
+
+function describeCandidateSource(source: string): string {
+  if (source === 'project-dsh') return '当前项目的 DSH 技能'
+  if (source === 'project-agents') return '当前项目的 Agent 技能'
+  if (source === 'user-dsh') return '个人 DSH 技能（所有项目可用）'
+  if (source === 'user-agents') return '个人 Agent 技能（所有项目可用）'
+  if (source === 'bundled') return 'DSH 内置技能'
+  if (source === 'runtime') return '当前会话加载的技能'
+  if (source === 'custom') return '自定义技能目录'
+  return '其他已加载位置'
 }
 
 function describeProposalAction(detail: ProposalDetail): string {
@@ -309,7 +329,8 @@ function describeProposalAction(detail: ProposalDetail): string {
   if (proposal.actionBinding.kind === 'MERGE') {
     return `确认后会把这次经验补充到已有技能“${makeSafeText(proposal.name)}”中。`
   }
-  return `已有技能“${makeSafeText(proposal.name)}”已包含这次经验，无需重复创建。`
+  const existingName = proposal.actionBinding.coveringCandidateBinding.name
+  return `已有技能“${makeSafeText(existingName)}”已包含这次经验。这份草稿不会保存，确认后将继续使用该已有技能。`
 }
 
 function describeExperienceType(type: ProposalDetail['experiences'][number]['type']): string {
@@ -368,19 +389,37 @@ export function ProposalDetailView(props: {
   const coveringBytes = proposal.actionBinding?.kind === 'DISCARD'
     ? proposal.actionBinding.coveringCandidateBinding.content
     : undefined
+  const coveringCandidate = proposal.actionBinding?.kind === 'DISCARD'
+    ? proposal.actionBinding.coveringCandidateBinding
+    : undefined
   const diff = baseBytes === undefined ? [] : makeExactLineDiff(baseBytes, proposal.exactSkillBytes)
 
   return createElement(Fragment, null,
-    createElement('h3', null, `${describeProposalKind(proposal.kind)}：${makeSafeText(proposal.name)}`),
+    createElement('h3', null, coveringCandidate === undefined
+      ? `${describeProposalKind(proposal.kind)}：${makeSafeText(proposal.name)}`
+      : `无需新建技能：继续使用 ${makeSafeText(coveringCandidate.name)}`),
     createElement('dl', { className: css.detailFacts },
-      createElement('dt', null, '这个技能有什么用'), createElement('dd', null, makeSafeText(proposal.description)),
-      createElement('dt', null, '什么时候会用到'), createElement('dd', null, makeSafeText(proposal.whenToUse)),
-      createElement('dt', null, '保存后在哪里可用'),
-      createElement('dd', null, describePersistenceScope(proposal.persistenceScope)),
+      coveringCandidate === undefined
+        ? createElement(Fragment, null,
+            createElement('dt', null, '这个技能有什么用'),
+            createElement('dd', null, makeSafeText(proposal.description)),
+            createElement('dt', null, '什么时候会用到'),
+            createElement('dd', null, makeSafeText(proposal.whenToUse)),
+            createElement('dt', null, '保存后在哪里可用'),
+            createElement('dd', null, describePersistenceScope(proposal.persistenceScope)),
+          )
+        : createElement(Fragment, null,
+            createElement('dt', null, '原本想保存的经验'),
+            createElement('dd', null, makeSafeText(proposal.description)),
+            createElement('dt', null, '适用场景'),
+            createElement('dd', null, makeSafeText(proposal.whenToUse)),
+            createElement('dt', null, '这次经验的范围'),
+            createElement('dd', null, describeProposalScope(proposal.kind, proposal.persistenceScope)),
+          ),
       createElement('dt', null, '当前进度'),
       createElement('dd', null, describeProposalOutcome(detail)),
     ),
-    createElement('h4', null, '为什么建议保存'),
+    createElement('h4', null, coveringCandidate === undefined ? '为什么建议保存' : '为什么无需新建'),
     createElement('p', null, makeSafeText(proposal.curationRationale)),
     ...detail.experiences.map(experience => createElement('article', { key: experience.experienceId },
       createElement('strong', null, `${describeExperienceType(experience.type)} · 来自明确表达`),
@@ -388,12 +427,14 @@ export function ProposalDetailView(props: {
     )),
     createElement('h4', null, '参考的对话内容'),
     createElement('p', { className: css.muted }, '以下片段来自本次对话，并已过滤不可安全展示的内容。'),
-    ...detail.evidenceRefs.map(evidence => createElement('article', { key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}` },
-      createElement('strong', null, evidence.truncated ? '对话片段（内容较长，已节选）' : '对话片段'),
+    ...detail.evidenceRefs.map((evidence, index) => createElement('article', { key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}` },
+      createElement('strong', null,
+        `对话片段 ${String(index + 1)}${evidence.truncated ? '（内容较长，已节选）' : ''}`,
+      ),
       createElement(ProposalTextView, {
         value: evidence.excerpt,
         mode: 'SAFE',
-        label: '参考的对话内容',
+        label: `参考的对话内容 ${String(index + 1)}`,
       }),
     )),
     createElement('h4', null, '这次会怎么处理'),
@@ -428,6 +469,12 @@ export function ProposalDetailView(props: {
         createElement('dt', null, '保存结果'),
         createElement('dd', null, describePublicationOutcome(detail.publicationOutcome)),
       ),
+      createElement('h4', null, '对话证据定位信息'),
+      createElement('ul', null,
+        ...detail.evidenceRefs.map(evidence => createElement('li', {
+          key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}`,
+        }, `记录 ${String(evidence.messageSeq)} · 内容指纹 ${evidence.excerptDigest}`)),
+      ),
       createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '保存目标技术信息' }),
     ),
     createElement('div', { role: 'group', 'aria-label': '内容显示方式', className: css.modeGroup },
@@ -442,14 +489,16 @@ export function ProposalDetailView(props: {
         onClick: () => { props.setTextMode('RAW') },
       }, '按原文显示'),
     ),
-    createElement('h4', null, '确认要保存的技能说明'),
+    createElement('h4', null, coveringCandidate === undefined ? '确认要保存的技能说明' : '用于判断的草稿内容'),
     createElement('p', { className: css.muted },
-      '这是 Agent 以后会遵循的完整说明。开头是技能名称和设置，标题下方是具体规则。',
+      coveringCandidate === undefined
+        ? '这是 Agent 以后会遵循的完整说明。开头是技能名称和设置，标题下方是具体规则。'
+        : '这份草稿不会保存，仅用于核对已有技能是否已经包含相同经验。',
     ),
     createElement(ProposalTextView, {
       value: proposal.exactSkillBytes,
       mode: props.textMode,
-      label: '确认要保存的技能说明',
+      label: coveringCandidate === undefined ? '确认要保存的技能说明' : '用于判断的草稿内容',
     }),
     baseBytes === undefined ? null : createElement(Fragment, null,
       createElement('h4', null, '现有技能内容'),
@@ -461,8 +510,8 @@ export function ProposalDetailView(props: {
       ),
     ),
     coveringBytes === undefined ? null : createElement(Fragment, null,
-      createElement('h4', null, '匹配到的已有技能内容'),
-      createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '匹配到的已有技能内容' }),
+      createElement('h4', null, '将继续使用的已有技能内容'),
+      createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '将继续使用的已有技能内容' }),
     ),
     createElement('div', { role: 'group', 'aria-label': '技能草稿操作', className: css.actions },
       action === 'RETRY_PUBLICATION'
