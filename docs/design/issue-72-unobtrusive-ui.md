@@ -276,6 +276,6 @@ request scope = currentWorkspace?.workspaceId + USER
 9. 设置页无需原会话即可查看当前 PROJECT + USER，并能完成现有审核、恢复和 Purge；跨项目聚合测试必须证明不会发生；
 10. Action Queue、列表、详情和 mutation 全部应用相同 Purge visibility、CurrentScope 和 Host 权限；
 11. Toast、RPC、设置页和日志不泄露密钥、正文、路径或原始模型输出；
-12. stock DSH rc.7/rc.8 的 `conversation.session.header.actions`、settings slot、Toast 和生命周期兼容性探针通过。
+12. stock DSH rc.2 的 `conversation.session.header.actions`、settings slot、Toast 和生命周期兼容性探针通过。
 
 本 Design 获批前不进入 #73 实现；实现不得为了视觉便利修改 #70/#71 的状态机或放宽现有 Review/Publication 安全边界。
