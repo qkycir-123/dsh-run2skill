@@ -466,8 +466,10 @@ export function ProposalDetailView(props: {
         createElement('dd', null, describeReviewDecision(detail.reviewDecision)),
         createElement('dt', null, '处理进度'),
         createElement('dd', null, describeProcessingState(detail.processingState)),
-        createElement('dt', null, '保存结果'),
-        createElement('dd', null, describePublicationOutcome(detail.publicationOutcome)),
+        createElement('dt', null, coveringCandidate === undefined ? '保存结果' : '处理结果'),
+        createElement('dd', null, coveringCandidate === undefined
+          ? describePublicationOutcome(detail.publicationOutcome)
+          : describeProposalOutcome(detail)),
       ),
       createElement('h4', null, '对话证据定位信息'),
       createElement('ul', null,
@@ -475,7 +477,11 @@ export function ProposalDetailView(props: {
           key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}`,
         }, `记录 ${String(evidence.messageSeq)} · 内容指纹 ${evidence.excerptDigest}`)),
       ),
-      createElement(ProposalTextView, { value: factsFromAction(detail), mode: 'SAFE', label: '保存目标技术信息' }),
+      createElement(ProposalTextView, {
+        value: factsFromAction(detail),
+        mode: 'SAFE',
+        label: coveringCandidate === undefined ? '保存目标技术信息' : '已有技能匹配技术信息',
+      }),
     ),
     createElement('div', { role: 'group', 'aria-label': '内容显示方式', className: css.modeGroup },
       createElement(Pill, {
