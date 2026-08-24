@@ -7,18 +7,16 @@ import {
   ROOT_RESOLVER_VERSION_V2,
 } from '../../domain/review/schemas.js'
 
-export const STOCK_DSH_BASELINE_COMMIT = '141eb6fef83422698aef7a981029e843e8161534'
+export const STOCK_DSH_BASELINE_COMMIT = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e'
 export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard', 'code'])
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
   standard: Object.freeze([
-    '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
     'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
   ]),
   code: Object.freeze([
-    'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
     'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
   ]),
 })

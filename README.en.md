@@ -14,7 +14,7 @@ Have you run into any of these situations?
 
 Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
 
-> The current stable release is `0.2.0`. It supports DSH Web `0.1.0-rc.7` and `0.1.0-rc.8`.
+> The current npm release, `0.2.0`, supports DSH Web `0.1.0-rc.7` and `0.1.0-rc.8`. `main` is adapted to DSH Web `0.1.1-rc.2` and will ship in the next release; do not install npm `0.2.0` on rc.2.
 
 ## See the complete flow
 
@@ -37,11 +37,13 @@ Run2Skill does not let an agent silently create permanent rules for itself. Ever
 
 ## Install
 
-First install DSH and Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available in your terminal. Then run:
+If you use DSH Web `0.1.0-rc.7` or `0.1.0-rc.8`, install Node.js `^22.19.0 || >=24.0.0`, make sure both `dsh` and `pnpm` are available in your terminal, and install the current npm release:
 
 ```bash
 dsh plugin --profile web add dsh-run2skill@0.2.0
 ```
+
+DSH Web `0.1.1-rc.2` users should wait for the next release; npm `0.2.0` does not support rc.2.
 
 Restart DSH Web. Open **Settings → Plugins**; the plugin is loaded when the **Run2Skill** tab appears.
 

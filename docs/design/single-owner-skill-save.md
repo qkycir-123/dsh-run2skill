@@ -55,7 +55,7 @@
 
 ### 3.2 stock DSH 契约
 
-以下契约在受支持的 rc.7 baseline `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca` 中存在；rc.8 `141eb6fef83422698aef7a981029e843e8161534` 在这些文件上没有改变相关契约。
+以下契约最初在历史 rc.7 baseline `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca` 中确认；当前受支持的 rc.2 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` 仍保留相关契约。
 
 | 能力 | 源码证据 | 可用于本设计 | 不能证明什么 |
 |---|---|---|---|
@@ -250,7 +250,7 @@ WorkItem.processingState = CAPTURED
 - manifest 使用流式摘要，不把所有 Skill 正文同时留在内存。
 - 用户正常工作时不显示所有权状态；`RESOLVED_BY_AGENT` 复用已有 Agent 回复/工具结果并静默结束，`RUN2SKILL_OWNED` 沿用自动技能草稿流程。
 - 只有 `NEEDS_CONFIRMATION` 才进入 #72 定义的按需提醒与插件设置恢复入口。
-- 性能预算数值必须在实现 Issue 中通过受支持 rc.7/rc.8 的冷/热 catalog probe 后确定，不能在设计阶段拍常量。
+- 性能预算数值必须在实现 Issue 中通过受支持 rc.2 的冷/热 catalog probe 后确定，不能在设计阶段拍常量。
 
 ## 9. stock DSH 不满足时的降级
 
@@ -290,7 +290,7 @@ WorkItem.processingState = CAPTURED
 - 重复 `turn/end`、gap replay、重复 scheduler wake：不重复选 owner 或启动任务；
 - 同版本 pre-step/session 重放复用 exact `TurnBaselineId` 与原 manifest；baseline/trigger policy 版本不一致时 `NEEDS_CONFIRMATION`；策略热变更后的新 turn 使用新版本；
 - 在每个状态转换点崩溃并重启：保持单一所有者；
-- rc.7 与 rc.8 stock DSH 上验证首 step 基线、filesystem watcher 延迟和 catalog complete 行为；
+- rc.2 stock DSH 上验证首 step 基线、filesystem watcher 延迟和 catalog complete 行为；
 - 持久化快照、日志、RPC 与 UI 不包含 Skill 正文、Shell 命令、工具参数、绝对路径或凭据。
 
 在这份 Design 获批前，不进入实现，也不据此提前拆分实现 Issue。

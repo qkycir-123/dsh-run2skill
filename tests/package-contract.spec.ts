@@ -72,8 +72,8 @@ describe('published package contract', () => {
       'THIRD_PARTY_NOTICES.md',
     ])
     expect(manifest.peerDependencies).toEqual({
-      '@deepseek-ai/dsh-agent-presets': '0.1.0-rc.7 || 0.1.0-rc.8',
-      '@deepseek-ai/dsh-client-ui-primitives': '0.1.0-rc.7 || 0.1.0-rc.8',
+      '@deepseek-ai/dsh-agent-presets': '0.1.1-rc.2',
+      '@deepseek-ai/dsh-client-ui-primitives': '0.1.1-rc.2',
     })
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },

@@ -18,3 +18,15 @@ test('every run2skill Web probe uses the shared compatibility-aware command buil
     assert.doesNotMatch(source, /\[bin,\s*['"]web['"]/u, `${file} can launch a visible system browser`)
   }
 })
+
+test('candidate privacy evidence observes proposal detail responses before rc.2 can prefetch them', async () => {
+  const source = await readFile(fileURLToPath(new URL('candidate-probe.mjs', import.meta.url)), 'utf8')
+  assert.match(source, /page\.on\('response'/u)
+  assert.doesNotMatch(source, /detailResponsePromise\s*=\s*page\.waitForResponse/u)
+})
+
+test('candidate probe selects the current user-facing proposal label', async () => {
+  const source = await readFile(fileURLToPath(new URL('candidate-probe.mjs', import.meta.url)), 'utf8')
+  assert.match(source, /getByRole\('button', \{ name: \/generated-file-hygiene\/u \}\)/u)
+  assert.doesNotMatch(source, /CREATE · generated-file-hygiene/u)
+})

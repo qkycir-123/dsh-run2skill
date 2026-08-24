@@ -478,11 +478,9 @@ describe('CP-ROOT-003 stock DSH publication root contract', () => {
   it('pins the exact supported standard and code preset compositions', async () => {
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
         'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
       ],
       code: [
-        'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
         'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
       ],
     })

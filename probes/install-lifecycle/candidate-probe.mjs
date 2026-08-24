@@ -267,7 +267,15 @@ async function observe(present, expectedAutomaticLearning, expectedCapturedCount
       console.log('CP_INS_A6_BROWSER_MODE=headless+no-system-browser')
       const page = await browser.newPage()
       const errors = []
+      let proposalDetailPayload
       page.on('pageerror', error => errors.push(String(error)))
+      page.on('response', async response => {
+        if (!response.url().includes('/run2skill/')) return
+        try {
+          if (response.request().postDataJSON()?.method !== 'proposals/get') return
+          proposalDetailPayload = await response.json()
+        } catch { /* ignore unrelated or incomplete response frames */ }
+      })
       let uiPhase = 'quiet'
       await page.route('**/run2skill/**', async route => {
         let request
@@ -337,22 +345,19 @@ async function observe(present, expectedAutomaticLearning, expectedCapturedCount
       await surface.waitFor({ timeout: 10_000 })
       assert.equal(await page.locator('[data-run2skill-status], [data-run2skill-proposal-trigger]').count(), 0)
       if (!purgeUiOnly) {
-        const detailResponsePromise = page.waitForResponse(response => {
-          if (!response.url().includes('/run2skill/')) return false
-          try { return response.request().postDataJSON()?.method === 'proposals/get' } catch { return false }
-        })
-        await surface.getByRole('button', { name: /CREATE · generated-file-hygiene/u }).click()
-        const detailResponse = await detailResponsePromise
-        const detailPayload = await detailResponse.json()
-        const detailWire = JSON.stringify(detailPayload?.result)
-        assert.equal(detailPayload?.result?.ok, true)
+        await surface.getByRole('button', { name: /generated-file-hygiene/u }).click()
+        await surface.getByRole('button', { name: '确认并保存' }).waitFor({ timeout: 10_000 })
+        const detailDeadline = Date.now() + 10_000
+        while (proposalDetailPayload === undefined && Date.now() < detailDeadline) await delay(100)
+        assert.notEqual(proposalDetailPayload, undefined, 'Proposal detail response was not observed')
+        const detailWire = JSON.stringify(proposalDetailPayload?.result)
+        assert.equal(proposalDetailPayload?.result?.ok, true)
         assert.doesNotMatch(
           detailWire,
           /canonicalPath|declaredRootPath|bundlePath|skillFilePath|flatSkillFilePath|"path"|[A-Za-z]:\\/u,
           'Proposal detail network DTO leaked an absolute or target path',
         )
         console.log('CP_INS_A6_DETAIL_NETWORK_PRIVACY=PASS')
-        await surface.getByRole('button', { name: '确认并保存' }).waitFor({ timeout: 10_000 })
         assert.equal((await surface.innerText()).includes('D:\\workspace'), false)
         await surface.getByRole('button', { name: '确认并保存' }).click()
         const retryPublication = surface.getByRole('button', { name: '重试保存' })
