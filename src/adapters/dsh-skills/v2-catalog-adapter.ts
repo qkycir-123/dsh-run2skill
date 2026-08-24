@@ -15,6 +15,13 @@ import type { GenerationCatalogPort, GenerationCatalogSnapshot } from '../../app
 import { GlobalV2Schema, type ExperienceIntentV2, type SessionBatchV2 } from '../../domain/v2/index.js'
 import type { DshSkillRegistryPort } from './skill-catalog.js'
 import { parseDshSkillFileForOwnership } from './v2-skill-file.js'
+import {
+  listStableContextDirectory,
+  parseDshContextFileSystem,
+  readStableContextFile,
+  type DshContextFileSystemPort,
+  type DshContextFileSystemTarget,
+} from '../dsh-filesystem/context-filesystem.js'
 
 const identity = z.string().min(1).max(256)
 const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/)
@@ -56,6 +63,12 @@ type OwnershipFileRead =
 
 interface OwnershipLocatedFile {
   readonly target: string
+  readonly bodyDigest: string
+  readonly skillBytesDigest: string
+}
+
+interface ContextOwnershipLocatedFile {
+  readonly target: DshContextFileSystemTarget
   readonly bodyDigest: string
   readonly skillBytesDigest: string
 }
@@ -106,6 +119,8 @@ export interface DshV2CatalogAdapterOptions<TView extends object> {
     view: TView,
     context: { readonly sessionLifecycleKey: string },
   ) => V2RuntimeCatalogIdentity | undefined
+  /** Resolves the exact Agent execution-world filesystem from this exact view. */
+  readonly resolveFileSystem?: (view: TView) => unknown
   /** @internal Allows deterministic boundary tests; Host wiring uses the frozen default policy. */
   readonly internalOwnershipPolicy?: Partial<OwnershipCatalogPolicy>
   /** @internal Allows deterministic bounded-stream tests; Host wiring reads the discovered file directly. */
@@ -136,6 +151,12 @@ interface PendingCandidate {
 
 type Candidate = RuntimeCandidate | PendingCandidate
 
+interface CapturedRuntime {
+  readonly complete: boolean
+  readonly digest: string
+  readonly candidates: readonly RuntimeCandidate[]
+}
+
 interface CapturedCatalog {
   readonly complete: boolean
   readonly runtimeCatalogDigest: string
@@ -158,6 +179,28 @@ function ownershipCatalogLabel(kind: 'provider' | 'source', value: string): stri
   return canonical.has(value)
     ? value
     : `opaque-${kind}-${sha256Utf8(canonicalJson({ kind, value }))}`
+}
+
+function contextFileSystemFromView(view: object): unknown {
+  if (!('scope' in view) || typeof view.scope !== 'object' || view.scope === null || !('ctx' in view.scope)) {
+    return undefined
+  }
+  const context = view.scope.ctx
+  if (typeof context !== 'object' || context === null || !('get' in context) || typeof context.get !== 'function') {
+    return undefined
+  }
+  try {
+    return context.get('fs')
+  } catch {
+    return undefined
+  }
+}
+
+function contextTargetDigest(target: DshContextFileSystemTarget): string {
+  return sha256Utf8(canonicalJson({
+    contract: 'dsh-fs-target-v1',
+    targetKeyDigest: sha256Utf8(target.targetKey),
+  }))
 }
 
 function pathApi(value: string): typeof win32 | typeof posix {
@@ -277,6 +320,7 @@ export class DshV2CatalogAdapter<TView extends object> {
   readonly #registry: DshSkillRegistryPort<TView>
   readonly #resolveView: DshV2CatalogAdapterOptions<TView>['resolveView']
   readonly #resolveRuntimeIdentity: NonNullable<DshV2CatalogAdapterOptions<TView>['resolveRuntimeIdentity']>
+  readonly #resolveFileSystem: NonNullable<DshV2CatalogAdapterOptions<TView>['resolveFileSystem']>
   readonly #ownershipPolicy: OwnershipCatalogPolicy
   readonly #openOwnershipFile: (path: string) => AsyncIterable<Uint8Array>
   readonly #openOwnershipDirectory: (path: string) => AsyncIterable<OwnershipDirectoryEntry>
@@ -285,6 +329,7 @@ export class DshV2CatalogAdapter<TView extends object> {
     this.#domain = domain
     this.#registry = options.registry
     this.#resolveView = options.resolveView
+    this.#resolveFileSystem = options.resolveFileSystem ?? contextFileSystemFromView
     this.#ownershipPolicy = { ...DEFAULT_OWNERSHIP_CATALOG_POLICY, ...options.internalOwnershipPolicy }
     this.#openOwnershipFile = options.internalOpenOwnershipFile
       ?? (path => createReadStream(path, { highWaterMark: 64 * 1024 }))
@@ -560,6 +605,20 @@ export class DshV2CatalogAdapter<TView extends object> {
     const unavailable = { complete: false, runtimeCatalogDigest: EMPTY_DIGEST, candidates: [] }
     const runtime = await this.#runtime(view, sessionLifecycleKey)
     if (!runtime.complete) return unavailable
+    const fileSystemValue = this.#resolveFileSystem(view)
+    if (fileSystemValue !== undefined) {
+      const filesystem = parseDshContextFileSystem(fileSystemValue)
+      return filesystem === undefined
+        ? unavailable
+        : await this.#ownershipRuntimeFromContextFileSystem(
+            filesystem,
+            view,
+            runtime,
+            observeBytes,
+            observeDirectoryEntry,
+            observeCandidateFile,
+          )
+    }
     const candidates = []
     const fileReads = new Map<string, Promise<OwnershipFileRead>>()
     const directoryIndexes = new Map<string, Promise<OwnershipDirectoryIndex | undefined>>()
@@ -596,6 +655,129 @@ export class DshV2CatalogAdapter<TView extends object> {
     }
     candidates.sort((left, right) => left.candidateId.localeCompare(right.candidateId))
     return { complete: true, runtimeCatalogDigest: runtime.digest, candidates }
+  }
+
+  async #ownershipRuntimeFromContextFileSystem(
+    filesystem: DshContextFileSystemPort,
+    view: TView,
+    runtime: CapturedRuntime,
+    observeBytes: (bytes: number) => boolean,
+    observeDirectoryEntry: () => boolean,
+    observeCandidateFile: () => boolean,
+  ): Promise<{
+    readonly complete: boolean
+    readonly runtimeCatalogDigest: string
+    readonly candidates: readonly {
+      readonly candidateId: string
+      readonly name: string
+      readonly provider: string
+      readonly source: string
+      readonly scope: 'PROJECT' | 'USER'
+      readonly writable: boolean
+      readonly targetPathDigest?: string
+      readonly bodyDigest: string
+    }[]
+  }> {
+    const unavailable = { complete: false, runtimeCatalogDigest: EMPTY_DIGEST, candidates: [] }
+    const signal = 'signal' in view && view.signal instanceof AbortSignal ? view.signal : undefined
+    const candidates = []
+    try {
+      for (const candidate of runtime.candidates) {
+        if (candidate.raw.provider !== 'filesystem') continue
+        const exact = candidate.raw.path === undefined
+          ? candidate.raw.resourceBase?.kind === 'directory'
+            ? await this.#discoverContextOwnershipFile(
+                filesystem,
+                candidate.raw.resourceBase.path,
+                candidate.raw.name,
+                signal,
+                observeBytes,
+                observeDirectoryEntry,
+                observeCandidateFile,
+              )
+            : undefined
+          : await this.#readContextOwnershipFile(
+              filesystem,
+              candidate.raw.path,
+              candidate.raw.name,
+              signal,
+              observeBytes,
+              observeCandidateFile,
+            )
+        if (exact === undefined) return unavailable
+        candidates.push({
+          candidateId: candidate.summary.candidateId,
+          name: candidate.summary.name,
+          provider: ownershipCatalogLabel('provider', candidate.summary.provider),
+          source: ownershipCatalogLabel('source', candidate.summary.source),
+          scope: candidate.summary.scope,
+          writable: candidate.summary.writable,
+          targetPathDigest: contextTargetDigest(exact.target),
+          bodyDigest: exact.bodyDigest,
+        })
+      }
+    } catch {
+      return unavailable
+    }
+    candidates.sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    return { complete: true, runtimeCatalogDigest: runtime.digest, candidates }
+  }
+
+  async #readContextOwnershipFile(
+    filesystem: DshContextFileSystemPort,
+    path: string,
+    expectedName: string,
+    signal: AbortSignal | undefined,
+    observeBytes: (bytes: number) => boolean,
+    observeCandidateFile: () => boolean,
+    containWithin?: DshContextFileSystemTarget,
+  ): Promise<ContextOwnershipLocatedFile | undefined> {
+    if (!observeCandidateFile()) return undefined
+    const stable = await readStableContextFile(filesystem, path, {
+      signal,
+      maxBytes: this.#ownershipPolicy.maxBodyBytes,
+      ...(containWithin === undefined ? {} : { containWithin }),
+    })
+    if (stable === undefined || !observeBytes(stable.bytes.byteLength)) return undefined
+    const exactSkillBytes = Buffer.from(stable.bytes).toString('utf8')
+    const parsed = parseDshSkillFileForOwnership(exactSkillBytes)
+    if (parsed === undefined || parsed.name !== expectedName) return undefined
+    return {
+      target: stable.target,
+      bodyDigest: sha256Utf8(parsed.body),
+      skillBytesDigest: sha256Utf8(exactSkillBytes),
+    }
+  }
+
+  async #discoverContextOwnershipFile(
+    filesystem: DshContextFileSystemPort,
+    directory: string,
+    expectedName: string,
+    signal: AbortSignal | undefined,
+    observeBytes: (bytes: number) => boolean,
+    observeDirectoryEntry: () => boolean,
+    observeCandidateFile: () => boolean,
+  ): Promise<ContextOwnershipLocatedFile | undefined> {
+    const stable = await listStableContextDirectory(filesystem, directory, { signal })
+    if (stable === undefined) return undefined
+    let match: ContextOwnershipLocatedFile | undefined
+    for (const entry of stable.entries) {
+      if (!observeDirectoryEntry()) return undefined
+      if (entry.type !== 'file' || !entry.name.endsWith('.md')) continue
+      const read = await this.#readContextOwnershipFile(
+        filesystem,
+        entry.target.displayPath,
+        expectedName,
+        signal,
+        observeBytes,
+        observeCandidateFile,
+        stable.target,
+      )
+      if (read === undefined) continue
+      if (match !== undefined) return undefined
+      match = read
+    }
+    return match
   }
 
   async #readOwnershipFile(
@@ -774,33 +956,58 @@ export class DshV2CatalogAdapter<TView extends object> {
         let totalBytes = 0
         let candidateFiles = 0
         const exactPath = definition.data.path ?? candidate.raw.path
-        const exact = exactPath === undefined
-          ? candidate.raw.resourceBase?.kind === 'directory'
-            ? await this.#discoverOwnershipFile(
-                candidate.raw.resourceBase.path,
+        const observeBytes = (bytes: number) => {
+          if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
+          totalBytes += bytes
+          return true
+        }
+        const observeCandidateFile = () => ++candidateFiles <= this.#ownershipPolicy.maxCandidateFiles
+        const fileSystemValue = this.#resolveFileSystem(view)
+        const contextFilesystem = fileSystemValue === undefined
+          ? undefined
+          : parseDshContextFileSystem(fileSystemValue)
+        if (fileSystemValue !== undefined && contextFilesystem === undefined) return undefined
+        const signal = 'signal' in view && view.signal instanceof AbortSignal ? view.signal : undefined
+        const exact = contextFilesystem === undefined
+          ? exactPath === undefined
+            ? candidate.raw.resourceBase?.kind === 'directory'
+              ? await this.#discoverOwnershipFile(
+                  candidate.raw.resourceBase.path,
+                  candidate.raw.name,
+                  observeBytes,
+                  () => true,
+                  observeCandidateFile,
+                  new Map(),
+                  new Map(),
+                )
+              : undefined
+            : await this.#readExactOwnershipFile(
+                exactPath,
                 candidate.raw.name,
-                bytes => {
-                  if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
-                  totalBytes += bytes
-                  return true
-                },
-                () => true,
-                () => ++candidateFiles <= this.#ownershipPolicy.maxCandidateFiles,
-                new Map(),
+                observeBytes,
+                observeCandidateFile,
                 new Map(),
               )
-            : undefined
-          : await this.#readExactOwnershipFile(
-              exactPath,
-              candidate.raw.name,
-              bytes => {
-                if (bytes > this.#ownershipPolicy.maxTotalBytes - totalBytes) return false
-                totalBytes += bytes
-                return true
-              },
-              () => ++candidateFiles <= this.#ownershipPolicy.maxCandidateFiles,
-              new Map(),
-            )
+          : exactPath === undefined
+            ? candidate.raw.resourceBase?.kind === 'directory'
+              ? await this.#discoverContextOwnershipFile(
+                  contextFilesystem,
+                  candidate.raw.resourceBase.path,
+                  candidate.raw.name,
+                  signal,
+                  observeBytes,
+                  () => true,
+                  observeCandidateFile,
+                )
+              : undefined
+            : await this.#readContextOwnershipFile(
+                contextFilesystem,
+                exactPath,
+                candidate.raw.name,
+                signal,
+                observeBytes,
+                observeCandidateFile,
+              )
         if (exact === undefined || exact.bodyDigest !== sha256Utf8(content)) return undefined
         skillBytesDigest = exact.skillBytesDigest
       }

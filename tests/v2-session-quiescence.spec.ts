@@ -189,6 +189,57 @@ describe('v2 Session quiescence fence', () => {
     expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
   })
 
+  it('schedules a bounded retry when an explicit save first races an active Agent', async () => {
+    const seeded = await seedWaiting({ explicit: true })
+    const port = activity({
+      complete: true, activeAgent: true, activityRevision: 'process-a:active',
+      durableLatestTurnEndSeq: 8, durableOpenTurn: false,
+    })
+    let now = BASE + 1
+    const worker = new SessionQuiescenceCoordinator(seeded.domain, { activity: port, now: () => now })
+
+    expect(await worker.runOnce()).toBe('IDLE')
+    const retryAt = worker.nextEligibleAt()
+    expect(retryAt).toBeGreaterThan(now)
+
+    // An agent/disposed wake may arrive before the timer. It must be allowed to
+    // re-check immediately instead of waiting for the retry deadline.
+    port.set({
+      complete: true, activeAgent: false, activityRevision: 'process-a:disposed',
+      durableLatestTurnEndSeq: 8, durableOpenTurn: false,
+    })
+    expect(await worker.runOnce()).toBe('PROCESSED')
+    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('READY')
+    expect(worker.nextEligibleAt()).toBeUndefined()
+  })
+
+  it('backs incomplete idle checks off to a capped low-frequency retry', async () => {
+    const seeded = await seedWaiting({ explicit: false })
+    let now = BASE + IDLE_MS
+    const worker = new SessionQuiescenceCoordinator(seeded.domain, {
+      activity: activity({
+        complete: false, activeAgent: false, activityRevision: 'process-a:incomplete',
+        durableLatestTurnEndSeq: 8, durableOpenTurn: false,
+      }),
+      now: () => now,
+    })
+
+    const delays: number[] = []
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect(await worker.runOnce()).toBe('IDLE')
+      const retryAt = worker.nextEligibleAt()
+      expect(retryAt).toBeGreaterThan(now)
+      delays.push(retryAt! - now)
+      now = retryAt!
+    }
+
+    expect(delays.slice(0, 3)).toEqual([1_000, 1_000, 1_000])
+    expect(delays[3]).toBe(30_000)
+    expect(delays.at(-1)).toBe(5 * 60 * 1_000)
+    expect(delays.every(delay => delay <= 5 * 60 * 1_000)).toBe(true)
+    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
+  })
+
   it('does not release a waiting Intent when a new Turn arrives during live activity observation', async () => {
     const seeded = await seedWaiting({ explicit: true })
     const entered = deferred<void>()

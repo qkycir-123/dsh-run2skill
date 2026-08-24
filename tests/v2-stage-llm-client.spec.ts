@@ -42,6 +42,7 @@ const route = {
   policyVersion: 'route-v1',
   maxInputBytes: 128 * 1024,
   maxOutputBytes: 64 * 1024,
+  detectionReasoningEffort: 'off',
 } as const
 
 function detectorInput(): BatchDetectorInput {
@@ -77,6 +78,7 @@ describe('DshV2StageLlmClient', () => {
     expect(llm.calls[0]).toMatchObject({
       provider: route.provider,
       model: route.model,
+      reasoningEffort: 'off',
       maxTokens: 4096,
       messages: [{ role: 'user', source: { kind: 'user' } }],
     })
@@ -84,8 +86,21 @@ describe('DshV2StageLlmClient', () => {
     expect(llm.calls[0]?.system).toContain('untrusted data')
     expect(llm.calls[0]?.system).toContain('use only observations[].evidenceDigest')
     expect(llm.calls[0]?.system).toContain('Never use directUserEvidence[].excerptDigest')
+    expect(llm.calls[0]?.system).toContain('Keep the complete JSON under 4096 UTF-8 bytes')
+    expect(llm.calls[0]?.system).toContain('Do not reason aloud')
     expect(llm.calls[0]?.system).not.toContain('Skill Markdown')
     expect(llm.calls[0]?.messages[0]?.content[0]?.text).toContain('"batchId"')
+  })
+
+  it('requires a completed explicit save request to become READY instead of waiting for another turn', async () => {
+    const output = { result: 'NONE' }
+    const llm = new RecordingLlm([chunks(JSON.stringify(output))])
+    const client = new DshV2StageLlmClient(llm)
+
+    await client.detect({ ...detectorInput(), triggerReasons: ['EXPLICIT'] })
+
+    expect(llm.calls[0]?.system).toContain('A completed EXPLICIT save request must be READY')
+    expect(llm.calls[0]?.system).toContain('Do not DEFER merely because Run2Skill has not created the Skill yet')
   })
 
   it('keeps recall, coverage, and generation as separate calls and schemas', async () => {
@@ -136,6 +151,7 @@ describe('DshV2StageLlmClient', () => {
     ]))
     expect(llm.calls[0]?.system).not.toContain('complete Markdown with a heading')
     expect(llm.calls[1]?.system).not.toContain('complete Markdown with a heading')
+    expect(llm.calls.every(call => !('reasoningEffort' in call))).toBe(true)
   })
 
   it('accepts one fenced JSON object while ignoring reasoning blocks', async () => {

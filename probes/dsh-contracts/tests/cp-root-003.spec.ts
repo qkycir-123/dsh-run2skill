@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
-import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, normalize, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -20,6 +21,7 @@ import { DshSkillCatalogAdapter } from '../src/adapters/dsh-skills/skill-catalog
 import { DshPublicationReadbackAdapter } from '../src/adapters/dsh-skills/publication-readback.js'
 import {
   StockDshRootContractResolver,
+  STOCK_PRESET_COMPOSITION_DIGESTS,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
@@ -473,6 +475,26 @@ async function publish(scope: Scope, decision: Decision, verifyRemount: boolean)
 }
 
 describe('CP-ROOT-003 stock DSH publication root contract', () => {
+  it('pins the exact supported standard and code preset compositions', async () => {
+    expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
+      standard: [
+        '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
+        'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
+      ],
+      code: [
+        'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
+        'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
+      ],
+    })
+    for (const presetId of ['standard', 'code'] as const) {
+      const content = await readFile(join(
+        process.cwd(), 'apps', 'cli', 'config', 'agent-presets', presetId, 'agent.cordis.yml',
+      ))
+      expect(STOCK_PRESET_COMPOSITION_DIGESTS[presetId])
+        .toContain(createHash('sha256').update(content).digest('hex'))
+    }
+  })
+
   it.each([
     ['PROJECT', 'CREATE', false],
     ['PROJECT', 'MERGE', false],

@@ -278,6 +278,21 @@ const learningIssueSchema = z.object({
     outputTokens: z.number().int().nonnegative().optional(),
     outcome: z.string().min(1).max(256),
   }).strict()).max(2),
+  attentionKind: z.enum(['SAFETY_STOP', 'PROCESSING_FAILURE', 'STALE_RESULT', 'NEEDS_DECISION']).optional(),
+  currentStage: z.enum(['DETECTION', 'OWNERSHIP', 'RECALL', 'COVERAGE', 'GENERATION']).optional(),
+  stages: z.array(z.object({
+    stage: z.enum(['DETECTION', 'OWNERSHIP', 'RECALL', 'COVERAGE', 'GENERATION']),
+    state: z.enum(['NOT_STARTED', 'COMPLETED', 'STOPPED']),
+    modelCalls: z.object({
+      total: z.number().int().nonnegative(),
+      reserved: z.number().int().nonnegative(),
+      succeeded: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      aborted: z.number().int().nonnegative(),
+      timedOut: z.number().int().nonnegative(),
+      outcomeUnknown: z.number().int().nonnegative(),
+    }).strict(),
+  }).strict()).max(5).optional(),
 }).strict()
 type LearningIssue = z.infer<typeof learningIssueSchema>
 const learningIssuePageSchema = z.object({
@@ -288,6 +303,78 @@ const learningIssuePageSchema = z.object({
     nextCursor: z.string().regex(/^c_[1-9][0-9]*_[1-9][0-9]*_[a-f0-9]{64}$/).optional(),
   }).strict(),
 }).strict()
+
+const learningStageLabels: Record<NonNullable<LearningIssue['currentStage']>, string> = {
+  DETECTION: '语义检测',
+  OWNERSHIP: '重复保存检查',
+  RECALL: '已有 Skill 检索',
+  COVERAGE: '重复与合并判断',
+  GENERATION: 'Skill 草稿生成',
+}
+
+function learningIssueDescription(item: LearningIssue): { readonly title: string; readonly detail: string } {
+  if (item.failureCode === 'BASELINE_INCOMPLETE') return {
+    title: '自动沉淀已停止',
+    detail: '缺少任务开始前的 Skill 状态记录，无法确认 Agent 是否已经保存过同类 Skill。为避免重复生成，本次已停止。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.failureCode === 'MODEL_TERMINAL_FAILURE') return {
+    title: '自动沉淀未完成',
+    detail: '模型没有返回可用的结果，本次自动沉淀未完成。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.failureCode === 'MODEL_OUTPUT_TRUNCATED') return {
+    title: '语义判断没有完成',
+    detail: '模型在返回简短判断前用完了本次输出额度，因此没有继续生成 Skill 草稿。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.failureCode === 'SESSION_CONTEXT_UNAVAILABLE') return {
+    title: '自动沉淀已停止',
+    detail: '任务结束后没能恢复当时的会话信息，无法确认 Agent 是否已经保存过同类 Skill。为避免重复生成，本次已停止。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.failureCode === 'SESSION_SNAPSHOT_UNAVAILABLE') return {
+    title: '自动沉淀已停止',
+    detail: '没能读取任务结束时的会话快照，无法确认 Skill 状态是否稳定。为避免重复生成，本次已停止。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.failureCode === 'SESSION_LOG_UNAVAILABLE') return {
+    title: '自动沉淀已停止',
+    detail: '没能完整读取本次任务的会话记录，无法确认 Agent 是否已经保存过同类 Skill。为避免重复生成，本次已停止。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.failureCode === 'SESSION_WINDOW_INCOMPLETE') return {
+    title: '自动沉淀已停止',
+    detail: '本次任务的会话记录不完整或超出安全检查范围，无法可靠判断是否已经生成过 Skill。为避免重复生成，本次已停止。',
+  }
+  if (item.failureCode === 'SESSION_CHANGED_DURING_CHECK') return {
+    title: '自动沉淀已停止',
+    detail: '核对期间会话又发生了变化，当前结果已经失效。为避免使用过期记录或重复生成，本次已停止。',
+  }
+  if (item.failureCode === 'OWNERSHIP_ANALYSIS_UNAVAILABLE' || item.failureCode === 'OBSERVATION_FAILED') return {
+    title: '自动沉淀已停止',
+    detail: '系统没能完整核对本次任务结束时的 Skill 状态和 Agent 操作记录，因此无法确认是否已经保存过同类 Skill。为避免重复生成，本次已停止。已有 Skill 和原始会话记录不受影响。',
+  }
+  if (item.attentionKind === 'STALE_RESULT') return {
+    title: '自动沉淀结果已过期',
+    detail: '生成依据已经发生变化，本次结果已停止使用，以免覆盖新的 Skill 状态。',
+  }
+  if (item.attentionKind === 'NEEDS_DECISION') return {
+    title: '自动沉淀需要确认',
+    detail: '系统无法明确判断是否还需要生成 Skill，因此没有自动继续。',
+  }
+  if (item.attentionKind === 'SAFETY_STOP') return {
+    title: '自动沉淀已停止',
+    detail: '系统无法确认继续处理是否安全，因此本次自动沉淀已停止。已有 Skill 和原始会话记录不受影响。',
+  }
+  return {
+    title: '自动沉淀未完成',
+    detail: '处理过程中出现问题，本次自动沉淀未能继续。已有 Skill 和原始会话记录不受影响。',
+  }
+}
+
+function stageDescription(stage: NonNullable<LearningIssue['stages']>[number]): string {
+  const label = learningStageLabels[stage.stage]
+  if (stage.state === 'NOT_STARTED') return `${label}：未开始`
+  if (stage.state === 'STOPPED') return `${label}：未完成`
+  if (stage.modelCalls.total === 0) return `${label}：已完成`
+  const succeeded = stage.modelCalls.succeeded === 0 ? '' : `，成功 ${String(stage.modelCalls.succeeded)} 次`
+  return `${label}：已完成（模型调用 ${String(stage.modelCalls.total)} 次${succeeded}）`
+}
 
 function attentionValue(value: unknown): AttentionProjection | undefined {
   if (value === null || typeof value !== 'object' || !('ok' in value) || value.ok !== true || !('value' in value)) {
@@ -629,34 +716,37 @@ export function LearningFailureSection(props: {
     }).catch(() => { setPhase('ERROR') }).finally(() => { setPending(undefined) })
   }
   if (learningActions.size === 0) return createElement(Fragment)
-  return createElement('section', { className: css.attentionGroup, 'aria-label': '学习失败恢复' },
+  return createElement('section', { className: css.attentionGroup, 'aria-label': '自动沉淀未继续' },
     createElement('div', { className: css.toolbar },
-      createElement('strong', null, `学习失败 · ${String(learningActions.size)} 项`),
+      createElement('strong', null, `自动沉淀未继续 · ${String(learningActions.size)} 项`),
       createElement(Button, {
         variant: 'outline',
         size: 'sm',
         icon: createElement(IconRefreshOutline16),
         disabled: !props.active || pending !== undefined,
         onClick: () => { setRefreshGeneration(value => value + 1) },
-      }, '刷新失败详情'),
+      }, '刷新详情'),
     ),
-    phase === 'LOADING' ? createElement('p', { role: 'status' }, '正在加载学习失败详情…') : null,
-    phase === 'ERROR' ? createElement('p', { role: 'alert' }, '学习失败详情暂不可用，请保持 DSH 运行并稍后重试。') : null,
+    phase === 'LOADING' ? createElement('p', { role: 'status' }, '正在加载自动沉淀详情…') : null,
+    phase === 'ERROR' ? createElement('p', { role: 'alert' }, '自动沉淀详情暂不可用，请保持 DSH 运行并稍后重试。') : null,
     ...items.map(item => {
       const action = learningActions.get(item.workItemId)
       const busy = pending === item.workItemId
       const isCoverageConfirmation = item.failureCode === 'COVERED_NEEDS_CONFIRMATION'
+      const description = isCoverageConfirmation
+        ? {
+            title: '发现可能重复的 Skill',
+            detail: 'Run2Skill 发现已有 Skill 可能已经包含这次经验，因此暂停生成新草稿。请选择下一步。',
+          }
+        : learningIssueDescription(item)
       return createElement('article', { className: css.detail, key: item.workItemId },
-        createElement('div', { className: css.toolbar },
-          createElement(Pill, null, isCoverageConfirmation ? '发现可能重复的 Skill' : item.failureCode),
-          item.failureDetail === undefined ? null : createElement(Pill, null, item.failureDetail),
-        ),
-        isCoverageConfirmation
-          ? createElement('p', null,
-              'Run2Skill 发现已有 Skill 可能已经包含这次经验，因此暂停生成新草稿。请选择下一步。',
-            )
-          : null,
-        createElement('p', null, `第 ${String(item.attempt)} 轮 · 已使用 ${String(item.requestBudgetUsed)} 次模型请求`),
+        createElement('strong', null, description.title),
+        createElement('p', null, description.detail),
+        item.stages === undefined
+          ? item.calls.length === 0 ? null : createElement('p', null, `已记录模型调用 ${String(item.calls.length)} 次`)
+          : createElement('div', null,
+              ...item.stages.map(stage => createElement('p', { key: stage.stage }, stageDescription(stage))),
+            ),
         item.modelRoute === undefined
           ? null
           : createElement('p', null, `模型路由：${item.modelRoute.provider} / ${item.modelRoute.model}`),
@@ -678,7 +768,7 @@ export function LearningFailureSection(props: {
                   dismissTriggerRef.current = event.currentTarget
                   setDismiss(item)
                 },
-              }, isCoverageConfirmation ? '使用已有 Skill，不生成草稿' : '关闭此失败')
+              }, isCoverageConfirmation ? '使用已有 Skill，不生成草稿' : '关闭此事项')
             : null,
         ),
       )
@@ -687,10 +777,10 @@ export function LearningFailureSection(props: {
       open: dismiss !== undefined,
       title: dismiss?.failureCode === 'COVERED_NEEDS_CONFIRMATION'
         ? '使用已有 Skill，不生成新草稿？'
-        : '确认关闭此学习失败？',
+        : '确认关闭此待处理事项？',
       description: dismiss?.failureCode === 'COVERED_NEEDS_CONFIRMATION'
         ? '确认后，此项将从待处理列表移除，Run2Skill 不会为这次经验生成新草稿；已有 Skill 和 DSH 原始会话记录不会改变。'
-        : '该失败会从待处理列表隐藏；已有 Skill 和 DSH 的原始会话记录不会改变。',
+        : '关闭后，本次自动沉淀不会继续，也不会生成草稿；已有 Skill 和 DSH 的原始会话记录不会改变。',
       disabled: pending !== undefined,
       triggerRef: dismissTriggerRef,
       onClose: () => { setDismiss(undefined) },

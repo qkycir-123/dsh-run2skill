@@ -2,7 +2,7 @@ import { canonicalJson } from '../../domain/learn/identity.js'
 import type { SessionBatchV2, TurnObservationV2 } from '../../domain/v2/index.js'
 import type { DshLlmPort } from './restricted-learning-client.js'
 
-export const V2_ROUTE_BUDGET_POLICY_VERSION = 'route-budget-v2'
+export const V2_ROUTE_BUDGET_POLICY_VERSION = 'route-budget-v3'
 
 const MAX_STAGE_OUTPUT_TOKENS = 16_384
 const CONTEXT_SAFETY_TOKENS = 2_048
@@ -34,6 +34,7 @@ function positiveSafeInteger(value: unknown): value is number {
 function resolvedCapacity(value: Awaited<ReturnType<DshLlmPort['resolveModelInfo']>>): {
   readonly contextWindow: number
   readonly outputTokens: number
+  readonly detectionReasoningEffort?: string
 } | undefined {
   const contextWindow = value.context?.contextWindow
   const defaultMaxTokens = value.defaultMaxTokens
@@ -44,7 +45,12 @@ function resolvedCapacity(value: Awaited<ReturnType<DshLlmPort['resolveModelInfo
     MAX_STAGE_OUTPUT_TOKENS,
     Math.max(1, Math.floor(contextWindow / 4)),
   )
-  return { contextWindow, outputTokens }
+  const detectionReasoningEffort = value.reasoning?.efforts.find(effort => effort.id === 'off')?.id
+  return {
+    contextWindow,
+    outputTokens,
+    ...(detectionReasoningEffort === undefined ? {} : { detectionReasoningEffort }),
+  }
 }
 
 /**
@@ -105,6 +111,9 @@ export class DshV2RouteSnapshotAdapter {
       policyVersion: V2_ROUTE_BUDGET_POLICY_VERSION,
       maxInputBytes,
       maxOutputBytes: first.outputTokens * OUTPUT_BYTE_RATIO,
+      ...(first.detectionReasoningEffort === undefined
+        ? {}
+        : { detectionReasoningEffort: first.detectionReasoningEffort }),
     }
   }
 

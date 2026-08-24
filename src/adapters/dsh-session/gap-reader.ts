@@ -27,6 +27,8 @@ function validHeader(value: unknown): value is DshSessionHeader {
     && (value['origin'] === undefined || value['origin'] === 'subagent')
     && (value['delegationDepth'] === undefined
       || isNonNegativeSafeInteger(value['delegationDepth']))
+    && (value['agentPreset'] === undefined
+      || (typeof value['agentPreset'] === 'string' && value['agentPreset'].length > 0))
 }
 
 function validEvent(value: unknown): value is DshSessionEvent {

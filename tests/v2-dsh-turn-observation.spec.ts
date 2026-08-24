@@ -246,6 +246,65 @@ describe('DSH TurnObservationV2 projection', () => {
     })
   })
 
+  it('projects a later explicit Turn from a normalized inherited route', async () => {
+    const events = completeTurn().filter(event => event.type !== 'request/header')
+    events.forEach((event, index) => {
+      ;(event as { seq: number }).seq = 10 + index
+      ;(event as { time: number }).time = 2_000 + index
+    })
+    const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
+
+    const result = await projectDshTurnObservationV2(
+      header,
+      events,
+      turnEndSeq,
+      workspace,
+      undefined,
+      {
+        requestHeaderSeq: 1,
+        provider: 'deepseek-official',
+        model: 'deepseek-chat',
+        complete: true,
+      },
+    )
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation).toMatchObject({
+      completeness: 'COMPLETE',
+      explicitSaveRequested: true,
+      routeObservation: {
+        provider: 'deepseek-official', model: 'deepseek-chat', complete: true,
+      },
+    })
+  })
+
+  it('does not fall back when a newer current request/header is malformed', async () => {
+    const events = completeTurn()
+    const route = events.find(event => event.type === 'request/header')!
+    ;(route as { data: unknown }).data = { header: { config: { provider: 'deepseek-official' } } }
+
+    const result = await projectDshTurnObservationV2(
+      header,
+      events,
+      8,
+      workspace,
+      undefined,
+      {
+        requestHeaderSeq: 0,
+        provider: 'prior-provider',
+        model: 'prior-model',
+        complete: true,
+      },
+    )
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    expect(result.observation).toMatchObject({
+      completeness: 'INCOMPLETE', explicitSaveRequested: false, routeObservation: { complete: false },
+    })
+  })
+
   it('records a failed tool result without persisting its raw content', async () => {
     const events = completeTurn('普通请求')
     const resultEvent = events.find(event => event.type === 'tool/result')!

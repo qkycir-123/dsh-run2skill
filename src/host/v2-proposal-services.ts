@@ -20,14 +20,17 @@ import {
 } from '../application/review/index.js'
 
 export interface V2ProposalHostSession<TView extends object> {
+  readonly sessionId?: string
   readonly view: TView
   readonly configuration: StockSkillRuntimeConfiguration
   readonly workspaceBinding?: StockWorkspaceContractBinding | undefined
+  readonly filesystem?: unknown
 }
 
 export interface V2ProposalHostServicesOptions<TView extends object> {
   readonly registry: DshSkillRegistryPort<TView>
   readonly resolveSession: (sessionLifecycleKey: string) => V2ProposalHostSession<TView> | undefined
+  readonly resolveFileSystem?: (view: TView) => unknown
   readonly resolveStockWritableRoot: (
     summary: Parameters<NonNullable<DshV2CatalogAdapterOptions<TView>['resolveStockWritableRoot']>>[0],
     view: TView,
@@ -53,6 +56,7 @@ export class V2ProposalHostServices<TView extends object> {
     const catalog = new DshV2CatalogAdapter(domain, {
       registry: options.registry,
       resolveView: lifecycleKey => options.resolveSession(lifecycleKey)?.view,
+      ...(options.resolveFileSystem === undefined ? {} : { resolveFileSystem: options.resolveFileSystem }),
       resolveStockWritableRoot: options.resolveStockWritableRoot,
     })
     const revalidator = new V2ProposalCatalogRevalidator(catalog.generation, catalog.publicationRecovery)

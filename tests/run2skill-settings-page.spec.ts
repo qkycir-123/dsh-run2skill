@@ -833,7 +833,7 @@ describe('run2skill native settings surface', () => {
     })
   })
 
-  it('renders real learning failure facts selected by Attention and invokes the bounded retry RPC', async () => {
+  it('renders a user-readable learning issue selected by Attention and invokes the bounded retry RPC', async () => {
     const workItemId = `wi_${'a'.repeat(64)}`
     const call = vi.fn(async (endpoint: string, _payload?: unknown, _signal?: AbortSignal) => endpoint === 'learning/issues/list'
       ? {
@@ -881,8 +881,12 @@ describe('run2skill native settings surface', () => {
       onMutationSettled: settled,
     }))
 
-    expect((await screen.findByRole('button', { name: '重试学习' })).closest('article')?.textContent)
-      .toContain('MODEL_USAGE_INVALID')
+    const article = (await screen.findByRole('button', { name: '重试学习' })).closest('article')
+    expect(article?.textContent).toContain('模型没有返回可用的结果')
+    expect(article?.textContent).toContain('已记录模型调用 2 次')
+    expect(article?.textContent).not.toContain('MODEL_TERMINAL_FAILURE')
+    expect(article?.textContent).not.toContain('MODEL_USAGE_INVALID')
+    expect(article?.textContent).not.toContain('第 1 轮')
     expect(call.mock.calls.find(([endpoint]) => endpoint === 'learning/issues/list')?.[1])
       .toMatchObject({ currentScope: { kind: 'USER_ONLY', generation: 1 }, limit: 20 })
     expect(call.mock.calls.find(([endpoint]) => endpoint === 'learning/issues/list')?.[1])
@@ -938,6 +942,106 @@ describe('run2skill native settings surface', () => {
     })
   })
 
+  it('explains an ownership safety stop with the successful detection facts and no internal codes', async () => {
+    const workItemId = `wi_${'e'.repeat(64)}`
+    const call = vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [{
+      workItemId, workItemRevision: 4,
+      createdAt: '2026-08-21T00:00:00.000Z', updatedAt: '2026-08-21T00:00:01.000Z',
+      failureCode: 'BASELINE_INCOMPLETE', retryable: false, attempt: 0, requestBudgetUsed: 0, calls: [],
+      attentionKind: 'SAFETY_STOP', currentStage: 'OWNERSHIP',
+      stages: [
+        {
+          stage: 'DETECTION', state: 'COMPLETED',
+          modelCalls: { total: 1, reserved: 0, succeeded: 1, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+        {
+          stage: 'OWNERSHIP', state: 'STOPPED',
+          modelCalls: { total: 0, reserved: 0, succeeded: 0, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+        {
+          stage: 'RECALL', state: 'NOT_STARTED',
+          modelCalls: { total: 0, reserved: 0, succeeded: 0, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+        {
+          stage: 'COVERAGE', state: 'NOT_STARTED',
+          modelCalls: { total: 0, reserved: 0, succeeded: 0, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+        {
+          stage: 'GENERATION', state: 'NOT_STARTED',
+          modelCalls: { total: 0, reserved: 0, succeeded: 0, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+      ],
+    }] } }))
+    render(createElement(LearningFailureSection, {
+      call, active: true,
+      actions: [{
+        actionKey: `act_${'f'.repeat(64)}`, subjectId: workItemId,
+        kind: 'DISMISS_LEARNING', availableActions: ['DISMISS'],
+      }],
+      onMutationSettled: vi.fn(),
+    }))
+
+    const section = await screen.findByRole('region', { name: '自动沉淀未继续' })
+    expect(section.textContent).toContain('自动沉淀已停止')
+    expect(section.textContent).toContain('缺少任务开始前的 Skill 状态记录')
+    expect(section.textContent).toContain('语义检测：已完成（模型调用 1 次，成功 1 次）')
+    expect(section.textContent).toContain('重复保存检查：未完成')
+    expect(section.textContent).toContain('已有 Skill 检索：未开始')
+    expect(section.textContent).toContain('Skill 草稿生成：未开始')
+    expect(section.textContent).not.toContain('BASELINE_INCOMPLETE')
+    expect(section.textContent).not.toContain('学习失败')
+    expect(section.textContent).not.toContain('第 0 轮')
+    expect(section.textContent).not.toContain('0 次模型请求')
+  })
+
+  it('explains a truncated semantic check in plain Chinese without exposing the internal code', async () => {
+    const workItemId = `wi_${'9'.repeat(64)}`
+    const call = vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [{
+      workItemId, workItemRevision: 3,
+      createdAt: '2026-08-21T00:00:00.000Z', updatedAt: '2026-08-21T00:00:01.000Z',
+      failureCode: 'MODEL_OUTPUT_TRUNCATED', retryable: false, attempt: 0, requestBudgetUsed: 1,
+      calls: [{ requestOrdinal: 1, kind: 'DETECTION', outputTokens: 4096, outcome: 'FAILED' }],
+      attentionKind: 'PROCESSING_FAILURE', currentStage: 'DETECTION',
+    }] } }))
+    render(createElement(LearningFailureSection, {
+      call, active: true,
+      actions: [{
+        actionKey: `act_${'8'.repeat(64)}`, subjectId: workItemId,
+        kind: 'DISMISS_LEARNING', availableActions: ['DISMISS'],
+      }],
+      onMutationSettled: vi.fn(),
+    }))
+
+    const section = await screen.findByRole('region', { name: '自动沉淀未继续' })
+    expect(section.textContent).toContain('语义判断没有完成')
+    expect(section.textContent).toContain('模型在返回简短判断前用完了本次输出额度')
+    expect(section.textContent).not.toContain('MODEL_OUTPUT_TRUNCATED')
+  })
+
+  it('explains an ownership observation failure in plain Chinese without the internal code', async () => {
+    const workItemId = `wi_${'1'.repeat(64)}`
+    const call = vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [{
+      workItemId, workItemRevision: 4,
+      createdAt: '2026-08-21T00:00:00.000Z', updatedAt: '2026-08-21T00:00:01.000Z',
+      failureCode: 'SESSION_LOG_UNAVAILABLE', retryable: false, attempt: 0, requestBudgetUsed: 0, calls: [],
+      attentionKind: 'SAFETY_STOP', currentStage: 'OWNERSHIP',
+    }] } }))
+    render(createElement(LearningFailureSection, {
+      call, active: true,
+      actions: [{
+        actionKey: `act_${'2'.repeat(64)}`, subjectId: workItemId,
+        kind: 'DISMISS_LEARNING', availableActions: ['DISMISS'],
+      }],
+      onMutationSettled: vi.fn(),
+    }))
+
+    const section = await screen.findByRole('region', { name: '自动沉淀未继续' })
+    expect(section.textContent).toContain('没能完整读取本次任务的会话记录')
+    expect(section.textContent).toContain('为避免重复生成')
+    expect(section.textContent).not.toContain('SESSION_LOG_UNAVAILABLE')
+    expect(section.textContent).not.toContain('OBSERVATION_FAILED')
+  })
+
   it('gives Reject Modal initial focus, a bidirectional trap, Escape, and trigger restoration', async () => {
     function Harness() {
       const [open, setOpen] = useState(false)
@@ -987,10 +1091,10 @@ describe('run2skill native settings surface', () => {
       }],
       onMutationSettled: vi.fn(),
     }))
-    const trigger = await screen.findByRole('button', { name: '关闭此失败' })
+    const trigger = await screen.findByRole('button', { name: '关闭此事项' })
     trigger.focus()
     fireEvent.click(trigger)
-    const dialog = await screen.findByRole('dialog', { name: '确认关闭此学习失败？' })
+    const dialog = await screen.findByRole('dialog', { name: '确认关闭此待处理事项？' })
     const buttons = Array.from(dialog.querySelectorAll('button'))
     expect(buttons[0]).toBe(document.activeElement)
     document.body.focus()
@@ -1000,7 +1104,7 @@ describe('run2skill native settings surface', () => {
     fireEvent.keyDown(document, { key: 'Tab', ['shift' + 'Key']: true })
     expect(buttons.at(-1)).toBe(document.activeElement)
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('dialog', { name: '确认关闭此学习失败？' })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: '确认关闭此待处理事项？' })).toBeNull()
     expect(trigger).toBe(document.activeElement)
   })
 })

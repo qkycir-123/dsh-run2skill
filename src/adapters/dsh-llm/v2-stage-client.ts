@@ -55,6 +55,7 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
       'For evidenceDigests, use only observations[].evidenceDigest values and copy them exactly.',
       'Never use directUserEvidence[].excerptDigest values as evidenceDigests.',
       'Return at most 3 carry items or intents. This stage must not recall, compare, or generate a Skill.',
+      'Do not reason aloud. Keep the complete JSON under 4096 UTF-8 bytes and make every prose field concise.',
     ].join('\n'),
   },
   CATALOG_SCAN: {
@@ -89,6 +90,12 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
     ].join('\n'),
   },
 })
+
+const EXPLICIT_DETECTION_RULES = [
+  'A completed EXPLICIT save request must be READY when the observations contain a reusable procedure, constraint, or correction.',
+  'Do not DEFER merely because Run2Skill has not created the Skill yet, because no later turn exists, or because the Agent correctly left Skill creation to Run2Skill.',
+  'For EXPLICIT, use DEFER only when the observed task or reusable experience is genuinely incomplete; use NONE only when the evidence contains no reusable experience.',
+].join('\n')
 
 const OUTPUT_BYTE_RATIO = 4
 const V2_STAGE_CALL_TIMEOUT_MS = 120_000
@@ -199,7 +206,12 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
   }
 
   detect(input: BatchDetectorInput): Promise<unknown> {
-    return this.#call('DETECTION', input, routeOf(input))
+    return this.#call(
+      'DETECTION',
+      input,
+      routeOf(input),
+      input.triggerReasons.includes('EXPLICIT') ? EXPLICIT_DETECTION_RULES : undefined,
+    )
   }
 
   classifyCatalog(input: Parameters<CatalogRecallClassifier['classify']>[0]): Promise<unknown> {
@@ -222,11 +234,14 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
       readonly model: string
       readonly maxInputBytes: number
       readonly maxOutputBytes: number
+      readonly detectionReasoningEffort?: string
     },
+    trustedSystemSuffix?: string,
   ): Promise<unknown> {
     const policy = STAGE_POLICIES[stage]
+    const system = trustedSystemSuffix === undefined ? policy.system : `${policy.system}\n${trustedSystemSuffix}`
     const userText = `INPUT_DATA:\n${canonicalJson(input)}`
-    if (Buffer.byteLength(policy.system, 'utf8') + Buffer.byteLength(userText, 'utf8') > route.maxInputBytes) {
+    if (Buffer.byteLength(system, 'utf8') + Buffer.byteLength(userText, 'utf8') > route.maxInputBytes) {
       throw new V2StageLlmError('INPUT_BUDGET_EXCEEDED')
     }
     const controller = new AbortController()
@@ -240,7 +255,10 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
       const options: DshGenerateOptions = {
         provider: route.provider,
         model: route.model,
-        system: policy.system,
+        ...(stage !== 'DETECTION' || route.detectionReasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: route.detectionReasoningEffort }),
+        system,
         maxTokens: Math.min(policy.maxTokens, Math.max(1, Math.floor(route.maxOutputBytes / OUTPUT_BYTE_RATIO))),
         messages: [{
           id: randomUUID(),

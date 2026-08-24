@@ -60,6 +60,13 @@ interface ProjectionPart<T> {
   readonly complete: boolean
 }
 
+export interface DshRequestRouteSnapshot {
+  readonly requestHeaderSeq: number
+  readonly complete: boolean
+  readonly provider?: string
+  readonly model?: string
+}
+
 interface ToolCallFact {
   readonly seq: number
   readonly step: number
@@ -327,20 +334,51 @@ function projectToolSummaries(
   return { value: summaries, complete }
 }
 
-function projectRoute(
-  events: readonly DshSessionEvent[],
-  turnEndSeq: number,
-): ProjectionPart<TurnObservationV2['routeObservation']> {
-  const latest = events
-    .filter(event => event.type === 'request/header' && event.seq <= turnEndSeq)
-    .sort((left, right) => right.seq - left.seq)[0]
-  if (latest === undefined || !isRecord(latest.data)) return { value: { complete: false }, complete: false }
-  const header = latest.data['header']
+export function projectDshRequestRouteV2(event: DshSessionEvent): DshRequestRouteSnapshot | undefined {
+  if (event.type !== 'request/header') return undefined
+  if (!isRecord(event.data)) return { requestHeaderSeq: event.seq, complete: false }
+  const header = event.data['header']
   const config = isRecord(header) ? header['config'] : undefined
   const provider = isRecord(config) ? config['provider'] : undefined
   const model = isRecord(config) ? config['model'] : undefined
-  if (!isIdentity(provider) || !isIdentity(model)) return { value: { complete: false }, complete: false }
-  return { value: { provider, model, complete: true }, complete: true }
+  if (!isIdentity(provider) || !isIdentity(model)) {
+    return { requestHeaderSeq: event.seq, complete: false }
+  }
+  return { requestHeaderSeq: event.seq, provider, model, complete: true }
+}
+
+export function advanceDshRequestRouteV2(
+  inheritedRoute: DshRequestRouteSnapshot | undefined,
+  events: readonly DshSessionEvent[],
+  throughSeq: number,
+): DshRequestRouteSnapshot | undefined {
+  let latest = inheritedRoute?.requestHeaderSeq !== undefined
+    && inheritedRoute.requestHeaderSeq <= throughSeq
+    ? inheritedRoute
+    : undefined
+  for (const event of events) {
+    if (event.seq > throughSeq) continue
+    const candidate = projectDshRequestRouteV2(event)
+    if (
+      candidate !== undefined
+      && (latest === undefined || candidate.requestHeaderSeq >= latest.requestHeaderSeq)
+    ) latest = candidate
+  }
+  return latest
+}
+
+function projectRoute(
+  events: readonly DshSessionEvent[],
+  turnEndSeq: number,
+  inheritedRoute?: DshRequestRouteSnapshot,
+): ProjectionPart<TurnObservationV2['routeObservation']> {
+  const latest = advanceDshRequestRouteV2(inheritedRoute, events, turnEndSeq)
+  if (
+    latest?.complete !== true
+    || latest.provider === undefined
+    || latest.model === undefined
+  ) return { value: { complete: false }, complete: false }
+  return { value: { provider: latest.provider, model: latest.model, complete: true }, complete: true }
 }
 
 async function projectScope(
@@ -389,6 +427,7 @@ export async function projectDshTurnObservationV2(
   turnEndSeq: number,
   workspace: WorkspaceBindingPort,
   recovery?: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
+  inheritedRoute?: DshRequestRouteSnapshot,
 ): Promise<DshTurnObservationV2Result> {
   const base = buildTurnObservation(header, sessionEvents, turnEndSeq)
   if (base.status !== 'OBSERVED') return base
@@ -406,7 +445,7 @@ export async function projectDshTurnObservationV2(
   )
   const assistant = projectAssistantSummary(turnEvents, observed.turn)
   const tools = projectToolSummaries(turnEvents, observed.turn)
-  const route = projectRoute(sessionEvents, observed.turnEndSeq)
+  const route = projectRoute(sessionEvents, observed.turnEndSeq, inheritedRoute)
   const scopeBinding = await projectScope(header.cwd, workspace)
   const complete = direct.complete && assistant.complete && tools.complete && route.complete
   const directUserEvidence = complete ? direct.value.evidence : []

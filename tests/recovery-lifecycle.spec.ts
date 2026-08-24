@@ -239,6 +239,42 @@ describe('RecoveryLifecycle', () => {
     release?.()
   })
 
+  it('aborts and joins startup recovery before closing its runtime', async () => {
+    let enteredScan: (() => void) | undefined
+    const scanEntered = new Promise<void>((resolve) => { enteredScan = resolve })
+    const order: string[] = []
+    const activeRuntime = {
+      scanner: {
+        ensureActivated: async () => completeScan,
+        scanBatch: async (signal?: AbortSignal) => {
+          enteredScan?.()
+          return await new Promise<GapScanResult>((resolve) => {
+            signal?.addEventListener('abort', () => {
+              queueMicrotask(() => {
+                order.push('scan-exit')
+                resolve(completeScan)
+              })
+            }, { once: true })
+          })
+        },
+      },
+      processCandidate: async () => undefined,
+      close: async () => { order.push('close') },
+    }
+    const lifecycle = new RecoveryLifecycle(
+      { open: async () => activeRuntime },
+      candidateKey,
+      new RuntimeNotices({ now: () => 0 }),
+    )
+
+    const starting = lifecycle.start()
+    await scanEntered
+    await lifecycle.dispose()
+    await starting
+
+    expect(order).toEqual(['scan-exit', 'close'])
+  })
+
   it('uses the public default queue bound of 1024 candidates', () => {
     expect(CAPTURE_QUEUE_LIMIT).toBe(1_024)
   })
