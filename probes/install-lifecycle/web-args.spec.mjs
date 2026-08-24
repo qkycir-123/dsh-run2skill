@@ -30,3 +30,13 @@ test('candidate probe selects the current user-facing proposal label', async () 
   assert.match(source, /getByRole\('button', \{ name: \/generated-file-hygiene\/u \}\)/u)
   assert.doesNotMatch(source, /CREATE · generated-file-hygiene/u)
 })
+
+test('stable release probe covers the published 0.2.0 package before the 0.3.0 candidate', async () => {
+  const probe = await readFile(fileURLToPath(new URL('release-upgrade-probe.mjs', import.meta.url)), 'utf8')
+  const runner = await readFile(fileURLToPath(new URL('../run-install-lifecycle-probe.ps1', import.meta.url)), 'utf8')
+
+  assert.match(probe, /<0\.1\.1-alpha\.tgz> <0\.2\.0\.tgz> <0\.3\.0\.tgz>/u)
+  assert.match(probe, /candidateManifest\.version, '0\.3\.0'/u)
+  assert.match(probe, /stableManifest\.version, '0\.2\.0'/u)
+  assert.match(runner, /npm pack dsh-run2skill@0\.2\.0/u)
+})

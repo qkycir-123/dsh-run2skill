@@ -16,7 +16,7 @@
 
 它不会让 Agent 偷偷给自己立规矩。每份技能草稿都可以先看来源、适用范围和完整内容，然后由你决定确认保存还是放弃草稿。只有确认后，它才会写入 DSH 的原生 Skill 目录。
 
-> npm 当前稳定版 `0.2.0` 支持 DSH Web `0.1.0-rc.7` 和 `0.1.0-rc.8`。`main` 已适配 DSH Web `0.1.1-rc.2`，并将在下一版本发布；请勿把 npm `0.2.0` 安装到 rc.2。
+> 当前稳定版为 `0.3.0`。目前仅支持 DSH Web `0.1.1-rc.2`。
 
 ## 看一遍完整流程
 
@@ -39,13 +39,11 @@
 
 ## 安装
 
-如果你使用 DSH Web `0.1.0-rc.7` 或 `0.1.0-rc.8`，先确认已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`，然后安装当前 npm 稳定版：
+先确认你使用 DSH Web `0.1.1-rc.2`，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。然后执行：
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.2.0
+dsh plugin --profile web add dsh-run2skill@0.3.0
 ```
-
-DSH Web `0.1.1-rc.2` 用户请等待下一版本发布；npm `0.2.0` 不支持 rc.2。
 
 重启 DSH Web。打开 **Settings → Plugins**，看到 **run2skill** 卡片就说明插件已加载。
 
