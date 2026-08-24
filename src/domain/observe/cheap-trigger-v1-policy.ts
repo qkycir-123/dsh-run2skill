@@ -10,7 +10,7 @@ export const CHEAP_TRIGGER_V1_POLICY = Object.freeze({
     saveWords: String.raw`(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)`,
     targetWords: String.raw`(?:技能|规则|流程|做法|复用|\b(?:skill(?:s)?|workflow|process|reuse)\b)`,
     fixedPhrases: String.raw`(?:记住这个(?:做法|流程|规则)|\bremember this\b)`,
-    requestContext: String.raw`^(?:(?:(?:now|right now|immediately)\s+|(?:现在|立即|马上)\s*)?)(?:(?:(?:(?:could|would) you please|please|can you|could you|would you)\s+)?\b(?:save|remember|capture)\b|i (?:want|need) you to \b(?:save|remember|capture)\b|(?:请|请把|把|将|帮我|麻烦).{0,24}(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)|(?:保存|记录|记住|沉淀|存成))`,
+    requestContext: String.raw`^(?:(?:(?:now|right now|immediately)\s+|(?:现在|立即|马上)\s*)?)(?:(?:(?:(?:could|would) you please|please|can you|could you|would you)\s+)?\b(?:save|remember|capture)\b|i (?:want|need) you to \b(?:save|remember|capture)\b|(?:请|请把|把|将|帮我|麻烦).{0,192}(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)|(?:保存|记录|记住|沉淀|存成))`,
     negation: String.raw`(?:\b(?:do not|don['’]t|never)\b|不要|别|无需|不用|禁止).{0,64}(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)`,
     explanation: String.raw`(?:\b(?:explain|describe)\b|解释|说明|如何|怎么|\bhow to\b).{0,32}(?:保存|记录|记住|沉淀|存成|\b(?:save|remember|capture)\b)`,
     maxDistance: 64,

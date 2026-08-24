@@ -20,7 +20,10 @@ function normalize(path: string): string {
   return path.replaceAll('\\', '/').replace(/\/{2,}/gu, '/').replace(/\/$/u, '')
 }
 
-function contextFixture() {
+function contextFixture(options: {
+  readonly onSkillMutation?: (target: { readonly targetKey: string; readonly displayPath: string }, version: string) => void
+  readonly pathlessRuntimeSummary?: boolean
+} = {}) {
   const root = '/workspace/.dsh/skills'
   const minimal = createMinimalV2Fixtures()
   const exactSkillBytes = renderCanonicalSkill({
@@ -160,7 +163,9 @@ function contextFixture() {
             whenToUse: proposal.body.whenToUse,
             provider: 'filesystem',
             source: 'project-dsh',
-            path: target,
+            ...(options.pathlessRuntimeSummary
+              ? { resourceBase: { kind: 'directory' as const, path: target.slice(0, target.lastIndexOf('/')) } }
+              : { path: target }),
             invocation: { modelInvocable: true, userInvocable: false },
           }],
         }
@@ -195,6 +200,7 @@ function contextFixture() {
       }),
     },
     registry,
+    ...(options.onSkillMutation === undefined ? {} : { onSkillMutation: options.onSkillMutation }),
     readbackAttempts: 1,
   })
   return {
@@ -221,6 +227,29 @@ describe('v2 context-filesystem Proposal publication', () => {
 
     await expect(seeded.adapter.publish(request)).resolves.toEqual(first)
     expect(seeded.writes).toHaveLength(1)
+  })
+
+  it('notifies the DSH Skill Registry after a context-filesystem write and before runtime confirmation', async () => {
+    const notifications: Array<{ readonly path: string; readonly version: string }> = []
+    let seeded!: ReturnType<typeof contextFixture>
+    seeded = contextFixture({
+      onSkillMutation(target, version) {
+        notifications.push({ path: target.displayPath, version })
+        seeded.setRuntimeVisible(true)
+      },
+    })
+    const request = { ...seeded.input, attemptId: `pcm_${'4'.repeat(64)}` }
+    seeded.setRuntimeVisible(false)
+
+    await expect(seeded.adapter.publish(request)).resolves.toMatchObject({ status: 'PUBLISHED' })
+    expect(notifications).toEqual([{ path: seeded.target, version: 'file-v3' }])
+  })
+
+  it('accepts the stock DSH pathless summary only after exact definition readback confirms the target file', async () => {
+    const seeded = contextFixture({ pathlessRuntimeSummary: true })
+    const request = { ...seeded.input, attemptId: `pcm_${'5'.repeat(64)}` }
+
+    await expect(seeded.adapter.publish(request)).resolves.toMatchObject({ status: 'PUBLISHED' })
   })
 
   it('keeps an exact written attempt unavailable until the DSH runtime Catalog catches up', async () => {

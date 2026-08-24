@@ -149,6 +149,8 @@ describe('DshV2StageLlmClient', () => {
       expect.stringContaining('UNRELATED | COVERED | PARTIAL | AMBIGUOUS'),
       expect.stringContaining('Skill Markdown'),
     ]))
+    expect(llm.calls[1]?.system).toContain('same underlying workflow')
+    expect(llm.calls[1]?.system).toContain('missing the new requirement is evidence for PARTIAL, not UNRELATED')
     expect(llm.calls[0]?.system).not.toContain('complete Markdown with a heading')
     expect(llm.calls[1]?.system).not.toContain('complete Markdown with a heading')
     expect(llm.calls.every(call => !('reasoningEffort' in call))).toBe(true)
@@ -256,6 +258,45 @@ describe('DshV2StageLlmClient', () => {
       expect(settled).toBe(false)
       await vi.advanceTimersByTimeAsync(30_000)
       await expect(pending).resolves.toEqual({ result: 'NONE' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('allows a complete Skill generation to outlive the two-minute semantic-stage budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const output = {
+        name: 'safe-workflow',
+        description: 'A safe workflow.',
+        whenToUse: 'Use for this task.',
+        content: '# Safe workflow\n\nDo the work.',
+      }
+      const slowLlm: DshLlmPort = {
+        resolveModelInfo: async () => ({ context: { contextWindow: 32_000 } }),
+        stream: async function * () {
+          await new Promise(resolve => setTimeout(resolve, 150_000))
+          yield * chunks(JSON.stringify(output))
+        },
+      }
+      const client = new DshV2StageLlmClient(slowLlm)
+      const pending = client.generate({
+        action: 'CREATE',
+        intent: {
+          intentId: `intent_${digest('2')}`,
+          persistenceScope: 'PROJECT',
+          experienceType: 'WORKFLOW',
+          applicabilitySummary: 'Apply the safe workflow.',
+          keySteps: ['Analyze', 'Implement', 'Test'],
+          prohibitions: ['Do not skip tests'],
+        },
+        inputDigest: digest('6'),
+        route,
+      })
+
+      await vi.advanceTimersByTimeAsync(120_000)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await expect(pending).resolves.toEqual(output)
     } finally {
       vi.useRealTimers()
     }

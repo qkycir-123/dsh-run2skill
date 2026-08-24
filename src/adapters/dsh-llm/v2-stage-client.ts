@@ -75,6 +75,10 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
       COMMON_RULES,
       'Compare every supplied complete candidate body with the ExperienceIntent.',
       'Classify each candidate exactly once as UNRELATED | COVERED | PARTIAL | AMBIGUOUS.',
+      'Use COVERED only when the candidate already contains the complete requested reusable behavior.',
+      'Use PARTIAL when the candidate covers the same underlying workflow or use case but the intent adds or corrects a rule, option, constraint, edge case, or verification step.',
+      'For an extension of an existing workflow, missing the new requirement is evidence for PARTIAL, not UNRELATED.',
+      'Use UNRELATED only when the candidate serves a materially different capability or workflow; use AMBIGUOUS when the relationship cannot be established safely.',
       'Schema: {"decisions":[{"candidateId":"exact supplied id","decision":"UNRELATED | COVERED | PARTIAL | AMBIGUOUS","reason":"short evidence-based reason"}]}.',
       'Preserve candidateId exactly. This stage must not generate or rewrite Skill Markdown.',
     ].join('\n'),
@@ -86,7 +90,7 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
       COMMON_RULES,
       'Generate one complete Skill Markdown proposal only for the Host-authorized CREATE or MERGE action.',
       'Schema: {"name":"lowercase-kebab-case","description":"string","whenToUse":"string","content":"complete Markdown with a heading"}.',
-      'For MERGE, return the complete merged Skill, never a patch or truncated body. Follow the supplied targetCandidateId and baseSkill as data.',
+      'For MERGE, preserve targetName exactly as the returned name and return the complete merged Skill, never a patch or truncated body. Follow the supplied targetCandidateId and baseSkill as data.',
     ].join('\n'),
   },
 })
@@ -109,6 +113,7 @@ const MERGE_LANGUAGE_RULES = [
 
 const OUTPUT_BYTE_RATIO = 4
 const V2_STAGE_CALL_TIMEOUT_MS = 120_000
+const V2_GENERATION_CALL_TIMEOUT_MS = 300_000
 
 interface PartialBlock {
   readonly type: string
@@ -201,18 +206,24 @@ function routeOf(input: { readonly route: {
 
 export interface DshV2StageLlmClientOptions {
   readonly timeoutMs?: number
+  readonly generationTimeoutMs?: number
 }
 
 /** DSH streaming adapter for the four isolated v2 semantic stages. */
 export class DshV2StageLlmClient implements BatchDetectorClient {
   readonly #timeoutMs: number
+  readonly #generationTimeoutMs: number
 
   constructor(
     private readonly llm: DshLlmPort,
     options: DshV2StageLlmClientOptions = {},
   ) {
     this.#timeoutMs = options.timeoutMs ?? V2_STAGE_CALL_TIMEOUT_MS
+    this.#generationTimeoutMs = options.generationTimeoutMs ?? V2_GENERATION_CALL_TIMEOUT_MS
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1) throw new Error('Invalid v2 stage timeout')
+    if (!Number.isSafeInteger(this.#generationTimeoutMs) || this.#generationTimeoutMs < 1) {
+      throw new Error('Invalid v2 generation timeout')
+    }
   }
 
   detect(input: BatchDetectorInput): Promise<unknown> {
@@ -261,10 +272,11 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     }
     const controller = new AbortController()
     let timedOut = false
+    const timeoutMs = stage === 'GENERATION' ? this.#generationTimeoutMs : this.#timeoutMs
     const timer = setTimeout(() => {
       timedOut = true
       controller.abort(new Error(`Run2Skill ${stage} model call timed out`))
-    }, this.#timeoutMs)
+    }, timeoutMs)
     const assembler = new TextStreamAssembler()
     try {
       const options: DshGenerateOptions = {

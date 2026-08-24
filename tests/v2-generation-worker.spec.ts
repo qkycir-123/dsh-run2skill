@@ -77,7 +77,17 @@ async function seedAuthorized(action: 'CREATE' | 'MERGE' = 'CREATE') {
       const content = bodies.get(candidateId)
       return item === undefined || content === undefined
         ? undefined
-        : { ...item, content, skillBytesDigest: sha256Utf8(content) }
+        : (() => {
+            const exactSkillBytes = action === 'MERGE'
+              ? `---\nname: ${item.name}\n---\n\n${content}`
+              : content
+            return {
+            ...item,
+            content,
+              exactSkillBytes,
+              skillBytesDigest: sha256Utf8(exactSkillBytes),
+            }
+          })()
     },
   }
   await domain.table('experience_intents').put(owned.intentId, owned)
@@ -196,6 +206,27 @@ function generationWorker(
 }
 
 describe('v2 generation lease worker', () => {
+  it('supplies the exact writable Skill name to MERGE generation', async () => {
+    const seeded = await seedAuthorized('MERGE')
+    let targetName: string | undefined
+    const model = generator({ generate: async input => {
+      targetName = (input as typeof input & { targetName?: string }).targetName
+      return {
+        name: 'generation-fixture',
+        description: 'A reusable generated workflow.',
+        whenToUse: 'Use when the same workflow recurs.',
+        content: '# Generated workflow\n\n1. Observe.\n2. Verify.',
+      }
+    } })
+
+    await generationWorker(seeded, {
+      catalog: seeded.catalog, generator: model, now: () => NOW,
+    }).runOnce()
+
+    expect(targetName).toBe('generation-fixture')
+    expect(model.calls).toBe(1)
+  })
+
   it('lets concurrent workers make exactly one generation call', async () => {
     const seeded = await seedAuthorized()
     const model = generator()

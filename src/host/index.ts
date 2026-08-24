@@ -24,6 +24,7 @@ import type {
   SessionPersistencePort,
   TurnIngressCandidate,
 } from '../adapters/dsh-session/types.js'
+import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
 import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
 import {
   registerObserveSummaryRpc,
@@ -166,6 +167,12 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   on(
     event: string,
     listener: (...args: never[]) => unknown,
+  ): void
+  emit(
+    event: 'fs/observed',
+    target: DshContextFileSystemTarget,
+    observation: { readonly kind: 'present'; readonly version: string },
+    actor: { readonly name: 'write' },
   ): void
 }
 
@@ -853,6 +860,9 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         refreshView: view => view.cwd === undefined
           ? view
           : { ...view, cwd: view.cwd.endsWith(sep) ? `${view.cwd}.${sep}` : `${view.cwd}${sep}` },
+        onSkillMutation: (target, version) => {
+          this.context.emit('fs/observed', target, { kind: 'present', version }, { name: 'write' })
+        },
       })
       await runtime.start()
       const activeRuntime = runtime

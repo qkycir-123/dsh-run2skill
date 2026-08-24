@@ -157,6 +157,8 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       intent: fixture.experienceIntent,
     })
     expect(loaded?.content).toBe('# Existing workflow')
+    expect(loaded?.exactSkillBytes).toBe(rawSkill('# Existing workflow'))
+    expect(loaded?.skillBytesDigest).toBe(sha256Utf8(rawSkill('# Existing workflow')))
   })
 
   it('recovers only the exact Proposal Catalog behind its retained publication journal', async () => {
@@ -273,6 +275,7 @@ describe('DSH v2 Runtime and Pending Catalog adapter', () => {
       intent: fixture.experienceIntent,
     })
     expect(loaded?.content).toBe('# Existing workflow')
+    expect(loaded?.exactSkillBytes).toBe(rawSkill('# Existing workflow'))
     expect(seenViews.every(item => item === view)).toBe(true)
   })
 

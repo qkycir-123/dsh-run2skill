@@ -107,6 +107,7 @@ export interface SkillGenerator {
     readonly action: 'CREATE' | 'MERGE'
     readonly intent: Pick<ExperienceIntentV2, 'intentId' | 'persistenceScope' | 'experienceType' | 'applicabilitySummary' | 'keySteps' | 'prohibitions'>
     readonly targetCandidateId?: string | undefined
+    readonly targetName?: string | undefined
     readonly baseSkill?: string | undefined
     readonly inputDigest: string
     readonly route: SessionBatchV2['routeSnapshot']
@@ -220,7 +221,8 @@ export class GenerationWorker {
       return 'PROCESSED'
     }
 
-    let baseSkill: string | undefined
+    let baseSkillForGeneration: string | undefined
+    let baseSkillBytes: string | undefined
     let baseSkillBytesDigest: string | undefined
     if (leased.generation.action === 'MERGE') {
       const targetCandidateId = leased.coverage.targetCandidateId
@@ -236,9 +238,10 @@ export class GenerationWorker {
       }
       if (
         target === undefined
+        || target.exactSkillBytes === undefined
         || target.skillBytesDigest === undefined
-        || target.skillBytesDigest !== sha256Utf8(target.content)
         || sha256Utf8(target.content) !== leased.coverage.targetDigest
+        || sha256Utf8(target.exactSkillBytes) !== target.skillBytesDigest
       ) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_TARGET_CHANGED')
         return 'PROCESSED'
@@ -248,8 +251,9 @@ export class GenerationWorker {
         await this.#releasePreCall(leased.intentId, 'GENERATION_TARGET_CHANGED')
         return 'PROCESSED'
       }
-      baseSkill = processed.text
-      baseSkillBytesDigest = sha256Utf8(baseSkill)
+      baseSkillForGeneration = processed.text
+      baseSkillBytes = target.exactSkillBytes
+      baseSkillBytesDigest = target.skillBytesDigest
       const afterRead = await this.#safeSnapshot(batch.data, leased)
       if (afterRead === undefined || !this.#snapshotMatches(afterRead, leased)) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_CATALOG_CHANGED')
@@ -257,7 +261,7 @@ export class GenerationWorker {
       }
     }
 
-    const modelInput = this.#modelInput(leased, batch.data, baseSkill)
+    const modelInput = this.#modelInput(leased, batch.data, baseSkillForGeneration)
     if (Buffer.byteLength(canonicalJson(modelInput), 'utf8') + this.#policy.reserveBytes > batch.data.routeSnapshot.maxInputBytes) {
       await this.#releasePreCall(leased.intentId, 'GENERATION_INPUT_BUDGET_EXHAUSTED')
       return 'PROCESSED'
@@ -332,7 +336,7 @@ export class GenerationWorker {
     }
     const outputDigest = sha256Utf8(canonicalJson(parsed.data))
     if (!await this.#terminalCall(leased.intentId, callId, 'SUCCEEDED', outputDigest)) return 'PROCESSED'
-    await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes, baseSkill, baseSkillBytesDigest)
+    await this.#commitResult(leased.intentId, parsed.data, exactSkillBytes, baseSkillBytes, baseSkillBytesDigest)
     if (await this.#validateQuiescence(leased.intentId) !== 'VALID') {
       await this.#markStaleResult(leased.intentId, leased.generation.leaseId!)
     }
@@ -567,6 +571,9 @@ export class GenerationWorker {
 
 
   #modelInput(intent: ExperienceIntentV2, batch: SessionBatchV2, baseSkill?: string) {
+    const target = intent.coverage.targetCandidateId === undefined
+      ? undefined
+      : intent.recall.candidates.find(item => item.candidateId === intent.coverage.targetCandidateId)
     return {
       action: intent.generation.action!,
       intent: {
@@ -578,6 +585,7 @@ export class GenerationWorker {
         prohibitions: intent.prohibitions,
       },
       ...(intent.coverage.targetCandidateId === undefined ? {} : { targetCandidateId: intent.coverage.targetCandidateId }),
+      ...(target === undefined ? {} : { targetName: target.summary.name }),
       ...(baseSkill === undefined ? {} : { baseSkill }),
       inputDigest: intent.generation.inputDigest!,
       route: batch.routeSnapshot,
@@ -1060,10 +1068,12 @@ export class GenerationWorker {
         const target = await this.#catalog.read({ candidateId, batch, intent })
         if (
           target === undefined
+          || target.exactSkillBytes === undefined
+          || target.skillBytesDigest === undefined
           || sha256Utf8(target.content) !== result.targetDigest
           || result.baseSkillBytes === undefined
-          || target.content !== result.baseSkillBytes
-          || sha256Utf8(target.content) !== result.baseSkillBytesDigest
+          || target.exactSkillBytes !== result.baseSkillBytes
+          || target.skillBytesDigest !== result.baseSkillBytesDigest
         ) return undefined
       } catch {
         return undefined

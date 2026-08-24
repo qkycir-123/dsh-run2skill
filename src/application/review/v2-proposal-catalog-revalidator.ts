@@ -57,9 +57,10 @@ export class V2ProposalCatalogRevalidator {
         || input.proposal.baseSkillBytes === undefined
         || input.proposal.baseSkillBytesDigest === undefined
         || sha256Utf8(target.content) !== input.proposal.targetIdentityDigest
-        || target.skillBytesDigest !== sha256Utf8(target.content)
-        || target.content !== input.proposal.baseSkillBytes
-        || sha256Utf8(target.content) !== input.proposal.baseSkillBytesDigest
+        || target.exactSkillBytes === undefined
+        || target.skillBytesDigest === undefined
+        || target.exactSkillBytes !== input.proposal.baseSkillBytes
+        || target.skillBytesDigest !== input.proposal.baseSkillBytesDigest
       ) return { status: 'STALE' }
       const after = await this.#snapshot(input)
       if (after === undefined) return { status: 'UNAVAILABLE' }

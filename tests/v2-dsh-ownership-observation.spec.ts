@@ -57,6 +57,7 @@ function harness(options: {
   readonly between?: readonly DshSessionEvent[]
   readonly snapshots?: readonly SessionPersistenceSnapshot[][]
   readonly seqOffset?: number
+  readonly turnEndSeq?: number
   readonly onReadFrom?: (fromSeq: number) => void
   readonly resolveTargetPathDigest?: (path: string, cwd?: string) => Promise<string | undefined>
   readonly sessionAvailable?: boolean
@@ -67,16 +68,17 @@ function harness(options: {
 }) {
   const fixture = createMinimalV2Fixtures()
   const seqOffset = options.seqOffset ?? 0
+  const turnEndSeq = options.turnEndSeq ?? 8 + seqOffset
   const baselineCandidates = [...(options.baselineCandidates ?? [])]
   const endCandidates = [...(options.endCandidates ?? [])]
   const manifestUnchanged = JSON.stringify(baselineCandidates) === JSON.stringify(endCandidates)
   const observationManifest = fixture.sessionBatch.observationManifest.map(entry => ({
-    ...entry, turnEndSeq: entry.turnEndSeq + seqOffset,
+    ...entry, turnStartSeq: entry.turnStartSeq + seqOffset, turnEndSeq,
   }))
   const batchFacts = {
     sessionLifecycleKey: fixture.sessionBatch.sessionLifecycleKey,
-    firstTurnEndSeq: fixture.sessionBatch.firstTurnEndSeq + seqOffset,
-    lastTurnEndSeq: fixture.sessionBatch.lastTurnEndSeq + seqOffset,
+    firstTurnEndSeq: turnEndSeq,
+    lastTurnEndSeq: turnEndSeq,
     detectorPolicyVersion: fixture.sessionBatch.detectorPolicyVersion,
   }
   const batch = SessionBatchV2Schema.parse({
@@ -93,7 +95,7 @@ function harness(options: {
   const events = [
     event('turn/start', 1 + seqOffset, { turn: 2 }),
     ...(options.between ?? []).map(item => ({ ...item, seq: item.seq + seqOffset })),
-    event('turn/end', 8 + seqOffset, { turn: 2, reason: { kind: 'completed' } }),
+    event('turn/end', turnEndSeq, { turn: 2, reason: { kind: 'completed' } }),
   ]
   let snapshotRead = 0
   const adapter = new DshV2OwnershipObservationAdapter({
@@ -105,7 +107,7 @@ function harness(options: {
       async readFrom(_sessionId, fromSeq) {
         if (options.readFromError !== undefined) throw options.readFromError
         options.onReadFrom?.(fromSeq)
-        return { meta: header, events }
+        return { meta: header, events: events.filter(item => item.seq >= fromSeq) }
       },
     },
     resolveSession: key => {
@@ -208,8 +210,28 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     await expect(observed.adapter.observe({
       batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
     })).resolves.toMatchObject({ status: 'OBSERVED', agentActivity: 'NONE' })
-    expect(observedFromSeq).toBeGreaterThan(0)
-    expect(observedFromSeq).toBeLessThanOrEqual(observed.batch.firstTurnEndSeq)
+    expect(observedFromSeq).toBe(observed.batch.observationManifest[0]!.turnStartSeq)
+  })
+
+  it('keeps a complete Turn with more than ten thousand assistant chunks', async () => {
+    const assistantChunks = Array.from({ length: 12_000 }, (_, index) => (
+      event('assistant/chunk', index + 2, { turn: 2, step: 1, delta: 'x' })
+    ))
+    let observedFromSeq = -1
+    const observed = harness({
+      baselineCandidates: [candidate()],
+      endCandidates: [candidate()],
+      between: assistantChunks,
+      turnEndSeq: 12_002,
+      onReadFrom: fromSeq => { observedFromSeq = fromSeq },
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      status: 'OBSERVED', toolEvidenceComplete: true, agentActivity: 'NONE',
+    })
+    expect(observedFromSeq).toBe(1)
   })
 
   it('proves no Agent Skill activity from a stable unchanged manifest and complete tool evidence', async () => {
@@ -232,6 +254,30 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     await expect(adapter.observe({ batch, intent, inputDigest: 'd'.repeat(64) })).resolves.toMatchObject({
       status: 'OBSERVED', inputDigest: 'd'.repeat(64), catalogComplete: true,
       toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [],
+    })
+  })
+
+  it('does not treat a failed edit of a non-Markdown source file as an attempted Skill save', async () => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-source-edit', name: 'edit',
+          arguments: JSON.stringify({
+            file_path: 'D:\\repo\\normalize-query.mjs', old_string: 'same', new_string: 'same',
+          }),
+        }),
+        toolResult(4, 'call-source-edit', true),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      status: 'OBSERVED', toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [],
+    })
+    await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
+      status: 'RUN2SKILL_OWNED', ownership: { reasonCode: 'NO_AGENT_SKILL_ACTIVITY' },
     })
   })
 

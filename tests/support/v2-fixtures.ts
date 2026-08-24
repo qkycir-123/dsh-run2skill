@@ -64,6 +64,7 @@ export function createMinimalV2Fixtures() {
     observationId: deriveTurnObservationIdV2(observationFacts),
     ...observationFacts,
     turn: 2,
+    turnStartSeq: 1,
     observedAt: now,
     ...observationContent,
     directUserEvidence: evidence,
@@ -77,6 +78,7 @@ export function createMinimalV2Fixtures() {
   }
   const observationManifest = [{
     observationId: turnObservation.observationId,
+    turnStartSeq: turnObservation.turnStartSeq,
     turnEndSeq: turnObservation.turnEndSeq,
     evidenceDigest: turnObservation.evidenceDigest,
     completeness: turnObservation.completeness,
