@@ -192,6 +192,23 @@
   unicode-bidi: isolate;
 }
 
+.technicalDetails {
+  margin: 16px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+}
+
+.technicalDetails summary {
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.technicalDetails[open] summary {
+  margin-bottom: 12px;
+}
+
 .status {
   min-height: 20px;
   margin: 0;
