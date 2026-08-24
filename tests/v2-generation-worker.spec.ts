@@ -227,6 +227,48 @@ describe('v2 generation lease worker', () => {
     expect(model.calls).toBe(1)
   })
 
+  it('rejects a MERGE Base Skill when only its frontmatter contains a secret', async () => {
+    const seeded = await seedAuthorized('MERGE')
+    const model = generator()
+    const safeBody = seeded.bodies.get(seeded.candidate.candidateId)
+    if (safeBody === undefined) throw new Error('expected MERGE fixture body')
+    const sensitiveFrontmatter = `${['pass', 'word'].join('')}: ${['synthetic-fixture', 'secret'].join('-')}`
+    const secretBaseSkill = [
+      '---',
+      `name: ${seeded.candidate.name}`,
+      sensitiveFrontmatter,
+      '---',
+      '',
+      safeBody,
+    ].join('\n')
+    const catalog: GenerationCatalogPort = {
+      snapshot: input => seeded.catalog.snapshot(input),
+      read: async input => {
+        const target = await seeded.catalog.read(input)
+        return target === undefined
+          ? undefined
+          : {
+              ...target,
+              exactSkillBytes: secretBaseSkill,
+              skillBytesDigest: sha256Utf8(secretBaseSkill),
+            }
+      },
+    }
+
+    await generationWorker(seeded, { catalog, generator: model, now: () => NOW }).runOnce()
+
+    const intent = ExperienceIntentV2Schema.parse(seeded.domain.experienceIntents.get(seeded.intentId))
+    expect(model.calls).toBe(0)
+    expect(intent.generation.sealedResult).toBeUndefined()
+    expect(seeded.domain.proposalLineages.size).toBe(0)
+    expect(intent).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      coverage: { reasonCode: 'GENERATION_TARGET_CHANGED' },
+      generation: { state: 'NOT_STARTED' },
+    })
+    expect(seeded.domain.global.get().proposalGenerationLease).toBeUndefined()
+  })
+
   it('lets concurrent workers make exactly one generation call', async () => {
     const seeded = await seedAuthorized()
     const model = generator()

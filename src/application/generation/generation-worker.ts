@@ -247,7 +247,13 @@ export class GenerationWorker {
         return 'PROCESSED'
       }
       const processed = preprocessPersistentText(target.content)
-      if (processed.redactionKinds.length > 0 || hasFormatControls(target.content)) {
+      const processedExactSkill = preprocessPersistentText(target.exactSkillBytes)
+      if (
+        processed.redactionKinds.length > 0
+        || processedExactSkill.redactionKinds.length > 0
+        || hasFormatControls(target.content)
+        || hasFormatControls(target.exactSkillBytes)
+      ) {
         await this.#releasePreCall(leased.intentId, 'GENERATION_TARGET_CHANGED')
         return 'PROCESSED'
       }
