@@ -22,6 +22,8 @@ import {
   run2skillV2DomainSpec,
 } from '../src/adapters/dsh-storage/v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
+import { canonicalJson } from '../src/domain/learn/identity.js'
+import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 
 describe('run2skill_v2 storage contract', () => {
   it('uses a new version-1 domain without changing the published v1 identity', () => {
@@ -236,6 +238,23 @@ describe('run2skill_v2 storage contract', () => {
     }
     expect(ExperienceIntentV2Schema.parse(discardedAfterConfirmation)).toEqual(discardedAfterConfirmation)
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
+  })
+
+  it('keeps published 0.2.0 observations and batches readable without Turn start coordinates', () => {
+    const fixture = createMinimalV2Fixtures()
+    const { turnStartSeq: _turnStartSeq, ...legacyObservation } = fixture.turnObservation
+    const legacyManifest = fixture.sessionBatch.observationManifest.map((entry) => {
+      const { turnStartSeq: _entryTurnStartSeq, ...legacyEntry } = entry
+      return legacyEntry
+    })
+    const legacyBatch = {
+      ...fixture.sessionBatch,
+      observationManifest: legacyManifest,
+      observationManifestDigest: sha256Utf8(canonicalJson(legacyManifest)),
+    }
+
+    expect(TurnObservationV2Schema.parse(legacyObservation)).toEqual(legacyObservation)
+    expect(SessionBatchV2Schema.parse(legacyBatch)).toEqual(legacyBatch)
   })
 
   it('deduplicates an intent across batch replay and DEFER carry', () => {

@@ -213,6 +213,28 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     expect(observedFromSeq).toBe(observed.batch.observationManifest[0]!.turnStartSeq)
   })
 
+  it('fails closed instead of guessing a Session window for a legacy batch without Turn starts', async () => {
+    let readCalls = 0
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      onReadFrom: () => { readCalls += 1 },
+    })
+    const legacyManifest = observed.batch.observationManifest.map((entry) => {
+      const { turnStartSeq: _turnStartSeq, ...legacyEntry } = entry
+      return legacyEntry
+    })
+    const legacyBatch = SessionBatchV2Schema.parse({
+      ...observed.batch,
+      observationManifest: legacyManifest,
+      observationManifestDigest: sha256Utf8(canonicalJson(legacyManifest)),
+    })
+
+    await expect(observed.adapter.observe({
+      batch: legacyBatch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toEqual({ status: 'UNAVAILABLE', reasonCode: 'SESSION_WINDOW_INCOMPLETE' })
+    expect(readCalls).toBe(0)
+  })
+
   it('keeps a complete Turn with more than ten thousand assistant chunks', async () => {
     const assistantChunks = Array.from({ length: 12_000 }, (_, index) => (
       event('assistant/chunk', index + 2, { turn: 2, step: 1, delta: 'x' })

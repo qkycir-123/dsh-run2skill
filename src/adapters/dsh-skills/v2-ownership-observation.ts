@@ -525,6 +525,9 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
       const before = exactSnapshot(beforeList, input.batch.sessionLifecycleKey, session?.header)
       if (before === undefined) return { status: 'UNAVAILABLE', reasonCode: 'SESSION_SNAPSHOT_UNAVAILABLE' }
       const fromSeq = input.batch.observationManifest[0]!.turnStartSeq
+      if (fromSeq === undefined) {
+        return { status: 'UNAVAILABLE', reasonCode: 'SESSION_WINDOW_INCOMPLETE' }
+      }
       failureCode = 'SESSION_LOG_UNAVAILABLE'
       const log = await this.options.persistence.readFrom(before.header.id, fromSeq)
       if (!sameHeader(log.meta, before.header)) {
