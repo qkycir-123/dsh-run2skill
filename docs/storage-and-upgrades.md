@@ -1,6 +1,6 @@
 # 数据存储与升级
 
-这份文档说明当前 `dsh-run2skill@0.2.0` 稳定版及 #84 批次学习重构会保存什么，以及升级、降级和卸载时应该注意什么。
+这份文档说明当前 `dsh-run2skill@0.3.0` 稳定版及 #84 批次学习重构会保存什么，以及升级、降级和卸载时应该注意什么。
 
 ## 保存的数据
 
@@ -19,7 +19,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 ## 当前格式
 
-`0.2.0` 使用独立的 `run2skill_v2` Domain version `1`：
+从 `0.2.0` 起，run2skill 使用独立的 `run2skill_v2` Domain version `1`：
 
 | v2 单元 | 内容 |
 |---|---|
@@ -47,7 +47,9 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 从 Alpha 升级到 `0.2.0` 时，v2 首次启用采用 fresh activation：不迁移 `run2skill_v1` 的 Proposal、WorkItem、Lineage 或其他中间缓存。插件只为现有 durable root Session 保存当前完整 Turn 的末尾水位，历史 Turn 不重新学习；启用后新观察只写 v2。已发布的原生 Skill 和 DSH Session Log 不属于这些中间缓存，不会被删除或改写。
 
-从 `0.2.0` 降级到 Alpha 会放弃 v2 的新中间缓存。已发布 Skill 和 DSH Session Log 仍会保留。
+从 `0.2.0` 升级到 `0.3.0` 不改变 Storage Domain 或 schema version；已有 v2 状态和已发布 Skill 会原样保留。
+
+从 `0.3.0` 降级到 Alpha 会放弃 v2 的新中间缓存。已发布 Skill 和 DSH Session Log 仍会保留。
 
 ## 数据清理与卸载
 

@@ -47,11 +47,11 @@ powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 ```powershell
 powershell -File probes/run-install-lifecycle-probe.ps1 `
   -DshSource <dsh-source> `
-  -ReleaseCandidateTarball <dsh-run2skill-0.2.0.tgz> `
+  -ReleaseCandidateTarball <dsh-run2skill-0.3.0.tgz> `
   -ReleaseCandidateSha256 <sha256>
 ```
 
-runner 会从 npm 下载已发布的 `0.1.1-alpha`（固定 SHA-256 `c674dad6102426054d59a2843270ee86aecd36789e83604c02dd6efd345fbb26`），再用传入的精确候选文件验证 `0.1.1-alpha → 0.2.0`。它会检查旧 v1 数据未被改写、v2 fresh activation 未迁移旧中间项、原生 Skill 保留，以及稳定候选卸载后数据仍保留。
+runner 会从 npm 下载已发布的 `0.1.1-alpha`（固定 SHA-256 `c674dad6102426054d59a2843270ee86aecd36789e83604c02dd6efd345fbb26`）和 `0.2.0`，再用传入的精确候选文件验证 `0.1.1-alpha → 0.2.0 → 0.3.0`。它会检查旧 v1 数据未被改写、v2 fresh activation 未迁移旧中间项、稳定版升级保留 v2 状态和原生 Skill，以及候选版卸载后数据仍保留。
 
 此外：
 
