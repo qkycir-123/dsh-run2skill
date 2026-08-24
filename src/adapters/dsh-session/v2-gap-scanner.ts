@@ -19,6 +19,10 @@ import { classifySessionRoot } from './observation.js'
 import type { DshSessionEvent, DshSessionHeader } from './types.js'
 import type { DshSessionGapReader } from './gap-reader.js'
 import {
+  advanceDshRequestRouteV2,
+  type DshRequestRouteSnapshot,
+} from './v2-turn-observation.js'
+import {
   DSH_SESSION_LOG_PREFIX_GENESIS,
   deriveDshSessionLogPrefixDigest,
   extendDshSessionLogPrefixDigest,
@@ -37,19 +41,28 @@ interface PartialScan {
   readonly inspectedEvents: number
 }
 
+interface SettledTailScan extends PartialScan {
+  readonly revision: string
+}
+
+interface SessionRouteCache {
+  readonly throughSeq: number
+  readonly route?: DshRequestRouteSnapshot
+}
+
 export interface FreshV2ActivationResult {
   readonly status: 'ACTIVATED' | 'ALREADY_ACTIVATED'
   readonly observedSessions: number
 }
 
 export interface V2GapTurnSink {
-  prepareSessionWindow(sessionLifecycleKey: string): Promise<void>
   observeTurn(
     header: DshSessionHeader,
     events: readonly DshSessionEvent[],
     turnEndSeq: number,
     workspace: WorkspaceBindingPort,
     recovery: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
+    inheritedRoute?: DshRequestRouteSnapshot,
   ): Promise<
     | { readonly status: 'OBSERVED' }
     | { readonly status: 'CHILD' }
@@ -251,6 +264,8 @@ export async function activateFreshRun2skillV2(
 
 export class DshV2GapScanner {
   readonly #partial = new Map<string, PartialScan>()
+  readonly #settledTails = new Map<string, SettledTailScan>()
+  readonly #routeCache = new Map<string, SessionRouteCache>()
   readonly #now
   readonly #heapUsed
   readonly #activationFenceTime
@@ -273,6 +288,7 @@ export class DshV2GapScanner {
   }
 
   async ensureActivated(signal?: AbortSignal): Promise<GapScanResult> {
+    signal?.throwIfAborted()
     try {
       await activateFreshRun2skillV2(
         this.domain,
@@ -284,13 +300,17 @@ export class DshV2GapScanner {
       )
       return this.#result('COMPLETE', 0, 0, 0, this.#heapUsed())
     } catch (error) {
-      const healthCode = error instanceof Error ? error.message : 'RECOVERY_UNAVAILABLE'
+      const candidateCode = error instanceof Error ? error.message : ''
+      const healthCode = /^[A-Z][A-Z0-9_]{0,63}$/u.test(candidateCode)
+        ? candidateCode
+        : 'V2_ACTIVATION_UNAVAILABLE'
       this.notices.record({ healthCode, sessionId: 'global' })
       return this.#result('UNAVAILABLE', 0, 0, 0, this.#heapUsed(), healthCode)
     }
   }
 
   async scanBatch(signal?: AbortSignal): Promise<GapScanResult> {
+    signal?.throwIfAborted()
     const activation = await this.ensureActivated(signal)
     if (activation.status !== 'COMPLETE') return activation
     const listed = await this.reader.listSnapshots(signal)
@@ -309,6 +329,8 @@ export class DshV2GapScanner {
     }
     const rootKeys = new Set(roots.map(root => root.lifecycleKey))
     for (const key of this.#partial.keys()) if (!rootKeys.has(key)) this.#partial.delete(key)
+    for (const key of this.#settledTails.keys()) if (!rootKeys.has(key)) this.#settledTails.delete(key)
+    for (const key of this.#routeCache.keys()) if (!rootKeys.has(key)) this.#routeCache.delete(key)
 
     let processedSessions = 0
     let processedEvents = 0
@@ -329,6 +351,16 @@ export class DshV2GapScanner {
         && !unverifiedInitialCursor
         && cursor.headerRevision !== root.revision
       const readFromSeq = mustValidatePrefix ? 0 : fromSeq
+      const settledTail = this.#settledTails.get(root.lifecycleKey)
+      if (
+        !mustValidatePrefix
+        && this.#partial.get(root.lifecycleKey) === undefined
+        && settledTail?.fromSeq === fromSeq
+        && settledTail.revision === root.revision
+      ) {
+        visitedRoots += 1
+        continue
+      }
       const readStartedAt = this.#now()
       const read = await this.reader.readFrom(root.header.id, readFromSeq, signal)
       maxReadFromLatencyMs = Math.max(maxReadFromLatencyMs, this.#now() - readStartedAt)
@@ -365,6 +397,7 @@ export class DshV2GapScanner {
       visitedRoots += 1
       if (scanEvents.length === 0) {
         this.#partial.delete(root.lifecycleKey)
+        this.#settledTails.delete(root.lifecycleKey)
         await this.#updateRecoveryMetadata(root, cursor, read.events, mustValidatePrefix)
         continue
       }
@@ -376,6 +409,12 @@ export class DshV2GapScanner {
       const inspectedThrough = Math.min(scanEvents.length, startOffset + remainingBudget)
       processedEvents += inspectedThrough - startOffset
       let turnSliceStart = 0
+      let recoveredRouteEvents: readonly DshSessionEvent[] | undefined
+      const cachedRoute = this.#routeCache.get(root.lifecycleKey)
+      const cacheMatchesCursor = cursor !== undefined
+        && cachedRoute?.throughSeq === cursor.observedThroughTurnEndSeq
+      let inheritedRoute = cacheMatchesCursor ? cachedRoute.route : undefined
+      let inheritedRouteBound = cursor === undefined || fromSeq === 0 || cacheMatchesCursor
       let runningPrefixDigest = cursor?.observedLogPrefixDigest ?? DSH_SESSION_LOG_PREFIX_GENESIS
       runningPrefixDigest = extendDshSessionLogPrefixDigest(
         runningPrefixDigest,
@@ -388,13 +427,64 @@ export class DshV2GapScanner {
         }
         if (event?.type !== 'turn/end') continue
         const turnEvents = scanEvents.slice(turnSliceStart, index + 1)
-        await this.sink.prepareSessionWindow(root.lifecycleKey)
+        const turnContainsRoute = turnEvents.some(candidate => candidate.type === 'request/header')
+        if (!inheritedRouteBound && !turnContainsRoute) {
+          if (recoveredRouteEvents === undefined) {
+            if (readFromSeq === 0) {
+              recoveredRouteEvents = read.events
+            } else {
+              const routeReadStartedAt = this.#now()
+              const routeRead = await this.reader.readFrom(root.header.id, 0, signal)
+              maxReadFromLatencyMs = Math.max(maxReadFromLatencyMs, this.#now() - routeReadStartedAt)
+              peakHeapBytes = Math.max(peakHeapBytes, this.#heapUsed())
+              if (routeRead.status === 'UNAVAILABLE') {
+                this.notices.record({ healthCode: routeRead.healthCode, sessionId: root.header.id })
+                return this.#result(
+                  'UNAVAILABLE', processedSessions, processedEvents,
+                  maxReadFromLatencyMs, peakHeapBytes, routeRead.healthCode,
+                )
+              }
+              try {
+                assertContiguous(routeRead.events, 0)
+              } catch {
+                this.notices.record({ healthCode: 'SESSION_LOG_UNAVAILABLE', sessionId: root.header.id })
+                return this.#result(
+                  'UNAVAILABLE', processedSessions, processedEvents,
+                  maxReadFromLatencyMs, peakHeapBytes, 'SESSION_LOG_UNAVAILABLE',
+                )
+              }
+              const actualPrefix = cursor === undefined
+                ? undefined
+                : deriveDshSessionLogPrefixDigest(routeRead.events, cursor.observedThroughTurnEndSeq)
+              if (
+                cursor?.observedLogPrefixDigest !== undefined
+                && actualPrefix !== cursor.observedLogPrefixDigest
+              ) {
+                this.notices.record({ healthCode: 'SESSION_LOG_ROLLBACK', sessionId: root.header.id })
+                return this.#result(
+                  'UNAVAILABLE', processedSessions, processedEvents,
+                  maxReadFromLatencyMs, peakHeapBytes, 'SESSION_LOG_ROLLBACK',
+                )
+              }
+              recoveredRouteEvents = routeRead.events
+            }
+          }
+          inheritedRoute = advanceDshRequestRouteV2(
+            undefined,
+            recoveredRouteEvents,
+            cursor?.observedThroughTurnEndSeq ?? 0,
+          )
+          inheritedRouteBound = true
+        }
+        inheritedRoute = advanceDshRequestRouteV2(inheritedRoute, turnEvents, event.seq)
+        if (turnContainsRoute) inheritedRouteBound = true
         const observed = await this.sink.observeTurn(
           read.header,
           turnEvents,
           event.seq,
           this.workspace,
           { headerRevision: root.revision, observedLogPrefixDigest: runningPrefixDigest },
+          inheritedRoute,
         )
         if (observed.status !== 'OBSERVED') {
           const healthCode = observed.status === 'UNAVAILABLE'
@@ -406,13 +496,27 @@ export class DshV2GapScanner {
             maxReadFromLatencyMs, peakHeapBytes, healthCode,
           )
         }
+        this.#routeCache.set(root.lifecycleKey, {
+          throughSeq: event.seq,
+          ...(inheritedRoute === undefined ? {} : { route: inheritedRoute }),
+        })
         turnSliceStart = index + 1
       }
 
       if (inspectedThrough < scanEvents.length) {
         this.#partial.set(root.lifecycleKey, { fromSeq, inspectedEvents: inspectedThrough })
+        this.#settledTails.delete(root.lifecycleKey)
       } else {
         this.#partial.delete(root.lifecycleKey)
+        if (turnSliceStart < inspectedThrough) {
+          this.#settledTails.set(root.lifecycleKey, {
+            fromSeq,
+            inspectedEvents: inspectedThrough,
+            revision: root.revision,
+          })
+        } else {
+          this.#settledTails.delete(root.lifecycleKey)
+        }
       }
       await this.#updateRecoveryMetadata(root, cursor, read.events, mustValidatePrefix)
       if (this.#now() - startedAt >= GAP_SCAN_TIME_SLICE_MS) break

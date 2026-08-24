@@ -13,8 +13,14 @@ export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard', 'code'])
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
-  standard: '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
-  code: 'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
+  standard: Object.freeze([
+    '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
+    'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
+  ]),
+  code: Object.freeze([
+    'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
+    'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
+  ]),
 })
 
 export interface StockSkillRuntimeConfiguration {
@@ -63,6 +69,8 @@ export interface StockAgentPresetObservationPort {
   read(id: string): Promise<string>
 }
 
+type StockAgentPresetReadPort = Pick<StockAgentPresetObservationPort, 'resolve' | 'read'>
+
 function contextUsesFileSystem(context: object): boolean {
   if (!('get' in context) || typeof context.get !== 'function') return false
   try {
@@ -75,22 +83,36 @@ function contextUsesFileSystem(context: object): boolean {
 export async function resolvePinnedStockPresetConfiguration(
   presets: StockAgentPresetObservationPort,
   agent: { readonly ctx: object },
-  expectedDigests: Readonly<Record<'standard' | 'code', string>> = STOCK_PRESET_COMPOSITION_DIGESTS,
+  expectedDigests: Readonly<Record<'standard' | 'code', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
 ): Promise<StockSkillRuntimeConfiguration | undefined> {
   const presetId = presets.composedPreset(agent.ctx)
+  return resolvePinnedStockPresetConfigurationById(
+    presets,
+    presetId,
+    contextUsesFileSystem(agent.ctx),
+    expectedDigests,
+  )
+}
+
+export async function resolvePinnedStockPresetConfigurationById(
+  presets: StockAgentPresetReadPort,
+  presetId: string | undefined,
+  usesContextFileSystem: boolean,
+  expectedDigests: Readonly<Record<'standard' | 'code', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
+): Promise<StockSkillRuntimeConfiguration | undefined> {
   if (presetId !== 'standard' && presetId !== 'code') return undefined
   try {
     const preset = await presets.resolve(presetId)
     if (preset.id !== presetId || preset.trust !== 'system') return undefined
     const content = await presets.read(presetId)
-    if (sha256Utf8(content) !== expectedDigests[presetId]) return undefined
+    if (!expectedDigests[presetId].includes(sha256Utf8(content))) return undefined
     return {
       profile: 'web',
       presetId,
       providerName: 'filesystem',
       includeDefaultRoots: true,
       customSkillDirs: [],
-      ...(contextUsesFileSystem(agent.ctx) ? { usesContextFileSystem: true as const } : {}),
+      ...(usesContextFileSystem ? { usesContextFileSystem: true as const } : {}),
     }
   } catch {
     return undefined

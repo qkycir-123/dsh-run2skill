@@ -77,6 +77,9 @@ import {
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
   resolvePinnedStockPresetConfiguration,
+  resolvePinnedStockPresetConfigurationById,
+  type StockSkillRuntimeConfiguration,
+  type StockWorkspaceContractBinding,
 } from '../adapters/dsh-skills/stock-root-contract.js'
 import { stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
@@ -118,6 +121,7 @@ export const inject = [
   'skills',
   'settings',
   'agentPresets',
+  'fs',
 ] as const
 
 interface DshSessionProjection {
@@ -126,8 +130,21 @@ interface DshSessionProjection {
 
 type Run2skillAgent = object & AgentScopeProjection & Parameters<typeof resolveStockSkillRuntimeConfiguration>[1]
 
+type Run2skillAgentPresets = Parameters<typeof resolvePinnedStockPresetConfiguration>[0] & {
+  standingKeyFor(id?: string): Promise<object>
+}
+
+function exactAgentFileSystem(agent: Run2skillAgent): unknown {
+  try {
+    return agent.ctx.get?.('fs')
+  } catch {
+    return undefined
+  }
+}
+
 interface AgentPreStepPayload {
   readonly agent: Run2skillAgent
+  readonly step: number
 }
 
 interface AgentDisposedPayload {
@@ -143,7 +160,9 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly llm: DshLlmPort
   readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
   readonly settings: DshSettingsPort
-  readonly agentPresets: Parameters<typeof resolvePinnedStockPresetConfiguration>[0]
+  readonly agentPresets: Run2skillAgentPresets
+  /** Host-plane DSH filesystem used by the supported web presets. */
+  readonly fs: unknown
   on(
     event: string,
     listener: (...args: never[]) => unknown,
@@ -637,6 +656,13 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     readonly workspaceId: string
     readonly canonicalPath: string
   }>()
+  readonly #dormantSessions = new Map<string, {
+    readonly header: DshSessionHeader
+    readonly scope: object
+    readonly configuration: StockSkillRuntimeConfiguration
+    readonly filesystem: unknown
+    readonly workspaceBinding?: StockWorkspaceContractBinding | undefined
+  }>()
 
   constructor(
     private readonly context: Run2skillHostContext,
@@ -657,20 +683,14 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
   async captureRootConfiguration(agent: Run2skillAgent): Promise<void> {
     const configuration = await this.#stockConfigurations.capture(agent)
     if (configuration === undefined) throw new Error('V2_ROOT_CONFIGURATION_UNAVAILABLE')
-    const cwd = agent.session.header.cwd
-    if (cwd === undefined) {
-      this.#workspaceBindings.delete(agent)
-      return
-    }
-    const binding = await new DshWorkspaceBindingResolver(this.context.workspaceRegistry).resolve(cwd)
-    if (binding.status === 'BOUND') {
-      this.#workspaceBindings.set(agent, {
-        workspaceId: binding.workspaceId,
-        canonicalPath: binding.canonicalPath,
-      })
-    } else {
-      this.#workspaceBindings.delete(agent)
-    }
+    const header = agent.session.header as DshSessionHeader
+    const workspaceBinding = await this.#workspaceBinding(header.cwd)
+    if (workspaceBinding === undefined) this.#workspaceBindings.delete(agent)
+    else this.#workspaceBindings.set(agent, workspaceBinding)
+    const presetId = configuration.presetId ?? header.agentPreset
+    if (presetId === undefined) throw new Error('V2_SESSION_PRESET_UNAVAILABLE')
+    const scope = await this.context.agentPresets.standingKeyFor(presetId)
+    this.#rememberDormantSession(header, scope, configuration, workspaceBinding)
   }
 
   releaseRootConfiguration(agent: Run2skillAgent): void {
@@ -689,12 +709,74 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     return { workspaceId: workspace.id, canonicalPath: workspace.path }
   }
 
+  async #workspaceBinding(cwd: string | undefined): Promise<StockWorkspaceContractBinding | undefined> {
+    if (cwd === undefined) return undefined
+    const binding = await new DshWorkspaceBindingResolver(this.context.workspaceRegistry).resolve(cwd)
+    return binding.status === 'BOUND'
+      ? { workspaceId: binding.workspaceId, canonicalPath: binding.canonicalPath }
+      : undefined
+  }
+
+  #rememberDormantSession(
+    header: DshSessionHeader,
+    scope: object,
+    configuration: StockSkillRuntimeConfiguration,
+    workspaceBinding: StockWorkspaceContractBinding | undefined,
+  ): void {
+    const lifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: header.id,
+      sessionCreatedAt: header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
+    })
+    this.#dormantSessions.set(lifecycleKey, {
+      header,
+      scope,
+      configuration,
+      filesystem: this.context.fs,
+      ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+    })
+  }
+
+  async #hydrateDormantSessions(): Promise<void> {
+    let snapshots: readonly { readonly header: DshSessionHeader }[]
+    try {
+      snapshots = await this.context.sessionPersistence.listSnapshots()
+    } catch {
+      return
+    }
+    for (const { header } of snapshots) {
+      if (classifySessionRoot(header).status !== 'ROOT') continue
+      try {
+        const configuration = await resolvePinnedStockPresetConfigurationById(
+          this.context.agentPresets,
+          header.agentPreset,
+          true,
+        )
+        if (configuration === undefined) continue
+        const scope = await this.context.agentPresets.standingKeyFor(configuration.presetId)
+        const workspaceBinding = await this.#workspaceBinding(header.cwd)
+        this.#rememberDormantSession(header, scope, configuration, workspaceBinding)
+      } catch {
+        // One unavailable historical Session must not block recovery of others.
+      }
+    }
+  }
+
+  #dormantForView(view: LearningSkillView<Run2skillAgent>) {
+    const cwdDigest = deriveSessionCwdDigest(view.cwd)
+    return [...this.#dormantSessions.values()].find(session => (
+      session.scope === view.scope
+      && deriveSessionCwdDigest(session.header.cwd) === cwdDigest
+    ))
+  }
+
   async open(): Promise<RecoveryRuntime> {
     let domain: Run2skillV2Domain | undefined
     let runtime: DshV2ProductionRuntime<LearningSkillView<Run2skillAgent>> | undefined
     try {
       domain = await openRun2skillV2Domain(this.context)
       const publicationAbort = new AbortController()
+      await this.#hydrateDormantSessions()
       const viewForAgent = (agent: Run2skillAgent): LearningSkillView<Run2skillAgent> => ({
         ...(agent.session.header.cwd === undefined ? {} : { cwd: agent.session.header.cwd }),
         scope: agent,
@@ -702,25 +784,45 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
       })
       const resolveSession = (lifecycleKey: string) => {
         const scope = this.scopes.resolveLifecycleKey(lifecycleKey)
-        if (scope.status !== 'AVAILABLE') return undefined
-        const configuration = this.#stockConfigurations.get(scope.agent)
-        if (configuration === undefined) return undefined
-        const workspaceBinding = this.#workspaceBindings.get(scope.agent)
+        if (scope.status === 'AVAILABLE') {
+          const configuration = this.#stockConfigurations.get(scope.agent)
+          if (configuration !== undefined) {
+            const workspaceBinding = this.#workspaceBindings.get(scope.agent)
+            const filesystem = exactAgentFileSystem(scope.agent)
+            return {
+              header: scope.agent.session.header as DshSessionHeader,
+              view: viewForAgent(scope.agent),
+              configuration,
+              ...(filesystem === undefined ? {} : { filesystem }),
+              ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+            }
+          }
+        }
+        const dormant = this.#dormantSessions.get(lifecycleKey)
+        if (dormant === undefined) return undefined
         return {
-          header: scope.agent.session.header as DshSessionHeader,
-          view: viewForAgent(scope.agent),
-          configuration,
-          ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
+          header: dormant.header,
+          view: {
+            ...(dormant.header.cwd === undefined ? {} : { cwd: dormant.header.cwd }),
+            scope: dormant.scope as Run2skillAgent,
+            signal: publicationAbort.signal,
+          },
+          configuration: dormant.configuration,
+          filesystem: dormant.filesystem,
+          ...(dormant.workspaceBinding === undefined ? {} : { workspaceBinding: dormant.workspaceBinding }),
         }
       }
       const resolveSessionByView = (view: LearningSkillView<Run2skillAgent>) => {
-        const configuration = this.#stockConfigurations.get(view.scope)
+        const dormant = this.#dormantForView(view)
+        const configuration = this.#stockConfigurations.get(view.scope) ?? dormant?.configuration
         if (configuration === undefined) return undefined
-        const workspaceBinding = this.#workspaceBindings.get(view.scope)
+        const workspaceBinding = this.#workspaceBindings.get(view.scope) ?? dormant?.workspaceBinding
+        const filesystem = exactAgentFileSystem(view.scope) ?? dormant?.filesystem
         return {
-          header: view.scope.session.header as DshSessionHeader,
+          header: dormant?.header ?? view.scope.session.header as DshSessionHeader,
           view,
           configuration,
+          ...(filesystem === undefined ? {} : { filesystem }),
           ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
         }
       }
@@ -844,18 +946,48 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
   context.on('session/event', (session: DshSessionProjection, event: DshSessionEvent) => {
     if (accepting) ingress.observe(session.header, event)
   })
-  context.on('agent/pre-step', async ({ agent }: AgentPreStepPayload, next: () => Promise<unknown>) => {
+  context.on('agent/pre-step', async ({ agent, step }: AgentPreStepPayload, next: () => Promise<unknown>) => {
     if (accepting && !scopeDisposers.has(agent)) {
-      const disposeScope = scopes.register(agent)
+      let disposeScope: (() => void) | undefined
       try {
+        disposeScope = scopes.register(agent)
         await factory.captureRootConfiguration(agent)
         scopeDisposers.set(agent, disposeScope)
         factory.wakeLearning()
         factory.wakePublication()
         factory.wakeCuration()
       } catch {
-        disposeScope()
+        disposeScope?.()
         notices.record({ healthCode: 'AGENT_SCOPE_UNAVAILABLE', sessionId: agent.id || 'global' })
+      }
+    }
+    if (
+      accepting
+      && step === 1
+      && agent.id.length > 0
+      && agent.session.header.id === agent.id
+    ) {
+      try {
+        const runtime = factory.currentV2Runtime
+        if (runtime !== undefined) {
+          await ingress.whenDispatched()
+          await lifecycle.whenIdle()
+          const capture = lifecycle.snapshot()
+          if (
+            capture.status !== 'READY'
+            || capture.recoveryLag
+            || capture.catchupNeeded
+            || capture.queueDepth > 0
+          ) throw new Error('V2_CAPTURE_NOT_CAUGHT_UP')
+          const header = agent.session.header
+          await runtime.pipeline.prepareSessionWindow(deriveSessionLifecycleKey({
+            rootSessionId: header.id,
+            sessionCreatedAt: header.createdAt,
+            sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
+          }))
+        }
+      } catch {
+        notices.record({ healthCode: 'V2_BASELINE_UNAVAILABLE', sessionId: agent.id })
       }
     }
     return await next()
@@ -864,6 +996,7 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     scopeDisposers.get(agent)?.()
     scopeDisposers.delete(agent)
     factory.releaseRootConfiguration(agent)
+    factory.wakeLearning()
   })
 
   const readSummary = (): ObserveSummaryV1 => {

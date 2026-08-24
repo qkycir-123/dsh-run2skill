@@ -4,6 +4,7 @@ import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/ob
 import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
 import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
+import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 
 function settingsService(): DshSettingsPort {
   return {
@@ -56,7 +57,9 @@ function services() {
       composedPreset() { return undefined },
       async resolve(id: string) { return { id, trust: 'system' as const } },
       async read() { return '' },
+      async standingKeyFor(id?: string) { return { agentPreset: id ?? 'standard' } },
     },
+    fs: {},
   }
 }
 
@@ -74,6 +77,7 @@ describe('Host plugin v2 production cutover', () => {
       'skills',
       'settings',
       'agentPresets',
+      'fs',
     ])
   })
 
@@ -164,9 +168,9 @@ describe('Host plugin v2 production cutover', () => {
     await dispose()
   })
 
-  it('does not alter the Agent pre-step waterfall decision when configuration capture fails', async () => {
+  it('durably prepares the batch window at step 1 before preserving the Agent waterfall decision', async () => {
     const domain = createMemoryRun2skillV2Domain()
-    let preStep: ((payload: { agent: never }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+    let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
       sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
@@ -184,8 +188,111 @@ describe('Host plugin v2 production cutover', () => {
       session: { header: { version: 1, id: 'agent-session', createdAt: 1_725_000_000_000 }, events: [] },
     }
     const decision = { kind: 'enter', messages: [] }
+    const next = vi.fn(async () => {
+      domain.writeLog.push('next')
+      return decision
+    })
+    const lifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: agent.session.header.id,
+      sessionCreatedAt: agent.session.header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(undefined),
+    })
+
+    domain.writeLog.length = 0
+    await expect(preStep?.({ agent: agent as never, step: 2 }, next)).resolves.toBe(decision)
+    expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline).toBeUndefined()
+    next.mockClear()
+
+    domain.writeLog.length = 0
+    await expect(preStep?.({ agent: agent as never, step: 1 }, next)).resolves.toBe(decision)
+    expect(domain.global.get().sessions[lifecycleKey]?.batchManifestBaseline).toMatchObject({
+      afterTurnEndSeq: 0,
+      complete: false,
+    })
+    expect(domain.writeLog.indexOf('global')).toBeGreaterThanOrEqual(0)
+    expect(domain.writeLog.indexOf('global')).toBeLessThan(domain.writeLog.indexOf('next'))
+    expect(next).toHaveBeenCalledOnce()
+    await dispose()
+  })
+
+  it('captures the previous durable Turn before preparing the next Turn baseline', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const header: DshSessionHeader = {
+      version: 1, id: 'agent-session', createdAt: 1_725_000_000_000, cwd: 'D:/workspace',
+    }
+    const events = turnEvents(header)
+    let present = false
+    let eventListener: ((session: { header: DshSessionHeader }, event: DshSessionEvent) => void) | undefined
+    let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+    const context = {
+      ...services(),
+      sessionPersistence: {
+        async listSnapshots() { return present ? [{ header, revision: 'jsonl:4' }] : [] },
+        async readFrom(_id: string, fromSeq: number) {
+          return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
+        },
+      },
+      storageDomain: { async open() { return domain } },
+      workspaceRegistry: {
+        async resolveByPath() { return { id: 'workspace-1', path: 'D:/workspace' } },
+        get() { return { id: 'workspace-1', path: 'D:/workspace' } },
+      },
+      connection: { rpc: { handle() { return async () => undefined } } },
+      on(event: string, listener: (...args: never[]) => unknown) {
+        if (event === 'session/event') eventListener = listener as unknown as typeof eventListener
+        if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
+      },
+    }
+    const dispose = await apply(context)
+    const agent = {
+      id: header.id,
+      ctx: { registry: { values: () => [] } },
+      session: { header, events: [] },
+    }
+    const decision = { kind: 'enter', messages: [] }
     const next = vi.fn(async () => decision)
-    await expect(preStep?.({ agent: agent as never }, next)).resolves.toBe(decision)
+    const lifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: header.id,
+      sessionCreatedAt: header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
+    })
+
+    present = true
+    for (const item of events) eventListener?.({ header }, item)
+    await expect(preStep?.({ agent: agent as never, step: 1 }, next)).resolves.toBe(decision)
+
+    expect(domain.turnObservations.size).toBe(1)
+    expect(domain.global.get().sessions[lifecycleKey]).toMatchObject({
+      observedThroughTurnEndSeq: 4,
+      batchManifestBaseline: { afterTurnEndSeq: 0, complete: false },
+    })
+    expect(next).toHaveBeenCalledOnce()
+    await dispose()
+  })
+
+  it('contains invalid Agent scope identity without blocking the pre-step waterfall', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+    const context = {
+      ...services(),
+      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      storageDomain: { async open() { return domain } },
+      workspaceRegistry: { async resolveByPath() { return undefined } },
+      connection: { rpc: { handle() { return async () => undefined } } },
+      on(event: string, listener: (...args: never[]) => unknown) {
+        if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
+      },
+    }
+    const dispose = await apply(context)
+    const agent = {
+      id: 'agent-session',
+      ctx: { registry: { values: () => [] } },
+      session: { header: { version: 1, id: 'different-session', createdAt: 1_725_000_000_000 }, events: [] },
+    }
+    const decision = { kind: 'enter', messages: [] }
+    const next = vi.fn(async () => decision)
+
+    await expect(preStep?.({ agent: agent as never, step: 1 }, next)).resolves.toBe(decision)
     expect(next).toHaveBeenCalledOnce()
     await dispose()
   })

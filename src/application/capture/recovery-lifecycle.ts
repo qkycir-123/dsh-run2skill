@@ -231,6 +231,8 @@ export class RecoveryLifecycle<Candidate = TurnIngressCandidate> {
     }
     this.#scanAbort.abort()
     this.#retry.dispose()
+    const recovery = this.#recoverPromise
+    if (recovery !== undefined) await recovery
     const drain = this.#drainPromise
     if (drain !== undefined) await this.#waitFor(drain, CAPTURE_DISPOSE_DRAIN_MS)
     this.#queue.length = 0

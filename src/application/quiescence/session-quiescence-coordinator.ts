@@ -15,6 +15,12 @@ const activityObservationSchema = z.object({
   durableOpenTurn: z.boolean(),
 }).strict()
 
+const FAST_QUIESCENCE_RETRY_DELAY_MS = 1_000
+const FAST_QUIESCENCE_RETRY_STAGES = 3
+const SLOW_QUIESCENCE_RETRY_DELAY_MS = 30_000
+const MAX_QUIESCENCE_RETRY_DELAY_MS = 5 * 60 * 1_000
+const MAX_QUIESCENCE_RETRY_STAGE = 8
+
 export interface SessionActivityObservationPort {
   observe(sessionLifecycleKey: string): Promise<unknown>
 }
@@ -26,6 +32,11 @@ export interface SessionQuiescenceCoordinatorOptions {
 
 type FenceValidation = 'VALID' | 'STALE' | 'INCOMPLETE'
 type SessionCursor = NonNullable<ReturnType<Run2skillV2Domain['global']['get']>['sessions'][string]>
+interface QuiescenceRetry {
+  readonly revision: number
+  readonly stage: number
+  readonly nextAt: number
+}
 
 /**
  * Releases detector READY facts only after the Session tail is fully detected,
@@ -36,6 +47,7 @@ export class SessionQuiescenceCoordinator {
   readonly #batches
   readonly #activity
   readonly #now
+  readonly #retries = new Map<string, QuiescenceRetry>()
 
   constructor(domain: Run2skillV2Domain, options: SessionQuiescenceCoordinatorOptions) {
     this.#intents = domain.table('experience_intents')
@@ -48,18 +60,24 @@ export class SessionQuiescenceCoordinator {
   readonly #global: Run2skillV2Domain['global']
 
   async runOnce(): Promise<'IDLE' | 'PROCESSED'> {
+    this.#discardObsoleteRetries()
     const candidates = [...this.#intents.entries()]
       .map(([, value]) => ExperienceIntentV2Schema.parse(value))
       .filter(intent => intent.status === 'WAITING_FOR_QUIESCENCE')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.ordinal - right.ordinal)
     for (const intent of candidates) {
-      if (await this.#tryRelease(intent)) return 'PROCESSED'
+      if (await this.#tryRelease(intent)) {
+        this.#retries.delete(intent.intentId)
+        return 'PROCESSED'
+      }
+      if (this.#isReleaseDue(intent)) this.#scheduleRetry(intent)
     }
     return 'IDLE'
   }
 
-  /** Returns only a future automatic-idle deadline; elapsed deadlines never poll. */
+  /** Returns a future idle deadline or one of the finite quiescence retries. */
   nextEligibleAt(now = this.#now()): number | undefined {
+    this.#discardObsoleteRetries()
     let earliest: number | undefined
     for (const [, raw] of this.#intents.entries()) {
       const parsed = ExperienceIntentV2Schema.safeParse(raw)
@@ -68,8 +86,12 @@ export class SessionQuiescenceCoordinator {
       if (
         intent.status !== 'WAITING_FOR_QUIESCENCE'
         || intent.quiescence.state !== 'WAITING'
-        || intent.explicitSave
       ) continue
+      if (intent.explicitSave) {
+        const retryAt = this.#retryAt(intent, now)
+        if (retryAt !== undefined) earliest = earliest === undefined ? retryAt : Math.min(earliest, retryAt)
+        continue
+      }
       const batch = SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId))
       if (
         !batch.success
@@ -87,8 +109,12 @@ export class SessionQuiescenceCoordinator {
       const lastActivity = cursor.lastActivityAt === undefined ? Number.NaN : Date.parse(cursor.lastActivityAt)
       if (!Number.isFinite(lastActivity)) continue
       const deadline = lastActivity + intent.quiescence.requiredIdleMs
-      if (deadline <= now) continue
-      earliest = earliest === undefined ? deadline : Math.min(earliest, deadline)
+      if (deadline > now) {
+        earliest = earliest === undefined ? deadline : Math.min(earliest, deadline)
+        continue
+      }
+      const retryAt = this.#retryAt(intent, now)
+      if (retryAt !== undefined) earliest = earliest === undefined ? retryAt : Math.min(earliest, retryAt)
     }
     return earliest
   }
@@ -220,6 +246,63 @@ export class SessionQuiescenceCoordinator {
 
   #cursor(sessionLifecycleKey: string) {
     return this.#global.get().sessions[sessionLifecycleKey]
+  }
+
+  #isReleaseDue(intent: ExperienceIntentV2): boolean {
+    if (intent.quiescence.state !== 'WAITING') return false
+    if (intent.explicitSave) return true
+    const cursor = this.#cursor(intent.sessionLifecycleKey)
+    const lastActivity = cursor?.lastActivityAt === undefined ? Number.NaN : Date.parse(cursor.lastActivityAt)
+    return Number.isFinite(lastActivity)
+      && this.#now() >= lastActivity + intent.quiescence.requiredIdleMs
+  }
+
+  #scheduleRetry(intent: ExperienceIntentV2): void {
+    const now = this.#now()
+    const current = this.#retries.get(intent.intentId)
+    if (current !== undefined && current.revision === intent.revision) {
+      if (current.nextAt > now) return
+      const stage = Math.min(current.stage + 1, MAX_QUIESCENCE_RETRY_STAGE)
+      this.#retries.set(intent.intentId, {
+        revision: intent.revision,
+        stage,
+        nextAt: now + this.#retryDelay(stage),
+      })
+      return
+    }
+    this.#retries.set(intent.intentId, {
+      revision: intent.revision,
+      stage: 1,
+      nextAt: now + FAST_QUIESCENCE_RETRY_DELAY_MS,
+    })
+  }
+
+  #retryAt(intent: ExperienceIntentV2, now: number): number | undefined {
+    const retry = this.#retries.get(intent.intentId)
+    return retry?.revision === intent.revision
+      && retry.nextAt > now
+      ? retry.nextAt
+      : undefined
+  }
+
+  #retryDelay(stage: number): number {
+    if (stage <= FAST_QUIESCENCE_RETRY_STAGES) return FAST_QUIESCENCE_RETRY_DELAY_MS
+    return Math.min(
+      MAX_QUIESCENCE_RETRY_DELAY_MS,
+      SLOW_QUIESCENCE_RETRY_DELAY_MS * (2 ** (stage - FAST_QUIESCENCE_RETRY_STAGES - 1)),
+    )
+  }
+
+  #discardObsoleteRetries(): void {
+    for (const [intentId, retry] of this.#retries) {
+      const parsed = ExperienceIntentV2Schema.safeParse(this.#intents.get(intentId))
+      if (
+        !parsed.success
+        || parsed.data.status !== 'WAITING_FOR_QUIESCENCE'
+        || parsed.data.quiescence.state !== 'WAITING'
+        || parsed.data.revision !== retry.revision
+      ) this.#retries.delete(intentId)
+    }
   }
 
   #sameCursorFence(

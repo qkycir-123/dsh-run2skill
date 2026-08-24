@@ -2,7 +2,10 @@ import type { DshLlmPort } from '../adapters/dsh-llm/restricted-learning-client.
 import { DshV2RouteSnapshotAdapter } from '../adapters/dsh-llm/v2-route-snapshot.js'
 import { DshV2StageLlmClient } from '../adapters/dsh-llm/v2-stage-client.js'
 import type { DshTurnObservationV2Result } from '../adapters/dsh-session/v2-turn-observation.js'
-import { projectDshTurnObservationV2 } from '../adapters/dsh-session/v2-turn-observation.js'
+import {
+  projectDshTurnObservationV2,
+  type DshRequestRouteSnapshot,
+} from '../adapters/dsh-session/v2-turn-observation.js'
 import type { DshSessionEvent, DshSessionHeader } from '../adapters/dsh-session/types.js'
 import type { Run2skillV2Domain } from '../adapters/dsh-storage/v2-types.js'
 import { SessionBatchCoordinator, SessionBatchScheduler } from '../application/batch/index.js'
@@ -130,6 +133,7 @@ export class DshV2PipelineRuntime {
     turnEndSeq: number,
     workspace: WorkspaceBindingPort,
     recovery?: { readonly headerRevision: string; readonly observedLogPrefixDigest: string },
+    inheritedRoute?: DshRequestRouteSnapshot,
   ): Promise<DshTurnObservationV2Result> {
     const projected = await projectDshTurnObservationV2(
       header,
@@ -137,6 +141,7 @@ export class DshV2PipelineRuntime {
       turnEndSeq,
       workspace,
       recovery,
+      inheritedRoute,
     )
     if (projected.status === 'OBSERVED') await this.#runtime.observe(projected.observation)
     return projected

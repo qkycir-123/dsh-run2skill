@@ -52,6 +52,28 @@ type Subject =
   | { readonly kind: 'BATCH'; readonly batch: SessionBatchV2 }
   | { readonly kind: 'INTENT'; readonly intent: ExperienceIntentV2 }
 
+type LearningStage = 'DETECTION' | 'OWNERSHIP' | 'RECALL' | 'COVERAGE' | 'GENERATION'
+type StageState = 'NOT_STARTED' | 'COMPLETED' | 'STOPPED'
+type ModelCall = {
+  readonly outcome: 'RESERVED' | 'SUCCEEDED' | 'FAILED' | 'ABORTED' | 'TIMED_OUT' | 'OUTCOME_UNKNOWN'
+}
+
+const learningStages: readonly LearningStage[] = [
+  'DETECTION', 'OWNERSHIP', 'RECALL', 'COVERAGE', 'GENERATION',
+]
+
+function callCounts(calls: readonly ModelCall[]) {
+  return {
+    total: calls.length,
+    reserved: calls.filter(call => call.outcome === 'RESERVED').length,
+    succeeded: calls.filter(call => call.outcome === 'SUCCEEDED').length,
+    failed: calls.filter(call => call.outcome === 'FAILED').length,
+    aborted: calls.filter(call => call.outcome === 'ABORTED').length,
+    timedOut: calls.filter(call => call.outcome === 'TIMED_OUT').length,
+    outcomeUnknown: calls.filter(call => call.outcome === 'OUTCOME_UNKNOWN').length,
+  }
+}
+
 function hash(parts: readonly string[]): string {
   return createHash('sha256').update(parts.join('\0'), 'utf8').digest('hex')
 }
@@ -74,6 +96,48 @@ function failure(value: Subject): string {
           : intent.status === 'COVERED_NEEDS_CONFIRMATION'
             ? 'COVERED_NEEDS_CONFIRMATION'
             : 'INTENT_NEEDS_ATTENTION'
+}
+
+function currentStage(value: Subject, reasonCode: string): LearningStage {
+  if (value.kind === 'BATCH') return 'DETECTION'
+  if (value.intent.ownership.state === 'NEEDS_CONFIRMATION') return 'OWNERSHIP'
+  if (value.intent.recall.state === 'INCOMPLETE') return 'RECALL'
+  if (
+    reasonCode.startsWith('GENERATION_')
+    || reasonCode.startsWith('SESSION_QUIESCENCE_')
+    || value.intent.generation.state === 'NEEDS_ATTENTION'
+  ) return 'GENERATION'
+  if (value.intent.coverage.state === 'NEEDS_ATTENTION' || value.intent.status === 'COVERED_NEEDS_CONFIRMATION') {
+    return 'COVERAGE'
+  }
+  return 'GENERATION'
+}
+
+function attentionKind(value: Subject, stage: LearningStage, reasonCode: string) {
+  if (stage === 'OWNERSHIP') return 'SAFETY_STOP' as const
+  if (reasonCode === 'STALE_RESULT') return 'STALE_RESULT' as const
+  if (value.kind === 'INTENT' && value.intent.status === 'COVERED_NEEDS_CONFIRMATION') {
+    return 'NEEDS_DECISION' as const
+  }
+  return 'PROCESSING_FAILURE' as const
+}
+
+function stageFacts(value: Subject, batch: SessionBatchV2 | undefined, stage: LearningStage) {
+  const calls = stage === 'DETECTION'
+    ? batch?.detector.calls ?? []
+    : value.kind === 'INTENT' && stage !== 'OWNERSHIP'
+      ? value.intent.stageCalls.filter(call => (
+          (stage === 'RECALL' && call.stage === 'CATALOG_SCAN') || call.stage === stage
+        ))
+      : []
+  const currentIndex = learningStages.indexOf(stage)
+  const stoppedIndex = learningStages.indexOf(currentStage(value, failure(value)))
+  const state: StageState = currentIndex < stoppedIndex
+    ? 'COMPLETED'
+    : currentIndex === stoppedIndex
+      ? 'STOPPED'
+      : 'NOT_STARTED'
+  return { stage, state, modelCalls: callCounts(calls) }
 }
 
 function action(
@@ -197,20 +261,22 @@ export class V2LearningAttentionService {
       const items = page.page.map(projected => {
         const subject = this.#find(projected.subjectId)
         if (subject === undefined) throw new CurrentScopeAuthorizationError('ACTION_STALE')
-        const calls = subject.kind === 'BATCH'
-          ? subject.batch.detector.calls.map(call => ({
-              requestOrdinal: 1,
-              kind: 'DETECTION',
-              outcome: call.outcome,
-            }))
-          : subject.intent.stageCalls.slice(-2).map((call, index) => ({
-              requestOrdinal: index + 1,
-              kind: call.stage,
-              outcome: call.outcome,
-            }))
-        const route = subject.kind === 'BATCH'
-          ? subject.batch.routeSnapshot
-          : subject.intent.stageCalls.at(-1)
+        const batch = subject.kind === 'BATCH'
+          ? subject.batch
+          : SessionBatchV2Schema.safeParse(this.#batches.get(subject.intent.batchId)).data
+        const callHistory = [
+          ...(batch?.detector.calls ?? []).map(call => ({ kind: 'DETECTION', outcome: call.outcome })),
+          ...(subject.kind === 'INTENT'
+            ? subject.intent.stageCalls.map(call => ({ kind: call.stage, outcome: call.outcome }))
+            : []),
+        ]
+        const calls = callHistory.slice(-2).map((call, index) => ({
+          requestOrdinal: Math.max(1, callHistory.length - 1) + index,
+          ...call,
+        }))
+        const route = subject.kind === 'INTENT' ? subject.intent.stageCalls.at(-1) ?? batch?.routeSnapshot : batch?.routeSnapshot
+        const reasonCode = projected.reasonCode
+        const stage = currentStage(subject, reasonCode)
         return {
           workItemId: projected.subjectId,
           workItemRevision: subject.kind === 'BATCH' ? subject.batch.revision : subject.intent.revision,
@@ -218,10 +284,13 @@ export class V2LearningAttentionService {
           updatedAt: projected.updatedAt,
           failureCode: projected.reasonCode,
           retryable: false,
-          attempt: Math.min(3, calls.length),
-          requestBudgetUsed: Math.min(2, calls.length),
+          attempt: Math.min(3, callHistory.length),
+          requestBudgetUsed: Math.min(2, callHistory.length),
           ...(route === undefined ? {} : { modelRoute: { provider: route.provider, model: route.model } }),
           calls,
+          attentionKind: attentionKind(subject, stage, reasonCode),
+          currentStage: stage,
+          stages: learningStages.map(candidate => stageFacts(subject, batch, candidate)),
         }
       })
       return { ok: true, value: {

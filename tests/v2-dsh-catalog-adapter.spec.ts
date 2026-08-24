@@ -5,6 +5,10 @@ import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
+import {
+  listStableContextDirectory,
+  readStableContextFile,
+} from '../src/adapters/dsh-filesystem/context-filesystem.js'
 
 async function seed() {
   const domain = createMemoryRun2skillV2Domain()
@@ -66,6 +70,95 @@ async function* openBundleDirectory() {
 }
 
 describe('DSH v2 Runtime and Pending Catalog adapter', () => {
+  it('reads writable Runtime winners through the exact Agent context filesystem', async () => {
+    const { domain, fixture, sessionBatch } = await seed()
+    const skillText = rawSkill('# Existing workflow')
+    const rootPath = 'D:\\repo\\.dsh\\skills'
+    const bundlePath = `${rootPath}\\existing-workflow`
+    const skillPath = `${bundlePath}\\SKILL.md`
+    const targets = new Map([
+      [rootPath.toLowerCase(), { targetKey: 'ctxfs://root', displayPath: rootPath }],
+      [bundlePath.toLowerCase(), { targetKey: 'ctxfs://bundle', displayPath: bundlePath }],
+      [skillPath.toLowerCase(), { targetKey: 'ctxfs://skill', displayPath: skillPath }],
+    ])
+    const resolve = async (path: string, options?: { cwd?: string }) => {
+      const absolute = path.toLowerCase() === 'skill.md'
+        ? skillPath
+        : path
+      const target = targets.get(absolute.replaceAll('/', '\\').toLowerCase())
+      if (target === undefined) throw Object.assign(new Error(`not found: ${path} cwd=${options?.cwd ?? ''}`), { code: 'FS_NOT_FOUND' })
+      return target
+    }
+    const filesystem = {
+      resolve,
+      contains: (parent: { targetKey: string }, child: { targetKey: string }) => (
+        parent.targetKey === 'ctxfs://root'
+        || (parent.targetKey === 'ctxfs://bundle' && child.targetKey === 'ctxfs://skill')
+        || parent.targetKey === child.targetKey
+      ),
+      lstat: async (path: string, options?: { cwd?: string }) => {
+        const target = await resolve(path, options)
+        return target.targetKey === 'ctxfs://skill'
+          ? { version: 'file-v1', type: 'file' as const, size: Buffer.byteLength(skillText) }
+          : { version: 'dir-v1', type: 'directory' as const }
+      },
+      stat: async (target: { targetKey: string }) => target.targetKey === 'ctxfs://skill'
+        ? { version: 'file-v1', type: 'file' as const, size: Buffer.byteLength(skillText) }
+        : { version: 'dir-v1', type: 'directory' as const },
+      readBytes: async () => Buffer.from(skillText),
+      listDir: async (target: { targetKey: string }) => target.targetKey === 'ctxfs://bundle'
+        ? [{
+            name: 'SKILL.md', type: 'file' as const,
+            target: targets.get(skillPath.toLowerCase())!,
+            version: 'file-v1', size: Buffer.byteLength(skillText),
+          }]
+        : [],
+    }
+    const view = {
+      cwd: 'D:\\repo',
+      scope: { ctx: { get: (name: string) => name === 'fs' ? filesystem : undefined } },
+      signal: new AbortController().signal,
+    }
+    const listed = await listStableContextDirectory(filesystem, bundlePath)
+    expect(listed?.entries.map(entry => entry.name)).toEqual(['SKILL.md'])
+    await expect(readStableContextFile(filesystem, skillPath, {
+      maxBytes: 1024 * 1024,
+      containWithin: listed!.target,
+    })).resolves.toMatchObject({ version: 'file-v1' })
+    const adapter = new DshV2CatalogAdapter(domain, {
+      registry: {
+        snapshot: async input => {
+          expect(input).toBe(view)
+          return { complete: true, skills: [runtimeSkill] }
+        },
+        get: async () => ({ ...runtimeSkill, path: skillPath, content: '# Existing workflow' }),
+      },
+      resolveView: () => view,
+      resolveStockWritableRoot: () => ({
+        scope: 'PROJECT', expectedProvider: 'filesystem', expectedSource: 'project-dsh',
+        canonicalRootPath: rootPath,
+      }),
+      internalOpenOwnershipFile: () => { throw new Error('must not bypass ctx.fs') },
+      internalOpenOwnershipDirectory: () => { throw new Error('must not bypass ctx.fs') },
+    })
+
+    const observed = await adapter.observeOwnershipCatalog(fixture.experienceIntent.sessionLifecycleKey)
+    expect(observed).toMatchObject({ complete: true })
+    expect(observed.candidates).toHaveLength(1)
+    expect(observed.candidates[0]?.targetPathDigest).toBe(sha256Utf8(canonicalJson({
+      contract: 'dsh-fs-target-v1',
+      targetKeyDigest: sha256Utf8('ctxfs://skill'),
+    })))
+
+    const snapshot = await adapter.recall.snapshot({ batch: sessionBatch, intent: fixture.experienceIntent })
+    const loaded = await adapter.recall.read({
+      candidateId: snapshot.summaries[0]!.candidateId,
+      batch: sessionBatch,
+      intent: fixture.experienceIntent,
+    })
+    expect(loaded?.content).toBe('# Existing workflow')
+  })
+
   it('recovers only the exact Proposal Catalog behind its retained publication journal', async () => {
     const { domain, fixture, sessionBatch } = await seed()
     const proposalId = `prop_${'9'.repeat(64)}`

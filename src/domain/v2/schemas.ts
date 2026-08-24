@@ -428,6 +428,7 @@ export const SessionBatchV2Schema = z.object({
     policyVersion: identity,
     maxInputBytes: positiveSafeInteger,
     maxOutputBytes: positiveSafeInteger,
+    detectionReasoningEffort: identity.optional(),
     failureCode: z.literal('ROUTE_UNAVAILABLE').optional(),
   }).strict(),
   detector: z.object({
@@ -595,6 +596,9 @@ export const OwnershipEvidenceV2Schema = z.discriminatedUnion('status', [
       'INTENT_INCOMPLETE', 'BASELINE_INCOMPLETE', 'CLAIM_INPUT_UNAVAILABLE',
       'BASELINE_TIME_INVALID',
       'OBSERVATION_FAILED', 'OBSERVATION_INVALID', 'OBSERVATION_OUTCOME_UNKNOWN',
+      'SESSION_CONTEXT_UNAVAILABLE', 'SESSION_SNAPSHOT_UNAVAILABLE',
+      'SESSION_LOG_UNAVAILABLE', 'SESSION_WINDOW_INCOMPLETE',
+      'SESSION_CHANGED_DURING_CHECK', 'OWNERSHIP_ANALYSIS_UNAVAILABLE',
     ]),
   }).strict(),
   z.object({

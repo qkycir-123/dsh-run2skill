@@ -6,6 +6,7 @@ export interface DshSessionHeader {
   readonly parentSession?: string
   readonly origin?: 'subagent'
   readonly delegationDepth?: number
+  readonly agentPreset?: string
 }
 
 export interface DshSessionEvent {

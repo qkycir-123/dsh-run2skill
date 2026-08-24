@@ -7,6 +7,7 @@ import { AgentFirstOwnershipCoordinator } from '../src/application/ownership/ind
 import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { deriveSessionBatchIdV2, SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import type { DshSessionEvent, DshSessionHeader, SessionPersistenceSnapshot } from '../src/adapters/dsh-session/types.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -57,6 +58,12 @@ function harness(options: {
   readonly snapshots?: readonly SessionPersistenceSnapshot[][]
   readonly seqOffset?: number
   readonly onReadFrom?: (fromSeq: number) => void
+  readonly resolveTargetPathDigest?: (path: string, cwd?: string) => Promise<string | undefined>
+  readonly sessionAvailable?: boolean
+  readonly resolvedHeader?: DshSessionHeader
+  readonly resolveSessionError?: Error
+  readonly readFromError?: Error
+  readonly manifestError?: Error
 }) {
   const fixture = createMinimalV2Fixtures()
   const seqOffset = options.seqOffset ?? 0
@@ -96,21 +103,33 @@ function harness(options: {
         return values[Math.min(snapshotRead++, values.length - 1)]!
       },
       async readFrom(_sessionId, fromSeq) {
+        if (options.readFromError !== undefined) throw options.readFromError
         options.onReadFrom?.(fromSeq)
         return { meta: header, events }
       },
     },
-    resolveSession: key => key === batch.sessionLifecycleKey ? { header } : undefined,
+    resolveSession: key => {
+      if (options.resolveSessionError !== undefined) throw options.resolveSessionError
+      return options.sessionAvailable !== false && key === batch.sessionLifecycleKey
+        ? { header: options.resolvedHeader ?? header }
+        : undefined
+    },
     manifest: {
-      capture: async () => ({
-        observedAt: '2026-08-22T01:00:00.000Z',
-        rootManifestDigest: manifestUnchanged ? batch.batchManifestBaseline.rootManifestDigest : '9'.repeat(64),
-        runtimeCatalogDigest: manifestUnchanged ? batch.batchManifestBaseline.runtimeCatalogDigest : '8'.repeat(64),
-        complete: true,
-        ownershipCandidates: endCandidates,
-      }),
+      capture: async () => {
+        if (options.manifestError !== undefined) throw options.manifestError
+        return {
+          observedAt: '2026-08-22T01:00:00.000Z',
+          rootManifestDigest: manifestUnchanged ? batch.batchManifestBaseline.rootManifestDigest : '9'.repeat(64),
+          runtimeCatalogDigest: manifestUnchanged ? batch.batchManifestBaseline.runtimeCatalogDigest : '8'.repeat(64),
+          complete: true,
+          ownershipCandidates: endCandidates,
+        }
+      },
     },
     now: () => Date.parse('2026-08-22T01:00:00.000Z'),
+    ...(options.resolveTargetPathDigest === undefined
+      ? {}
+      : { resolveTargetPathDigest: options.resolveTargetPathDigest }),
   })
   return { adapter, batch, intent: fixture.experienceIntent }
 }
@@ -146,6 +165,38 @@ async function decideWithRealAdapter(
 }
 
 describe('real DSH Agent-first ownership observation adapter', () => {
+  it('attributes Agent writes with the exact context-filesystem target identity', async () => {
+    const targetPathDigest = sha256Utf8(canonicalJson({
+      contract: 'dsh-fs-target-v1',
+      targetKeyDigest: sha256Utf8('ctxfs://fixture-skill'),
+    }))
+    const created = { ...candidate(), targetPathDigest }
+    const aliasPath = '.dsh/skills/fixture-workflow/SKILL.md'
+    const { adapter, batch, intent } = harness({
+      baselineCandidates: [],
+      endCandidates: [created],
+      resolveTargetPathDigest: async path => path === aliasPath ? targetPathDigest : undefined,
+      between: [
+        event('tool/call', 3, {
+          turn: 2, step: 1, callId: 'call-context-fs', name: 'write',
+          arguments: JSON.stringify({ file_path: aliasPath, content: exactSkillBytes }),
+        }),
+        toolResult(4, 'call-context-fs'),
+      ],
+    })
+
+    await expect(adapter.observe({ batch, intent, inputDigest: 'd'.repeat(64) })).resolves.toMatchObject({
+      status: 'OBSERVED',
+      toolEvidenceComplete: true,
+      agentActivity: 'WRITE_SUCCEEDED',
+      changedCandidates: [{
+        candidateId: created.candidateId,
+        writeAttribution: 'AGENT_WRITE_SUCCEEDED',
+        intentBinding: 'MATCH',
+      }],
+    })
+  })
+
   it('reads only a bounded suffix for a late SessionBatch', async () => {
     let observedFromSeq = -1
     const observed = harness({
@@ -181,6 +232,49 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     await expect(adapter.observe({ batch, intent, inputDigest: 'd'.repeat(64) })).resolves.toMatchObject({
       status: 'OBSERVED', inputDigest: 'd'.repeat(64), catalogComplete: true,
       toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [],
+    })
+  })
+
+  it('ignores rc.8 inbox and automatic-title control events that cannot write Skill files', async () => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('agent/inbox/spliced', 2, {
+          target: 'next-turn', start: 0, removedCount: 0, inserted: [],
+        }),
+        event('session/title-llm-request', 3, {
+          provider: 'fixture', model: 'fixture', messageSeqs: [1],
+        }),
+        event('session/title', 4, {
+          title: 'Fixture title', messageSeqs: [1], source: { kind: 'provider', provider: 'fixture' },
+        }),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      status: 'OBSERVED', toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [],
+    })
+  })
+
+  it('keeps standard-mode approval control events inside a complete ownership window', async () => {
+    const observed = harness({
+      baselineCandidates: [candidate()], endCandidates: [candidate()],
+      between: [
+        event('approval/asked', 2, {
+          turn: 2, step: 1, approvalId: 'approval-1', toolCallId: 'call-1',
+        }),
+        event('approval/decided', 3, {
+          turn: 2, step: 1, approvalId: 'approval-1', decision: 'approved',
+        }),
+      ],
+    })
+
+    await expect(observed.adapter.observe({
+      batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      status: 'OBSERVED', toolEvidenceComplete: true, agentActivity: 'NONE', changedCandidates: [],
     })
   })
 
@@ -566,7 +660,7 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
   })
 
-  it('fails closed when dynamic Shell state could hide a same-content Skill rewrite', async () => {
+  it('uses the complete end Catalog when a Shell call carries no Skill-generation evidence', async () => {
     const observed = harness({
       baselineCandidates: [candidate()], endCandidates: [candidate()],
       between: [
@@ -579,7 +673,7 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
 
     await expect(decideWithRealAdapter(observed)).resolves.toMatchObject({
-      status: 'NEEDS_CONFIRMATION', ownership: { reasonCode: 'AGENT_ACTIVITY_AMBIGUOUS' },
+      status: 'RUN2SKILL_OWNED', ownership: { reasonCode: 'NO_AGENT_SKILL_ACTIVITY' },
     })
   })
 
@@ -612,7 +706,7 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     })
     await expect(raced.adapter.observe({
       batch: raced.batch, intent: raced.intent, inputDigest: 'd'.repeat(64),
-    })).resolves.toEqual({ status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' })
+    })).resolves.toEqual({ status: 'UNAVAILABLE', reasonCode: 'SESSION_CHANGED_DURING_CHECK' })
 
     const malformedAssistant = harness({
       between: [event('assistant/message', 3, {
@@ -623,5 +717,66 @@ describe('real DSH Agent-first ownership observation adapter', () => {
     await expect(malformedAssistant.adapter.observe({
       batch: malformedAssistant.batch, intent: malformedAssistant.intent, inputDigest: 'd'.repeat(64),
     })).resolves.toMatchObject({ status: 'OBSERVED', toolEvidenceComplete: false, agentActivity: 'AMBIGUOUS' })
+  })
+
+  it('does not mistake an ordinary Markdown divider for a generated Skill body', async () => {
+    const { adapter, batch, intent } = harness({
+      between: [event('assistant/message', 3, {
+        turn: 2, step: 1,
+        message: {
+          role: 'assistant', source: { kind: 'assistant' },
+          content: [{
+            type: 'text',
+            text: '任务完成。\n\n---\n\n我没有创建或修改任何 SKILL.md。',
+          }],
+        },
+      })],
+    })
+
+    await expect(adapter.observe({ batch, intent, inputDigest: 'd'.repeat(64) })).resolves.toMatchObject({
+      status: 'OBSERVED', toolEvidenceComplete: true, agentActivity: 'NONE',
+    })
+  })
+
+  it('keeps ownership diagnostics stage-specific without exposing exception text', async () => {
+    const cases = [
+      {
+        observed: harness({ resolveSessionError: new Error('secret resolver detail') }),
+        reasonCode: 'SESSION_CONTEXT_UNAVAILABLE',
+      },
+      {
+        observed: harness({ readFromError: new Error('secret session backend detail') }),
+        reasonCode: 'SESSION_LOG_UNAVAILABLE',
+      },
+      {
+        observed: harness({ manifestError: new Error('secret manifest detail') }),
+        reasonCode: 'OWNERSHIP_ANALYSIS_UNAVAILABLE',
+      },
+    ] as const
+
+    for (const { observed, reasonCode } of cases) {
+      const result = await observed.adapter.observe({
+        batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+      })
+      expect(result).toEqual({ status: 'UNAVAILABLE', reasonCode })
+      expect(JSON.stringify(result)).not.toContain('secret')
+    }
+  })
+
+  it('uses the durable Session snapshot when the optional live Host Session is gone', async () => {
+    const observed = harness({ sessionAvailable: false })
+    const sessionLifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: header.id,
+      sessionCreatedAt: header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
+    })
+    const batch = { ...observed.batch, sessionLifecycleKey }
+    const intent = { ...observed.intent, sessionLifecycleKey }
+
+    await expect(observed.adapter.observe({
+      batch, intent, inputDigest: 'd'.repeat(64),
+    })).resolves.toMatchObject({
+      status: 'OBSERVED', catalogComplete: true, toolEvidenceComplete: true,
+    })
   })
 })

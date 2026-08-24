@@ -4,8 +4,10 @@ import type { SessionPersistencePort, DshSessionEvent, DshSessionHeader } from '
 import type { OwnershipObservationPort } from '../../application/ownership/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
+import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../../domain/observe/signal-key.js'
 import { parseDshSkillFileForOwnership } from './v2-skill-file.js'
 import type { ExperienceIntentV2, OwnershipEvidenceV2, SessionBatchV2 } from '../../domain/v2/index.js'
+import { parseDshContextFileSystem } from '../dsh-filesystem/context-filesystem.js'
 
 type OwnershipCandidate = NonNullable<SessionBatchV2['batchManifestBaseline']['ownershipCandidates']>[number]
 
@@ -60,6 +62,12 @@ const DIRECT_FILE_TOOLS = new Set(['write', 'edit', 'str_replace_editor'])
 const STR_REPLACE_EDITOR_WRITE_COMMANDS = new Set(['create', 'str_replace', 'insert'])
 const SKILL_MARKER = /(?:SKILL\.md|[\\/]\.(?:dsh|agents)[\\/]skills[\\/]|[\\/]skills[\\/])/iu
 const SUPPORTED_TURN_EVENTS = new Set([
+  // DSH rc.8 emits these control-plane records inside the Turn envelope.
+  // They only manage the Agent inbox or the log-backed Session title and
+  // cannot mutate files; the tool/call + tool/result pairs below remain the
+  // authoritative evidence for filesystem activity.
+  'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
+  'approval/asked', 'approval/decided',
   'turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'assistant/chunk',
   'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
   'request/context', 'session/end-seed',
@@ -83,15 +91,20 @@ const DEFAULT_OWNERSHIP_OBSERVATION_POLICY: OwnershipObservationPolicy = Object.
 
 export interface DshV2OwnershipObservationAdapterOptions {
   readonly persistence: SessionPersistencePort
-  readonly resolveSession: (sessionLifecycleKey: string) => { readonly header: DshSessionHeader } | undefined
+  readonly resolveSession: (sessionLifecycleKey: string) => {
+    readonly header: DshSessionHeader
+    readonly filesystem?: unknown
+  } | undefined
   readonly manifest: {
     capture(sessionLifecycleKey: string): Promise<SessionBatchV2['batchManifestBaseline']>
   }
   readonly now?: () => number
   readonly internalPolicy?: Partial<OwnershipObservationPolicy>
+  readonly resolveTargetPathDigest?: (path: string, cwd?: string) => Promise<string | undefined>
 }
 
 interface ParsedWrite {
+  readonly targetPath?: string
   readonly targetPathDigest?: string
   readonly readbackBody?: string
   readonly readbackBodyDigest?: string
@@ -127,15 +140,31 @@ export function deriveOwnershipTargetPathDigest(path: string, cwd?: string): str
   return sha256Utf8(canonicalJson({ path: canonicalPath(path, cwd) }))
 }
 
+function deriveContextTargetPathDigest(targetKey: string): string {
+  return sha256Utf8(canonicalJson({
+    contract: 'dsh-fs-target-v1',
+    targetKeyDigest: sha256Utf8(targetKey),
+  }))
+}
+
 function sameHeader(left: DshSessionHeader, right: DshSessionHeader): boolean {
   return canonicalJson(left) === canonicalJson(right)
 }
 
 function exactSnapshot(
   snapshots: readonly { readonly header: DshSessionHeader; readonly revision: string }[],
-  header: DshSessionHeader,
+  sessionLifecycleKey: string,
+  resolvedHeader?: DshSessionHeader,
 ) {
-  const matches = snapshots.filter(snapshot => sameHeader(snapshot.header, header))
+  const matches = snapshots.filter(snapshot => resolvedHeader === undefined
+    ? deriveSessionLifecycleKey({
+        rootSessionId: snapshot.header.id,
+        sessionCreatedAt: snapshot.header.createdAt,
+        sessionCwdDigest: deriveSessionCwdDigest(snapshot.header.cwd),
+      }) === sessionLifecycleKey
+    : snapshot.header.id === resolvedHeader.id
+      && snapshot.header.createdAt === resolvedHeader.createdAt
+      && snapshot.header.cwd === resolvedHeader.cwd)
   return matches.length === 1 ? matches[0] : undefined
 }
 
@@ -238,6 +267,7 @@ function directWrite(
   const authoredText = typeof fullContent === 'string' ? fullContent : mutationText
   const authoredBodyEvidence = typeof authoredText === 'string' ? skillBodyEvidence(authoredText) : 'NONE'
   return {
+    targetPath: path,
     targetPathDigest: deriveOwnershipTargetPathDigest(path, cwd),
     ...(readback === undefined
       ? {}
@@ -252,35 +282,56 @@ function directWrite(
 
 function skillBodyEvidence(value: string): 'COMPLETE' | 'NONE' | 'AMBIGUOUS' {
   const lines = value.split('\n')
-  let sawOpening = false
+  let sawSkillShape = false
   for (let opening = 0; opening < lines.length; opening += 1) {
     if (lines[opening]!.replace(/\r$/u, '') !== '---') continue
-    sawOpening = true
     const closing = lines.findIndex(
       (line, index) => index > opening && line.replace(/\r$/u, '') === '---',
     )
-    if (closing < 0) return 'AMBIGUOUS'
+    if (closing < 0) {
+      const tail = lines.slice(opening + 1).join('\n')
+      if (/^(?:name|description):/imu.test(tail)) sawSkillShape = true
+      continue
+    }
     const header = lines.slice(opening + 1, closing).join('\n')
     const body = lines.slice(closing + 1).join('\n')
       .replace(/^\s*```(?:markdown|md)?\s*$/gimu, '')
       .trim()
+    const hasName = /^name:\s*[^\s#][^\r\n]*$/imu.test(header)
+    const hasDescription = /^description:\s*[^\s#][^\r\n]*$/imu.test(header)
     if (
-      /^name:\s*[^\s#][^\r\n]*$/imu.test(header)
-      && /^description:\s*[^\s#][^\r\n]*$/imu.test(header)
+      hasName
+      && hasDescription
       && body.length > 0
     ) return 'COMPLETE'
+    if (hasName || hasDescription) sawSkillShape = true
     opening = closing
   }
-  return sawOpening ? 'AMBIGUOUS' : 'NONE'
+  return sawSkillShape ? 'AMBIGUOUS' : 'NONE'
 }
 
-function analyzeTools(
+function shellSkillEvidence(rawArguments: string): 'COMPLETE' | 'NONE' | 'AMBIGUOUS' {
+  if (SKILL_MARKER.test(rawArguments)) return 'COMPLETE'
+  const args = parseJsonObject(rawArguments)
+  if (args === undefined) return 'AMBIGUOUS'
+  let result: 'NONE' | 'AMBIGUOUS' = 'NONE'
+  for (const value of Object.values(args)) {
+    if (typeof value !== 'string') continue
+    const evidence = skillBodyEvidence(value)
+    if (evidence === 'COMPLETE') return evidence
+    if (evidence === 'AMBIGUOUS') result = evidence
+  }
+  return result
+}
+
+async function analyzeTools(
   events: readonly DshSessionEvent[],
   cwd: string | undefined,
   knownSkillTargetDigests: ReadonlySet<string>,
   policy: OwnershipObservationPolicy,
   deadline: number,
-): ToolEvidence {
+  resolveTargetPathDigest?: (path: string, cwd?: string) => Promise<string | undefined>,
+): Promise<ToolEvidence> {
   const calls = new Map<string, { readonly seq: number; readonly data: z.infer<typeof toolCallSchema> }>()
   const results = new Map<string, { readonly seq: number; readonly data: z.infer<typeof toolResultSchema> }>()
   let activity: ToolEvidence['activity'] = 'NONE'
@@ -368,9 +419,18 @@ function analyzeTools(
           return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
         }
       }
-      const parsedWrite = directWrite(call.name, call.arguments, failed, cwd)
+      let parsedWrite = directWrite(call.name, call.arguments, failed, cwd)
       if (parsedWrite === undefined) {
         return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+      }
+      if (resolveTargetPathDigest !== undefined) {
+        const targetPathDigest = parsedWrite.targetPath === undefined
+          ? undefined
+          : await resolveTargetPathDigest(parsedWrite.targetPath, cwd)
+        if (targetPathDigest === undefined || Date.now() > deadline) {
+          return { complete: false, activity: 'AMBIGUOUS', writes: [], unattributedBodyEvidence: true }
+        }
+        parsedWrite = { ...parsedWrite, targetPathDigest }
       }
       const write = !parsedWrite.skillMarker
         && parsedWrite.targetPathDigest !== undefined
@@ -387,12 +447,14 @@ function analyzeTools(
       continue
     }
     if (SHELL_TOOLS.has(call.name)) {
-      if (SKILL_MARKER.test(call.arguments)) {
+      const evidence = shellSkillEvidence(call.arguments)
+      if (evidence === 'COMPLETE') {
         activity = 'BODY_GENERATED'
-      } else {
+        unattributedBodyEvidence = true
+      } else if (evidence === 'AMBIGUOUS') {
         activity = 'AMBIGUOUS'
+        unattributedBodyEvidence = true
       }
-      unattributedBodyEvidence = true
       continue
     }
     activity = 'AMBIGUOUS'
@@ -450,27 +512,38 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
     readonly intent: ExperienceIntentV2
     readonly inputDigest: string
   }): Promise<OwnershipEvidenceV2> {
+    let failureCode: Extract<OwnershipEvidenceV2, { status: 'UNAVAILABLE' }>['reasonCode'] = 'SESSION_CONTEXT_UNAVAILABLE'
     try {
       const session = this.options.resolveSession(input.batch.sessionLifecycleKey)
-      if (session === undefined) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+      failureCode = 'SESSION_SNAPSHOT_UNAVAILABLE'
       const beforeList = await this.options.persistence.listSnapshots()
-      const before = exactSnapshot(beforeList, session.header)
-      if (before === undefined) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+      const before = exactSnapshot(beforeList, input.batch.sessionLifecycleKey, session?.header)
+      if (before === undefined) return { status: 'UNAVAILABLE', reasonCode: 'SESSION_SNAPSHOT_UNAVAILABLE' }
       const fromSeq = Math.max(0, input.batch.firstTurnEndSeq - this.#policy.readLookbehindSeqs)
-      const log = await this.options.persistence.readFrom(session.header.id, fromSeq)
-      if (!sameHeader(log.meta, session.header)) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+      failureCode = 'SESSION_LOG_UNAVAILABLE'
+      const log = await this.options.persistence.readFrom(before.header.id, fromSeq)
+      if (!sameHeader(log.meta, before.header)) {
+        return { status: 'UNAVAILABLE', reasonCode: 'SESSION_LOG_UNAVAILABLE' }
+      }
+      failureCode = 'SESSION_WINDOW_INCOMPLETE'
       const window = batchWindow(
         log.events, input.batch, this.#policy, Date.now() + this.#policy.maxAnalysisMs,
       )
-      if (window === undefined) return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+      if (window === undefined) return { status: 'UNAVAILABLE', reasonCode: 'SESSION_WINDOW_INCOMPLETE' }
 
+      failureCode = 'OWNERSHIP_ANALYSIS_UNAVAILABLE'
       const end = await this.options.manifest.capture(input.batch.sessionLifecycleKey)
+      failureCode = 'SESSION_SNAPSHOT_UNAVAILABLE'
       const afterList = await this.options.persistence.listSnapshots()
-      const after = exactSnapshot(afterList, session.header)
-      if (after === undefined || after.revision !== before.revision) {
-        return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+      const after = exactSnapshot(afterList, input.batch.sessionLifecycleKey, session?.header)
+      if (after === undefined) {
+        return { status: 'UNAVAILABLE', reasonCode: 'SESSION_SNAPSHOT_UNAVAILABLE' }
+      }
+      if (!sameHeader(after.header, before.header) || after.revision !== before.revision) {
+        return { status: 'UNAVAILABLE', reasonCode: 'SESSION_CHANGED_DURING_CHECK' }
       }
 
+      failureCode = 'OWNERSHIP_ANALYSIS_UNAVAILABLE'
       const baselineCandidates = input.batch.batchManifestBaseline.ownershipCandidates
       const endCandidates = end.ownershipCandidates
       const catalogComplete = input.batch.batchManifestBaseline.complete
@@ -481,12 +554,28 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         [...(baselineCandidates ?? []), ...(endCandidates ?? [])]
           .flatMap(candidate => candidate.targetPathDigest === undefined ? [] : [candidate.targetPathDigest]),
       )
-      const toolEvidence = analyzeTools(
+      const contextFilesystem = session?.filesystem === undefined
+        ? undefined
+        : parseDshContextFileSystem(session.filesystem)
+      const resolveTargetPathDigest = this.options.resolveTargetPathDigest
+        ?? (session?.filesystem === undefined
+          ? undefined
+          : async (path: string, cwd?: string) => {
+              if (contextFilesystem === undefined) return undefined
+              try {
+                const target = await contextFilesystem.resolve(path, { cwd })
+                return deriveContextTargetPathDigest(target.targetKey)
+              } catch {
+                return undefined
+              }
+            })
+      const toolEvidence = await analyzeTools(
         window,
-        session.header.cwd,
+        before.header.cwd,
         knownSkillTargetDigests,
         this.#policy,
         Date.now() + this.#policy.maxAnalysisMs,
+        resolveTargetPathDigest,
       )
       const changes = catalogComplete ? changedCandidates(baselineCandidates, endCandidates) : []
       const changedCandidateIds = new Set(changes.map(({ baseline, end: current }) => (
@@ -565,7 +654,7 @@ export class DshV2OwnershipObservationAdapter implements OwnershipObservationPor
         changedCandidates: projected,
       }
     } catch {
-      return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+      return { status: 'UNAVAILABLE', reasonCode: failureCode }
     }
   }
 }

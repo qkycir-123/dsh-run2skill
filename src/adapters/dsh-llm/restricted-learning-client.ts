@@ -98,6 +98,7 @@ export type DshStreamChunk =
 export interface DshGenerateOptions {
   readonly provider: string
   readonly model: string
+  readonly reasoningEffort?: string
   readonly messages: DshUserMessage[]
   readonly system: string
   readonly maxTokens: number
@@ -119,6 +120,14 @@ export interface DshLlmPort {
   ): Promise<{
     readonly context?: { readonly contextWindow: number }
     readonly defaultMaxTokens?: number
+    readonly reasoning?: {
+      readonly efforts: readonly {
+        readonly id: string
+        readonly name: string
+        readonly description?: string
+      }[]
+      readonly defaultEffort?: string
+    }
   }>
   stream(options: DshGenerateOptions): AsyncIterable<DshStreamChunk>
 }

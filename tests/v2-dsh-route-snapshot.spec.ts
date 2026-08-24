@@ -26,6 +26,10 @@ describe('DshV2RouteSnapshotAdapter', () => {
     const adapter = new DshV2RouteSnapshotAdapter(llm({
       context: { contextWindow: 128_000 },
       defaultMaxTokens: 8_192,
+      reasoning: {
+        efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }],
+        defaultEffort: 'high',
+      },
     }))
 
     await expect(adapter.capture('sl_session', [
@@ -37,6 +41,7 @@ describe('DshV2RouteSnapshotAdapter', () => {
       policyVersion: V2_ROUTE_BUDGET_POLICY_VERSION,
       maxInputBytes: 117_760,
       maxOutputBytes: 32_768,
+      detectionReasoningEffort: 'off',
     })
   })
 
@@ -49,6 +54,7 @@ describe('DshV2RouteSnapshotAdapter', () => {
     const snapshot = await new DshV2RouteSnapshotAdapter(port).capture('sl_session', [observation(10)])
 
     expect(snapshot).toMatchObject({ maxInputBytes: 29_440, maxOutputBytes: 2_048 })
+    expect(snapshot).not.toHaveProperty('detectionReasoningEffort')
     expect(streamed).toBe(false)
   })
 

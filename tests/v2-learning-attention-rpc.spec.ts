@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { V2LearningAttentionService } from '../src/adapters/dsh-connection/v2-learning-attention-rpc.js'
 import { CompleteCoverageWorker } from '../src/application/coverage-analysis/index.js'
 import { CompleteCatalogRecallWorker, deriveRecallCandidateId } from '../src/application/recall/index.js'
-import { deriveTurnObservationContentDigestV2, ExperienceIntentV2Schema, SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import {
+  deriveOwnershipClaimIdV2,
+  deriveOwnershipEvidenceDigestV2,
+  deriveOwnershipReceiptDigestV2,
+  deriveTurnObservationContentDigestV2,
+  ExperienceIntentV2Schema,
+  SessionBatchV2Schema,
+} from '../src/domain/v2/index.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
@@ -125,6 +132,87 @@ describe('v2 learning Attention RPC', () => {
       ok: true,
       value: { changed: false, disposition: 'RETRY_QUEUED' },
     })
+  })
+
+  it('reports the successful Batch detection before an ownership safety stop', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const { fixture } = await seededObservation(domain)
+    const evidence = { status: 'UNAVAILABLE' as const, reasonCode: 'BASELINE_INCOMPLETE' as const }
+    const evidenceDigest = deriveOwnershipEvidenceDigestV2(evidence)
+    const claimId = deriveOwnershipClaimIdV2({
+      intentId: fixture.experienceIntent.intentId,
+      intentRevision: fixture.experienceIntent.revision,
+    })
+    const intent = ExperienceIntentV2Schema.parse({
+      ...fixture.experienceIntent,
+      revision: 4,
+      status: 'NEEDS_CONFIRMATION',
+      ownership: {
+        state: 'NEEDS_CONFIRMATION',
+        claimId,
+        claimedIntentRevision: fixture.experienceIntent.revision,
+        claimedAt: now,
+        evidence,
+        evidenceDigest,
+        reasonCode: 'BASELINE_INCOMPLETE',
+        receiptDigest: deriveOwnershipReceiptDigestV2({
+          intentId: fixture.experienceIntent.intentId,
+          claimedIntentRevision: fixture.experienceIntent.revision,
+          claimId,
+          decision: 'NEEDS_CONFIRMATION',
+          evidenceDigest,
+          reasonCode: 'BASELINE_INCOMPLETE',
+        }),
+      },
+    })
+    const batch = SessionBatchV2Schema.parse({
+      ...fixture.sessionBatch,
+      revision: 3,
+      batchManifestBaseline: { ...fixture.sessionBatch.batchManifestBaseline, complete: false },
+      detector: {
+        result: 'READY',
+        calls: [{
+          stage: 'DETECTION', callId: `call_${'a'.repeat(64)}`, ordinal: 1,
+          inputDigest: 'b'.repeat(64), provider: 'deepseek-official', model: 'deepseek-chat',
+          policyVersion: 'batch-detector-v1', outcome: 'SUCCEEDED', outputDigest: 'c'.repeat(64),
+        }],
+        intentIds: [intent.intentId],
+        carry: [],
+      },
+      state: 'COMMITTED_READY',
+    })
+    await domain.table('session_batches').put(batch.batchId, batch)
+    await domain.table('experience_intents').put(intent.intentId, intent)
+    const service = new V2LearningAttentionService(
+      domain,
+      async workspaceId => ({ workspaceId, canonicalPath: 'D:/workspace' }),
+      () => now,
+    )
+
+    const result = await service.handler()('learning/issues/list', {
+      apiVersion: 1,
+      currentScope: scope,
+      limit: 20,
+    }, new AbortController().signal)
+
+    expect(result).toMatchObject({ ok: true, value: { items: [{
+      failureCode: 'BASELINE_INCOMPLETE',
+      attentionKind: 'SAFETY_STOP',
+      currentStage: 'OWNERSHIP',
+      stages: [
+        {
+          stage: 'DETECTION', state: 'COMPLETED',
+          modelCalls: { total: 1, succeeded: 1, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+        {
+          stage: 'OWNERSHIP', state: 'STOPPED',
+          modelCalls: { total: 0, succeeded: 0, failed: 0, aborted: 0, timedOut: 0, outcomeUnknown: 0 },
+        },
+        { stage: 'RECALL', state: 'NOT_STARTED' },
+        { stage: 'COVERAGE', state: 'NOT_STARTED' },
+        { stage: 'GENERATION', state: 'NOT_STARTED' },
+      ],
+    }] } })
   })
 
   it('projects a generation failure and durably dismisses its duplicate barrier facts', async () => {

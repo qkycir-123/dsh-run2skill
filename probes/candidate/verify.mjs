@@ -156,10 +156,12 @@ function scan(name, content) {
       'candidate_key',
       'coordinate_key',
       'action_key',
+      'attempt_key',
       'lifecycle_key',
       'notice_key',
       'session_lifecycle_key',
       'signal_key',
+      'target_key',
     ].includes(normalized)
     const selfDescribingConstant = literalValue.toLowerCase() === normalized
     const location = `${name}:SECRET_ASSIGNMENT:${normalized}:${String(line)}`
@@ -198,6 +200,10 @@ for (const [sample, expectedRule] of rejectedAssignmentSamples) {
     true,
     `candidate scanner must reject ${expectedRule}`,
   )
+}
+
+for (const sample of ['attempt_key=ordinaryvalue123', 'target_key=/workspace/skill']) {
+  assert.deepEqual(scan('coordinate.fixture', sample), [], 'coordinate keys must not be classified as credentials')
 }
 
 const packArgs = ['pack', '--json', '--pack-destination', packageDirectory]

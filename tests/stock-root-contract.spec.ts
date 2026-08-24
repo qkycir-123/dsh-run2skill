@@ -2,10 +2,12 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   STOCK_DSH_BASELINE_COMMIT,
+  STOCK_PRESET_COMPOSITION_DIGESTS,
   StockDshRootContractResolver,
   StockSkillRuntimeConfigurationCache,
   deriveStockResolutionContractDigest,
   resolvePinnedStockPresetConfiguration,
+  resolvePinnedStockPresetConfigurationById,
   resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
@@ -46,26 +48,81 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('accepts only an exact trusted pinned stock preset when module-local mount state is unavailable', async () => {
+  it('accepts both allowlisted stock preset compositions and fails closed for an unknown digest', async () => {
     const agent = { ctx: {} }
-    const content = '- id: skill-filesystem\n  name: stock\n'
+    const rc7Content = '- id: skill-filesystem\n  name: rc.7\n'
+    const rc8Content = '- id: skill-filesystem\n  name: rc.8\n'
+    let content = rc7Content
     const service = {
       composedPreset: (ctx: object) => ctx === agent.ctx ? 'standard' : undefined,
       resolve: async () => ({ id: 'standard', trust: 'system' as const }),
       read: async () => content,
     }
-    const digests = { standard: sha256Utf8(content), code: 'f'.repeat(64) }
+    const digests = {
+      standard: [sha256Utf8(rc7Content), sha256Utf8(rc8Content)],
+      code: ['f'.repeat(64)],
+    }
 
+    await expect(resolvePinnedStockPresetConfiguration(service, agent, digests))
+      .resolves.toEqual(configuration())
+    content = rc8Content
     await expect(resolvePinnedStockPresetConfiguration(service, agent, digests))
       .resolves.toEqual(configuration())
     await expect(resolvePinnedStockPresetConfiguration({
       ...service,
-      read: async () => `${content}# drift\n`,
+      read: async () => `${rc8Content}# unknown\n`,
     }, agent, digests)).resolves.toBeUndefined()
     await expect(resolvePinnedStockPresetConfiguration({
       ...service,
       resolve: async () => ({ id: 'standard', trust: 'user' as const }),
     }, agent, digests)).resolves.toBeUndefined()
+  })
+
+  it('restores a pinned stock preset by durable id without a live Agent context', async () => {
+    const content = '- id: skill-filesystem\n  name: stock\n'
+    const presets = {
+      resolve: async (id: string) => ({ id, trust: 'system' as const }),
+      read: async () => content,
+    }
+    const digests = { standard: [sha256Utf8(content)], code: ['f'.repeat(64)] }
+
+    await expect(resolvePinnedStockPresetConfigurationById(
+      presets,
+      'standard',
+      true,
+      digests,
+    )).resolves.toEqual(configuration({ usesContextFileSystem: true }))
+    await expect(resolvePinnedStockPresetConfigurationById(
+      presets,
+      'standard',
+      false,
+      digests,
+    )).resolves.toEqual(configuration())
+    await expect(resolvePinnedStockPresetConfigurationById(
+      presets,
+      'standard',
+      false,
+      { ...digests, standard: ['0'.repeat(64)] },
+    )).resolves.toBeUndefined()
+    await expect(resolvePinnedStockPresetConfigurationById(
+      presets,
+      'custom',
+      false,
+      digests,
+    )).resolves.toBeUndefined()
+  })
+
+  it('pins the exact rc.7 and rc.8 stock preset digest allowlists', () => {
+    expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
+      standard: [
+        '4edeb70bf995a0324f234e2adf8db6b394c3d26e1bcb76821976950fb0237bc9',
+        'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
+      ],
+      code: [
+        'dbab55b31753028956e700223420b586476313045f8527d07ed1e080df223718',
+        'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
+      ],
+    })
   })
 
   it('derives the exact filesystem configuration from the stock fiber mounted for one Agent generation', async () => {

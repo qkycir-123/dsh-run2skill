@@ -7,7 +7,11 @@ import type { StockSkillRuntimeConfiguration } from '../src/adapters/dsh-skills/
 import type { V2ProposalPublicationInput } from '../src/application/publication/index.js'
 import { deriveV2ProposalRef } from '../src/application/review/index.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
-import { ProposalLineageV2Schema, SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import {
+  ProposalLineageV2Schema,
+  SessionBatchV2Schema,
+  deriveNativeProposalLineageIdV2,
+} from '../src/domain/v2/index.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
 const roots: string[] = []
@@ -35,6 +39,27 @@ function input(canonicalWorkspacePath: string): V2ProposalPublicationInput {
     lineage: rebound,
     proposal: rebound.proposalRevisions[0]!,
     proposalRef: deriveV2ProposalRef(rebound),
+    intent: minimal.proposalReadyIntent,
+    batch: SessionBatchV2Schema.parse(minimal.sessionBatch),
+  }
+}
+
+function userInput(): V2ProposalPublicationInput {
+  const minimal = createMinimalV2Fixtures()
+  const raw = minimal.nativeActiveProposalLineage
+  const proposal = raw.proposalRevisions[0]!
+  const { projectScopeBinding: _projectScopeBinding, ...userProposal } = proposal
+  const lineage = ProposalLineageV2Schema.parse({
+    ...raw,
+    persistenceScope: 'USER',
+    lineageId: deriveNativeProposalLineageIdV2('USER', raw.behaviorSignature),
+    proposalRevisions: [userProposal],
+  })
+  if (lineage.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+  return {
+    lineage,
+    proposal: lineage.proposalRevisions[0]!,
+    proposalRef: deriveV2ProposalRef(lineage),
     intent: minimal.proposalReadyIntent,
     batch: SessionBatchV2Schema.parse(minimal.sessionBatch),
   }
@@ -109,7 +134,7 @@ describe('v2 stock publication binding resolver', () => {
     })
   })
 
-  it('rejects non-stock roots and context filesystem publication', async () => {
+  it('rejects non-stock roots', async () => {
     const project = await mkdtemp(join(tmpdir(), 'run2skill-v2-binding-'))
     roots.push(project)
     const base = {
@@ -129,8 +154,131 @@ describe('v2 stock publication binding resolver', () => {
     })
 
     await expect(resolver.resolve(input(project))).resolves.toEqual({ status: 'STALE' })
-    configuration = { ...base, customSkillDirs: [], usesContextFileSystem: true }
-    await expect(resolver.resolve(input(project))).resolves.toEqual({ status: 'STALE' })
+  })
+
+  it('binds the exact Session context filesystem and a root-scoped write policy', async () => {
+    const project = join(process.cwd(), 'virtual-context-project').replaceAll('\\', '/')
+    const declaredRoot = join(project, '.dsh', 'skills')
+    const root = declaredRoot.replaceAll('\\', '/')
+    const entries = new Map([[project, { version: 'project-v1', type: 'directory' as const }]])
+    const targetFor = (path: string) => ({ targetKey: `ctxfs://${path}`, displayPath: path })
+    const filesystem = {
+      sandboxMode: 'workspace-write' as const,
+      resolve: async (path: string) => targetFor(path.replaceAll('\\', '/')),
+      processPath: (target: { displayPath: string }) => target.displayPath,
+      contains: (parent: { displayPath: string }, child: { displayPath: string }) => (
+        child.displayPath === parent.displayPath || child.displayPath.startsWith(`${parent.displayPath}/`)
+      ),
+      stat: async (target: { displayPath: string }) => entries.get(target.displayPath),
+      lstat: async (path: string) => entries.get(path.replaceAll('\\', '/')),
+      readBytes: async () => new Uint8Array(),
+      listDir: async () => [],
+      writeText: async () => ({ operation: 'create' as const, version: 'v1', before: null, after: '' }),
+    }
+    const view = {}
+    const resolver = new DshV2StockPublicationBindingResolver({
+      resolveSession: () => ({
+        view,
+        filesystem,
+        configuration: {
+          profile: 'web', presetId: 'standard', providerName: 'filesystem',
+          includeDefaultRoots: true, customSkillDirs: [], usesContextFileSystem: true,
+        },
+        workspaceBinding: { workspaceId: 'workspace-1', canonicalPath: project },
+      }),
+    })
+
+    await expect(resolver.resolve(input(project))).resolves.toMatchObject({
+      status: 'READY',
+      view,
+      filesystem,
+      rootTarget: targetFor(root),
+      publicationPolicy: {
+        mode: 'workspace-write',
+        workspaceRoot: root,
+        sessionId: expect.any(String),
+      },
+      rootBinding: {
+        state: 'ABSENT',
+        scope: 'PROJECT',
+        declaredRootPath: declaredRoot,
+        canonicalExistingAncestorPath: project,
+        missingSegments: ['.dsh', 'skills'],
+      },
+    })
+  })
+
+  it('observes the USER stock root through the exact Session context filesystem', async () => {
+    const home = join(process.cwd(), 'virtual-context-home').replaceAll('\\', '/')
+    const declaredRoot = join(home, 'skills')
+    const root = declaredRoot.replaceAll('\\', '/')
+    const entries = new Map([[home, { version: 'home-v1', type: 'directory' as const }]])
+    const targetFor = (path: string) => ({ targetKey: `ctxfs://${path}`, displayPath: path })
+    const filesystem = {
+      sandboxMode: 'workspace-write' as const,
+      resolve: async (path: string) => targetFor(path.replaceAll('\\', '/')),
+      processPath: (target: { displayPath: string }) => target.displayPath,
+      contains: (parent: { displayPath: string }, child: { displayPath: string }) => (
+        child.displayPath === parent.displayPath || child.displayPath.startsWith(`${parent.displayPath}/`)
+      ),
+      stat: async (target: { displayPath: string }) => entries.get(target.displayPath),
+      lstat: async (path: string) => entries.get(path.replaceAll('\\', '/')),
+      readBytes: async () => new Uint8Array(),
+      listDir: async () => [],
+      writeText: async () => ({ operation: 'create' as const, version: 'v1', before: null, after: '' }),
+    }
+    const resolver = new DshV2StockPublicationBindingResolver({
+      resolveSession: () => ({
+        view: {},
+        filesystem,
+        configuration: {
+          profile: 'web', presetId: 'standard', providerName: 'filesystem',
+          includeDefaultRoots: true, customSkillDirs: [], usesContextFileSystem: true,
+          configuredDshHome: home,
+        },
+      }),
+    })
+
+    await expect(resolver.resolve(userInput())).resolves.toMatchObject({
+      status: 'READY',
+      filesystem,
+      rootTarget: targetFor(root),
+      publicationPolicy: { mode: 'workspace-write', workspaceRoot: root },
+      rootBinding: {
+        state: 'ABSENT',
+        scope: 'USER',
+        declaredRootPath: declaredRoot,
+        canonicalExistingAncestorPath: home,
+        missingSegments: ['skills'],
+      },
+    })
+  })
+
+  it('fails closed when context filesystem observation throws', async () => {
+    const project = join(process.cwd(), 'throwing-context-project')
+    const filesystem = {
+      resolve: async () => { throw new Error('ctx.fs unavailable') },
+      processPath: () => project,
+      contains: () => true,
+      stat: async () => undefined,
+      lstat: async () => undefined,
+      readBytes: async () => new Uint8Array(),
+      listDir: async () => [],
+      writeText: async () => ({ operation: 'create' as const, version: 'v1', before: null, after: '' }),
+    }
+    const resolver = new DshV2StockPublicationBindingResolver({
+      resolveSession: () => ({
+        view: {},
+        filesystem,
+        configuration: {
+          profile: 'web', presetId: 'standard', providerName: 'filesystem',
+          includeDefaultRoots: true, customSkillDirs: [], usesContextFileSystem: true,
+        },
+        workspaceBinding: { workspaceId: 'workspace-1', canonicalPath: project },
+      }),
+    })
+
+    await expect(resolver.resolve(input(project))).resolves.toEqual({ status: 'UNAVAILABLE' })
   })
 
   it('returns unavailable when the exact Session lifecycle is gone', async () => {

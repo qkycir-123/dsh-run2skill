@@ -70,8 +70,10 @@ export class SessionCoordinateIngress {
   readonly #buffers = new Map<string, TurnBuffer>()
   readonly #maxCoordinates: number
   readonly #pendingHealthCodes = new Set<SessionIngressHealth['code']>()
+  readonly #dispatchWaiters = new Set<() => void>()
   #coordinateCount = 0
   #saturationReported = false
+  #pendingDispatches = 0
 
   constructor(
     private readonly onCandidate: CandidateHandler,
@@ -89,6 +91,12 @@ export class SessionCoordinateIngress {
       this.observeCoordinate(header, event)
     } catch {
       this.reportDownstreamFailure()
+    }
+  }
+
+  async whenDispatched(): Promise<void> {
+    while (this.#pendingDispatches > 0) {
+      await new Promise<void>(resolve => this.#dispatchWaiters.add(resolve))
     }
   }
 
@@ -138,6 +146,7 @@ export class SessionCoordinateIngress {
       turnEndSeq: event.seq,
       directUserMessages: complete ? buffered.directUserMessages : [],
     }
+    this.#pendingDispatches += 1
     queueMicrotask(() => {
       try {
         void Promise.resolve(this.onCandidate(candidate)).catch(() => {
@@ -145,6 +154,12 @@ export class SessionCoordinateIngress {
         })
       } catch {
         this.reportHealth('SESSION_OBSERVER_DOWNSTREAM_FAILED')
+      } finally {
+        this.#pendingDispatches -= 1
+        if (this.#pendingDispatches === 0) {
+          for (const resolve of this.#dispatchWaiters) resolve()
+          this.#dispatchWaiters.clear()
+        }
       }
     })
   }

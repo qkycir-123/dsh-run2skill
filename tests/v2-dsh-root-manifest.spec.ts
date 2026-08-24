@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   DshV2RootManifestAdapter,
@@ -31,6 +31,72 @@ function runtime(
   }),
 ): DshV2RuntimeCatalogManifestPort {
   return { observeRuntimeCatalog: observe }
+}
+
+function nodeContextFileSystem(options: { readonly driftAfterRead?: boolean } = {}) {
+  const calls = { listDir: 0, readBytes: 0 }
+  const target = (path: string) => ({ targetKey: resolve(path), displayPath: resolve(path) })
+  const type = (info: Awaited<ReturnType<typeof stat>>) => info.isFile()
+    ? 'file' as const
+    : info.isDirectory() ? 'directory' as const : 'other' as const
+  const version = (info: Awaited<ReturnType<typeof stat>>) => [
+    info.dev, info.ino, info.mode, info.size, info.mtimeMs, info.ctimeMs,
+  ].join(':')
+  const missing = (error: unknown) => typeof error === 'object' && error !== null && 'code' in error
+    && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+
+  return {
+    calls,
+    filesystem: {
+      resolve: async (path: string, options?: { cwd?: string }) => target(resolve(options?.cwd ?? '', path)),
+      contains: (parent: { targetKey: string }, child: { targetKey: string }) => {
+        const path = relative(parent.targetKey, child.targetKey)
+        return path === '' || (!path.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+          && path !== '..' && !isAbsolute(path))
+      },
+      stat: async (value: { targetKey: string }) => {
+        try {
+          const info = await stat(value.targetKey)
+          return {
+            version: `${version(info)}${options.driftAfterRead === true && calls.readBytes > 0 ? ':drifted' : ''}`,
+            type: type(info),
+            size: info.size,
+          }
+        } catch (error) {
+          if (missing(error)) return undefined
+          throw error
+        }
+      },
+      lstat: async (path: string, options?: { cwd?: string }) => {
+        try {
+          const info = await lstat(resolve(options?.cwd ?? '', path))
+          return {
+            version: version(info),
+            type: info.isSymbolicLink() ? 'symlink' as const : type(info),
+            size: info.size,
+          }
+        } catch (error) {
+          if (missing(error)) return undefined
+          throw error
+        }
+      },
+      readBytes: async (value: { targetKey: string }, _signal: AbortSignal | undefined, maxBytes: number) => {
+        calls.readBytes += 1
+        const bytes = await readFile(value.targetKey)
+        if (bytes.byteLength > maxBytes) throw new Error('bounded read exceeded')
+        return bytes
+      },
+      listDir: async (value: { targetKey: string }) => {
+        calls.listDir += 1
+        const entries = await readdir(value.targetKey, { withFileTypes: true })
+        return entries.map(entry => ({
+          name: entry.name,
+          type: entry.isFile() ? 'file' as const : entry.isDirectory() ? 'directory' as const : 'other' as const,
+          target: target(join(value.targetKey, entry.name)),
+        }))
+      },
+    },
+  }
 }
 
 describe('DshV2RootManifestAdapter', () => {
@@ -140,6 +206,45 @@ describe('DshV2RootManifestAdapter', () => {
     })
   })
 
+  it('uses the exact Session context filesystem to capture a complete manifest', async () => {
+    const root = await tempRoot()
+    const project = join(root, 'project')
+    await mkdir(join(project, '.git'), { recursive: true })
+    await write(join(project, '.dsh', 'skills', 'workflow', 'SKILL.md'), '# context filesystem')
+    const context = nodeContextFileSystem()
+    const adapter = new DshV2RootManifestAdapter({
+      resolveSession: () => ({
+        cwd: project,
+        filesystem: context.filesystem,
+        configuration: {
+          profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true,
+          customSkillDirs: [], configuredDshHome: join(root, 'dsh-home'), configuredAgentsHome: join(root, 'agents-home'),
+          usesContextFileSystem: true,
+        },
+      }),
+      runtimeCatalog: runtime(), environment: {}, homeDirectory: () => join(root, 'home'),
+    })
+
+    await expect(adapter.capture('sl_session')).resolves.toMatchObject({ complete: true })
+    expect(context.calls.listDir).toBeGreaterThan(0)
+    expect(context.calls.readBytes).toBeGreaterThan(0)
+
+    const drifting = nodeContextFileSystem({ driftAfterRead: true })
+    const unstable = new DshV2RootManifestAdapter({
+      resolveSession: () => ({
+        cwd: project,
+        filesystem: drifting.filesystem,
+        configuration: {
+          profile: 'web', presetId: 'standard', providerName: 'filesystem', includeDefaultRoots: true,
+          customSkillDirs: [], configuredDshHome: join(root, 'dsh-home'), configuredAgentsHome: join(root, 'agents-home'),
+          usesContextFileSystem: true,
+        },
+      }),
+      runtimeCatalog: runtime(), environment: {}, homeDirectory: () => join(root, 'home'),
+    })
+    await expect(unstable.capture('sl_session')).resolves.toMatchObject({ complete: false })
+  })
+
   it('fails closed on environment drift, runtime incompleteness, or a mixed root/catalog sample', async () => {
     const root = await tempRoot()
     const project = join(root, 'project')
@@ -163,7 +268,7 @@ describe('DshV2RootManifestAdapter', () => {
 
     const virtualFileSystem = new DshV2RootManifestAdapter({
       ...base,
-      resolveSession: () => ({ cwd: project, configuration: { ...configuration, usesContextFileSystem: true } }),
+      resolveSession: () => ({ cwd: project, filesystem: {}, configuration: { ...configuration, usesContextFileSystem: true } }),
       runtimeCatalog: runtime(),
     })
     expect((await virtualFileSystem.capture('sl_session')).complete).toBe(false)
@@ -200,6 +305,15 @@ describe('DshV2RootManifestAdapter', () => {
       runtimeCatalog: runtime(), environment: {}, homeDirectory: () => join(root, 'home'),
     }
     expect((await new DshV2RootManifestAdapter(base).capture('sl_session')).complete).toBe(false)
+    const context = nodeContextFileSystem()
+    expect((await new DshV2RootManifestAdapter({
+      ...base,
+      resolveSession: () => ({
+        cwd: project,
+        filesystem: context.filesystem,
+        configuration: { ...configuration, usesContextFileSystem: true },
+      }),
+    }).capture('sl_session')).complete).toBe(false)
 
     await rm(join(skillRoot, 'escaped'), { recursive: true, force: true })
     await write(join(skillRoot, 'large', 'SKILL.md'), 'x'.repeat(64))

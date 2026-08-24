@@ -34,6 +34,7 @@ export interface V2ProductionHostSession<TView extends object> {
   readonly view: TView
   readonly configuration: StockSkillRuntimeConfiguration
   readonly workspaceBinding?: StockWorkspaceContractBinding | undefined
+  readonly filesystem?: unknown
 }
 
 export interface DshV2ProductionRuntimeOptions<TView extends object> {
@@ -101,6 +102,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     const catalog = new DshV2CatalogAdapter(domain, {
       registry: options.skills,
       resolveView: lifecycleKey => options.resolveSession(lifecycleKey)?.view,
+      resolveFileSystem: view => options.resolveSessionByView(view)?.filesystem,
       resolveStockWritableRoot: (summary, view) => resolveWritableRoot(summary.source, view),
     })
     const manifest = new DshV2RootManifestAdapter({
@@ -108,7 +110,11 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
         const session = options.resolveSession(lifecycleKey)
         return session === undefined
           ? undefined
-          : { cwd: session.header.cwd, configuration: session.configuration }
+          : {
+              cwd: session.header.cwd,
+              configuration: session.configuration,
+              ...(session.filesystem === undefined ? {} : { filesystem: session.filesystem }),
+            }
       },
       runtimeCatalog: catalog,
       ...(options.now === undefined ? {} : { now: options.now }),
@@ -122,7 +128,12 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       persistence: options.persistence,
       resolveSession: lifecycleKey => {
         const session = options.resolveSession(lifecycleKey)
-        return session === undefined ? undefined : { header: session.header }
+        return session === undefined
+          ? undefined
+          : {
+              header: session.header,
+              ...(session.filesystem === undefined ? {} : { filesystem: session.filesystem }),
+            }
       },
       manifest,
       ...(options.now === undefined ? {} : { now: options.now }),
@@ -153,11 +164,14 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
         return session === undefined
           ? undefined
           : {
+              sessionId: session.header.id,
               view: session.view,
               configuration: session.configuration,
               ...(session.workspaceBinding === undefined ? {} : { workspaceBinding: session.workspaceBinding }),
+              ...(session.filesystem === undefined ? {} : { filesystem: session.filesystem }),
             }
       },
+      resolveFileSystem: view => options.resolveSessionByView(view)?.filesystem,
       resolveStockWritableRoot: (summary, view) => resolveWritableRoot(summary.source, view),
       sessionCoordinate: input => {
         const session = options.resolveSession(input.batch.sessionLifecycleKey)
