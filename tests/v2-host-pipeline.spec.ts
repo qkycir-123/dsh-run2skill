@@ -121,14 +121,7 @@ describe('v2 Host pipeline assembly', () => {
         resolveModelInfo: async () => ({ context: { contextWindow: 32_000 }, defaultMaxTokens: 4_096 }),
         stream: async function * (options) {
           started.resolve(options.signal)
-          await Promise.race([
-            release.promise,
-            new Promise<never>((_resolve, reject) => {
-              const abort = () => { reject(options.signal.reason) }
-              if (options.signal.aborted) abort()
-              else options.signal.addEventListener('abort', abort, { once: true })
-            }),
-          ])
+          await release.promise
           yield { type: 'block-start' as const, index: 0, blockType: 'text' }
           yield { type: 'block-end' as const, index: 0, block: { type: 'text', text: '{"result":"NONE"}' } }
           yield { type: 'usage' as const, usage: { inputTokens: 10, outputTokens: 4 } }
@@ -171,9 +164,11 @@ describe('v2 Host pipeline assembly', () => {
 
     try {
       const disposing = runtime.dispose()
+      let settled = false
+      const closed = Promise.all([observing, disposing]).then(() => { settled = true })
       expect(signal.aborted).toBe(true)
-      await expect(observing).resolves.toMatchObject({ status: 'OBSERVED' })
-      await disposing
+      await vi.waitFor(() => { expect(settled).toBe(true) })
+      await closed
     } finally {
       release.resolve()
     }

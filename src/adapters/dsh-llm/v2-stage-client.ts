@@ -283,6 +283,22 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
       throw new V2StageLlmError('INPUT_BUDGET_EXCEEDED')
     }
     const controller = new AbortController()
+    const options: DshGenerateOptions = {
+      provider: route.provider,
+      model: route.model,
+      ...(stage !== 'DETECTION' || route.detectionReasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: route.detectionReasoningEffort }),
+      system,
+      maxTokens: Math.min(policy.maxTokens, Math.max(1, Math.floor(route.maxOutputBytes / OUTPUT_BYTE_RATIO))),
+      messages: [{
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text: userText }],
+        source: { kind: 'user' },
+      }],
+      signal: controller.signal,
+    }
     let timedOut = false
     const timeoutMs = stage === 'GENERATION' ? this.#generationTimeoutMs : this.#timeoutMs
     const timer = setTimeout(() => {
@@ -291,36 +307,35 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     }, timeoutMs)
     this.#active.set(controller, timer)
     const assembler = new TextStreamAssembler()
-    try {
-      const options: DshGenerateOptions = {
-        provider: route.provider,
-        model: route.model,
-        ...(stage !== 'DETECTION' || route.detectionReasoningEffort === undefined
-          ? {}
-          : { reasoningEffort: route.detectionReasoningEffort }),
-        system,
-        maxTokens: Math.min(policy.maxTokens, Math.max(1, Math.floor(route.maxOutputBytes / OUTPUT_BYTE_RATIO))),
-        messages: [{
-          id: randomUUID(),
-          role: 'user',
-          content: [{ type: 'text', text: userText }],
-          source: { kind: 'user' },
-        }],
-        signal: controller.signal,
-      }
+    let terminalError: V2StageLlmError | undefined
+    let removeAbortListener = (): void => undefined
+    const aborted = new Promise<never>((_resolve, reject) => {
+      const onAbort = () => { reject(controller.signal.reason) }
+      removeAbortListener = () => { controller.signal.removeEventListener('abort', onAbort) }
+      if (controller.signal.aborted) onAbort()
+      else controller.signal.addEventListener('abort', onAbort, { once: true })
+    })
+    const consuming = (async () => {
       for await (const chunk of this.llm.stream(options)) {
+        if (controller.signal.aborted) return
         assembler.push(chunk)
         if (Buffer.byteLength(assembler.text(), 'utf8') > Math.min(policy.maxOutputBytes, route.maxOutputBytes)) {
+          terminalError = new V2StageLlmError('MODEL_OUTPUT_LIMIT_EXCEEDED')
           controller.abort(new Error(`Run2Skill ${stage} output exceeded its limit`))
-          throw new V2StageLlmError('MODEL_OUTPUT_LIMIT_EXCEEDED')
+          throw terminalError
         }
       }
+    })()
+    try {
+      await Promise.race([consuming, aborted])
     } catch (error) {
+      if (terminalError !== undefined) throw terminalError
       if (error instanceof V2StageLlmError) throw error
       if (timedOut) throw new V2StageLlmError('MODEL_TIMEOUT')
       if (controller.signal.aborted) throw new V2StageLlmError('MODEL_ABORTED')
       throw new V2StageLlmError('MODEL_STREAM_FAILED')
     } finally {
+      removeAbortListener()
       clearTimeout(timer)
       this.#active.delete(controller)
     }

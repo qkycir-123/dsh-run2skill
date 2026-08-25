@@ -302,31 +302,45 @@ describe('DshV2StageLlmClient', () => {
     }
   })
 
-  it('aborts an active model stream and rejects new calls after disposal', async () => {
+  it('rejects an active call on disposal even when the model stream ignores AbortSignal', async () => {
     const started = Promise.withResolvers<AbortSignal>()
+    const release = Promise.withResolvers<void>()
     const llm: DshLlmPort = {
       resolveModelInfo: async () => ({ context: { contextWindow: 32_000 } }),
       stream: async function * (options) {
         started.resolve(options.signal)
-        await new Promise<never>((_resolve, reject) => {
-          const abort = () => { reject(options.signal.reason) }
-          if (options.signal.aborted) abort()
-          else options.signal.addEventListener('abort', abort, { once: true })
-        })
-        yield * []
+        await release.promise
+        yield * chunks('{"result":"NONE"}')
       },
     }
     const client = new DshV2StageLlmClient(llm)
     const pending = client.detect(detectorInput())
     const signal = await started.promise
 
-    client.dispose()
+    try {
+      client.dispose()
+      const outcome = await Promise.race([
+        pending.then(
+          value => ({ status: 'RESOLVED' as const, value }),
+          error => ({ status: 'REJECTED' as const, error: error as unknown }),
+        ),
+        new Promise<{ readonly status: 'PENDING' }>(resolve => {
+          setTimeout(() => { resolve({ status: 'PENDING' }) }, 0)
+        }),
+      ])
 
-    expect(signal.aborted).toBe(true)
-    await expect(pending).rejects.toEqual(expect.objectContaining({ code: 'MODEL_ABORTED' }))
-    await expect(client.detect(detectorInput())).rejects.toEqual(
-      expect.objectContaining({ code: 'MODEL_ABORTED' }),
-    )
+      expect(signal.aborted).toBe(true)
+      expect(outcome).toEqual({
+        status: 'REJECTED',
+        error: expect.objectContaining({ code: 'MODEL_ABORTED' }),
+      })
+      await expect(client.detect(detectorInput())).rejects.toEqual(
+        expect.objectContaining({ code: 'MODEL_ABORTED' }),
+      )
+    } finally {
+      release.resolve()
+      await pending.catch(() => undefined)
+    }
   })
 
   it('returns malformed JSON as untrusted output so the stage worker can record INVALID_OUTPUT', async () => {

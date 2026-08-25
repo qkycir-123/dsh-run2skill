@@ -1,17 +1,6 @@
 import type { TurnObservationV2 } from '../../domain/v2/index.js'
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
-export const V2_PIPELINE_DISPOSE_TIMEOUT_MS = 2_000
-
-function settleWithin(promise: Promise<unknown>, milliseconds: number): Promise<void> {
-  return new Promise(resolve => {
-    const timer = setTimeout(resolve, milliseconds)
-    void promise.then(() => {
-      clearTimeout(timer)
-      resolve()
-    })
-  })
-}
 
 export interface V2PipelineBatchScheduler {
   start(): Promise<void>
@@ -143,11 +132,12 @@ export class Run2skillV2PipelineRuntime {
       } catch (error) {
         this.#reportError(error)
       }
-      const settling = Promise.allSettled([
+      const results = await Promise.allSettled([
         this.settle(),
         this.#batchScheduler.dispose(),
       ])
-      await settleWithin(settling, V2_PIPELINE_DISPOSE_TIMEOUT_MS)
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (failure !== undefined) throw failure.reason
     })()
     this.#disposeAttempt = attempt
     return await attempt
@@ -155,9 +145,13 @@ export class Run2skillV2PipelineRuntime {
 
   async #drain(): Promise<void> {
     for (let transition = 0; transition < this.#maxTransitionsPerDrain; transition += 1) {
+      if (this.#disposed) return
       let processed = false
       for (const worker of this.#stages) {
-        if (await worker.runOnce() === 'PROCESSED') {
+        if (this.#disposed) return
+        const outcome = await worker.runOnce()
+        if (this.#disposed) return
+        if (outcome === 'PROCESSED') {
           processed = true
           break
         }
