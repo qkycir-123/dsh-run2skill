@@ -302,6 +302,33 @@ describe('DshV2StageLlmClient', () => {
     }
   })
 
+  it('aborts an active model stream and rejects new calls after disposal', async () => {
+    const started = Promise.withResolvers<AbortSignal>()
+    const llm: DshLlmPort = {
+      resolveModelInfo: async () => ({ context: { contextWindow: 32_000 } }),
+      stream: async function * (options) {
+        started.resolve(options.signal)
+        await new Promise<never>((_resolve, reject) => {
+          const abort = () => { reject(options.signal.reason) }
+          if (options.signal.aborted) abort()
+          else options.signal.addEventListener('abort', abort, { once: true })
+        })
+        yield * []
+      },
+    }
+    const client = new DshV2StageLlmClient(llm)
+    const pending = client.detect(detectorInput())
+    const signal = await started.promise
+
+    client.dispose()
+
+    expect(signal.aborted).toBe(true)
+    await expect(pending).rejects.toEqual(expect.objectContaining({ code: 'MODEL_ABORTED' }))
+    await expect(client.detect(detectorInput())).rejects.toEqual(
+      expect.objectContaining({ code: 'MODEL_ABORTED' }),
+    )
+  })
+
   it('returns malformed JSON as untrusted output so the stage worker can record INVALID_OUTPUT', async () => {
     const client = new DshV2StageLlmClient(new RecordingLlm([chunks('{"result":')]))
     await expect(client.detect(detectorInput())).resolves.toBe('{"result":')

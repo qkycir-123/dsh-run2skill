@@ -213,6 +213,8 @@ export interface DshV2StageLlmClientOptions {
 export class DshV2StageLlmClient implements BatchDetectorClient {
   readonly #timeoutMs: number
   readonly #generationTimeoutMs: number
+  readonly #active = new Map<AbortController, ReturnType<typeof setTimeout>>()
+  #disposed = false
 
   constructor(
     private readonly llm: DshLlmPort,
@@ -252,6 +254,15 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     )
   }
 
+  dispose(): void {
+    if (this.#disposed) return
+    this.#disposed = true
+    for (const [controller, timer] of this.#active) {
+      clearTimeout(timer)
+      controller.abort(new Error('Run2Skill v2 stage client disposed'))
+    }
+  }
+
   async #call(
     stage: Stage,
     input: unknown,
@@ -264,6 +275,7 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     },
     trustedSystemSuffix?: string,
   ): Promise<unknown> {
+    if (this.#disposed) throw new V2StageLlmError('MODEL_ABORTED')
     const policy = STAGE_POLICIES[stage]
     const system = trustedSystemSuffix === undefined ? policy.system : `${policy.system}\n${trustedSystemSuffix}`
     const userText = `INPUT_DATA:\n${canonicalJson(input)}`
@@ -277,6 +289,7 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
       timedOut = true
       controller.abort(new Error(`Run2Skill ${stage} model call timed out`))
     }, timeoutMs)
+    this.#active.set(controller, timer)
     const assembler = new TextStreamAssembler()
     try {
       const options: DshGenerateOptions = {
@@ -309,6 +322,7 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
       throw new V2StageLlmError('MODEL_STREAM_FAILED')
     } finally {
       clearTimeout(timer)
+      this.#active.delete(controller)
     }
     if (timedOut) throw new V2StageLlmError('MODEL_TIMEOUT')
     if (assembler.finish?.kind === 'aborted') throw new V2StageLlmError('MODEL_ABORTED')

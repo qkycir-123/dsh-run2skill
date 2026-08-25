@@ -112,6 +112,73 @@ describe('v2 Host pipeline assembly', () => {
     await runtime.dispose()
   })
 
+  it('propagates disposal to an active Host model stream', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const started = Promise.withResolvers<AbortSignal>()
+    const release = Promise.withResolvers<void>()
+    const runtime = createDshV2PipelineRuntime(domain, {
+      llm: {
+        resolveModelInfo: async () => ({ context: { contextWindow: 32_000 }, defaultMaxTokens: 4_096 }),
+        stream: async function * (options) {
+          started.resolve(options.signal)
+          await Promise.race([
+            release.promise,
+            new Promise<never>((_resolve, reject) => {
+              const abort = () => { reject(options.signal.reason) }
+              if (options.signal.aborted) abort()
+              else options.signal.addEventListener('abort', abort, { once: true })
+            }),
+          ])
+          yield { type: 'block-start' as const, index: 0, blockType: 'text' }
+          yield { type: 'block-end' as const, index: 0, block: { type: 'text', text: '{"result":"NONE"}' } }
+          yield { type: 'usage' as const, usage: { inputTokens: 10, outputTokens: 4 } }
+          yield { type: 'finish' as const, reason: { kind: 'stop' } }
+        },
+      },
+      baseline: {
+        capture: async () => ({
+          observedAt: new Date(CREATED_AT - 1).toISOString(),
+          rootManifestDigest: '1'.repeat(64), runtimeCatalogDigest: '2'.repeat(64), complete: true,
+        }),
+      },
+      activity: { observe: async () => ({ complete: false }) },
+      ownership: { observe: async () => ({ status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }) },
+      catalog: {
+        recall: {
+          snapshot: async () => { throw new Error('failed detection must not recall') },
+          read: async () => undefined,
+        },
+        generation: {
+          snapshot: async () => { throw new Error('failed detection must not generate') },
+          read: async () => undefined,
+        },
+      },
+    })
+    await runtime.start()
+    await runtime.prepareSessionWindow(lifecycleKey())
+    const events: DshSessionEvent[] = []
+    for (let turn = 0; turn < 4; turn += 1) {
+      events.push(...turnEvents(turn))
+      await runtime.observeTurn(header, events, turn * 10 + 4, {
+        resolve: async () => ({ status: 'BOUND', workspaceId: 'workspace-1', canonicalPath: CWD }),
+      })
+    }
+    events.push(...turnEvents(4))
+    const observing = runtime.observeTurn(header, events, 44, {
+      resolve: async () => ({ status: 'BOUND', workspaceId: 'workspace-1', canonicalPath: CWD }),
+    })
+    const signal = await started.promise
+
+    try {
+      const disposing = runtime.dispose()
+      expect(signal.aborted).toBe(true)
+      await expect(observing).resolves.toMatchObject({ status: 'OBSERVED' })
+      await disposing
+    } finally {
+      release.resolve()
+    }
+  })
+
   it('recovers durable stages before accepting a new observation and never calls a model during recovery', async () => {
     const domain = createMemoryRun2skillV2Domain()
     let modelCalls = 0

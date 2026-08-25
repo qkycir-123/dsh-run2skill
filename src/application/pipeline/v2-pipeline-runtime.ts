@@ -1,6 +1,17 @@
 import type { TurnObservationV2 } from '../../domain/v2/index.js'
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
+export const V2_PIPELINE_DISPOSE_TIMEOUT_MS = 2_000
+
+function settleWithin(promise: Promise<unknown>, milliseconds: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, milliseconds)
+    void promise.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
 
 export interface V2PipelineBatchScheduler {
   start(): Promise<void>
@@ -26,6 +37,7 @@ export interface Run2skillV2PipelineRuntimeOptions {
   readonly now?: () => number
   readonly setTimer?: (callback: () => void, delay: number) => unknown
   readonly clearTimer?: (handle: unknown) => void
+  readonly abortActive?: () => void
 }
 
 /**
@@ -42,6 +54,7 @@ export class Run2skillV2PipelineRuntime {
   readonly #now: () => number
   readonly #setTimer: (callback: () => void, delay: number) => unknown
   readonly #clearTimer: (handle: unknown) => void
+  readonly #abortActive: () => void
   #tail: Promise<void> = Promise.resolve()
   #timer: unknown
   #startAttempt: Promise<void> | undefined
@@ -59,6 +72,7 @@ export class Run2skillV2PipelineRuntime {
     this.#now = options.now ?? Date.now
     this.#setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.#clearTimer = options.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
+    this.#abortActive = options.abortActive ?? (() => undefined)
     if (!Number.isSafeInteger(this.#maxTransitionsPerDrain) || this.#maxTransitionsPerDrain < 1) {
       throw new TypeError('Invalid v2 pipeline drain limit')
     }
@@ -124,8 +138,16 @@ export class Run2skillV2PipelineRuntime {
     const attempt = (async () => {
       this.#disposed = true
       this.#cancelTimer()
-      await this.settle()
-      await this.#batchScheduler.dispose()
+      try {
+        this.#abortActive()
+      } catch (error) {
+        this.#reportError(error)
+      }
+      const settling = Promise.allSettled([
+        this.settle(),
+        this.#batchScheduler.dispose(),
+      ])
+      await settleWithin(settling, V2_PIPELINE_DISPOSE_TIMEOUT_MS)
     })()
     this.#disposeAttempt = attempt
     return await attempt
