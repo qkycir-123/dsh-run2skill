@@ -26,6 +26,7 @@ export interface Run2skillV2PipelineRuntimeOptions {
   readonly now?: () => number
   readonly setTimer?: (callback: () => void, delay: number) => unknown
   readonly clearTimer?: (handle: unknown) => void
+  readonly abortActive?: () => void
 }
 
 /**
@@ -42,6 +43,7 @@ export class Run2skillV2PipelineRuntime {
   readonly #now: () => number
   readonly #setTimer: (callback: () => void, delay: number) => unknown
   readonly #clearTimer: (handle: unknown) => void
+  readonly #abortActive: () => void
   #tail: Promise<void> = Promise.resolve()
   #timer: unknown
   #startAttempt: Promise<void> | undefined
@@ -59,6 +61,7 @@ export class Run2skillV2PipelineRuntime {
     this.#now = options.now ?? Date.now
     this.#setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.#clearTimer = options.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
+    this.#abortActive = options.abortActive ?? (() => undefined)
     if (!Number.isSafeInteger(this.#maxTransitionsPerDrain) || this.#maxTransitionsPerDrain < 1) {
       throw new TypeError('Invalid v2 pipeline drain limit')
     }
@@ -124,8 +127,17 @@ export class Run2skillV2PipelineRuntime {
     const attempt = (async () => {
       this.#disposed = true
       this.#cancelTimer()
-      await this.settle()
-      await this.#batchScheduler.dispose()
+      try {
+        this.#abortActive()
+      } catch (error) {
+        this.#reportError(error)
+      }
+      const results = await Promise.allSettled([
+        this.settle(),
+        this.#batchScheduler.dispose(),
+      ])
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (failure !== undefined) throw failure.reason
     })()
     this.#disposeAttempt = attempt
     return await attempt
@@ -133,9 +145,13 @@ export class Run2skillV2PipelineRuntime {
 
   async #drain(): Promise<void> {
     for (let transition = 0; transition < this.#maxTransitionsPerDrain; transition += 1) {
+      if (this.#disposed) return
       let processed = false
       for (const worker of this.#stages) {
-        if (await worker.runOnce() === 'PROCESSED') {
+        if (this.#disposed) return
+        const outcome = await worker.runOnce()
+        if (this.#disposed) return
+        if (outcome === 'PROCESSED') {
           processed = true
           break
         }

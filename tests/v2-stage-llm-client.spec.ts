@@ -302,6 +302,47 @@ describe('DshV2StageLlmClient', () => {
     }
   })
 
+  it('rejects an active call on disposal even when the model stream ignores AbortSignal', async () => {
+    const started = Promise.withResolvers<AbortSignal>()
+    const release = Promise.withResolvers<void>()
+    const llm: DshLlmPort = {
+      resolveModelInfo: async () => ({ context: { contextWindow: 32_000 } }),
+      stream: async function * (options) {
+        started.resolve(options.signal)
+        await release.promise
+        yield * chunks('{"result":"NONE"}')
+      },
+    }
+    const client = new DshV2StageLlmClient(llm)
+    const pending = client.detect(detectorInput())
+    const signal = await started.promise
+
+    try {
+      client.dispose()
+      const outcome = await Promise.race([
+        pending.then(
+          value => ({ status: 'RESOLVED' as const, value }),
+          error => ({ status: 'REJECTED' as const, error: error as unknown }),
+        ),
+        new Promise<{ readonly status: 'PENDING' }>(resolve => {
+          setTimeout(() => { resolve({ status: 'PENDING' }) }, 0)
+        }),
+      ])
+
+      expect(signal.aborted).toBe(true)
+      expect(outcome).toEqual({
+        status: 'REJECTED',
+        error: expect.objectContaining({ code: 'MODEL_ABORTED' }),
+      })
+      await expect(client.detect(detectorInput())).rejects.toEqual(
+        expect.objectContaining({ code: 'MODEL_ABORTED' }),
+      )
+    } finally {
+      release.resolve()
+      await pending.catch(() => undefined)
+    }
+  })
+
   it('returns malformed JSON as untrusted output so the stage worker can record INVALID_OUTPUT', async () => {
     const client = new DshV2StageLlmClient(new RecordingLlm([chunks('{"result":')]))
     await expect(client.detect(detectorInput())).resolves.toBe('{"result":')

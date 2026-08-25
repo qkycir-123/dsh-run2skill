@@ -113,6 +113,7 @@ export class DshV2PipelineRuntime {
         setTimer: options.internalTimer.set,
         clearTimer: options.internalTimer.clear,
       }),
+      abortActive: () => { stageClient.dispose() },
     })
     wakePipeline = () => { this.#runtime.wake() }
   }
