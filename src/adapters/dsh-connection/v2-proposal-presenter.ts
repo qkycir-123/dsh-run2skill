@@ -2,6 +2,7 @@ import type { V2ProposalPublicationInput } from '../../application/publication/i
 import { deriveV2ProposalRef } from '../../application/review/index.js'
 import { ExperienceRecordV1Schema } from '../../domain/learn/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
+import { OBSERVE_LIMITS } from '../../domain/observe/constants.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import type { RootBindingV2 } from '../../domain/review/index.js'
 import { TurnObservationV2Schema, type TurnObservationV2 } from '../../domain/v2/index.js'
@@ -10,6 +11,9 @@ import { safeProposalSchema } from './proposal-review-rpc.js'
 import type { V2CompatibleProposalPresentation } from './v2-proposal-rpc.js'
 
 type SessionCoordinate = V2CompatibleProposalPresentation['sessionCoordinate']
+type DurableEvidenceRef = TurnObservationV2['directUserEvidence'][number]
+
+const LEGACY_EVIDENCE_OMISSION = '\n…\n'
 
 export class V2ProposalPresentationError extends Error {
   constructor(readonly code: 'UNAVAILABLE' | 'STALE') {
@@ -38,6 +42,48 @@ function safeRootBinding(binding: RootBindingV2) {
 
 function syntheticId(prefix: 'lp' | 'exp', intentId: string): string {
   return `${prefix}_${sha256Utf8(canonicalJson({ contract: 'run2skill-v2-ui-identity-v1', prefix, intentId }))}`
+}
+
+function takeUtf8Prefix(value: string, maxBytes: number): string {
+  let result = ''
+  let usedBytes = 0
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (usedBytes + characterBytes > maxBytes) break
+    result += character
+    usedBytes += characterBytes
+  }
+  return result
+}
+
+function takeUtf8Suffix(value: string, maxBytes: number): string {
+  let result = ''
+  let usedBytes = 0
+  for (const character of [...value].reverse()) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (usedBytes + characterBytes > maxBytes) break
+    result = character + result
+    usedBytes += characterBytes
+  }
+  return result
+}
+
+function projectLegacyEvidence(evidence: DurableEvidenceRef): DurableEvidenceRef {
+  if (Buffer.byteLength(evidence.excerpt, 'utf8') <= OBSERVE_LIMITS.maxEvidenceBytes) return evidence
+  const available = OBSERVE_LIMITS.maxEvidenceBytes - Buffer.byteLength(LEGACY_EVIDENCE_OMISSION, 'utf8')
+  const headBytes = Math.ceil(available / 2)
+  const tailBytes = Math.floor(available / 2)
+  const excerpt = [
+    takeUtf8Prefix(evidence.excerpt, headBytes),
+    LEGACY_EVIDENCE_OMISSION,
+    takeUtf8Suffix(evidence.excerpt, tailBytes),
+  ].join('')
+  return {
+    ...evidence,
+    excerpt,
+    excerptDigest: sha256Utf8(excerpt),
+    truncated: true,
+  }
 }
 
 /** Produces the path-free v1-shaped detail currently consumed by the DSH UI. */
@@ -81,7 +127,7 @@ export class V2CompatibleProposalPresenter<TView extends object> {
       observations
         .flatMap(observation => observation.directUserEvidence)
         .map(evidence => [`${String(evidence.messageSeq)}\0${evidence.excerptDigest}`, evidence]),
-    ).values()].slice(0, 4)
+    ).values()].slice(0, 4).map(projectLegacyEvidence)
     if (evidenceRefs.length === 0) throw new V2ProposalPresentationError('UNAVAILABLE')
     let resolved
     try {
