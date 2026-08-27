@@ -145,6 +145,11 @@ function explicitSaveIndices(clauses: readonly TextClause[]): number[] {
   return matches
 }
 
+/** Uses the complete Cheap Trigger v1 clause, request, negation, and explanation semantics. */
+export function isExplicitSaveRequestV1(text: string): boolean {
+  return explicitSaveIndices(textClauses(text, true, true)).length > 0
+}
+
 function firstCorrectionIndex(clauses: readonly TextClause[]): number | undefined {
   for (const [index, clause] of clauses.entries()) {
     const anchorIndex = firstMatchIndex(clause.text, correctionPatterns)

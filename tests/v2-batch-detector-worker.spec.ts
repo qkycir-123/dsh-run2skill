@@ -312,10 +312,10 @@ describe('v2 Batch Detector worker', () => {
   it('keeps detector evidence within one strict batch budget without adding a model call', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
     const importantTails = [
-      `Remember this workflow as a Skill. ${'Capture this workflow as a Skill. '.repeat(30)}`,
-      'Never skip verification and do not report success before the read-back.',
-      'Acceptance criteria: typecheck, lint, and all tests pass.',
-      'Required steps: first inspect, then change, finally read the value back. Only change the target field.',
+      'Please capture this workflow as a Skill.',
+      `Never skip verification. ${'Do not save this workflow as a Skill. '.repeat(20)}`,
+      `Acceptance criteria: typecheck, lint, and all tests pass. ${'Explain how to save this workflow as a Skill. '.repeat(20)}`,
+      `Required steps: first inspect, then change, finally read the value back. Only change the target field. ${'The docs say "save this workflow as a Skill". '.repeat(20)}`,
       'TRUE_BATCH_TAIL: the user finally corrected the publication directory.',
     ]
     const observations = importantTails.map((importantTail, index) => {
@@ -413,7 +413,7 @@ describe('v2 Batch Detector worker', () => {
       .map(item => item.excerpt).join('\n') ?? ''
     expect(model.calls).toBe(1)
     expect(evidenceBytes).toBeLessThanOrEqual(RUN2SKILL_V2_LIMITS.maxBatchEvidenceTotalBytes)
-    expect(selectedText).toContain('Capture this workflow as a Skill')
+    expect(selectedText).toContain('Please capture this workflow as a Skill')
     expect(selectedText).toContain('Never skip verification')
     expect(selectedText).toContain('Acceptance criteria')
     expect(selectedText).toContain('first inspect, then change, finally read the value back')

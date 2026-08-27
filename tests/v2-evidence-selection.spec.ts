@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
+import { isExplicitSaveRequestV1 } from '../src/domain/observe/trigger.js'
 import { selectBoundedEvidenceRefsV2 } from '../src/domain/v2/index.js'
 
 function ref(messageSeq: number, excerpt: string) {
@@ -15,9 +16,50 @@ function ref(messageSeq: number, excerpt: string) {
 }
 
 describe('v2 bounded evidence selection', () => {
+  it.each([
+    ['请把这个流程记录为技能。', true],
+    ['Please capture this workflow as a skill.', true],
+    ['不要把这个流程保存成技能。', false],
+    ['Do not save this workflow as a skill.', false],
+    ['请解释如何把流程保存成技能。', false],
+    ['Please explain how to capture this workflow as a skill.', false],
+    ['文档示例写的是“把这个流程保存成技能”。', false],
+    ['The quoted example says "save this workflow as a skill".', false],
+  ])('reuses full cheap-trigger explicit-save semantics: %s', (text, expected) => {
+    expect(isExplicitSaveRequestV1(text as string)).toBe(expected)
+  })
+
+  it.each([8 * 1024, 16 * 1024])(
+    'keeps the true save request when negative, explanatory, and quoted save text competes at %i bytes',
+    budget => {
+      const positive = '请把这套流程记录为技能。'
+      const negativeFlood = Array.from({ length: 80 }, (_, index) => (
+        `Do not save this workflow as a skill NEGATIVE_${String(index)}.`
+      )).join('\n')
+      const explanationFlood = Array.from({ length: 80 }, (_, index) => (
+        `Please explain how to capture this workflow as a skill EXPLANATION_${String(index)}.`
+      )).join('\n')
+      const quotedFlood = Array.from({ length: 80 }, (_, index) => (
+        `The docs say "save this workflow as a skill" QUOTED_${String(index)}.`
+      )).join('\n')
+      const selected = selectBoundedEvidenceRefsV2([
+        ref(1, `${positive}\n${'旧背景。'.repeat(1_000)}`),
+        ref(2, negativeFlood),
+        ref(3, explanationFlood),
+        ref(4, quotedFlood),
+        ref(5, `${'最新背景。'.repeat(1_000)}\nTRUE_LATEST_TAIL`),
+      ], budget)
+      const text = selected.map(item => item.excerpt).join('\n')
+
+      expect(text).toContain(positive)
+      expect(selected.reduce((total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'), 0))
+        .toBeLessThanOrEqual(budget)
+    },
+  )
+
   it('reserves every strong semantic class and the true latest tail before competitive fill', () => {
     const saveFlood = Array.from({ length: 20 }, (_, index) => (
-      `SAVE_FLOOD_${String(index)}: capture this workflow as a skill for reuse.`
+      `Please capture this workflow as a skill for reuse SAVE_FLOOD_${String(index)}.`
     )).join('\n')
     const selected = selectBoundedEvidenceRefsV2([
       ref(1, saveFlood),

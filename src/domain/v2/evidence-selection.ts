@@ -1,18 +1,8 @@
 import { sha256Utf8 } from '../observe/hashing.js'
-import { CHEAP_TRIGGER_V1_POLICY } from '../observe/cheap-trigger-v1-policy.js'
+import { isExplicitSaveRequestV1 } from '../observe/trigger.js'
 
 const OMISSION_MARKER = '\n…\n'
 const MAX_SEMANTIC_UNIT_BYTES = 512
-
-const explicitSaveForward = new RegExp(
-  `${CHEAP_TRIGGER_V1_POLICY.explicitSave.saveWords}.{0,${String(CHEAP_TRIGGER_V1_POLICY.explicitSave.maxDistance)}}${CHEAP_TRIGGER_V1_POLICY.explicitSave.targetWords}`,
-  'iu',
-)
-const explicitSaveReverse = new RegExp(
-  `${CHEAP_TRIGGER_V1_POLICY.explicitSave.targetWords}.{0,${String(CHEAP_TRIGGER_V1_POLICY.explicitSave.maxDistance)}}${CHEAP_TRIGGER_V1_POLICY.explicitSave.saveWords}`,
-  'iu',
-)
-const explicitSaveFixed = new RegExp(CHEAP_TRIGGER_V1_POLICY.explicitSave.fixedPhrases, 'iu')
 
 type SemanticClass = 'EXPLICIT_SAVE' | 'PROHIBITION' | 'ACCEPTANCE' | 'ORDERED_STEPS' | 'CONSTRAINT' | 'LATEST_TAIL'
 
@@ -88,9 +78,7 @@ function semanticUnits(value: string): string[] {
 
 function semanticClasses(value: string): SemanticClass[] {
   const result: SemanticClass[] = []
-  if (explicitSaveForward.test(value) || explicitSaveReverse.test(value) || explicitSaveFixed.test(value)) {
-    result.push('EXPLICIT_SAVE')
-  }
+  if (isExplicitSaveRequestV1(value)) result.push('EXPLICIT_SAVE')
   if (/(?:不得|禁止|不要|不可|严禁|never\b|must\s+not\b|do\s+not\b|don['’]t\b)/iu.test(value)) {
     result.push('PROHIBITION')
   }
