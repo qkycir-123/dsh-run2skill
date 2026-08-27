@@ -39,6 +39,7 @@ describe('run2skill CSS lifecycle', () => {
     expect(css).toMatch(/@container\s*\(min-width:\s*760px\)/)
     expect(css).toMatch(/\.detailFacts\s*\{[^}]*grid-template-columns:\s*minmax\(6rem,\s*max-content\)\s+minmax\(0,\s*1fr\)/s)
     expect(css).toMatch(/\.proposalListButton\[aria-current=['"]true['"]\]/)
+    expect(css).toMatch(/@container\s*\(max-width:\s*30rem\)[\s\S]*\.learningStatusRow[\s\S]*flex-direction:\s*column/)
   })
 
   it('updates one owner/style id across HMR and removes it after the last disposer', () => {

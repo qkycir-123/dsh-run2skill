@@ -86,6 +86,58 @@ function coordinatorOptions(overrides?: {
 }
 
 describe('v2 SessionBatch coordinator', () => {
+  it('queues one idempotent manual synthesis request without exposing the internal batch threshold', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await coordinator.recordObservation(observation({ seq: 10, observedAt: MINUTE }))
+
+    await expect(coordinator.requestSynthesis(
+      createMinimalV2Fixtures().turnObservation.sessionLifecycleKey,
+    )).resolves.toEqual({ changed: true, disposition: 'QUEUED' })
+    await expect(coordinator.requestSynthesis(
+      createMinimalV2Fixtures().turnObservation.sessionLifecycleKey,
+    )).resolves.toEqual({ changed: false, disposition: 'QUEUED' })
+
+    const frozen = await coordinator.flushRequested()
+    expect(frozen).toHaveLength(1)
+    expect(frozen[0]).toMatchObject({
+      firstTurnEndSeq: 10,
+      lastTurnEndSeq: 10,
+      triggerReasons: ['EXPLICIT'],
+      state: 'FROZEN',
+    })
+    expect(domain.sessionBatches.size).toBe(1)
+  })
+
+  it('returns a stable empty receipt when the current Session has no unprocessed observation', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())
+
+    await expect(coordinator.requestSynthesis(
+      createMinimalV2Fixtures().turnObservation.sessionLifecycleKey,
+    )).resolves.toEqual({ changed: false, disposition: 'EMPTY' })
+  })
+
+  it('keeps a manual request durable until complete idle Session facts permit one freeze', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const first = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await first.recordObservation(observation({ seq: 10, observedAt: MINUTE }))
+    const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+    const receipts = await Promise.all([
+      first.requestSynthesis(lifecycleKey),
+      first.requestSynthesis(lifecycleKey),
+    ])
+    expect(receipts.filter(receipt => receipt.changed)).toHaveLength(1)
+    expect(await first.flushRequested(async () => false)).toEqual([])
+    expect(domain.sessionBatches.size).toBe(0)
+
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await recovered.recover(MINUTE)
+    expect(domain.sessionBatches.size).toBe(0)
+    expect(await recovered.flushRequested(async () => true)).toHaveLength(1)
+    expect(domain.sessionBatches.size).toBe(1)
+  })
+
   it('persists ordinary turns without a model claim and freezes exactly at the fifth complete turn', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const coordinator = new SessionBatchCoordinator(domain, coordinatorOptions())

@@ -94,6 +94,149 @@ export type RecentSkillActivityCall = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
+export type LearningStatusCall = (
+  endpoint: 'learning/status' | 'learning/request',
+  payload: {
+    readonly apiVersion: 1
+    readonly currentScope:
+      | { readonly kind: 'USER_ONLY'; readonly generation: number }
+      | { readonly kind: 'WORKSPACE'; readonly generation: number; readonly workspaceId: string }
+    readonly sessionId: string
+  },
+  signal: AbortSignal,
+) => Promise<unknown>
+
+const learningStatusResultSchema = z.object({
+  ok: z.literal(true),
+  value: z.object({
+    apiVersion: z.literal(1),
+    state: z.enum(['EMPTY', 'RECORDED', 'PROCESSING', 'CHECKING', 'COVERED', 'NEEDS_ATTENTION']),
+    canRequest: z.boolean(),
+  }).strict(),
+}).strict()
+
+const learningRequestResultSchema = z.object({
+  ok: z.literal(true),
+  value: z.object({
+    apiVersion: z.literal(1),
+    changed: z.boolean(),
+    disposition: z.enum(['EMPTY', 'PROCESSING', 'QUEUED']),
+  }).strict(),
+}).strict()
+
+const learningStatusCopy = {
+  EMPTY: '暂无可整理的经验。',
+  RECORDED: '已记下，待本次会话结束后整理。',
+  PROCESSING: '正在整理本次经验…',
+  CHECKING: '正在检查已有 Skill…',
+  COVERED: '已有 Skill 已覆盖这次经验。',
+  NEEDS_ATTENTION: '整理结果需要你处理。',
+} as const
+
+export function LearningStatusSection(props: {
+  readonly sessionId?: string
+  readonly workspaceId?: string
+  readonly scopeGeneration?: number
+  readonly active: boolean
+  readonly call: LearningStatusCall
+  readonly pollMs?: number
+}): ReactElement {
+  const [state, setState] = useState<
+    | { readonly phase: 'LOADING' }
+    | { readonly phase: 'ERROR' }
+    | { readonly phase: 'READY'; readonly value: z.infer<typeof learningStatusResultSchema>['value'] }
+  >({ phase: 'LOADING' })
+  const [refreshGeneration, setRefreshGeneration] = useState(0)
+  const requestPending = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
+  useEffect(() => {
+    if (!props.active || props.sessionId === undefined) return
+    const abort = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async (): Promise<void> => {
+      try {
+        const parsed = learningStatusResultSchema.safeParse(await props.call('learning/status', {
+          apiVersion: 1,
+          currentScope: currentScope(props.workspaceId, props.scopeGeneration ?? 1),
+          sessionId: props.sessionId!,
+        }, abort.signal))
+        if (!abort.signal.aborted) setState(parsed.success ? { phase: 'READY', value: parsed.data.value } : { phase: 'ERROR' })
+      } catch {
+        if (!abort.signal.aborted) setState({ phase: 'ERROR' })
+      } finally {
+        if (!abort.signal.aborted) timer = setTimeout(() => { void refresh() }, props.pollMs ?? 5_000)
+      }
+    }
+    void refresh()
+    return () => {
+      abort.abort()
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [props.active, props.call, props.pollMs, props.scopeGeneration, props.sessionId, props.workspaceId, refreshGeneration])
+  const request = () => {
+    if (!props.active || requestPending.current || state.phase !== 'READY' || !state.value.canRequest || props.sessionId === undefined) return
+    requestPending.current = true
+    setSubmitting(true)
+    const abort = new AbortController()
+    void (async () => {
+      try {
+        const result = learningRequestResultSchema.safeParse(await props.call('learning/request', {
+          apiVersion: 1,
+          currentScope: currentScope(props.workspaceId, props.scopeGeneration ?? 1),
+          sessionId: props.sessionId!,
+        }, abort.signal))
+        if (!result.success) throw new Error('LEARNING_REQUEST_UNAVAILABLE')
+        setState({
+          phase: 'READY',
+          value: {
+            apiVersion: 1,
+            state: result.data.value.disposition === 'PROCESSING'
+              ? 'PROCESSING'
+              : result.data.value.disposition === 'QUEUED'
+                ? 'RECORDED'
+                : 'EMPTY',
+            canRequest: false,
+          },
+        })
+        setRefreshGeneration(value => value + 1)
+      } catch {
+        setState({ phase: 'ERROR' })
+      } finally {
+        requestPending.current = false
+        setSubmitting(false)
+      }
+    })()
+  }
+  const disabled = !props.active || state.phase !== 'READY' || !state.value.canRequest || submitting
+  const statusText = props.sessionId === undefined
+    ? '请先打开一个会话。'
+    : state.phase === 'LOADING'
+      ? '正在读取整理状态…'
+      : state.phase === 'ERROR'
+        ? '整理状态暂不可用，请刷新后重试。'
+        : learningStatusCopy[state.value.state]
+  return createElement('div', { className: css.sectionBody },
+    createElement('div', { className: css.learningStatusRow },
+      createElement('p', { role: state.phase === 'ERROR' ? 'alert' : 'status', 'aria-live': 'polite', className: css.status },
+        statusText,
+      ),
+      createElement('div', { className: css.actions },
+        createElement(Button, {
+          variant: 'primary',
+          disabled,
+          onClick: request,
+        }, submitting ? '正在提交…' : '立即整理本次经验'),
+        createElement(Button, {
+          variant: 'outline',
+          'aria-label': '刷新整理状态',
+          disabled: !props.active || props.sessionId === undefined || submitting,
+          onClick: () => { setState({ phase: 'LOADING' }); setRefreshGeneration(value => value + 1) },
+        }, createElement(IconRefreshOutline16)),
+      ),
+    ),
+  )
+}
+
 const recentSkillActivityResultSchema = z.object({
   ok: z.literal(true),
   value: z.object({
@@ -1024,6 +1167,7 @@ export function Run2skillSettingsPage(props: {
   readonly callAttention: AttentionCall
   readonly callReview: ProposalReviewCall
   readonly callActivity: RecentSkillActivityCall
+  readonly callLearningStatus?: LearningStatusCall
   readonly useSessions?: <T>(selector: (state: { readonly current?: string }) => T) => T
   readonly useWorkspaces?: <T>(selector: (state: {
     readonly items: readonly { readonly workspaceId: string; readonly sessionIds?: readonly string[] }[]
@@ -1034,7 +1178,7 @@ export function Run2skillSettingsPage(props: {
     .find(workspace => workspace.sessionIds?.includes(liveSessionId ?? ''))?.workspaceId)
   const workspaceId = props.useSessions === undefined ? props.workspaceId : liveWorkspaceId
   const sessionId = props.useSessions === undefined ? props.sessionId : liveSessionId
-  const [open, setOpen] = useState(() => new Set(['attention']))
+  const [open, setOpen] = useState(() => new Set(['status', 'attention']))
   const hostTab = useHostTabVisibility()
   const [attention, setAttention] = useState<AttentionProjection>()
   const [attentionRefresh, setAttentionRefresh] = useState(0)
@@ -1083,7 +1227,16 @@ export function Run2skillSettingsPage(props: {
     }, content),
   )
   return createElement('div', { ref: hostTab.ref, className: css.page, 'data-run2skill-settings-page': true },
-    createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里只展示需要处理的事项和持久设置。'),
+    createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里展示当前状态、需要处理的事项和持久设置。'),
+    props.callLearningStatus === undefined ? null : disclosure('status', '整理状态', createElement(IconSparkle16),
+      createElement(LearningStatusSection, {
+        key: JSON.stringify([sessionId ?? null, workspaceId ?? null, scopeGeneration, purgeState.hostDataEpoch]),
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(workspaceId === undefined ? {} : { workspaceId }),
+        scopeGeneration,
+        active: hostTab.visible && open.has('status') && !purgeDataChanging,
+        call: props.callLearningStatus,
+      })),
     disclosure('attention', '需要处理', createElement(IconWarningOutline16),
       createElement('div', { className: css.sectionBody },
         createElement(AttentionSettingsSummary, {
@@ -1184,6 +1337,9 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
   const callActivity: RecentSkillActivityCall = async (payload, signal) => await context.connection.rpc.call(
     RUN2SKILL_RPC_CHANNEL, 'recent-activity/list', payload, signal,
   )
+  const callLearningStatus: LearningStatusCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
+    RUN2SKILL_RPC_CHANNEL, endpoint, payload, signal,
+  )
   const callPurge: PurgeCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
     RUN2SKILL_RPC_CHANNEL, endpoint, payload, signal,
   )
@@ -1212,6 +1368,7 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
       callAttention,
       callReview,
       callActivity,
+      callLearningStatus,
     }),
   }, Run2skillSettingsPage))
 

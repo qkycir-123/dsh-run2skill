@@ -246,6 +246,30 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     }
   }
 
+  async requestSynthesis(sessionLifecycleKey: string): Promise<{
+    readonly changed: boolean
+    readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+  }> {
+    const receipt = await this.pipeline.requestSynthesis(sessionLifecycleKey)
+    if (receipt.disposition === 'QUEUED') this.pipeline.wake()
+    return receipt
+  }
+
+  learningStatusSession(sessionLifecycleKey: string) {
+    const session = this.options.resolveSession(sessionLifecycleKey)
+    return session === undefined
+      ? undefined
+      : {
+          sessionId: session.header.id,
+          ...(session.workspaceBinding === undefined ? {} : {
+            workspaceBinding: {
+              workspaceId: session.workspaceBinding.workspaceId,
+              canonicalPath: session.workspaceBinding.canonicalPath,
+            },
+          }),
+        }
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true

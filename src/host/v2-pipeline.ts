@@ -67,6 +67,23 @@ export class DshV2PipelineRuntime {
     const batchScheduler = new SessionBatchScheduler({
       coordinator,
       onIdleBatchFrozen: () => { wakePipeline() },
+      permitRequestedSynthesis: async sessionLifecycleKey => {
+        const cursor = domain.global.get().sessions[sessionLifecycleKey]
+        const observed = await options.activity.observe(sessionLifecycleKey)
+        if (
+          cursor === undefined
+          || observed === null
+          || typeof observed !== 'object'
+          || !('complete' in observed)
+          || !('activeAgent' in observed)
+          || !('durableOpenTurn' in observed)
+          || !('durableLatestTurnEndSeq' in observed)
+        ) return false
+        return observed.complete === true
+          && observed.activeAgent === false
+          && observed.durableOpenTurn === false
+          && observed.durableLatestTurnEndSeq === cursor.observedThroughTurnEndSeq
+      },
       ...(options.now === undefined ? {} : { now: options.now }),
     })
     const quiescence = new SessionQuiescenceCoordinator(domain, {
@@ -126,6 +143,10 @@ export class DshV2PipelineRuntime {
 
   observe(observation: Parameters<Run2skillV2PipelineRuntime['observe']>[0]): Promise<void> {
     return this.#runtime.observe(observation)
+  }
+
+  requestSynthesis(sessionLifecycleKey: string) {
+    return this.#runtime.requestSynthesis(sessionLifecycleKey)
   }
 
   async observeTurn(

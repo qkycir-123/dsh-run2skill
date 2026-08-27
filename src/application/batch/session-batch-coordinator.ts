@@ -74,6 +74,18 @@ function withoutBatchManifestBaseline(cursor: SessionCursorV2): SessionCursorV2 
   return rest
 }
 
+function consumeManualSynthesisRequest(
+  cursor: SessionCursorV2,
+  throughTurnEndSeq: number,
+): SessionCursorV2 {
+  if (
+    cursor.manualSynthesisRequest === undefined
+    || cursor.manualSynthesisRequest.throughTurnEndSeq > throughTurnEndSeq
+  ) return cursor
+  const { manualSynthesisRequest: _request, ...rest } = cursor
+  return rest
+}
+
 function canonicalReasons(reasons: Iterable<SessionBatchV2['triggerReasons'][number]>): SessionBatchV2['triggerReasons'] {
   const unique = new Set(reasons)
   return TRIGGER_ORDER.filter(reason => unique.has(reason))
@@ -133,6 +145,9 @@ export class SessionBatchCoordinator {
           ? {}
           : { observedLogPrefixDigest: cursor.observedLogPrefixDigest }),
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
+        ...(cursor?.manualSynthesisRequest === undefined
+          ? {}
+          : { manualSynthesisRequest: cursor.manualSynthesisRequest }),
         ...(cursor?.lastActivityAt === undefined ? {} : { lastActivityAt: cursor.lastActivityAt }),
         batchManifestBaseline: baseline,
         openExperienceCarry: cursor?.openExperienceCarry ?? [],
@@ -176,6 +191,9 @@ export class SessionBatchCoordinator {
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
         ...sessionRecoveryMetadata(cursor, observation.sessionRecovery),
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
+        ...(cursor?.manualSynthesisRequest === undefined
+          ? {}
+          : { manualSynthesisRequest: cursor.manualSynthesisRequest }),
         lastActivityAt: latestIso(cursor?.lastActivityAt, observation.observedAt),
         ...(baseline === undefined ? {} : { batchManifestBaseline: baseline }),
         openExperienceCarry: cursor?.openExperienceCarry ?? [],
@@ -203,6 +221,58 @@ export class SessionBatchCoordinator {
       const frozen: SessionBatchV2[] = []
       for (const lifecycleKey of Object.keys(current.sessions).sort()) {
         const result = await this.#freezeOne(next, lifecycleKey, now)
+        next = result.global
+        if (result.changed && result.batch !== undefined) frozen.push(result.batch)
+      }
+      return { value: frozen, global: next }
+    })
+  }
+
+  requestSynthesis(sessionLifecycleKey: string): Promise<{
+    readonly changed: boolean
+    readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+  }> {
+    return this.#global.runExclusive<{
+      readonly changed: boolean
+      readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+    }>(async current => {
+      const cursor = current.sessions[sessionLifecycleKey]
+      if (cursor === undefined) return { value: { changed: false, disposition: 'EMPTY' } }
+      const active = cursor.activeBatchId === undefined
+        ? undefined
+        : SessionBatchV2Schema.safeParse(this.#batches.get(cursor.activeBatchId)).data
+      const pendingAfter = active?.lastTurnEndSeq ?? cursor.detectedThroughTurnEndSeq
+      if (cursor.observedThroughTurnEndSeq <= pendingAfter) {
+        return { value: { changed: false, disposition: active === undefined ? 'EMPTY' : 'PROCESSING' } }
+      }
+      if (cursor.manualSynthesisRequest?.throughTurnEndSeq === cursor.observedThroughTurnEndSeq) {
+        return { value: { changed: false, disposition: 'QUEUED' } }
+      }
+      const nextCursor: SessionCursorV2 = {
+        ...cursor,
+        manualSynthesisRequest: {
+          throughTurnEndSeq: cursor.observedThroughTurnEndSeq,
+          requestedAt: this.#isoNow(),
+        },
+        updatedAt: this.#isoNow(),
+      }
+      return {
+        value: { changed: true, disposition: 'QUEUED' },
+        global: { ...current, sessions: { ...current.sessions, [sessionLifecycleKey]: nextCursor } },
+      }
+    })
+  }
+
+  flushRequested(
+    permit: (sessionLifecycleKey: string) => boolean | Promise<boolean> = () => true,
+  ): Promise<readonly SessionBatchV2[]> {
+    return this.#global.runExclusive(async current => {
+      let next = current
+      const frozen: SessionBatchV2[] = []
+      for (const lifecycleKey of Object.keys(current.sessions).sort()) {
+        if (next.sessions[lifecycleKey]?.manualSynthesisRequest === undefined) continue
+        if (!await permit(lifecycleKey)) continue
+        const result = await this.#freezeOne(next, lifecycleKey, undefined, true)
         next = result.global
         if (result.changed && result.batch !== undefined) frozen.push(result.batch)
       }
@@ -293,6 +363,9 @@ export class SessionBatchCoordinator {
         ),
         ...sessionRecoveryMetadata(existing, tail.sessionRecovery),
         ...(existing?.activeBatchId === undefined ? {} : { activeBatchId: existing.activeBatchId }),
+        ...(existing?.manualSynthesisRequest === undefined
+          ? {}
+          : { manualSynthesisRequest: existing.manualSynthesisRequest }),
         lastActivityAt: latestIso(existing?.lastActivityAt, tail.observedAt),
         ...(existing?.batchManifestBaseline === undefined
           ? {}
@@ -338,6 +411,7 @@ export class SessionBatchCoordinator {
     current: GlobalV2,
     lifecycleKey: string,
     idleNow: number | undefined,
+    allowManualRequest = false,
   ): Promise<{ readonly global: GlobalV2; readonly batch?: SessionBatchV2; readonly changed: boolean }> {
     const cursor = current.sessions[lifecycleKey]
     if (cursor === undefined) return { global: current, changed: false }
@@ -352,7 +426,7 @@ export class SessionBatchCoordinator {
       .map(([, value]) => TurnObservationV2Schema.parse(value))
       .filter(item => item.sessionLifecycleKey === lifecycleKey && item.turnEndSeq > cursor.detectedThroughTurnEndSeq)
       .sort((left, right) => left.turnEndSeq - right.turnEndSeq)
-    const candidate = this.#candidate(pending, cursor, idleNow)
+    const candidate = this.#candidate(pending, cursor, idleNow, allowManualRequest)
     if (candidate === undefined) return { global: current, changed: false }
     const first = candidate.observations[0]!
     const last = candidate.observations.at(-1)!
@@ -409,7 +483,7 @@ export class SessionBatchCoordinator {
           sessions: {
             ...current.sessions,
             [lifecycleKey]: {
-              ...withoutBatchManifestBaseline(cursor),
+              ...consumeManualSynthesisRequest(withoutBatchManifestBaseline(cursor), existing.lastTurnEndSeq),
               activeBatchId: existing.batchId,
               updatedAt: this.#isoNow(),
             },
@@ -485,7 +559,7 @@ export class SessionBatchCoordinator {
         sessions: {
           ...current.sessions,
           [lifecycleKey]: {
-            ...withoutBatchManifestBaseline(cursor),
+            ...consumeManualSynthesisRequest(withoutBatchManifestBaseline(cursor), batch.lastTurnEndSeq),
             activeBatchId: batch.batchId,
             updatedAt: now,
           },
@@ -501,7 +575,10 @@ export class SessionBatchCoordinator {
     batch: SessionBatchV2,
     now: string,
   ): GlobalV2 {
-    const withoutBaseline = withoutBatchManifestBaseline(withoutUndefinedActiveBatch(cursor))
+    const withoutBaseline = consumeManualSynthesisRequest(
+      withoutBatchManifestBaseline(withoutUndefinedActiveBatch(cursor)),
+      batch.lastTurnEndSeq,
+    )
     return {
       ...current,
       sessions: {
@@ -520,9 +597,13 @@ export class SessionBatchCoordinator {
     pending: readonly TurnObservationV2[],
     cursor: SessionCursorV2,
     idleNow: number | undefined,
+    allowManualRequest: boolean,
   ): FreezeCandidate | undefined {
     if (pending.length === 0) return undefined
     const explicitIndex = pending.findIndex(item => item.explicitSaveRequested)
+    const manualIndex = !allowManualRequest || cursor.manualSynthesisRequest === undefined
+      ? -1
+      : pending.findIndex(item => item.turnEndSeq >= cursor.manualSynthesisRequest!.throughTurnEndSeq)
     let completeCount = 0
     let thresholdIndex = -1
     for (const [index, item] of pending.entries()) {
@@ -532,11 +613,11 @@ export class SessionBatchCoordinator {
         break
       }
     }
-    const immediateIndexes = [explicitIndex, thresholdIndex].filter(index => index >= 0)
+    const immediateIndexes = [explicitIndex, manualIndex, thresholdIndex].filter(index => index >= 0)
     if (immediateIndexes.length > 0) {
       const endIndex = Math.min(...immediateIndexes)
       const reasons: SessionBatchV2['triggerReasons'][number][] = []
-      if (explicitIndex === endIndex) reasons.push('EXPLICIT')
+      if (explicitIndex === endIndex || manualIndex === endIndex) reasons.push('EXPLICIT')
       if (thresholdIndex === endIndex) reasons.push('THRESHOLD')
       return { observations: pending.slice(0, endIndex + 1), reasons }
     }

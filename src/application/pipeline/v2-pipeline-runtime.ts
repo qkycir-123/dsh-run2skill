@@ -6,6 +6,10 @@ export interface V2PipelineBatchScheduler {
   start(): Promise<void>
   prepareSessionWindow(sessionLifecycleKey: string): Promise<void>
   observe(observation: TurnObservationV2): Promise<void>
+  requestSynthesis?(sessionLifecycleKey: string): Promise<{
+    readonly changed: boolean
+    readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+  }>
   wake(): void
   settle(): Promise<void>
   dispose(): Promise<void>
@@ -107,6 +111,18 @@ export class Run2skillV2PipelineRuntime {
       await this.#batchScheduler.observe(observation)
       await this.#drain()
     })
+  }
+
+  async requestSynthesis(sessionLifecycleKey: string): Promise<{
+    readonly changed: boolean
+    readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+  }> {
+    if (!this.#started) await this.start()
+    this.#assertOpen()
+    if (this.#batchScheduler.requestSynthesis === undefined) {
+      throw new Error('Run2Skill synthesis requests are unavailable')
+    }
+    return await this.#batchScheduler.requestSynthesis(sessionLifecycleKey)
   }
 
   wake(): void {

@@ -34,6 +34,7 @@ import {
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
 import { projectRuntimeAttention } from '../adapters/dsh-connection/attention-rpc.js'
 import { createV2RecentSkillActivityRpcHandler } from '../adapters/dsh-connection/v2-recent-skill-activity-rpc.js'
+import { createV2LearningStatusRpcHandler } from '../adapters/dsh-connection/v2-learning-status-rpc.js'
 import { createV2ProposalRpcHandler } from '../adapters/dsh-connection/v2-proposal-rpc.js'
 import { V2CurrentScopeAuthorizer } from '../adapters/dsh-connection/v2-current-scope-authorizer.js'
 import { openRun2skillDomain } from '../adapters/dsh-storage/domain.js'
@@ -1061,14 +1062,27 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     },
     v2LearningRpc,
   )
-  const v2Rpc = createV2RecentSkillActivityRpcHandler(
+  const v2LearningStatusRpc = createV2LearningStatusRpcHandler(
     () => factory.currentV2Domain,
-    resolveCurrentWorkspace,
+    {
+      resolveSession: lifecycleKey => factory.currentV2Runtime?.learningStatusSession(lifecycleKey),
+      resolveWorkspace: resolveCurrentWorkspace,
+      requestSynthesis: async lifecycleKey => {
+        const runtime = factory.currentV2Runtime
+        if (runtime === undefined) throw new Error('V2_RUNTIME_UNAVAILABLE')
+        return await runtime.requestSynthesis(lifecycleKey)
+      },
+    },
     createPurgeRpcHandler(
       () => factory.currentV2Runtime?.purge,
       v2ProposalRpc,
       { runMutation: operation => mutationGate.run(operation) },
     ),
+  )
+  const v2Rpc = createV2RecentSkillActivityRpcHandler(
+    () => factory.currentV2Domain,
+    resolveCurrentWorkspace,
+    v2LearningStatusRpc,
   )
   const disposeRpc = registerObserveSummaryRpc(
     context.connection,

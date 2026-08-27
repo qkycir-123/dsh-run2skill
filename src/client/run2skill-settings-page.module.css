@@ -64,6 +64,30 @@
   gap: 8px;
 }
 
+.learningStatusRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.learningStatusRow > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 30rem) {
+  .learningStatusRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .learningStatusRow .actions > * {
+    flex: 1 1 auto;
+  }
+}
+
 .attentionList,
 .proposalList,
 .activityList {

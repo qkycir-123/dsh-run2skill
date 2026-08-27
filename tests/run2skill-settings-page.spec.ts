@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   Run2skillAttentionToast,
   AttentionSettingsSummary,
+  LearningStatusSection,
   LearningFailureSection,
   RecentSkillActivitySection,
   RejectProposalModal,
@@ -34,6 +35,94 @@ describe('run2skill native settings surface', () => {
     const promise = new Promise<T>(yes => { resolve = yes })
     return { promise, resolve }
   }
+
+  it('shows plain-language learning states and submits one idempotent immediate synthesis request', async () => {
+    let requested = false
+    const call = vi.fn(async (endpoint: string) => {
+      if (endpoint === 'learning/status') return {
+        ok: true,
+        value: {
+          apiVersion: 1,
+          state: requested ? 'PROCESSING' : 'RECORDED',
+          canRequest: !requested,
+        },
+      }
+      requested = true
+      return { ok: true, value: { apiVersion: 1, changed: true, disposition: 'QUEUED' } }
+    })
+    render(createElement(LearningStatusSection, {
+      sessionId: 'session-a',
+      workspaceId: 'workspace-a',
+      active: true,
+      call,
+    }))
+
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toBe('已记下，待本次会话结束后整理。')
+    expect(status.textContent).not.toMatch(/5\s*Turn|3\/5|batch|watermark/i)
+    const trigger = screen.getByRole('button', { name: '立即整理本次经验' })
+    fireEvent.click(trigger)
+    fireEvent.click(trigger)
+    await waitFor(() => expect(call.mock.calls.filter(([endpoint]) => endpoint === 'learning/request')).toHaveLength(1))
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('正在整理本次经验…'))
+  })
+
+  it.each([
+    ['EMPTY', '暂无可整理的经验。', false],
+    ['CHECKING', '正在检查已有 Skill…', false],
+    ['COVERED', '已有 Skill 已覆盖这次经验。', false],
+    ['NEEDS_ATTENTION', '整理结果需要你处理。', false],
+  ] as const)('renders the %s learning state without scheduler internals', async (state, copy, canRequest) => {
+    render(createElement(LearningStatusSection, {
+      sessionId: 'session-a',
+      active: true,
+      call: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state, canRequest } })),
+    }))
+
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toBe(copy)
+    expect(status.textContent).not.toMatch(/5\s*Turn|3\/5|batch|watermark|threshold/i)
+    expect(screen.getByRole('button', { name: '立即整理本次经验' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('keeps the last failure actionable through an accessible refresh control', async () => {
+    let fail = true
+    const call = vi.fn(async () => {
+      if (fail) throw new Error('synthetic status failure')
+      return { ok: true, value: { apiVersion: 1, state: 'EMPTY', canRequest: false } }
+    })
+    render(createElement(LearningStatusSection, {
+      sessionId: 'session-a', active: true, call,
+    }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe('整理状态暂不可用，请刷新后重试。')
+    expect(screen.getByRole('button', { name: '立即整理本次经验' }).hasAttribute('disabled')).toBe(true)
+    const refresh = screen.getByRole('button', { name: '刷新整理状态' })
+    refresh.focus()
+    expect(document.activeElement).toBe(refresh)
+    fail = false
+    fireEvent.click(refresh)
+    expect((await screen.findByRole('status')).textContent).toBe('暂无可整理的经验。')
+  })
+
+  it('disables stale status actions while the host surface is inactive', async () => {
+    const call = vi.fn(async (_endpoint: string) => ({
+      ok: true,
+      value: { apiVersion: 1, state: 'RECORDED', canRequest: true },
+    }))
+    const view = render(createElement(LearningStatusSection, {
+      sessionId: 'session-a', active: true, scopeGeneration: 2, call,
+    }))
+    await screen.findByText('已记下，待本次会话结束后整理。')
+
+    view.rerender(createElement(LearningStatusSection, {
+      sessionId: 'session-a', active: false, scopeGeneration: 3, call,
+    }))
+    expect(screen.getByRole('button', { name: '立即整理本次经验' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '刷新整理状态' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '立即整理本次经验' }))
+    expect(call.mock.calls.filter(([endpoint]) => endpoint === 'learning/request')).toHaveLength(0)
+  })
 
   it('uses Attention action identity as the only source of visible Proposal work', () => {
     const review = {
