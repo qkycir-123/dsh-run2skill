@@ -28,6 +28,7 @@ export const PROPOSALS_APPROVE_ENDPOINT = 'proposals/approve'
 export const PROPOSALS_REJECT_ENDPOINT = 'proposals/reject'
 export const PROPOSALS_RETRY_ENDPOINT = 'proposals/retry'
 export const PROPOSALS_REFRESH_ENDPOINT = 'proposals/refresh'
+export const PROPOSALS_REVISE_ENDPOINT = 'proposals/revise'
 export const COVERAGE_CONFIRM_DISCARD_ENDPOINT = 'coverage/confirm-discard'
 
 const MAX_REQUEST_BYTES = 8 * 1024
@@ -63,6 +64,14 @@ const mutationRequestShape = {
 }
 export const mutationRequestSchema = z.object(mutationRequestShape).strict()
 export const rejectRequestSchema = z.object({ ...mutationRequestShape, confirm: z.literal(true) }).strict()
+export const reviseRequestSchema = z.object({
+  ...mutationRequestShape,
+  actionId: z.string().regex(/^rev_[a-f0-9]{64}$/),
+  feedback: z.string().refine(value => {
+    const trimmed = value.trim()
+    return trimmed.length > 0 && Buffer.byteLength(trimmed, 'utf8') <= 2_048
+  }, 'Expected non-empty feedback of at most 2048 UTF-8 bytes'),
+}).strict()
 
 const listItemSchema = z.object({
   workItemId,
@@ -73,7 +82,7 @@ const listItemSchema = z.object({
   description: z.string().min(1),
   persistenceScope: z.enum(['PROJECT', 'USER']),
   createdAt: z.string().datetime({ offset: true }),
-  processingState: z.enum(['READY_FOR_REVIEW', 'PUBLISHING', 'NEEDS_ATTENTION']),
+  processingState: z.enum(['READY_FOR_REVIEW', 'REVISING', 'PUBLISHING', 'NEEDS_ATTENTION']),
   publicationOutcome: z.enum(['PENDING_REVIEW', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISH_FAILED']),
 }).strict()
 
@@ -156,6 +165,12 @@ export const safeProposalSchema = z.object({
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
   catalogObservationDigest: z.string().regex(/^[a-f0-9]{64}$/),
   curationRationale: z.string().min(1).max(4_096),
+  revisionParent: z.object({
+    proposalId,
+    revision: positiveSafeInteger,
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+    exactSkillBytes: z.string().min(1).max(65_536),
+  }).strict().optional(),
   actionBinding: safeActionBindingSchema.optional(),
   proposalId, digest: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict().superRefine((value, context) => {
@@ -169,7 +184,7 @@ export const detailResponseSchema = z.object({
   apiVersion: z.literal(1),
   workItemId,
   workItemRevision: positiveSafeInteger,
-  processingState: z.enum(['READY_FOR_REVIEW', 'PUBLISHING', 'NEEDS_ATTENTION', 'TERMINAL']),
+  processingState: z.enum(['READY_FOR_REVIEW', 'REVISING', 'PUBLISHING', 'NEEDS_ATTENTION', 'TERMINAL']),
   reviewDecision: z.enum(['PENDING', 'APPROVED', 'REJECTED']),
   publicationOutcome: z.enum([
     'PENDING_REVIEW', 'DISCARDED', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISHED', 'PUBLISH_FAILED',
@@ -202,7 +217,7 @@ export const receiptSchema = z.object({
   workItemRevision: positiveSafeInteger,
   proposalRef: ProposalRefV1Schema,
   changed: z.boolean(),
-  processingState: z.enum(['READY_FOR_REVIEW', 'PUBLISHING', 'NEEDS_ATTENTION', 'TERMINAL']),
+  processingState: z.enum(['READY_FOR_REVIEW', 'REVISING', 'PUBLISHING', 'NEEDS_ATTENTION', 'TERMINAL']),
   reviewDecision: z.enum(['PENDING', 'APPROVED', 'REJECTED']),
   publicationOutcome: z.enum([
     'PENDING_REVIEW', 'DISCARDED', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISHED', 'PUBLISH_FAILED',

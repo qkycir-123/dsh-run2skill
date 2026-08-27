@@ -3,6 +3,8 @@ import { DshV2ProposalFileSystemAdapter } from '../adapters/dsh-publication/v2-p
 import { DshV2StockPublicationBindingResolver } from '../adapters/dsh-publication/v2-stock-publication-binding.js'
 import type { DshSkillRegistryPort } from '../adapters/dsh-skills/skill-catalog.js'
 import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
+import type { DshLlmPort } from '../adapters/dsh-llm/restricted-learning-client.js'
+import { DshV2StageLlmClient } from '../adapters/dsh-llm/v2-stage-client.js'
 import {
   DshV2CatalogAdapter,
   type DshV2CatalogAdapterOptions,
@@ -17,6 +19,7 @@ import {
 import {
   V2ProposalCatalogRevalidator,
   V2ProposalRefreshCoordinator,
+  V2ProposalRevisionCoordinator,
   V2ProposalReviewCoordinator,
 } from '../application/review/index.js'
 
@@ -29,6 +32,7 @@ export interface V2ProposalHostSession<TView extends object> {
 }
 
 export interface V2ProposalHostServicesOptions<TView extends object> {
+  readonly llm: DshLlmPort
   readonly registry: DshSkillRegistryPort<TView>
   readonly resolveSession: (sessionLifecycleKey: string) => V2ProposalHostSession<TView> | undefined
   readonly resolveFileSystem?: (view: TView) => unknown
@@ -49,12 +53,15 @@ export class V2ProposalHostServices<TView extends object> {
   readonly reviews: V2ProposalReviewCoordinator
   readonly publications: V2ProposalPublicationCoordinator
   readonly refreshes: V2ProposalRefreshCoordinator
+  readonly revisions: V2ProposalRevisionCoordinator
   readonly presenter: V2CompatibleProposalPresenter<TView>
+  readonly #revisionClient: DshV2StageLlmClient
 
   constructor(
     readonly domain: Run2skillV2Domain,
     options: V2ProposalHostServicesOptions<TView>,
   ) {
+    this.#revisionClient = new DshV2StageLlmClient(options.llm)
     const catalog = new DshV2CatalogAdapter(domain, {
       registry: options.registry,
       resolveView: lifecycleKey => options.resolveSession(lifecycleKey)?.view,
@@ -90,5 +97,12 @@ export class V2ProposalHostServices<TView extends object> {
       domain,
       options.now === undefined ? {} : { now: options.now },
     )
+    this.revisions = new V2ProposalRevisionCoordinator(domain, {
+      revalidate: input => revalidator.revalidate(input),
+      generate: input => this.#revisionClient.revise(input),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    })
   }
+
+  dispose(): void { this.#revisionClient.dispose() }
 }

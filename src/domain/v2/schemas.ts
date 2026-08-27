@@ -2184,6 +2184,15 @@ const NativeProposalRevisionV2Schema = z.object({
   publicationExternalReceiptDigest: sha256Hex.optional(),
   publishedAt: isoDateTime.optional(),
   publicationReceiptDigest: sha256Hex.optional(),
+  revisionSource: z.object({
+    kind: z.literal('USER_FEEDBACK'),
+    actionId: z.string().regex(/^rev_[a-f0-9]{64}$/),
+    parentProposalId: z.string().regex(/^prop_[a-f0-9]{64}$/),
+    parentProposalRevision: positiveSafeInteger,
+    parentProposalDigest: sha256Hex,
+    feedbackDigest: sha256Hex,
+    feedbackSummary: utf8Limited(512),
+  }).strict().optional(),
   createdAt: isoDateTime,
 }).strict().superRefine((value, context) => {
   const hasFailure = value.reviewFailureCode !== undefined || value.reviewAttemptedAt !== undefined
@@ -2257,6 +2266,28 @@ const NativeProposalLineageV2Schema = z.object({
   ownerIntentRevision: positiveSafeInteger,
   currentProposalRevision: safeNonNegativeInteger,
   proposalRevisions: z.array(NativeProposalRevisionV2Schema).max(64),
+  revisionActions: z.array(z.object({
+    actionId: z.string().regex(/^rev_[a-f0-9]{64}$/),
+    parentProposalId: z.string().regex(/^prop_[a-f0-9]{64}$/),
+    parentProposalRevision: positiveSafeInteger,
+    parentProposalDigest: sha256Hex,
+    feedbackDigest: sha256Hex,
+    feedbackSummary: utf8Limited(512),
+    inputDigest: sha256Hex,
+    callId: z.string().regex(/^call_[a-f0-9]{64}$/),
+    state: z.enum(['CALL_RESERVED', 'SUCCEEDED', 'FAILED', 'OUTCOME_UNKNOWN']),
+    failureCode: z.enum([
+      'REVISION_MODEL_FAILED', 'REVISION_OUTPUT_INVALID', 'REVISION_CATALOG_CHANGED',
+      'REVISION_CATALOG_UNAVAILABLE', 'REVISION_OUTCOME_UNKNOWN',
+    ]).optional(),
+    resultProposalRef: z.object({
+      proposalId: z.string().regex(/^prop_[a-f0-9]{64}$/),
+      revision: positiveSafeInteger,
+      digest: sha256Hex,
+    }).strict().optional(),
+    createdAt: isoDateTime,
+    completedAt: isoDateTime.optional(),
+  }).strict()).max(64).default([]),
   currentSkillRevision: safeNonNegativeInteger.default(0),
   skillRevisions: z.array(NativeSkillRevisionV2Schema).max(128).default([]),
   createdAt: isoDateTime,
@@ -2279,6 +2310,47 @@ const NativeProposalLineageV2Schema = z.object({
     if (revision.action === 'CREATE' && (
       revision.baseSkillBytes !== undefined || revision.baseSkillBytesDigest !== undefined
     )) context.addIssue({ code: 'custom', path: ['proposalRevisions', index], message: 'CREATE Proposal cannot retain Base Skill bytes' })
+    if (index === 0 && revision.revisionSource !== undefined) {
+      context.addIssue({ code: 'custom', path: ['proposalRevisions', index, 'revisionSource'], message: 'Initial Proposal cannot claim a parent revision' })
+    }
+    if (index > 0 && revision.revisionSource !== undefined) {
+      const parent = value.proposalRevisions[index - 1]
+      if (
+        parent === undefined
+        || revision.revisionSource.parentProposalId !== parent.proposalId
+        || revision.revisionSource.parentProposalRevision !== parent.revision
+      ) context.addIssue({ code: 'custom', path: ['proposalRevisions', index, 'revisionSource'], message: 'Proposal revision source must bind its direct immutable parent' })
+    }
+  })
+  const revisionActionIds = value.revisionActions.map(action => action.actionId)
+  if (new Set(revisionActionIds).size !== revisionActionIds.length) {
+    context.addIssue({ code: 'custom', path: ['revisionActions'], message: 'Proposal revision action ids must be unique' })
+  }
+  value.revisionActions.forEach((action, index) => {
+    const terminal = action.state !== 'CALL_RESERVED'
+    if (terminal !== (action.completedAt !== undefined)) {
+      context.addIssue({ code: 'custom', path: ['revisionActions', index], message: 'Terminal revision action requires an exact completion time' })
+    }
+    if ((action.state === 'SUCCEEDED') !== (action.resultProposalRef !== undefined)) {
+      context.addIssue({ code: 'custom', path: ['revisionActions', index, 'resultProposalRef'], message: 'Successful revision action requires one immutable result ref' })
+    }
+    if ((action.state === 'FAILED' || action.state === 'OUTCOME_UNKNOWN') !== (action.failureCode !== undefined)) {
+      context.addIssue({ code: 'custom', path: ['revisionActions', index, 'failureCode'], message: 'Failed revision action requires one bounded failure code' })
+    }
+    if (action.state === 'OUTCOME_UNKNOWN' && action.failureCode !== 'REVISION_OUTCOME_UNKNOWN') {
+      context.addIssue({ code: 'custom', path: ['revisionActions', index, 'failureCode'], message: 'Unknown revision outcome requires its exact failure code' })
+    }
+  })
+  value.proposalRevisions.forEach((revision, index) => {
+    if (revision.revisionSource === undefined) return
+    const action = value.revisionActions.find(item => item.actionId === revision.revisionSource!.actionId)
+    if (
+      action?.state !== 'SUCCEEDED'
+      || action.resultProposalRef?.proposalId !== revision.proposalId
+      || action.resultProposalRef.revision !== revision.revision
+      || action.feedbackDigest !== revision.revisionSource.feedbackDigest
+      || action.feedbackSummary !== revision.revisionSource.feedbackSummary
+    ) context.addIssue({ code: 'custom', path: ['proposalRevisions', index, 'revisionSource'], message: 'Proposal revision source requires one matching successful action receipt' })
   })
   if (value.currentSkillRevision !== value.skillRevisions.length) {
     context.addIssue({ code: 'custom', path: ['currentSkillRevision'], message: 'Native lineage must retain complete consecutive Skill revisions' })

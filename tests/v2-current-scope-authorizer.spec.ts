@@ -5,6 +5,7 @@ import {
 } from '../src/adapters/dsh-connection/v2-current-scope-authorizer.js'
 import { ProposalLineageV2Schema } from '../src/domain/v2/index.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
+import { deriveV2ProposalRef } from '../src/application/review/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
@@ -47,7 +48,7 @@ describe('v2 current-scope Action Queue authorization', () => {
       kind: 'REVIEW_PROPOSAL',
       reasonCode: 'PROPOSAL_READY',
       scope: 'PROJECT',
-      availableActions: ['APPROVE', 'REJECT'],
+      availableActions: ['APPROVE', 'REJECT', 'REVISE'],
     })
     expect(actions[0]?.proposalRef).toMatchObject({ proposalId: `prop_${'3'.repeat(64)}` })
     expect(await authorizer.authorize(domain, {
@@ -101,7 +102,7 @@ describe('v2 current-scope Action Queue authorization', () => {
       kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
     })
     expect(actions).toMatchObject([{
-      kind: 'RETRY_PUBLICATION', reasonCode: 'PUBLICATION_UNAVAILABLE', availableActions: ['RETRY'],
+      kind: 'RETRY_PUBLICATION', reasonCode: 'PUBLICATION_UNAVAILABLE', availableActions: ['RETRY', 'REVISE'],
     }])
 
     const nonRetryable = ProposalLineageV2Schema.parse({
@@ -171,8 +172,39 @@ describe('v2 current-scope Action Queue authorization', () => {
     await expect(authorizer.project(domain, {
       kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
     })).resolves.toMatchObject([{
-      kind: 'RETRY_PUBLICATION', reasonCode: 'PUBLICATION_PENDING', availableActions: ['RETRY'],
+      kind: 'RETRY_PUBLICATION', reasonCode: 'PUBLICATION_PENDING', availableActions: ['RETRY', 'REVISE'],
     }])
+  })
+
+  it('disables approval and publication actions while a Proposal revision call is reserved', async () => {
+    const { domain, fixture } = await seed()
+    const active = ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)
+    if (active.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    const proposalRef = deriveV2ProposalRef(active)
+    await domain.table('proposal_lineages').put(active.lineageId, ProposalLineageV2Schema.parse({
+      ...active,
+      revision: active.revision + 1,
+      revisionActions: [{
+        actionId: `rev_${'1'.repeat(64)}`,
+        parentProposalId: proposalRef.proposalId,
+        parentProposalRevision: proposalRef.revision,
+        parentProposalDigest: proposalRef.digest,
+        feedbackDigest: '2'.repeat(64),
+        feedbackSummary: 'revise',
+        inputDigest: '3'.repeat(64),
+        callId: `call_${'4'.repeat(64)}`,
+        state: 'CALL_RESERVED',
+        createdAt: '2026-08-23T00:02:00.000Z',
+      }],
+      updatedAt: '2026-08-23T00:02:00.000Z',
+    }))
+    const authorizer = new V2CurrentScopeAuthorizer(async workspaceId => ({
+      workspaceId, canonicalPath: 'D:\\repo',
+    }))
+
+    await expect(authorizer.project(domain, {
+      kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
+    })).resolves.toMatchObject([{ availableActions: [] }])
   })
 
   it('rejects a stale action identity after the lineage revision changes', async () => {

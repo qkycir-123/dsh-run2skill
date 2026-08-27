@@ -1,4 +1,5 @@
 import type { V2ProposalPublicationInput } from '../../application/publication/index.js'
+import { deriveV2ProposalRef } from '../../application/review/index.js'
 import { ExperienceRecordV1Schema } from '../../domain/learn/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
@@ -145,6 +146,30 @@ export class V2CompatibleProposalPresenter<TView extends object> {
         supportingExperienceIds: [syntheticId('exp', input.intent.intentId)],
         catalogObservationDigest: input.proposal.runtimeCatalogDigest,
         curationRationale: input.intent.applicabilitySummary,
+        ...(input.proposal.revisionSource === undefined
+          ? {}
+          : (() => {
+              const parent = input.lineage.proposalRevisions[input.proposal.revision - 2]
+              if (
+                parent === undefined
+                || parent.proposalId !== input.proposal.revisionSource.parentProposalId
+                || parent.revision !== input.proposal.revisionSource.parentProposalRevision
+              ) throw new V2ProposalPresentationError('STALE')
+              const parentRef = deriveV2ProposalRef({
+                ...input.lineage,
+                currentProposalRevision: parent.revision,
+                proposalRevisions: input.lineage.proposalRevisions.slice(0, input.proposal.revision - 1),
+              })
+              if (parentRef.digest !== input.proposal.revisionSource.parentProposalDigest) {
+                throw new V2ProposalPresentationError('STALE')
+              }
+              return { revisionParent: {
+                proposalId: parent.proposalId,
+                revision: parent.revision,
+                digest: parentRef.digest,
+                exactSkillBytes: parent.body.exactSkillBytes,
+              } }
+            })()),
         ...(actionBinding === undefined ? {} : { actionBinding }),
         proposalId: input.proposal.proposalId,
         digest: input.proposalRef.digest,

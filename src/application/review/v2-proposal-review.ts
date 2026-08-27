@@ -106,6 +106,9 @@ function immutableProposalFacts(lineage: NativeProposalLineageV2, proposal: Nati
       ...(proposal.projectScopeBinding === undefined
         ? {}
         : { projectScopeBinding: proposal.projectScopeBinding }),
+      ...(proposal.revisionSource === undefined
+        ? {}
+        : { revisionSource: proposal.revisionSource }),
       createdAt: proposal.createdAt,
     },
   }
