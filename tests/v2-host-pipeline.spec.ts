@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createDshV2PipelineRuntime } from '../src/host/v2-pipeline.js'
 import { projectDshTurnObservationV2 } from '../src/adapters/dsh-session/v2-turn-observation.js'
+import { V2LearningAttentionService } from '../src/adapters/dsh-connection/v2-learning-attention-rpc.js'
+import { projectV2LearningStatus } from '../src/adapters/dsh-connection/v2-learning-status-rpc.js'
 import { SessionBatchCoordinator } from '../src/application/batch/index.js'
+import { SessionQuiescenceCoordinator } from '../src/application/quiescence/index.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
 import type { OwnershipObservationPort } from '../src/application/ownership/index.js'
@@ -240,19 +243,28 @@ describe('v2 Host pipeline assembly', () => {
     await runtime.dispose()
   })
 
-  it.each(['NONE', 'READY'] as const)(
-    'automatically freezes one later manual request after a recovered active batch commits %s',
-    async oldResult => {
+  it.each([
+    { oldResult: 'NONE', laterResult: 'NONE' },
+    { oldResult: 'READY', laterResult: 'NONE' },
+    { oldResult: 'READY', laterResult: 'READY' },
+  ] as const)(
+    'closes recovered $oldResult learning safely when the later explicit batch commits $laterResult',
+    async ({ oldResult, laterResult }) => {
       const domain = createMemoryRun2skillV2Domain()
       await seedActiveBatchWithLaterManualRequest(domain)
       let detectorCalls = 0
+      const activity = { observe: async () => ({
+        complete: true, activeAgent: false, durableLatestTurnEndSeq: 14,
+        durableOpenTurn: false, activityRevision: 'stable-14',
+      }) }
       const runtime = createDshV2PipelineRuntime(domain, {
         llm: {
           resolveModelInfo: async () => ({ context: { contextWindow: 32_000 }, defaultMaxTokens: 4_096 }),
           stream: async function * () {
             detectorCalls += 1
-            let output = JSON.stringify({ result: 'NONE' })
-            if (detectorCalls === 1 && oldResult === 'READY') {
+            const result = detectorCalls === 1 ? oldResult : laterResult
+            let output = JSON.stringify({ result })
+            if (result === 'READY') {
               const claimed = [...domain.sessionBatches.values()]
                 .find(batch => batch.state === 'DETECTION_CLAIMED')!
               const observationId = claimed.observationManifest.at(-1)!.observationId
@@ -261,7 +273,7 @@ describe('v2 Host pipeline assembly', () => {
                 result: 'READY',
                 intents: [{
                   persistenceScope: 'PROJECT', experienceType: 'WORKFLOW',
-                  applicabilitySummary: '记录旧批次中的可复用流程',
+                  applicabilitySummary: `记录第 ${detectorCalls} 个批次中的可复用流程`,
                   keySteps: ['保留经过验证的步骤'], prohibitions: [], evidenceDigests: [evidenceDigest],
                   completeness: { status: 'COMPLETE', blockers: [] },
                 }],
@@ -279,10 +291,7 @@ describe('v2 Host pipeline assembly', () => {
             rootManifestDigest: '1'.repeat(64), runtimeCatalogDigest: '2'.repeat(64), complete: true,
           }),
         },
-        activity: { observe: async () => ({
-          complete: true, activeAgent: false, durableLatestTurnEndSeq: 14,
-          durableOpenTurn: false, activityRevision: 'stable-14',
-        }) },
+        activity,
         ownership: { observe: async () => ({ status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }) },
         catalog: {
           recall: {
@@ -304,7 +313,7 @@ describe('v2 Host pipeline assembly', () => {
       expect(batches).toHaveLength(2)
       expect(batches[0]).toMatchObject({ state: `COMMITTED_${oldResult}`, lastTurnEndSeq: 4 })
       expect(batches[1]).toMatchObject({
-        state: 'COMMITTED_NONE',
+        state: `COMMITTED_${laterResult}`,
         firstTurnEndSeq: 14,
         lastTurnEndSeq: 14,
         triggerReasons: ['EXPLICIT'],
@@ -313,6 +322,45 @@ describe('v2 Host pipeline assembly', () => {
         detectedThroughTurnEndSeq: 14,
       })
       expect(domain.global.get().sessions[lifecycleKey()]?.manualSynthesisRequest).toBeUndefined()
+      const intents = [...domain.experienceIntents.values()]
+      const quiescence = new SessionQuiescenceCoordinator(domain, { activity })
+      expect(quiescence.nextEligibleAt()).toBeUndefined()
+      const attention = new V2LearningAttentionService(
+        domain,
+        async workspaceId => ({ workspaceId, canonicalPath: CWD }),
+      )
+      const actions = await attention.project({ kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-1' })
+      if (oldResult === 'NONE') {
+        expect(intents).toHaveLength(0)
+        expect(actions).toHaveLength(0)
+        expect(projectV2LearningStatus(domain, lifecycleKey())).toMatchObject({ state: 'EMPTY' })
+      } else {
+        const oldIntent = intents.find(intent => intent.batchId === batches[0]!.batchId)
+        expect(oldIntent).toMatchObject({
+          status: 'NEEDS_ATTENTION',
+          evidenceRefs: [{ turnEndSeq: 4 }],
+          quiescence: {
+            state: 'SATISFIED',
+            batchLastTurnEndSeq: 4,
+            observedThroughTurnEndSeq: 14,
+            detectedThroughTurnEndSeq: 14,
+          },
+          coverage: { state: 'NEEDS_ATTENTION', reasonCode: 'SESSION_TAIL_ADVANCED' },
+        })
+        expect(actions.find(action => action.reasonCode === 'SESSION_TAIL_ADVANCED')).toMatchObject({
+          kind: 'DISMISS_LEARNING',
+          availableActions: ['DISMISS'],
+        })
+        expect(projectV2LearningStatus(domain, lifecycleKey())).toMatchObject({ state: 'NEEDS_ATTENTION' })
+        if (laterResult === 'READY') {
+          expect(intents.find(intent => intent.batchId === batches[1]!.batchId)).toMatchObject({
+            status: 'NEEDS_CONFIRMATION',
+            evidenceRefs: [{ turnEndSeq: 14 }],
+          })
+        } else {
+          expect(intents).toHaveLength(1)
+        }
+      }
       await runtime.dispose()
     },
   )

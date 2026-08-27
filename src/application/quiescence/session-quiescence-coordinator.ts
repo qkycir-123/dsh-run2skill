@@ -66,6 +66,10 @@ export class SessionQuiescenceCoordinator {
       .filter(intent => intent.status === 'WAITING_FOR_QUIESCENCE')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.ordinal - right.ordinal)
     for (const intent of candidates) {
+      if (await this.#tryMoveSupersededToAttention(intent)) {
+        this.#retries.delete(intent.intentId)
+        return 'PROCESSED'
+      }
       if (await this.#tryRelease(intent)) {
         this.#retries.delete(intent.intentId)
         return 'PROCESSED'
@@ -87,19 +91,33 @@ export class SessionQuiescenceCoordinator {
         intent.status !== 'WAITING_FOR_QUIESCENCE'
         || intent.quiescence.state !== 'WAITING'
       ) continue
+      const batch = SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId))
+      const cursor = this.#cursor(intent.sessionLifecycleKey)
+      if (
+        batch.success
+        && batch.data.state === 'COMMITTED_READY'
+        && batch.data.sessionLifecycleKey === intent.sessionLifecycleKey
+        && batch.data.lastTurnEndSeq === intent.quiescence.batchLastTurnEndSeq
+        && cursor !== undefined
+        && cursor.activeBatchId === undefined
+        && cursor.observedThroughTurnEndSeq > batch.data.lastTurnEndSeq
+        && cursor.observedThroughTurnEndSeq === cursor.detectedThroughTurnEndSeq
+      ) {
+        const retryAt = this.#retryAt(intent, now)
+        if (retryAt !== undefined) earliest = earliest === undefined ? retryAt : Math.min(earliest, retryAt)
+        continue
+      }
       if (intent.explicitSave) {
         const retryAt = this.#retryAt(intent, now)
         if (retryAt !== undefined) earliest = earliest === undefined ? retryAt : Math.min(earliest, retryAt)
         continue
       }
-      const batch = SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId))
       if (
         !batch.success
         || batch.data.state !== 'COMMITTED_READY'
         || batch.data.sessionLifecycleKey !== intent.sessionLifecycleKey
         || batch.data.lastTurnEndSeq !== intent.quiescence.batchLastTurnEndSeq
       ) continue
-      const cursor = this.#cursor(intent.sessionLifecycleKey)
       if (
         cursor === undefined
         || cursor.activeBatchId !== undefined
@@ -145,6 +163,72 @@ export class SessionQuiescenceCoordinator {
       || activity.activityRevision !== fence.activityRevision
       ? 'STALE'
       : 'VALID'
+  }
+
+  async #tryMoveSupersededToAttention(intent: ExperienceIntentV2): Promise<boolean> {
+    if (intent.quiescence.state !== 'WAITING') return false
+    const batch = SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId))
+    if (
+      !batch.success
+      || batch.data.state !== 'COMMITTED_READY'
+      || batch.data.sessionLifecycleKey !== intent.sessionLifecycleKey
+      || batch.data.lastTurnEndSeq !== intent.quiescence.batchLastTurnEndSeq
+    ) return false
+    const cursor = this.#cursor(intent.sessionLifecycleKey)
+    if (
+      cursor === undefined
+      || cursor.activeBatchId !== undefined
+      || cursor.observedThroughTurnEndSeq <= batch.data.lastTurnEndSeq
+      || cursor.observedThroughTurnEndSeq !== cursor.detectedThroughTurnEndSeq
+    ) return false
+    const activity = await this.#observe(intent.sessionLifecycleKey)
+    if (
+      activity === undefined
+      || !activity.complete
+      || activity.activeAgent
+      || activity.durableOpenTurn
+      || activity.durableLatestTurnEndSeq !== cursor.observedThroughTurnEndSeq
+    ) return false
+    const afterActivity = this.#cursor(intent.sessionLifecycleKey)
+    if (afterActivity === undefined || !this.#sameCursorFence(cursor, afterActivity)) return false
+    const recordedAt = this.#isoNow()
+    const fenceFacts = {
+      intentId: intent.intentId,
+      batchId: intent.batchId,
+      sessionLifecycleKey: intent.sessionLifecycleKey,
+      batchLastTurnEndSeq: intent.quiescence.batchLastTurnEndSeq,
+      observedThroughTurnEndSeq: cursor.observedThroughTurnEndSeq,
+      detectedThroughTurnEndSeq: cursor.detectedThroughTurnEndSeq,
+      activityRevision: activity.activityRevision,
+    }
+    let changed = false
+    await this.#intents.update(intent.intentId, current => {
+      const latest = ExperienceIntentV2Schema.parse(current)
+      if (latest.revision !== intent.revision || latest.status !== 'WAITING_FOR_QUIESCENCE') return latest
+      changed = true
+      return ExperienceIntentV2Schema.parse({
+        ...latest,
+        revision: latest.revision + 1,
+        status: 'NEEDS_ATTENTION',
+        quiescence: {
+          state: 'SATISFIED',
+          batchLastTurnEndSeq: latest.quiescence.batchLastTurnEndSeq,
+          requiredIdleMs: latest.quiescence.requiredIdleMs,
+          observedThroughTurnEndSeq: cursor.observedThroughTurnEndSeq,
+          detectedThroughTurnEndSeq: cursor.detectedThroughTurnEndSeq,
+          activityRevision: activity.activityRevision,
+          satisfiedAt: recordedAt,
+          fenceDigest: deriveSessionQuiescenceFenceDigestV2(fenceFacts),
+        },
+        coverage: {
+          state: 'NEEDS_ATTENTION',
+          retryUsed: latest.coverage.retryUsed,
+          reasonCode: 'SESSION_TAIL_ADVANCED',
+        },
+        updatedAt: recordedAt,
+      })
+    })
+    return changed
   }
 
   async #tryRelease(intent: ExperienceIntentV2): Promise<boolean> {
@@ -251,7 +335,18 @@ export class SessionQuiescenceCoordinator {
   #isReleaseDue(intent: ExperienceIntentV2): boolean {
     if (intent.quiescence.state !== 'WAITING') return false
     if (intent.explicitSave) return true
+    const batch = SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId))
     const cursor = this.#cursor(intent.sessionLifecycleKey)
+    if (
+      batch.success
+      && batch.data.state === 'COMMITTED_READY'
+      && batch.data.sessionLifecycleKey === intent.sessionLifecycleKey
+      && batch.data.lastTurnEndSeq === intent.quiescence.batchLastTurnEndSeq
+      && cursor !== undefined
+      && cursor.activeBatchId === undefined
+      && cursor.observedThroughTurnEndSeq > batch.data.lastTurnEndSeq
+      && cursor.observedThroughTurnEndSeq === cursor.detectedThroughTurnEndSeq
+    ) return true
     const lastActivity = cursor?.lastActivityAt === undefined ? Number.NaN : Date.parse(cursor.lastActivityAt)
     return Number.isFinite(lastActivity)
       && this.#now() >= lastActivity + intent.quiescence.requiredIdleMs

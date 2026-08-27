@@ -92,6 +92,13 @@ export function projectV2LearningStatus(
   const canRequest = activeBatch === undefined
     && cursor.observedThroughTurnEndSeq > pendingAfter
     && cursor.manualSynthesisRequest === undefined
+  const sessionIntents = [...domain.table('experience_intents').entries()].flatMap(([, raw]) => {
+    const parsed = ExperienceIntentV2Schema.safeParse(raw)
+    return parsed.success && parsed.data.sessionLifecycleKey === sessionLifecycleKey ? [parsed.data] : []
+  })
+  if (statusForIntents(domain, sessionIntents) === 'NEEDS_ATTENTION') {
+    return { state: 'NEEDS_ATTENTION', canRequest }
+  }
   if (activeBatch !== undefined) return { state: 'PROCESSING', canRequest }
   if (cursor.observedThroughTurnEndSeq > cursor.detectedThroughTurnEndSeq) {
     return { state: 'RECORDED', canRequest }
