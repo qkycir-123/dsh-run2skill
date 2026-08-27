@@ -154,6 +154,7 @@ export interface BatchDetectorInput {
 }
 
 export interface BatchDetectorClient {
+  projectInput?(input: BatchDetectorInput): BatchDetectorInput
   detect(input: BatchDetectorInput): Promise<unknown>
 }
 
@@ -169,6 +170,7 @@ interface ClaimedBatch {
   readonly input: BatchDetectorInput
   readonly inputDigest: string
   readonly callId: string
+  readonly projectionFailureCode?: string
 }
 
 interface RejectedBatch {
@@ -200,6 +202,10 @@ export class BatchDetectorWorker {
     if (claimed === undefined) return 'IDLE'
     if ('rejectedBatch' in claimed) {
       await this.#advanceCursor(claimed.rejectedBatch)
+      return 'PROCESSED'
+    }
+    if (claimed.projectionFailureCode !== undefined) {
+      await this.#commitAttention(claimed, 'FAILED', claimed.projectionFailureCode)
       return 'PROCESSED'
     }
     let raw: unknown
@@ -312,7 +318,7 @@ export class BatchDetectorWorker {
         existing.push(evidence)
         evidenceByObservation.set(evidence.observationId, existing)
       }
-      const input: BatchDetectorInput = {
+      const rawInput: BatchDetectorInput = {
         batchId: batch.batchId,
         sessionLifecycleKey: batch.sessionLifecycleKey,
         triggerReasons: batch.triggerReasons,
@@ -330,6 +336,13 @@ export class BatchDetectorWorker {
           evidenceDigest: item.evidenceDigest,
         })),
         carry: cursor.openExperienceCarry,
+      }
+      let input = rawInput
+      let projectionFailureCode: string | undefined
+      try {
+        input = this.#client.projectInput?.(rawInput) ?? rawInput
+      } catch (error) {
+        projectionFailureCode = detectorModelFailureCode(error)
       }
       const inputDigest = sha256Utf8(canonicalJson(input))
       const callId = `call_${sha256Utf8(canonicalJson({
@@ -365,7 +378,16 @@ export class BatchDetectorWorker {
           updatedAt: this.#isoNow(),
         })
       })
-      return { value: { batch: claimed, observations, input, inputDigest, callId } }
+      return {
+        value: {
+          batch: claimed,
+          observations,
+          input,
+          inputDigest,
+          callId,
+          ...(projectionFailureCode === undefined ? {} : { projectionFailureCode }),
+        },
+      }
     })
   }
 

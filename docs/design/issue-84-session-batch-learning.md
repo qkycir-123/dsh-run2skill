@@ -205,7 +205,7 @@ idle deadline 是最后一个 durable TurnObservation 的 `observedAt + 30m`。�
 
 Detector 输入只包含冻结 batch 的有界 TurnObservation、最多 3 个 DEFER carry、来源标签和 route，不包含 Skill Catalog。
 
-TurnObservation 不再对每条 direct-user message 只截取固定前缀。文本必须先完成 secret 与控制字符处理，再在整个观察窗口共享的严格 UTF-8 byte 预算内，确定性优先保留显式保存、禁止项、验收/验证、顺序步骤、约束和尾部关键语义。Detector Envelope 随后对整个 batch 使用第二层严格 evidence 总预算；超限时压缩或移除低优先级片段，但不发送完整 Session、不增加逐 Turn LLM，也不能绕过最终 route 输入总预算。
+TurnObservation 不再对每条 direct-user message 只截取固定前缀。文本必须先完成 secret 与控制字符处理，再在整个观察窗口共享的严格 UTF-8 byte 预算内，确定性为显式保存、禁止项、验收/验证、顺序步骤、约束和真实最新尾部分别保留最低配额，再填充其余语义；任一类都有上限，不得吞掉其他强语义。Detector 随后对整个 batch 使用第二层严格 evidence 总预算，并以实际 system prompt 与序列化 user JSON 计算 route 输入总量。超限时先有界压缩 assistant/tool/carry 辅助字段，再按上述配额缩减 direct-user evidence；必须保留 observation/evidence 绑定，最小安全 envelope 仍无法容纳时才 fail closed。模型调用与 durable claim 共用同一投影，`inputDigest` 精确绑定实际发送数据；不发送完整 Session，不增加逐 Turn LLM。
 
 输出：
 

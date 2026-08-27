@@ -288,15 +288,37 @@ describe('v2 Batch Detector worker', () => {
     expect(route).toEqual(fixtures.sessionBatch.routeSnapshot)
   })
 
+  it('claims the exact projected input that the detector client receives', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    let received: Parameters<BatchDetectorClient['detect']>[0] | undefined
+    const model: BatchDetectorClient = {
+      projectInput: input => ({
+        ...input,
+        observations: input.observations.map(item => ({ ...item, assistantOutcomeSummary: '' })),
+      }),
+      detect: async input => {
+        received = input
+        return { result: 'NONE' }
+      },
+    }
+
+    await new BatchDetectorWorker(domain, { client: model }).runOnce()
+
+    expect(received).toBeDefined()
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)?.detector.calls[0]?.inputDigest)
+      .toBe(sha256Utf8(canonicalJson(received)))
+  })
+
   it('keeps detector evidence within one strict batch budget without adding a model call', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
-    const importantTail = [
-      'Required final step: read the changed value back.',
-      'Never skip verification.',
+    const importantTails = [
+      `Remember this workflow as a Skill. ${'Capture this workflow as a Skill. '.repeat(30)}`,
+      'Never skip verification and do not report success before the read-back.',
       'Acceptance criteria: typecheck, lint, and all tests pass.',
-      'Remember this workflow as a Skill.',
-    ].join(' ')
-    const observations = Array.from({ length: 3 }, (_, index) => {
+      'Required steps: first inspect, then change, finally read the value back. Only change the target field.',
+      'TRUE_BATCH_TAIL: the user finally corrected the publication directory.',
+    ]
+    const observations = importantTails.map((importantTail, index) => {
       const excerpt = `${'irrelevant background. '.repeat(260)}${importantTail}`
       const directUserEvidence = [{
         source: 'USER_DIRECT' as const,
@@ -391,7 +413,40 @@ describe('v2 Batch Detector worker', () => {
       .map(item => item.excerpt).join('\n') ?? ''
     expect(model.calls).toBe(1)
     expect(evidenceBytes).toBeLessThanOrEqual(RUN2SKILL_V2_LIMITS.maxBatchEvidenceTotalBytes)
+    expect(selectedText).toContain('Capture this workflow as a Skill')
     expect(selectedText).toContain('Never skip verification')
+    expect(selectedText).toContain('Acceptance criteria')
+    expect(selectedText).toContain('first inspect, then change, finally read the value back')
+    expect(selectedText).toContain('Only change the target field')
+    expect(selectedText).toContain('TRUE_BATCH_TAIL')
+  })
+
+  it('fails a minimum-envelope projection closed without invoking the detector', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    let calls = 0
+    const failure = Object.assign(new Error('minimum envelope is too large'), {
+      code: 'INPUT_BUDGET_EXCEEDED',
+    })
+    const worker = new BatchDetectorWorker(domain, {
+      client: {
+        projectInput: () => { throw failure },
+        detect: async () => {
+          calls += 1
+          return { result: 'NONE' }
+        },
+      },
+    })
+
+    await expect(worker.runOnce()).resolves.toBe('PROCESSED')
+
+    expect(calls).toBe(0)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
+      state: 'NEEDS_ATTENTION',
+      detector: {
+        failureCode: 'INPUT_BUDGET_EXCEEDED',
+        calls: [{ outcome: 'FAILED', failureCode: 'INPUT_BUDGET_EXCEEDED' }],
+      },
+    })
   })
 
   it('rejects whitespace-only READY semantics', async () => {

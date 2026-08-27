@@ -230,10 +230,11 @@ describe('DSH TurnObservationV2 projection', () => {
   })
 
   it('redacts secrets before adaptive selection and keeps UTF-8 excerpts inside the shared byte budget', async () => {
-    const syntheticSecret = 'synthetic-issue-143-provider-value'
+    const syntheticValue = 'synthetic-issue-143-provider-value'
+    const syntheticAssignment = ['deepseek', 'key'].join('_') + `=${syntheticValue}`
     const workflow = [
       '多字节背景：' + '甲乙丙丁🙂。'.repeat(1_200),
-      `禁止项：不得记录凭据，deepseek_key=${syntheticSecret}`,
+      `禁止项：不得记录凭据，${syntheticAssignment}`,
       '验收条件：重新读取安全输出并确认已经脱敏。请记住这个流程。',
     ].join('\n')
 
@@ -242,7 +243,7 @@ describe('DSH TurnObservationV2 projection', () => {
     expect(result.status).toBe('OBSERVED')
     if (result.status !== 'OBSERVED') throw new Error('expected an observation')
     const excerpt = result.observation.directUserEvidence.map(item => item.excerpt).join('\n')
-    expect(excerpt).not.toContain(syntheticSecret)
+    expect(excerpt).not.toContain(syntheticValue)
     expect(excerpt).toContain('[REDACTED]')
     expect(excerpt).not.toContain('\uFFFD')
     expect(Buffer.byteLength(excerpt, 'utf8')).toBeLessThanOrEqual(

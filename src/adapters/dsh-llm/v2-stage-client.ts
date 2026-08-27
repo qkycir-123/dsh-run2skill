@@ -10,6 +10,7 @@ import type { CatalogRecallClassifier } from '../../application/recall/index.js'
 import type { CoverageClassifier } from '../../application/coverage-analysis/index.js'
 import type { SkillGenerator } from '../../application/generation/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
+import { selectBoundedEvidenceRefsV2 } from '../../domain/v2/index.js'
 
 type Stage = 'DETECTION' | 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION'
 
@@ -112,6 +113,7 @@ const MERGE_LANGUAGE_RULES = [
 ].join('\n')
 
 const OUTPUT_BYTE_RATIO = 4
+const INPUT_DATA_PREFIX = 'INPUT_DATA:\n'
 const V2_STAGE_CALL_TIMEOUT_MS = 120_000
 const V2_GENERATION_CALL_TIMEOUT_MS = 300_000
 
@@ -204,6 +206,103 @@ function routeOf(input: { readonly route: {
   return input.route
 }
 
+function stageSystem(stage: Stage, trustedSystemSuffix?: string): string {
+  const system = STAGE_POLICIES[stage].system
+  return trustedSystemSuffix === undefined ? system : `${system}\n${trustedSystemSuffix}`
+}
+
+function stageUserText(input: unknown): string {
+  return `${INPUT_DATA_PREFIX}${canonicalJson(input)}`
+}
+
+function stageEnvelopeBytes(system: string, input: unknown): number {
+  return Buffer.byteLength(system, 'utf8') + Buffer.byteLength(stageUserText(input), 'utf8')
+}
+
+function takeUtf8Prefix(value: string, maxBytes: number): string {
+  let result = ''
+  let usedBytes = 0
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (usedBytes + characterBytes > maxBytes) break
+    result += character
+    usedBytes += characterBytes
+  }
+  return result
+}
+
+function projectDetectionAuxiliary(
+  input: BatchDetectorInput,
+  mode: 'BOUNDED' | 'MINIMAL',
+): BatchDetectorInput {
+  return {
+    ...input,
+    observations: input.observations.map(observation => ({
+      ...observation,
+      assistantOutcomeSummary: mode === 'BOUNDED'
+        ? takeUtf8Prefix(observation.assistantOutcomeSummary, 512)
+        : '',
+      toolOutcomeSummary: mode === 'BOUNDED' ? observation.toolOutcomeSummary.slice(-4) : [],
+    })),
+    carry: input.carry.map(item => ({
+      ...item,
+      summary: mode === 'BOUNDED' ? takeUtf8Prefix(item.summary, 256) || '…' : '…',
+    })),
+  }
+}
+
+function projectDetectionEvidence(input: BatchDetectorInput, maxEvidenceBytes: number): BatchDetectorInput {
+  const selected = selectBoundedEvidenceRefsV2(input.observations.flatMap(observation => (
+    observation.directUserEvidence.map(evidence => ({ ...evidence, observationId: observation.observationId }))
+  )), maxEvidenceBytes)
+  const evidenceByObservation = new Map<string, typeof selected>()
+  for (const evidence of selected) {
+    const current = evidenceByObservation.get(evidence.observationId) ?? []
+    current.push(evidence)
+    evidenceByObservation.set(evidence.observationId, current)
+  }
+  return {
+    ...input,
+    observations: input.observations.map(observation => ({
+      ...observation,
+      directUserEvidence: (evidenceByObservation.get(observation.observationId) ?? []).map(({
+        observationId: _observationId,
+        ...evidence
+      }) => evidence),
+    })),
+  }
+}
+
+function projectDetectionInput(input: BatchDetectorInput): BatchDetectorInput {
+  const system = stageSystem(
+    'DETECTION',
+    input.triggerReasons.includes('EXPLICIT') ? EXPLICIT_DETECTION_RULES : undefined,
+  )
+  if (stageEnvelopeBytes(system, input) <= input.route.maxInputBytes) return input
+
+  const bounded = projectDetectionAuxiliary(input, 'BOUNDED')
+  if (stageEnvelopeBytes(system, bounded) <= input.route.maxInputBytes) return bounded
+
+  const minimalAuxiliary = projectDetectionAuxiliary(input, 'MINIMAL')
+  if (stageEnvelopeBytes(system, minimalAuxiliary) <= input.route.maxInputBytes) return minimalAuxiliary
+
+  const originalEvidenceBytes = minimalAuxiliary.observations.flatMap(item => item.directUserEvidence)
+    .reduce((total, evidence) => total + Buffer.byteLength(evidence.excerpt, 'utf8'), 0)
+  const hadDirectEvidence = originalEvidenceBytes > 0
+  const budgets = new Set<number>()
+  for (let budget = originalEvidenceBytes; budget > 0; budget -= 256) budgets.add(budget)
+  for (const budget of [512, 256, 128, 64]) {
+    if (budget <= originalEvidenceBytes) budgets.add(budget)
+  }
+  for (const budget of [...budgets].sort((left, right) => right - left)) {
+    const projected = projectDetectionEvidence(minimalAuxiliary, budget)
+    const retainedEvidence = projected.observations.some(item => item.directUserEvidence.length > 0)
+    if ((!hadDirectEvidence || retainedEvidence)
+      && stageEnvelopeBytes(system, projected) <= input.route.maxInputBytes) return projected
+  }
+  throw new V2StageLlmError('INPUT_BUDGET_EXCEEDED')
+}
+
 export interface DshV2StageLlmClientOptions {
   readonly timeoutMs?: number
   readonly generationTimeoutMs?: number
@@ -228,13 +327,18 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     }
   }
 
-  detect(input: BatchDetectorInput): Promise<unknown> {
-    return this.#call(
+  async detect(input: BatchDetectorInput): Promise<unknown> {
+    const projected = this.projectInput(input)
+    return await this.#call(
       'DETECTION',
-      input,
-      routeOf(input),
-      input.triggerReasons.includes('EXPLICIT') ? EXPLICIT_DETECTION_RULES : undefined,
+      projected,
+      routeOf(projected),
+      projected.triggerReasons.includes('EXPLICIT') ? EXPLICIT_DETECTION_RULES : undefined,
     )
+  }
+
+  projectInput(input: BatchDetectorInput): BatchDetectorInput {
+    return projectDetectionInput(input)
   }
 
   classifyCatalog(input: Parameters<CatalogRecallClassifier['classify']>[0]): Promise<unknown> {
@@ -277,8 +381,8 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
   ): Promise<unknown> {
     if (this.#disposed) throw new V2StageLlmError('MODEL_ABORTED')
     const policy = STAGE_POLICIES[stage]
-    const system = trustedSystemSuffix === undefined ? policy.system : `${policy.system}\n${trustedSystemSuffix}`
-    const userText = `INPUT_DATA:\n${canonicalJson(input)}`
+    const system = stageSystem(stage, trustedSystemSuffix)
+    const userText = stageUserText(input)
     if (Buffer.byteLength(system, 'utf8') + Buffer.byteLength(userText, 'utf8') > route.maxInputBytes) {
       throw new V2StageLlmError('INPUT_BUDGET_EXCEEDED')
     }
