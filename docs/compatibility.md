@@ -1,14 +1,12 @@
 # DSH 兼容性
 
-[`dsh-run2skill@0.3.0`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.0) 稳定版支持以下官方、未修改的 DeepSeek Harness 版本：
+[`dsh-run2skill@0.3.1`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.1) 稳定版支持以下官方、未修改的 DeepSeek Harness 版本：
 
 | DSH 版本 | 官方 commit | 结果 |
 |---|---|---|
 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 完整契约、原生 UI 槽位/公共组件、存储、发布和真实安装生命周期通过 |
 
-核验日期：2026-08-24。
-
-仓库 `main` 在 `v0.3.0` tag 之后包含尚未发布的功能与修复；它们没有扩大下表的 DSH 支持范围，也不能当作新的稳定版兼容承诺。稳定包与主分支差异见 [`CHANGELOG.md`](../CHANGELOG.md)。
+核验日期：2026-08-28。
 
 ## 当前支持范围
 
@@ -19,7 +17,7 @@
 - Windows 上的插件 Host、Web Client、Settings、技能草稿审核、数据清理和 Skill 发布；
 - Windows 与 Linux/WSL 上的原子 Skill 发布协议。
 
-以下情况尚未作为 `0.3.0` 的兼容承诺：
+以下情况尚未作为 `0.3.1` 的兼容承诺：
 
 - DSH 的其他 profile；
 - 自定义 Skill provider、自定义 Skill roots 或 `includeDefaultRoots=false`；

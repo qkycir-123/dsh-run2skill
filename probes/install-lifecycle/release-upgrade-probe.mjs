@@ -13,14 +13,31 @@ import {
 } from '../support/safe-diagnostics.mjs'
 import { dshWebArgs, dshWebHelp, supportsNoOpen } from './web-args.mjs'
 
-const [cloneArg, previousArchiveArg, stableArchiveArg, candidateArchiveArg, workArg, expectedCandidateHash] = process.argv.slice(2)
-if (!cloneArg || !previousArchiveArg || !stableArchiveArg || !candidateArchiveArg || !workArg || !expectedCandidateHash) {
-  throw new Error('usage: node release-upgrade-probe.mjs <built-dsh-clone> <0.1.1-alpha.tgz> <0.2.0.tgz> <0.3.0.tgz> <work-root> <candidate-sha256>')
+const [
+  cloneArg,
+  previousArchiveArg,
+  stableArchiveArg,
+  currentArchiveArg,
+  candidateArchiveArg,
+  workArg,
+  expectedCandidateHash,
+] = process.argv.slice(2)
+if (
+  !cloneArg
+  || !previousArchiveArg
+  || !stableArchiveArg
+  || !currentArchiveArg
+  || !candidateArchiveArg
+  || !workArg
+  || !expectedCandidateHash
+) {
+  throw new Error('usage: node release-upgrade-probe.mjs <built-dsh-clone> <0.1.1-alpha.tgz> <0.2.0.tgz> <0.3.0.tgz> <0.3.1.tgz> <work-root> <candidate-sha256>')
 }
 
 const clone = resolve(cloneArg)
 const previousArchive = resolve(previousArchiveArg)
 const stableArchive = resolve(stableArchiveArg)
+const currentArchive = resolve(currentArchiveArg)
 const candidateArchive = resolve(candidateArchiveArg)
 const work = resolve(workArg)
 const home = join(work, 'dsh-home')
@@ -49,13 +66,16 @@ async function sha256(path) {
 
 const previousManifest = archiveManifest(previousArchive)
 const stableManifest = archiveManifest(stableArchive)
+const currentManifest = archiveManifest(currentArchive)
 const candidateManifest = archiveManifest(candidateArchive)
 assert.equal(previousManifest.name, 'dsh-run2skill')
 assert.equal(previousManifest.version, '0.1.1-alpha')
 assert.equal(stableManifest.name, 'dsh-run2skill')
 assert.equal(stableManifest.version, '0.2.0')
+assert.equal(currentManifest.name, 'dsh-run2skill')
+assert.equal(currentManifest.version, '0.3.0')
 assert.equal(candidateManifest.name, 'dsh-run2skill')
-assert.equal(candidateManifest.version, '0.3.0')
+assert.equal(candidateManifest.version, '0.3.1')
 assert.equal(await sha256(previousArchive), 'c674dad6102426054d59a2843270ee86aecd36789e83604c02dd6efd345fbb26')
 assert.equal(await sha256(candidateArchive), expectedCandidateHash.toLowerCase())
 
@@ -351,7 +371,7 @@ for (const [key, session] of v1Sessions) {
 assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
 
 console.log('CP_RELEASE_UPGRADE_STAGE=upgrade-0.3.0')
-await dsh(['plugin', '--profile', 'web', 'add', candidateArchive])
+await dsh(['plugin', '--profile', 'web', 'add', currentArchive])
 assert.equal(await installedVersion(), '0.3.0')
 await observeWeb(true)
 assert.deepEqual(await readFile(v1Path), v1Before, '0.3.0 modified the retained Alpha v1 storage')
@@ -370,7 +390,27 @@ for (const [key, session] of v1Sessions) {
 }
 assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
 
-console.log('CP_RELEASE_UPGRADE_STAGE=uninstall-0.3.0')
+console.log('CP_RELEASE_UPGRADE_STAGE=upgrade-0.3.1')
+await dsh(['plugin', '--profile', 'web', 'add', candidateArchive])
+assert.equal(await installedVersion(), '0.3.1')
+await observeWeb(true)
+assert.deepEqual(await readFile(v1Path), v1Before, '0.3.1 modified the retained Alpha v1 storage')
+const v2AfterCandidateUpgrade = JSON.parse(await readFile(join(storageDirectory, 'run2skill_v2.json'), 'utf8'))
+assert.equal(v2AfterCandidateUpgrade.unit?.name, 'run2skill_v2')
+assert.equal(v2AfterCandidateUpgrade.unit?.version, 1)
+assert.equal(v2AfterCandidateUpgrade.global?.migration?.source?.domainName, 'run2skill_v1')
+assert.equal(v2AfterCandidateUpgrade.global?.migration?.phase, 'COMMITTED')
+assert.equal(Object.keys(v2AfterCandidateUpgrade.tables?.legacy_items ?? {}).length, 0)
+assert.equal(Object.keys(v2AfterCandidateUpgrade.tables?.turn_observations ?? {}).length, 0)
+for (const [key, session] of v1Sessions) {
+  const watermark = v2AfterCandidateUpgrade.global?.activation?.observerStartWatermarks?.[key]
+  assert.ok(watermark, `0.3.1 upgrade omitted Alpha session watermark ${key}`)
+  assert.ok(watermark.observedTailSeq >= session.observedTailSeq)
+  assert.equal(watermark.nextSeq, watermark.observedTailSeq + 1)
+}
+assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
+
+console.log('CP_RELEASE_UPGRADE_STAGE=uninstall-0.3.1')
 await dsh(['plugin', '--profile', 'web', 'remove', 'dsh-run2skill'])
 const removedManifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 assert.equal(removedManifest.dsh.profile.bundles.includes('dsh-run2skill'), false)
@@ -382,5 +422,6 @@ assert.equal(await readFile(skillPath, 'utf8'), retainedSkill)
 
 console.log(`CP_RELEASE_PREVIOUS_SHA256=${await sha256(previousArchive)}`)
 console.log(`CP_RELEASE_STABLE_SHA256=${await sha256(stableArchive)}`)
+console.log(`CP_RELEASE_CURRENT_SHA256=${await sha256(currentArchive)}`)
 console.log(`CP_RELEASE_CANDIDATE_SHA256=${await sha256(candidateArchive)}`)
 console.log('CP_RELEASE_UPGRADE=PASS')

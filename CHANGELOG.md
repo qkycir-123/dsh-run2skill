@@ -2,13 +2,28 @@
 
 ## 未发布 — `main`
 
-以下变化已经合入主分支，但不属于 `v0.3.0` tag，也尚未出现在稳定版安装包中：
+暂无尚未发布的变化。
+
+## 0.3.1 — 2026-08-28
+
+`0.3.1` 把 `v0.3.0` 之后已经在真实 DSH Web 验证的整理、草稿修订和长证据能力发布为稳定包。
+
+### 变化
 
 - 修复真实 Skill 草稿生成、MERGE 与完整 Catalog/发布事实的绑定，并调整 CREATE 默认使用简体中文、MERGE 保持原 Skill 的主要语言（[#134](https://github.com/qkycir-123/dsh-run2skill/pull/134)、[#139](https://github.com/qkycir-123/dsh-run2skill/pull/139)）。
 - 插件关闭时主动取消在途模型调用并限制等待，不让未响应的模型流拖住停机（[#140](https://github.com/qkycir-123/dsh-run2skill/pull/140)）。
 - 在设置页增加低噪声的学习阶段说明和“立即整理本次经验”入口；它不会展示内部批次计数，且仍须经过会话静止、查重、审核与发布安全门（[#145](https://github.com/qkycir-123/dsh-run2skill/pull/145)）。
 - 长工作流证据改用 TurnObservation 与 Detector batch 两层共享预算，优先保留显式保存、禁止项、验收条件、顺序步骤、约束和最新尾部；真实 system prompt 与序列化 user envelope 仍受严格总预算约束（[#146](https://github.com/qkycir-123/dsh-run2skill/pull/146)）。
 - 待审核草稿可接收一条有界修改意见并生成新的不可变 revision；旧草稿和旧批准立即失效，新版本必须重新审核，不提供自由编辑或自动发布（[#147](https://github.com/qkycir-123/dsh-run2skill/pull/147)）。
+- 修复长证据投影到旧版详情契约时超过单条 512-byte 上限、导致整个草稿详情不可用的问题；只压缩 UI 展示副本，不修改 durable evidence（[#150](https://github.com/qkycir-123/dsh-run2skill/pull/150)）。
+
+### 兼容性与数据
+
+- 继续只支持 DSH Web `0.1.1-rc.2`（`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`），没有扩大 provider、profile 或自定义 roots 范围。
+- `run2skill_v2` 继续使用 Domain version `1`；`0.3.1` 新字段均为 additive/defaulted，升级会保留已有状态和已发布原生 Skill。
+- 已验证 `0.1.1-alpha → 0.2.0 → 0.3.0 → 0.3.1` 升级链和候选版卸载保留边界。
+
+发布说明：[`dsh-run2skill 0.3.1`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.1)。
 
 ## 0.3.0 — 2026-08-24
 
