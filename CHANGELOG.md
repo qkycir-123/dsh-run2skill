@@ -1,5 +1,33 @@
 # 版本变化
 
+## 未发布 — `main`
+
+以下变化已经合入主分支，但不属于 `v0.3.0` tag，也尚未出现在稳定版安装包中：
+
+- 修复真实 Skill 草稿生成、MERGE 与完整 Catalog/发布事实的绑定，并调整 CREATE 默认使用简体中文、MERGE 保持原 Skill 的主要语言（[#134](https://github.com/qkycir-123/dsh-run2skill/pull/134)、[#139](https://github.com/qkycir-123/dsh-run2skill/pull/139)）。
+- 插件关闭时主动取消在途模型调用并限制等待，不让未响应的模型流拖住停机（[#140](https://github.com/qkycir-123/dsh-run2skill/pull/140)）。
+- 在设置页增加低噪声的学习阶段说明和“立即整理本次经验”入口；它不会展示内部批次计数，且仍须经过会话静止、查重、审核与发布安全门（[#145](https://github.com/qkycir-123/dsh-run2skill/pull/145)）。
+- 长工作流证据改用 TurnObservation 与 Detector batch 两层共享预算，优先保留显式保存、禁止项、验收条件、顺序步骤、约束和最新尾部；真实 system prompt 与序列化 user envelope 仍受严格总预算约束（[#146](https://github.com/qkycir-123/dsh-run2skill/pull/146)）。
+- 待审核草稿可接收一条有界修改意见并生成新的不可变 revision；旧草稿和旧批准立即失效，新版本必须重新审核，不提供自由编辑或自动发布（[#147](https://github.com/qkycir-123/dsh-run2skill/pull/147)）。
+
+## 0.3.0 — 2026-08-24
+
+`0.3.0` 聚焦真实 DSH Web 草稿与审核流程、首次使用体验和 DSH `0.1.1-rc.2` 适配。
+
+### 变化
+
+- 修复真实 DSH Web 会话的草稿生成，以及 Proposal 审核与过期刷新生命周期。
+- 优化首次使用文案、技能草稿说明、状态展示和“需要处理”面板布局。
+- 重新录制完整流程 GIF 和三张关键界面截图。
+
+### 兼容性与数据
+
+- 只支持 DSH Web `0.1.1-rc.2`（`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`）；完整契约、原生 UI、存储、发布和真实安装生命周期已通过验证。
+- 已验证 `0.1.1-alpha → 0.2.0 → 0.3.0` 升级、数据与已发布原生 Skill 保留，以及卸载流程。
+- 从 `0.2.0` 升级不改变 `run2skill_v2` Storage Domain 或 schema version。
+
+发布说明：[`dsh-run2skill 0.3.0`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.0)。本条目不包含 `v0.3.0` tag 之后的未发布修复。
+
 ## 0.2.0 — 2026-08-23
 
 run2skill 结束 Alpha 版本标记，发布首个稳定版 `0.2.0`。

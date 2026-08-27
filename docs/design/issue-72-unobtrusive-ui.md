@@ -1,12 +1,18 @@
 # 无感提醒与插件设置页 Design
 
-状态：待评审
+状态：已发布核心继续适用；`main` 已合入尚未发布的 #141 增量
+
+首次落地版本：`0.1.1-alpha`
 
 对应 Issue：[“仅在需要人工处理时提示，并将 run2skill 持久信息迁入设置” #72](https://github.com/qkycir-123/dsh-run2skill/issues/72)
 
 设计日期：2026-08-21
 
-DSH 源码基线：`deepseek-ai/deepseek-harness@99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）
+DSH 源码基线：本设计最初在 `deepseek-ai/deepseek-harness@99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）上取证；当前 `0.3.0` 支持的 DSH baseline 见 [兼容性声明](../compatibility.md)。
+
+文档中的实施顺序与“获批前”门禁是历史决策记录；#73 已完成实现。`0.3.0` 的已发布事实是：正常状态不常驻占用会话 Header，只在存在可操作事项时提示，持久信息和操作集中在插件设置页。
+
+`main` 在 `v0.3.0` tag 之后合入 #141：设置页可显示“已记下并等待整理、正在整理、正在检查已有 Skill、已有 Skill 覆盖、需要处理”等低噪声状态，并提供“立即整理本次经验”。它不展示内部批次计数、阈值、水位或 reason code；请求只作用于当前已授权 Session/Workspace 的 durable observation，且不能绕过 Agent 静止、证据完整、查重、审核或发布门。
 
 ## 1. 结论
 
@@ -261,9 +267,9 @@ request scope = currentWorkspace?.workspaceId + USER
 
 #73 可以在 #70 的动作 DTO 尚未完成时先支持 Proposal 和现有发布失败，但不能把暂时不可操作的学习失败伪装成可操作提醒。
 
-## 11. 验收与实现门
+## 11. 历史验收与实现门
 
-后续实现至少覆盖：
+当时的后续实现至少覆盖：
 
 1. 正常捕获、分析、成功、自动恢复、空闲和 `PUBLISHING` 时 Header 无 run2skill DOM、无 Toast；
 2. Proposal、可恢复学习失败、`NEEDS_REFRESH`、可重试发布失败各产生正确 Action；
@@ -278,4 +284,4 @@ request scope = currentWorkspace?.workspaceId + USER
 11. Toast、RPC、设置页和日志不泄露密钥、正文、路径或原始模型输出；
 12. stock DSH rc.2 的 `conversation.session.header.actions`、settings slot、Toast 和生命周期兼容性探针通过。
 
-本 Design 获批前不进入 #73 实现；实现不得为了视觉便利修改 #70/#71 的状态机或放宽现有 Review/Publication 安全边界。
+历史实施门禁要求本 Design 获批后才进入 #73；#73 已完成，且当前实现仍不得为了视觉便利修改所有者状态机或放宽现有 Review/Publication 安全边界。

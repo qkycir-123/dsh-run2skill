@@ -1,11 +1,13 @@
-# dsh-run2skill v0.2 产品需求文档
+# dsh-run2skill v0.2 核心流程产品需求文档
 
-状态：v0.2 核心流程修订待 #84 Design PR 评审
+状态：`0.2.0` 核心需求已接受并落地；`0.3.0` 继续适用；`main` 的未发布增量单独标记
 文档版本：v0.2
-更新时间：2026-08-22
-适用版本：`v0.2.0` 开发线
+更新时间：2026-08-27
+适用版本：`0.2.0`–`0.3.0`；以及文中明确标记的 `main` 未发布增量
 
-修订记录：维护者于 2026-08-19 接受 v0.1 需求设计；2026-08-21 接受“无感自动沉淀且同一保存意图不能让 Agent 与 Run2Skill 各生成一次”的单一所有者原则。2026-08-22，#84 将逐 Turn Cheap Trigger/单阶段 Learning 修订为 SessionBatch 检测、ExperienceIntent 所有权、完整 Catalog 召回、独立 coverage 与 generation；不扩大自动发布权限。
+修订记录：维护者于 2026-08-19 接受 v0.1 需求设计；2026-08-21 接受“无感自动沉淀且同一保存意图不能让 Agent 与 Run2Skill 各生成一次”的单一所有者原则。2026-08-22，#84 将逐 Turn Cheap Trigger/单阶段 Learning 修订为 SessionBatch 检测、ExperienceIntent 所有权、完整 Catalog 召回、独立 coverage 与 generation；不扩大自动发布权限。该修订已随 `0.2.0` 发布；`0.3.0` 在此核心边界上完善真实 Web 草稿生成、审核/刷新体验与 DSH 兼容性。
+
+`v0.3.0` tag 之后，`main` 已实现三项尚未发布到稳定包的增量：设置页低噪声整理状态与“立即整理本次经验”；长工作流在 TurnObservation、Detector evidence 和真实 route envelope 上使用严格共享预算；待审核 Proposal 按一条有界修改意见生成新的不可变 revision 并重新审核。它们不公开内部批次计数，不增加逐 Turn 模型调用，也不改变 Agent-first、完整查重、人工批准和安全发布边界。稳定版与 `main` 的完整差异见 [`CHANGELOG.md`](../../CHANGELOG.md)。
 
 ## 1. 文档目的与效力
 
@@ -14,7 +16,7 @@
 本文不规定模块拆分、存储介质、RPC 实现、包结构或代码方案。相关技术决策应在需求冻结后写入：
 
 - `docs/architecture/baseline.md`；
-- `docs/architecture/dsh-compatibility.md`；
+- [`docs/compatibility.md`](../compatibility.md)；
 - 必要的 `docs/adr/`。
 
 若实现便利与本文冲突，以本文为准。若当前 DSH 源码事实与本文引用的集成前提冲突，应先记录差异并回到产品或架构评审，不得用未评审的兼容层掩盖。
@@ -33,7 +35,7 @@
 
 > 如何把用户在真实 DSH 执行中明确教出的长期行为，转成有来源、可审核、不会覆盖未见变化，并能由 DSH 直接使用的原生 Skill。
 
-当前问题判断主要来自维护者的直接使用经验，尚未形成外部用户研究结论。因此 Alpha 阶段必须同时验证：用户是否愿意处理 Proposal、系统是否减少重复维护，以及发布后的 Skill 是否真的改善后续相关任务。
+立项与 Alpha 阶段的问题判断主要来自维护者的直接使用经验，尚未形成外部用户研究结论。稳定版发布后仍需持续验证：用户是否愿意处理 Proposal、系统是否减少重复维护，以及发布后的 Skill 是否真的改善后续相关任务。
 
 ## 3. 目标用户与核心任务
 
@@ -341,6 +343,9 @@ Subagent Child Session 不得独立触发学习，但可以作为 Root Session P
 **REQ-OBS-011**
 READY Intent 在 Agent-first、recall、coverage 或 generation 前必须取得 durable Session quiescence fence，绑定 batch 尾部、observed/detected 水位和 live activity revision。自动路径要求最后活动空闲 30 分钟；显式保存可免等待，但不能免除“无更新 Turn、无 active batch、Agent 未运行”的重校验。generation 调用前、结果提交后和 Proposal body 提交前 fence 必须仍有效；失效时不得生成 Proposal，已消耗的 generation 结果只能进入 `STALE_RESULT`。
 
+**REQ-OBS-012（`main` 未发布）**
+设置页可以把当前会话投影为“已记下并等待整理、正在整理、正在检查已有 Skill、已有 Skill 覆盖、需要处理”等低噪声用户状态，但不得展示内部批次阈值、水位或进度分数。用户可对当前有权访问、已经持久化且尚未处理的会话尾部请求一次“立即整理本次经验”；请求必须幂等并持久化，等待期间随新的 durable observation 扩展到最终稳定尾部，且仍须通过 Session quiescence、Detector、Agent-first、完整 recall/coverage、Review 和 Publication 门禁。
+
 ### 10.2 分阶段模型与成本
 
 **REQ-LRN-001**
@@ -369,6 +374,9 @@ Learning Model 必须是只接收有界 Envelope、返回结构化语义结果�
 
 **REQ-LRN-007**
 每个阶段的调用次数、输入输出和重试必须独立有界。系统至少记录 stage、input digest、provider、model、input/output usage 和 outcome；阶段不能借用其他阶段预算。相同输入、相同策略的确定性失败不得机械重试，崩溃后 outcome unknown 不得自动重复同一调用。
+
+**REQ-LRN-008（`main` 未发布）**
+direct-user evidence 必须先脱敏，再在 TurnObservation 共享 UTF-8 字节预算内确定性保留显式保存、禁止项、验收/验证、顺序步骤、约束和真实最新尾部；每类同时具有最低保留量与上限，单个超长片段不能吞掉其他必要类别。Detector 再对整个 batch 使用第二层 evidence 总预算，并以真实 system prompt 与序列化 user envelope 校验 route 总输入；durable claim 与实际发送共用同一投影和 `inputDigest`。最小安全 envelope 无法容纳时 fail closed，不发送完整 Session，也不增加逐 Turn 模型调用。
 
 ### 10.3 作用域判定
 
@@ -460,7 +468,7 @@ v0.2 不提供 Approve All、完整 Markdown Editor、inline Scope 切换后直�
 **REQ-REV-011**
 打开审核和提交 Approve 时，Host 都必须重新取得 complete Runtime/Pending Catalog 并重做 coverage/target binding 校验。若其他 Session、Agent 或外部文件变化已经覆盖该 Intent，Proposal 必须标记为 `covered` 或 `stale` 并退出可发布状态；不得依赖 Proposal 生成时的旧 Catalog，也不得要求 DSH 为 Proposal 提供 Catalog CAS/共享锁。
 
-**REQ-REV-012**
+**REQ-REV-012（`main` 未发布）**
 用户可对当前可审核 Proposal 提交一条有长度上限的修改意见。浏览器只提交意见和 immutable Proposal 引用，Host 根据旧版完整正文生成新的完整 Proposal，并重做 scope、Catalog、coverage、target/Base、secret、format 与 CAS 校验。新版必须有新的 immutable revision/digest，旧版和其 Approval 永久失效，新版必须重新审核；修改意见不得改变 Scope、授权发布或让浏览器提交最终 `SKILL.md` 正文。
 
 ### 10.6 发布与回读
@@ -540,7 +548,7 @@ CREATE 发布为 `r1`；MERGE 形成下一 Revision。首次 MERGE 普通 Existi
 v0.2 的模型策略固定为 `inherit-session`，不提供模型选择器。配置变更从下一个 Stage claim 生效，已开始的 Stage 使用启动时配置快照。
 
 **REQ-CFG-003**
-设置页只提供一个“缓存清理”入口和一个“清理所有缓存”操作。它清除本机所有 Run2Skill 派生中间数据，包括 WorkItem、Observation/Batch/Intent、过滤后的 Evidence、pending Proposal、Lineage metadata、失败与非敏感诊断记录和派生索引；不向用户暴露 PROJECT/USER 等内部清理作用域。
+设置页的数据管理只提供一个“缓存清理”入口和一个“清理所有缓存”操作。它清除本机 `run2skill_v2` 中的 Observation/Batch/Intent、过滤后的 Evidence、pending Proposal、Lineage metadata、失败与非敏感诊断记录和派生索引；不打开或删除 `run2skill_v1`，也不向用户暴露 PROJECT/USER 等内部清理作用域。
 
 **REQ-CFG-004**
 Purge 确认必须明确区分：
@@ -549,6 +557,9 @@ Purge 确认必须明确区分：
 - 不会删除：DSH Session Log、已发布的原生 Skill，以及 Provider、Agent 或其他 DSH 设置。
 
 用户发起 Purge 后，已清除数据不得继续出现在正常产品界面。
+
+**REQ-CFG-005（`main` 未发布）**
+低噪声学习状态和“立即整理本次经验”只出现在 Run2Skill 设置页，不恢复会话 Header 常驻状态，也不因内部调度变化弹 Toast。按钮必须在无可处理 durable observation、作用域不可证明、请求已排队、Agent 正在运行或插件不可用时给出准确的等待/禁用状态；重复点击、刷新与重启不得重复 Detector 或 generation。
 
 ## 11. 状态语义与恢复
 
@@ -632,7 +643,7 @@ Redaction 只是 defense-in-depth，不是完整秘密检测保证；第一道�
 - DSH Web client plugin、Session header slot 和 Host/Client 通信；
 - profile/plugin 安装、禁用和卸载机制。
 
-精确源码证据、baseline commit 和上游升级协议以 `docs/architecture/dsh-compatibility.md` 为准。产品必须遵守：
+精确源码证据、baseline commit 和上游升级协议以 [`docs/compatibility.md`](../compatibility.md) 为准。产品必须遵守：
 
 - 不修改 DSH 源码；
 - DSH 相关调用集中在薄 Adapter；
@@ -778,9 +789,9 @@ Registry readback 只证明发布成功，不证明行为有效；行为验收�
 - Dedicated Learning Model；
 - TUI/CLI approval、Team/Org/Public、Cloud Sync。
 
-## 18. Alpha 阶段待验证的产品假设
+## 18. 发布后仍需持续验证的产品假设
 
-当前没有 #84 Design 之外的已知产品阻塞。下列事项属于 Alpha 产品验证，不影响本次核心流程边界：
+`0.2.0` 已完成 #84 核心流程的发布门禁，`0.3.0` 保持该边界。下列事项是后续产品验证计划，不改写已发布能力：
 
 1. 用户愿意处理有限、解释充分的 Proposal，而不是认为审核负担过高；
 2. 生成并发布的 Skill 能减少后续重复纠正，而不会显著增加误触发或维护成本。

@@ -16,7 +16,9 @@
 
 它不会让 Agent 偷偷给自己立规矩。每份技能草稿都可以先看来源、适用范围和完整内容，然后由你决定确认保存还是放弃草稿。只有确认后，它才会写入 DSH 的原生 Skill 目录。
 
-> 当前稳定版为 `0.3.0`。目前仅支持 DSH Web `0.1.1-rc.2`。
+> 当前稳定版为 [`0.3.0`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.0)。目前仅支持 DSH Web `0.1.1-rc.2`。
+
+仓库 `main` 还包含尚未发布的改动：设置页可以用低噪声文案说明当前整理阶段并请求“立即整理本次经验”；待审核草稿可以按一条修改意见生成新的不可变版本并重新审核；长工作流证据会在有界共享预算内优先保留关键步骤、禁止项和验收条件。“立即整理”仍会等待 Agent 停止运行和事实完整，并继续经过查重、审核与发布安全门。通过 npm 安装的 `0.3.0` 不包含这些变化，完整边界见 [版本变化](CHANGELOG.md)。
 
 ## 看一遍完整流程
 
@@ -67,6 +69,8 @@ run2skill 会在一轮对话完成后做轻量检查。它不是每轮都拉着�
 2. 在待处理列表中查看技能草稿、适用范围和内容差异。
 3. 选择确认并保存、放弃草稿，或在保存失败后重试。
 4. 保存成功后，结果就是普通的 DSH 原生 Skill；即使以后卸载 run2skill，它仍然可以被 DSH 使用。
+
+在 `main` 的未发布版本中，确认或放弃前还可以提交一条修改意见，由 Host 生成新的完整草稿版本；旧版批准会失效，新版仍需重新审核。
 
 技能草稿可以保存到当前项目（`PROJECT`）或当前用户（`USER`）范围。当前版本只会写入 DSH 默认的 Skill 存储目录；如果你改过 Skill 的存储方式或关闭了默认目录，run2skill 会停止保存，不会猜测写入位置。
 
@@ -134,6 +138,7 @@ dsh plugin --profile web remove dsh-run2skill
 - [数据存储与升级](docs/storage-and-upgrades.md)
 - [产品需求](docs/product/prd.md)
 - [架构基线](docs/architecture/baseline.md)
+- [设计文档索引](docs/design/README.md)
 - [同一 Skill 保存意图的单一生成所有者设计](docs/design/single-owner-skill-save.md)
 - [贡献指南](CONTRIBUTING.md)
 - [维护者兼容性探针](probes/README.md)

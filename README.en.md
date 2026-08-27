@@ -14,7 +14,9 @@ Have you run into any of these situations?
 
 Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
 
-> The current stable release is `0.3.0`. It supports DSH Web `0.1.1-rc.2` only.
+> The current stable release is [`0.3.0`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.0). It supports DSH Web `0.1.1-rc.2` only.
+
+The repository's `main` branch also contains unreleased changes: the settings page can describe the current learning stage without exposing internal batch counters and can request immediate synthesis of the current experience; review feedback can produce a new immutable draft that must be reviewed again; and long-workflow evidence preserves important steps, prohibitions, and acceptance criteria within shared bounded budgets. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. The npm `0.3.0` package does not include these changes; see the [changelog](CHANGELOG.md) for the exact boundary.
 
 ## See the complete flow
 
@@ -65,6 +67,8 @@ When something needs your attention, DSH shows one native notification. To revie
 2. Review the draft, its intended scope, evidence, and complete content.
 3. Approve and save it, discard it, or retry a failed save.
 4. After a successful save, it is an ordinary native DSH Skill and remains usable even if Run2Skill is later uninstalled.
+
+On the unreleased `main` branch, you may also submit one revision request before approving or discarding. The Host generates a complete new immutable draft, invalidates the old approval, and requires another review.
 
 Drafts can target the current project (`PROJECT`) or the current user (`USER`). The current release writes only to DSH's default Skill storage. If you replace or disable that storage, Run2Skill stops safely instead of guessing a path.
 
@@ -130,6 +134,7 @@ Report problems through [GitHub Issues](https://github.com/qkycir-123/dsh-run2sk
 - [Storage and upgrades](docs/storage-and-upgrades.md)
 - [Product requirements](docs/product/prd.md)
 - [Architecture baseline](docs/architecture/baseline.md)
+- [Design document index](docs/design/README.md)
 - [Single-owner design for one Skill-save intent](docs/design/single-owner-skill-save.md)
 - [Contributing](CONTRIBUTING.md)
 - [Maintainer compatibility probes](probes/README.md)
