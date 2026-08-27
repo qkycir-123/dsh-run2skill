@@ -73,6 +73,8 @@ export class SessionBatchScheduler {
     if (!this.#started) await this.start()
     return await this.#enqueue(async () => {
       await this.#coordinator.recordObservation(observation)
+      const requested = await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
+      if (requested.length > 0) this.#onIdleBatchFrozen()
     })
   }
 

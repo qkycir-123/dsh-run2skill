@@ -309,6 +309,7 @@ export class SessionBatchCoordinator {
     for (const cursor of Object.values(current.sessions)) {
       if (
         cursor.activeBatchId !== undefined
+        || cursor.manualSynthesisRequest !== undefined
         || cursor.observedThroughTurnEndSeq <= cursor.detectedThroughTurnEndSeq
         || cursor.lastActivityAt === undefined
       ) continue
@@ -421,6 +422,9 @@ export class SessionBatchCoordinator {
         throw new SessionBatchStateConflictError('Session cursor references a missing or terminal active batch')
       }
       return { global: current, batch: active, changed: false }
+    }
+    if (!allowManualRequest && cursor.manualSynthesisRequest !== undefined) {
+      return { global: current, changed: false }
     }
     const pending = [...this.#observations.entries()]
       .map(([, value]) => TurnObservationV2Schema.parse(value))
