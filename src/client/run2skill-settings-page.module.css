@@ -83,8 +83,21 @@
     flex-direction: column;
   }
 
+  .learningStatusRow .actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
   .learningStatusRow .actions > * {
-    flex: 1 1 auto;
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    flex: 0 0 auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 
