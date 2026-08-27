@@ -146,8 +146,51 @@ describe('v2 Session quiescence fence', () => {
         },
       },
     })
+    expect(await worker.runOnce()).toBe('PROCESSED')
+    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      coverage: { state: 'NEEDS_ATTENTION', reasonCode: 'SESSION_TAIL_ADVANCED' },
+    })
+  })
+
+  it('moves a READY fact superseded by a fully detected stable tail into durable attention', async () => {
+    const seeded = await seedWaiting({ explicit: true })
+    const finalTail = seeded.batch.lastTurnEndSeq + 2
+    const global = seeded.domain.global.get()
+    await seeded.domain.global.set({
+      ...global,
+      sessions: {
+        ...global.sessions,
+        [seeded.batch.sessionLifecycleKey]: {
+          ...global.sessions[seeded.batch.sessionLifecycleKey]!,
+          observedThroughTurnEndSeq: finalTail,
+          detectedThroughTurnEndSeq: finalTail,
+        },
+      },
+    })
+    const port = activity({
+      complete: true, activeAgent: false, activityRevision: 'stable-final-tail',
+      durableLatestTurnEndSeq: finalTail, durableOpenTurn: false,
+    })
+    const worker = new SessionQuiescenceCoordinator(seeded.domain, {
+      activity: port,
+      now: () => BASE + 1,
+    })
+
+    expect(await worker.runOnce()).toBe('PROCESSED')
+    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      quiescence: {
+        state: 'SATISFIED',
+        batchLastTurnEndSeq: seeded.batch.lastTurnEndSeq,
+        observedThroughTurnEndSeq: finalTail,
+        detectedThroughTurnEndSeq: finalTail,
+        activityRevision: 'stable-final-tail',
+      },
+      coverage: { state: 'NEEDS_ATTENTION', reasonCode: 'SESSION_TAIL_ADVANCED' },
+    })
+    expect(worker.nextEligibleAt()).toBeUndefined()
     expect(await worker.runOnce()).toBe('IDLE')
-    expect(seeded.domain.experienceIntents.get(seeded.intent.intentId)?.status).toBe('WAITING_FOR_QUIESCENCE')
   })
 
   it('binds the durable fence to exact Session and live Agent activity facts', async () => {

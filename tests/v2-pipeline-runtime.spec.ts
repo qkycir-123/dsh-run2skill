@@ -91,6 +91,30 @@ describe('v2 pipeline runtime', () => {
     expect(dispose).toHaveBeenCalledOnce()
   })
 
+  it('runs one scheduler feedback check for each counted stage transition', async () => {
+    const afterStageTransition = vi.fn(async () => undefined)
+    const batch: V2PipelineBatchScheduler = {
+      start: async () => undefined,
+      prepareSessionWindow: async () => undefined,
+      observe: async () => undefined,
+      afterStageTransition,
+      wake: () => undefined,
+      settle: async () => undefined,
+      dispose: async () => undefined,
+    }
+    const stage: V2PipelineStageWorker = { runOnce: async () => 'PROCESSED' }
+    const runtime = new Run2skillV2PipelineRuntime({
+      batchScheduler: batch,
+      stages: [stage],
+      recoveryOrder: [],
+      maxTransitionsPerDrain: 2,
+    })
+
+    await expect(runtime.start()).rejects.toThrow('Run2Skill v2 pipeline drain limit reached')
+    expect(afterStageTransition).toHaveBeenCalledTimes(2)
+    await runtime.dispose()
+  })
+
   it('signals active work, starts no next item, and waits for the active tail before disposal completes', async () => {
     const started = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()

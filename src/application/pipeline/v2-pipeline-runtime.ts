@@ -6,6 +6,11 @@ export interface V2PipelineBatchScheduler {
   start(): Promise<void>
   prepareSessionWindow(sessionLifecycleKey: string): Promise<void>
   observe(observation: TurnObservationV2): Promise<void>
+  requestSynthesis?(sessionLifecycleKey: string): Promise<{
+    readonly changed: boolean
+    readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+  }>
+  afterStageTransition?(): Promise<void>
   wake(): void
   settle(): Promise<void>
   dispose(): Promise<void>
@@ -109,6 +114,18 @@ export class Run2skillV2PipelineRuntime {
     })
   }
 
+  async requestSynthesis(sessionLifecycleKey: string): Promise<{
+    readonly changed: boolean
+    readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
+  }> {
+    if (!this.#started) await this.start()
+    this.#assertOpen()
+    if (this.#batchScheduler.requestSynthesis === undefined) {
+      throw new Error('Run2Skill synthesis requests are unavailable')
+    }
+    return await this.#batchScheduler.requestSynthesis(sessionLifecycleKey)
+  }
+
   wake(): void {
     if (!this.#started || this.#disposed) return
     this.#batchScheduler.wake()
@@ -153,6 +170,11 @@ export class Run2skillV2PipelineRuntime {
         if (this.#disposed) return
         if (outcome === 'PROCESSED') {
           processed = true
+          // The scheduler feedback is part of this counted stage transition.
+          // It can freeze newly unblocked durable requests, but never recurses
+          // into this drain or consumes another transition from the budget.
+          await this.#batchScheduler.afterStageTransition?.()
+          if (this.#disposed) return
           break
         }
       }

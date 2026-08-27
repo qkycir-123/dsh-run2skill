@@ -47,6 +47,40 @@ function scheduledObservation(seq: number, observedAt: number) {
   return { ...value, contentDigest: deriveTurnObservationContentDigestV2(value) }
 }
 
+function coordinator(domain: ReturnType<typeof createMemoryRun2skillV2Domain>, now: () => number) {
+  return new SessionBatchCoordinator(domain, {
+    captureBaseline: async () => ({
+      observedAt: new Date(now()).toISOString(),
+      rootManifestDigest: '1'.repeat(64),
+      runtimeCatalogDigest: '2'.repeat(64),
+      complete: true,
+    }),
+    captureRouteSnapshot: async () => ({
+      provider: 'deepseek-official',
+      model: 'deepseek-chat',
+      policyVersion: 'batch-detector-v1',
+      maxInputBytes: 128 * 1024,
+      maxOutputBytes: 8 * 1024,
+    }),
+    now,
+  })
+}
+
+async function seedManualSynthesisRequest(
+  domain: ReturnType<typeof createMemoryRun2skillV2Domain>,
+  now: () => number,
+): Promise<string> {
+  const firstProcess = coordinator(domain, now)
+  const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+  await firstProcess.recordObservation(scheduledObservation(10, now()))
+  await expect(firstProcess.requestSynthesis(lifecycleKey)).resolves.toMatchObject({
+    changed: true,
+    disposition: 'QUEUED',
+  })
+  expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeDefined()
+  return lifecycleKey
+}
+
 describe('v2 SessionBatch scheduler', () => {
   it('retries coordinator recovery after a failed start instead of reporting a false success', async () => {
     let recoveries = 0
@@ -55,6 +89,7 @@ describe('v2 SessionBatch scheduler', () => {
         recoveries += 1
         if (recoveries === 1) throw new Error('synthetic coordinator recovery failure')
       },
+      flushRequested: async () => [],
       nextIdleAt: () => undefined,
     } as unknown as SessionBatchCoordinator
     const scheduler = new SessionBatchScheduler({ coordinator })
@@ -105,5 +140,101 @@ describe('v2 SessionBatch scheduler', () => {
     await scheduler.settle()
     expect(domain.sessionBatches.size).toBe(1)
     await scheduler.dispose()
+  })
+
+  it('flushes an over-idle durable manual request exactly once after restart when quiescence permits it', async () => {
+    let now = 60_000
+    const domain = createMemoryRun2skillV2Domain()
+    const lifecycleKey = await seedManualSynthesisRequest(domain, () => now)
+    now += 30 * 60_000 + 1
+    const permitRequestedSynthesis = vi.fn(async () => true)
+    const onIdleBatchFrozen = vi.fn()
+    const restarted = new SessionBatchScheduler({
+      coordinator: coordinator(domain, () => now),
+      now: () => now,
+      permitRequestedSynthesis,
+      onIdleBatchFrozen,
+    })
+
+    await restarted.start()
+
+    expect(permitRequestedSynthesis).toHaveBeenCalledWith(lifecycleKey)
+    expect([...domain.sessionBatches.values()]).toHaveLength(1)
+    expect([...domain.sessionBatches.values()][0]).toMatchObject({ triggerReasons: ['EXPLICIT'] })
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
+    expect(onIdleBatchFrozen).toHaveBeenCalledOnce()
+    restarted.wake()
+    await restarted.settle()
+    expect([...domain.sessionBatches.values()]).toHaveLength(1)
+    expect(onIdleBatchFrozen).toHaveBeenCalledOnce()
+    expect(permitRequestedSynthesis).toHaveBeenCalledOnce()
+    await restarted.dispose()
+  })
+
+  it('keeps an over-idle durable manual request pending after restart while quiescence denies it', async () => {
+    let now = 60_000
+    const timer = new ManualTimer()
+    const domain = createMemoryRun2skillV2Domain()
+    const lifecycleKey = await seedManualSynthesisRequest(domain, () => now)
+    now += 30 * 60_000 + 1
+    const permitRequestedSynthesis = vi.fn(async () => false)
+    const restarted = new SessionBatchScheduler({
+      coordinator: coordinator(domain, () => now),
+      now: () => now,
+      setTimer: timer.set,
+      clearTimer: timer.clear,
+      permitRequestedSynthesis,
+    })
+
+    await restarted.start()
+
+    expect(permitRequestedSynthesis).toHaveBeenCalledWith(lifecycleKey)
+    expect(domain.sessionBatches.size).toBe(0)
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeDefined()
+    expect(timer.callback).toBeUndefined()
+    await restarted.dispose()
+  })
+
+  it('does not let a threshold observation bypass a denied manual-request permit', async () => {
+    let now = 60_000
+    let permit = false
+    const domain = createMemoryRun2skillV2Domain()
+    const firstProcess = coordinator(domain, () => now)
+    const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+    for (const seq of [10, 20, 30, 40]) {
+      await firstProcess.recordObservation(scheduledObservation(seq, now++))
+    }
+    await expect(firstProcess.requestSynthesis(lifecycleKey)).resolves.toMatchObject({
+      changed: true,
+      disposition: 'QUEUED',
+    })
+    const permitRequestedSynthesis = vi.fn(async () => permit)
+    const onIdleBatchFrozen = vi.fn()
+    const restarted = new SessionBatchScheduler({
+      coordinator: coordinator(domain, () => now),
+      now: () => now,
+      permitRequestedSynthesis,
+      onIdleBatchFrozen,
+    })
+    await restarted.start()
+
+    await restarted.observe(scheduledObservation(50, now++))
+
+    expect(permitRequestedSynthesis).toHaveBeenCalledTimes(2)
+    expect(domain.sessionBatches.size).toBe(0)
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toMatchObject({
+      throughTurnEndSeq: 50,
+    })
+    permit = true
+    restarted.wake()
+    await restarted.settle()
+    expect([...domain.sessionBatches.values()]).toHaveLength(1)
+    expect([...domain.sessionBatches.values()][0]).toMatchObject({
+      lastTurnEndSeq: 50,
+      triggerReasons: ['EXPLICIT', 'THRESHOLD'],
+    })
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
+    expect(onIdleBatchFrozen).toHaveBeenCalledOnce()
+    await restarted.dispose()
   })
 })

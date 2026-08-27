@@ -2375,6 +2375,10 @@ const SessionCursorV2Schema = z.object({
   headerRevision: identity.optional(),
   observedLogPrefixDigest: sha256Hex.optional(),
   activeBatchId: z.string().regex(/^batch_[a-f0-9]{64}$/).optional(),
+  manualSynthesisRequest: z.object({
+    throughTurnEndSeq: safeNonNegativeInteger,
+    requestedAt: isoDateTime,
+  }).strict().optional(),
   lastActivityAt: isoDateTime.optional(),
   batchManifestBaseline: BatchManifestBaselineV2Schema.extend({
     afterTurnEndSeq: safeNonNegativeInteger,
@@ -2388,6 +2392,14 @@ const SessionCursorV2Schema = z.object({
   if (value.detectedThroughTurnEndSeq > value.observedThroughTurnEndSeq) {
     context.addIssue({ code: 'custom', path: ['detectedThroughTurnEndSeq'], message: 'Detected cursor cannot exceed observed cursor' })
   }
+  if (value.manualSynthesisRequest !== undefined && (
+    value.manualSynthesisRequest.throughTurnEndSeq <= value.detectedThroughTurnEndSeq
+    || value.manualSynthesisRequest.throughTurnEndSeq > value.observedThroughTurnEndSeq
+  )) context.addIssue({
+    code: 'custom',
+    path: ['manualSynthesisRequest'],
+    message: 'Manual synthesis request must bind an unprocessed durable Session tail',
+  })
   if (value.batchManifestBaseline !== undefined && (
     value.batchManifestBaseline.afterTurnEndSeq < value.detectedThroughTurnEndSeq
     || value.batchManifestBaseline.afterTurnEndSeq > value.observedThroughTurnEndSeq

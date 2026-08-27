@@ -9,6 +9,12 @@ export interface SessionBatchSchedulerOptions {
   readonly now?: () => number
   readonly setTimer?: (callback: () => void, delay: number) => unknown
   readonly clearTimer?: (handle: unknown) => void
+  readonly permitRequestedSynthesis?: (sessionLifecycleKey: string) => boolean | Promise<boolean>
+}
+
+export interface SynthesisRequestReceipt {
+  readonly changed: boolean
+  readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
 }
 
 // This scheduler only freezes authoritative work. The Detector worker must scan
@@ -19,6 +25,7 @@ export class SessionBatchScheduler {
   readonly #setTimer
   readonly #clearTimer
   readonly #onIdleBatchFrozen
+  readonly #permitRequestedSynthesis
   #timer: unknown
   #tail: Promise<void> = Promise.resolve()
   #startAttempt: Promise<void> | undefined
@@ -31,6 +38,7 @@ export class SessionBatchScheduler {
     this.#setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.#clearTimer = options.clearTimer ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
     this.#onIdleBatchFrozen = options.onIdleBatchFrozen ?? (() => undefined)
+    this.#permitRequestedSynthesis = options.permitRequestedSynthesis ?? (() => true)
   }
 
   async start(): Promise<void> {
@@ -39,6 +47,8 @@ export class SessionBatchScheduler {
     if (this.#startAttempt !== undefined) return await this.#startAttempt
     const attempt = this.#enqueue(async () => {
       await this.#coordinator.recover(this.#now())
+      const requested = await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
+      if (requested.length > 0) this.#onIdleBatchFrozen()
     })
     this.#startAttempt = attempt
     try {
@@ -63,13 +73,31 @@ export class SessionBatchScheduler {
     if (!this.#started) await this.start()
     return await this.#enqueue(async () => {
       await this.#coordinator.recordObservation(observation)
+      const requested = await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
+      if (requested.length > 0) this.#onIdleBatchFrozen()
+    })
+  }
+
+  async requestSynthesis(sessionLifecycleKey: string): Promise<SynthesisRequestReceipt> {
+    if (this.#disposed) throw new Error('SessionBatchScheduler is disposed')
+    if (!this.#started) await this.start()
+    return await this.#enqueue(async () => await this.#coordinator.requestSynthesis(sessionLifecycleKey))
+  }
+
+  async afterStageTransition(): Promise<void> {
+    if (this.#disposed) throw new Error('SessionBatchScheduler is disposed')
+    if (!this.#started) await this.start()
+    await this.#enqueue(async () => {
+      await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
     })
   }
 
   wake(): void {
     if (!this.#started || this.#disposed) return
     void this.#enqueue(async () => {
-      if ((await this.#coordinator.flushIdle(this.#now())).length > 0) this.#onIdleBatchFrozen()
+      const requested = await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
+      const idle = await this.#coordinator.flushIdle(this.#now())
+      if (requested.length > 0 || idle.length > 0) this.#onIdleBatchFrozen()
     })
   }
 
@@ -83,7 +111,7 @@ export class SessionBatchScheduler {
     await this.settle()
   }
 
-  #enqueue(operation: () => Promise<void>): Promise<void> {
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.#tail.then(operation)
     this.#tail = result.then(
       () => { this.#schedule() },
