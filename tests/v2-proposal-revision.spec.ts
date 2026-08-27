@@ -10,6 +10,11 @@ import {
   GlobalV2Schema,
   ProposalLineageV2Schema,
   SessionBatchV2Schema,
+  deriveNativeProposalLineageIdV2,
+  deriveNativeProposalRefDigestV2,
+  deriveProposalCatalogMutationIdV2,
+  deriveProposalRevisionCallIdV2,
+  deriveProposalRevisionMutationOwnerIdV2,
   deriveProposalReviewReceiptDigestV2,
 } from '../src/domain/v2/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -141,6 +146,25 @@ describe('v2 Proposal revision coordinator', () => {
       expect(ProposalLineageV2Schema.safeParse(forgedResultRef).success).toBe(false)
     }
 
+    const forgedInputDigest = structuredClone(revised.lineage)
+    forgedInputDigest.revisionActions[0]!.inputDigest = 'f'.repeat(64)
+    expect(ProposalLineageV2Schema.safeParse(forgedInputDigest).success).toBe(false)
+
+    const forgedCallId = structuredClone(revised.lineage)
+    forgedCallId.revisionActions[0]!.callId = `call_${'f'.repeat(64)}`
+    expect(ProposalLineageV2Schema.safeParse(forgedCallId).success).toBe(false)
+
+    const forgedGenerationReceipt = structuredClone(revised.lineage)
+    const forgedChild = forgedGenerationReceipt.proposalRevisions[1]!
+    forgedChild.generationResultReceiptDigest = 'f'.repeat(64)
+    forgedGenerationReceipt.revisionActions[0]!.resultProposalRef!.digest = deriveNativeProposalRefDigestV2({
+      lineageId: forgedGenerationReceipt.lineageId,
+      persistenceScope: forgedGenerationReceipt.persistenceScope,
+      behaviorSignature: forgedGenerationReceipt.behaviorSignature,
+      proposal: forgedChild,
+    })
+    expect(ProposalLineageV2Schema.safeParse(forgedGenerationReceipt).success).toBe(false)
+
     await expect(coordinator.revise({ ...request(seeded), actionId: `rev_${'b'.repeat(64)}` }))
       .rejects.toMatchObject({ code: 'STALE_PROPOSAL_REF' })
   })
@@ -167,6 +191,18 @@ describe('v2 Proposal revision coordinator', () => {
     await expect(coordinator.revise(request(seeded, 'different input')))
       .rejects.toMatchObject({ code: 'REVISION_INPUT_INVALID' })
     expect(generate).toHaveBeenCalledOnce()
+
+    const second = await coordinator.revise({
+      lineageId: first.lineage.lineageId,
+      expectedLineageRevision: first.lineage.revision,
+      proposalRef: first.proposalRef,
+      actionId: `rev_${'b'.repeat(64)}`,
+      feedback: '请再补充回读验证。',
+    })
+    expect(second.proposalRef.revision).toBe(3)
+    await expect(coordinator.revise(request(seeded)))
+      .rejects.toMatchObject({ code: 'STALE_PROPOSAL_REF' })
+    expect(generate).toHaveBeenCalledTimes(2)
   })
 
   it('keeps an old approval on the superseded parent and requires fresh review for the revision', async () => {
@@ -290,7 +326,7 @@ describe('v2 Proposal revision coordinator', () => {
         feedbackDigest: sha256Utf8('revise'),
         feedbackSummary: 'revise',
         inputDigest: 'd'.repeat(64),
-        callId: `call_${'e'.repeat(64)}`,
+        callId: deriveProposalRevisionCallIdV2(ACTION_ID, 'd'.repeat(64)),
         state: 'CALL_RESERVED',
         createdAt: NOW,
       }],
@@ -324,5 +360,117 @@ describe('v2 Proposal revision coordinator', () => {
 
     await expect(coordinator.recover()).resolves.toBe('IDLE')
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toMatchObject({ ownerId: foreignOwner })
+  })
+
+  it('does not let a successful action in lineage A commit lineage B legacy crash journal', async () => {
+    const seeded = await seed()
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      generate: async input => ({
+        name: input.parent.name,
+        description: 'Revised in lineage A.',
+        whenToUse: 'Use after tests.',
+        content: '# Revised A\n\nRun tests.',
+      }),
+      now: () => NOW,
+    })
+    await coordinator.revise(request(seeded))
+
+    const behaviorSignature = '9'.repeat(64)
+    const lineageId = deriveNativeProposalLineageIdV2(seeded.lineage.persistenceScope, behaviorSignature)
+    const lineageBBase = ProposalLineageV2Schema.parse({
+      ...seeded.lineage,
+      lineageId,
+      behaviorSignature,
+    })
+    if (lineageBBase.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage B')
+    const parentRef = deriveV2ProposalRef(lineageBBase)
+    const inputDigest = '8'.repeat(64)
+    const lineageB = ProposalLineageV2Schema.parse({
+      ...lineageBBase,
+      revision: lineageBBase.revision + 1,
+      revisionActions: [{
+        actionId: ACTION_ID,
+        parentProposalId: parentRef.proposalId,
+        parentProposalRevision: parentRef.revision,
+        parentProposalDigest: parentRef.digest,
+        feedbackDigest: sha256Utf8('revise'),
+        feedbackSummary: 'revise',
+        inputDigest,
+        callId: deriveProposalRevisionCallIdV2(ACTION_ID, inputDigest),
+        state: 'CALL_RESERVED',
+        createdAt: NOW,
+      }],
+    })
+    await seeded.domain.table('proposal_lineages').put(lineageId, lineageB)
+    const before = seeded.domain.global.get()
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...before,
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId: deriveProposalCatalogMutationIdV2({
+          ownerId: ACTION_ID,
+          kind: 'USER_ACTION',
+          inputCatalogEpoch: before.proposalCatalogEpoch,
+        }),
+        ownerId: ACTION_ID,
+        kind: 'USER_ACTION',
+        phase: 'PREPARED',
+        preparedAt: NOW,
+      },
+    }))
+
+    await expect(coordinator.recover()).resolves.toBe('RECOVERED')
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: before.proposalCatalogEpoch,
+      proposalCatalogLastMutation: before.proposalCatalogLastMutation,
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    const recoveredB = ProposalLineageV2Schema.parse(seeded.domain.table('proposal_lineages').get(lineageId))
+    if (recoveredB.origin !== 'RUN2SKILL_V2') throw new Error('expected recovered lineage B')
+    expect(recoveredB.revisionActions[0]).toMatchObject({
+      state: 'OUTCOME_UNKNOWN', failureCode: 'REVISION_OUTCOME_UNKNOWN',
+    })
+  })
+
+  it('finalizes only the exact lineage-bound mutation after a child commit crash', async () => {
+    const seeded = await seed()
+    const before = seeded.domain.global.get()
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      generate: async input => ({
+        name: input.parent.name,
+        description: 'Revised before crash.',
+        whenToUse: 'Use after tests.',
+        content: '# Revised\n\nRun tests.',
+      }),
+      now: () => NOW,
+    })
+    const revised = await coordinator.revise(request(seeded))
+    const committed = seeded.domain.global.get()
+    const ownerId = deriveProposalRevisionMutationOwnerIdV2(revised.lineage.lineageId, ACTION_ID)
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...before,
+      proposalCatalogMutationJournal: {
+        schemaVersion: 1,
+        mutationId: deriveProposalCatalogMutationIdV2({
+          ownerId,
+          kind: 'USER_ACTION',
+          inputCatalogEpoch: before.proposalCatalogEpoch,
+        }),
+        ownerId,
+        kind: 'USER_ACTION',
+        phase: 'PREPARED',
+        preparedAt: NOW,
+      },
+    }))
+
+    await expect(coordinator.recover()).resolves.toBe('RECOVERED')
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: committed.proposalCatalogEpoch,
+      proposalCatalogLastMutation: committed.proposalCatalogLastMutation,
+    })
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
+    await expect(coordinator.recover()).resolves.toBe('IDLE')
   })
 })

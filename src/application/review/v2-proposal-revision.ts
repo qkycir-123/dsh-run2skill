@@ -11,6 +11,9 @@ import {
   SessionBatchV2Schema,
   deriveProposalCatalogMutationAnchorV2,
   deriveProposalCatalogMutationIdV2,
+  deriveProposalRevisionCallIdV2,
+  deriveProposalRevisionGenerationReceiptDigestV2,
+  deriveProposalRevisionMutationOwnerIdV2,
   type ExperienceIntentV2,
   type ProposalLineageV2,
   type SessionBatchV2,
@@ -228,7 +231,7 @@ export class V2ProposalRevisionCoordinator {
         feedbackDigest,
         route: batch.routeSnapshot,
       }))
-      const callId = `call_${sha256Utf8(canonicalJson({ actionId: request.actionId, inputDigest }))}`
+      const callId = deriveProposalRevisionCallIdV2(request.actionId, inputDigest)
       const createdAt = this.#now()
       const reservedAction: RevisionAction = {
         actionId: request.actionId,
@@ -284,15 +287,15 @@ export class V2ProposalRevisionCoordinator {
           || after.runtimeCatalogDigest !== before.runtimeCatalogDigest
         ) throw new V2ProposalRevisionError('REVISION_CATALOG_CHANGED')
 
-        const anchor = await this.#prepareMutation(request.actionId, after)
+        const mutationOwnerId = deriveProposalRevisionMutationOwnerIdV2(lineage.lineageId, request.actionId)
+        const anchor = await this.#prepareMutation(mutationOwnerId, after)
         const proposalRevision = parent.revision + 1
-        const generationResultReceiptDigest = sha256Utf8(canonicalJson({
-          contract: 'run2skill-v2-proposal-revision-result-v1',
+        const generationResultReceiptDigest = deriveProposalRevisionGenerationReceiptDigestV2({
           actionId: request.actionId,
           callId,
           inputDigest,
           skillBytesDigest: body.skillBytesDigest,
-        }))
+        })
         const proposalId = `prop_${sha256Utf8(canonicalJson({
           lineageId: lineage.lineageId,
           parentProposalId: parent.proposalId,
@@ -348,7 +351,7 @@ export class V2ProposalRevisionCoordinator {
             ? { ...action, state: 'SUCCEEDED' as const, resultProposalRef: proposalRef, completedAt }
             : action),
         }))
-        await this.#finalizeMutation(request.actionId)
+        await this.#finalizeMutation(mutationOwnerId)
         return { changed: true, lineage: updated, proposalRef }
       } catch (caught) {
         await this.#recoverMutationJournal().catch(() => undefined)
@@ -439,6 +442,9 @@ export class V2ProposalRevisionCoordinator {
 
   #duplicateResult(lineage: NativeLineage, action: RevisionAction): V2ProposalRevisionResult {
     if (action.state === 'SUCCEEDED' && action.resultProposalRef !== undefined) {
+      if (!sameRef(action.resultProposalRef, deriveV2ProposalRef(lineage))) {
+        throw new V2ProposalRevisionError('STALE_PROPOSAL_REF')
+      }
       return { changed: false, lineage, proposalRef: action.resultProposalRef }
     }
     if (action.state === 'CALL_RESERVED') throw new V2ProposalRevisionError('REVISION_BUSY')
@@ -452,7 +458,7 @@ export class V2ProposalRevisionCoordinator {
   }
 
   async #prepareMutation(
-    actionId: string,
+    mutationOwnerId: string,
     snapshot: Extract<V2ProposalReviewRevalidation, { readonly status: 'CURRENT' }>,
   ) {
     return await this.#global.runExclusive(async current => {
@@ -468,12 +474,12 @@ export class V2ProposalRevisionCoordinator {
         || current.proposalCatalogLastMutation.digest !== snapshot.catalogMutationReceiptDigest
       ) throw new V2ProposalRevisionError('REVISION_CATALOG_CHANGED')
       const mutationId = deriveProposalCatalogMutationIdV2({
-        ownerId: actionId,
+        ownerId: mutationOwnerId,
         kind: 'USER_ACTION',
         inputCatalogEpoch: current.proposalCatalogEpoch,
       })
       const anchor = deriveProposalCatalogMutationAnchorV2({
-        ownerId: actionId,
+        ownerId: mutationOwnerId,
         kind: 'USER_ACTION',
         inputCatalogEpoch: current.proposalCatalogEpoch,
       })
@@ -484,7 +490,7 @@ export class V2ProposalRevisionCoordinator {
           proposalCatalogMutationJournal: {
             schemaVersion: 1,
             mutationId,
-            ownerId: actionId,
+            ownerId: mutationOwnerId,
             kind: 'USER_ACTION',
             phase: 'PREPARED',
             preparedAt: this.#now(),
@@ -494,15 +500,15 @@ export class V2ProposalRevisionCoordinator {
     })
   }
 
-  async #finalizeMutation(actionId: string): Promise<void> {
+  async #finalizeMutation(mutationOwnerId: string): Promise<void> {
     await this.#global.runExclusive(async current => {
       const journal = current.proposalCatalogMutationJournal
       const expectedId = deriveProposalCatalogMutationIdV2({
-        ownerId: actionId,
+        ownerId: mutationOwnerId,
         kind: 'USER_ACTION',
         inputCatalogEpoch: current.proposalCatalogEpoch,
       })
-      if (journal?.kind !== 'USER_ACTION' || journal.ownerId !== actionId || journal.mutationId !== expectedId) {
+      if (journal?.kind !== 'USER_ACTION' || journal.ownerId !== mutationOwnerId || journal.mutationId !== expectedId) {
         throw new V2ProposalRevisionError('REVISION_RECOVERY_CONFLICT')
       }
       const { proposalCatalogMutationJournal: _journal, ...rest } = current
@@ -512,7 +518,7 @@ export class V2ProposalRevisionCoordinator {
           ...rest,
           proposalCatalogEpoch: current.proposalCatalogEpoch + 1,
           proposalCatalogLastMutation: deriveProposalCatalogMutationAnchorV2({
-            ownerId: actionId,
+            ownerId: mutationOwnerId,
             kind: 'USER_ACTION',
             inputCatalogEpoch: current.proposalCatalogEpoch,
           }),
@@ -523,14 +529,22 @@ export class V2ProposalRevisionCoordinator {
 
   async #recoverMutationJournal(): Promise<boolean> {
     const journal = this.#global.get().proposalCatalogMutationJournal
-    if (journal?.kind !== 'USER_ACTION' || !/^rev_[a-f0-9]{64}$/.test(journal.ownerId)) return false
-    const succeeded = [...this.#lineages.entries()].some(([, raw]) => {
-      const parsed = ProposalLineageV2Schema.safeParse(raw)
-      return parsed.success
-        && parsed.data.origin === 'RUN2SKILL_V2'
-        && parsed.data.revisionActions.some(action => action.actionId === journal.ownerId && action.state === 'SUCCEEDED')
-    })
-    if (succeeded) await this.#finalizeMutation(journal.ownerId)
+    if (journal?.kind !== 'USER_ACTION') return false
+    const legacyUnbound = /^rev_[a-f0-9]{64}$/.test(journal.ownerId)
+    const lineageBound = /^revop_[a-f0-9]{64}$/.test(journal.ownerId)
+    if (!legacyUnbound && !lineageBound) return false
+    const ownedSucceeded = lineageBound
+      ? [...this.#lineages.entries()].filter(([, raw]) => {
+          const parsed = ProposalLineageV2Schema.safeParse(raw)
+          return parsed.success
+            && parsed.data.origin === 'RUN2SKILL_V2'
+            && parsed.data.revisionActions.some(action => (
+              action.state === 'SUCCEEDED'
+              && deriveProposalRevisionMutationOwnerIdV2(parsed.data.lineageId, action.actionId) === journal.ownerId
+            ))
+        })
+      : []
+    if (ownedSucceeded.length === 1) await this.#finalizeMutation(journal.ownerId)
     else {
       await this.#global.runExclusive(async current => {
         if (current.proposalCatalogMutationJournal?.mutationId !== journal.mutationId) {

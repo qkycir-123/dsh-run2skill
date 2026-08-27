@@ -3,7 +3,7 @@ import {
   V2CurrentScopeAuthorizer,
   deriveV2ActionSubjectId,
 } from '../src/adapters/dsh-connection/v2-current-scope-authorizer.js'
-import { ProposalLineageV2Schema } from '../src/domain/v2/index.js'
+import { ProposalLineageV2Schema, deriveProposalRevisionCallIdV2 } from '../src/domain/v2/index.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
 import { deriveV2ProposalRef } from '../src/application/review/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -192,7 +192,7 @@ describe('v2 current-scope Action Queue authorization', () => {
         feedbackDigest: '2'.repeat(64),
         feedbackSummary: 'revise',
         inputDigest: '3'.repeat(64),
-        callId: `call_${'4'.repeat(64)}`,
+        callId: deriveProposalRevisionCallIdV2(`rev_${'1'.repeat(64)}`, '3'.repeat(64)),
         state: 'CALL_RESERVED',
         createdAt: '2026-08-23T00:02:00.000Z',
       }],

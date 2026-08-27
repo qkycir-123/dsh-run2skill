@@ -20,6 +20,7 @@ import {
 import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
+import { ProposalInboxController, type ProposalPollEnvironment } from '../src/client/proposal-inbox.js'
 import {
   GlobalV2Schema,
   ProposalLineageV2Schema,
@@ -226,6 +227,15 @@ async function attentionAction(handler: ReturnType<typeof createHandler>['handle
   return { actionKey, subjectId, kind, proposalRef }
 }
 
+const controllerEnvironment: ProposalPollEnvironment = {
+  isVisible: () => true,
+  setInterval: () => 1,
+  clearInterval: () => undefined,
+  onFocus: () => () => undefined,
+  onVisibilityChange: () => () => undefined,
+  onOnline: () => () => undefined,
+}
+
 describe('v2 Proposal RPC compatibility bridge', () => {
   it('delegates to v1 until the v2 migration activation is committed', async () => {
     const seeded = await seed({ committed: false })
@@ -318,6 +328,61 @@ describe('v2 Proposal RPC compatibility bridge', () => {
     if (stored.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
     expect(stored.proposalRevisions).toHaveLength(2)
     expect(stored.revisionActions).toHaveLength(1)
+
+    const currentAction = await attentionAction(handler)
+    const secondRequest = {
+      ...request,
+      workItemRevision: stored.revision,
+      proposalRef: currentAction.proposalRef,
+      action: currentAction,
+      actionId: `rev_${'e'.repeat(64)}`,
+      feedback: '请再补充回读验证。',
+    }
+    await expect(handler(PROPOSALS_REVISE_ENDPOINT, secondRequest, new AbortController().signal))
+      .resolves.toMatchObject({ ok: true, value: { proposalRef: { revision: 3 } } })
+    await expect(handler(PROPOSALS_REVISE_ENDPOINT, request, new AbortController().signal))
+      .resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+  })
+
+  it('does not reuse a lost-response action id when the same feedback targets the next Proposal revision', async () => {
+    const seeded = await seed()
+    const { handler } = createHandler(seeded)
+    let actions = [await attentionAction(handler)]
+    let loseFirstRevisionResponse = true
+    const revisionActionIds: string[] = []
+    const call = async (endpoint: string, payload: unknown, signal: AbortSignal) => {
+      const response = await handler(endpoint, payload, signal)
+      if (endpoint === PROPOSALS_REVISE_ENDPOINT) {
+        revisionActionIds.push((payload as { actionId: string }).actionId)
+        if (loseFirstRevisionResponse) {
+          loseFirstRevisionResponse = false
+          throw new Error('simulated lost response')
+        }
+      }
+      return response
+    }
+    const controller = new ProposalInboxController('workspace-v2', call, controllerEnvironment, {
+      attentionDriven: true,
+      scopeAccess: () => ({ currentScope, actions }),
+    })
+    await controller.open()
+    await controller.select(actions[0]!.proposalRef.proposalId)
+    await controller.revise('请补充先运行测试。')
+
+    actions = [await attentionAction(handler)]
+    await controller.open()
+    await controller.select(actions[0]!.proposalRef.proposalId)
+    await controller.revise('请补充先运行测试。')
+
+    expect(revisionActionIds).toHaveLength(2)
+    expect(revisionActionIds[1]).not.toBe(revisionActionIds[0])
+    const stored = ProposalLineageV2Schema.parse(
+      seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId),
+    )
+    if (stored.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
+    expect(stored.proposalRevisions).toHaveLength(3)
+    expect(stored.revisionActions).toHaveLength(2)
+    controller.dispose()
   })
 
   it('revalidates while opening detail and replaces the stale review action with REFRESH', async () => {

@@ -299,7 +299,12 @@ export class ProposalInboxController {
   #removeFocus: (() => void) | undefined
   #removeVisibility: (() => void) | undefined
   #removeOnline: (() => void) | undefined
-  #revisionAttempt: { readonly feedback: string; readonly actionId: string } | undefined
+  #revisionAttempt: {
+    readonly workItemId: string
+    readonly proposalRef: ProposalRefV1
+    readonly feedback: string
+    readonly actionId: string
+  } | undefined
 
   constructor(
     private readonly workspaceId: string,
@@ -497,9 +502,11 @@ export class ProposalInboxController {
       candidate.proposalRef.proposalId === proposalRef.proposalId
     )) ?? detail.action
     if (action === undefined) return
-    const attempt = this.#revisionAttempt?.feedback === normalized
+    const attempt = this.#revisionAttempt?.workItemId === detail.workItemId
+      && sameProposalRef(this.#revisionAttempt.proposalRef, proposalRef)
+      && this.#revisionAttempt.feedback === normalized
       ? this.#revisionAttempt
-      : { feedback: normalized, actionId: createRevisionActionId() }
+      : { workItemId: detail.workItemId, proposalRef, feedback: normalized, actionId: createRevisionActionId() }
     this.#revisionAttempt = attempt
     await this.#execute(async signal => {
       this.#publish({ ...this.#state, mutationPending: true, announcement: '正在按修改意见生成新草稿…' })
@@ -702,6 +709,12 @@ function createRevisionActionId(): string {
   const bytes = new Uint8Array(32)
   globalThis.crypto.getRandomValues(bytes)
   return `rev_${Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')}`
+}
+
+function sameProposalRef(left: ProposalRefV1, right: ProposalRefV1): boolean {
+  return left.proposalId === right.proposalId
+    && left.revision === right.revision
+    && left.digest === right.digest
 }
 
 const formatCharacters = new Map<number, string>([

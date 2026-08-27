@@ -204,6 +204,34 @@ export function deriveProposalCatalogMutationAnchorV2(
   }
 }
 
+export function deriveProposalRevisionCallIdV2(actionId: string, inputDigest: string): `call_${string}` {
+  return `call_${sha256Utf8(canonicalJson({
+    contract: 'run2skill-v2-proposal-revision-call-v1',
+    actionId,
+    inputDigest,
+  }))}`
+}
+
+export function deriveProposalRevisionGenerationReceiptDigestV2(facts: {
+  readonly actionId: string
+  readonly callId: string
+  readonly inputDigest: string
+  readonly skillBytesDigest: string
+}): string {
+  return sha256Utf8(canonicalJson({
+    contract: 'run2skill-v2-proposal-revision-result-v1',
+    ...facts,
+  }))
+}
+
+export function deriveProposalRevisionMutationOwnerIdV2(lineageId: string, actionId: string): string {
+  return `revop_${sha256Utf8(canonicalJson({
+    contract: 'run2skill-v2-proposal-revision-mutation-owner-v1',
+    lineageId,
+    actionId,
+  }))}`
+}
+
 export function deriveProposalReviewReceiptDigestV2(facts: {
   readonly proposalRef: {
     readonly proposalId: string
@@ -2381,6 +2409,9 @@ const NativeProposalLineageV2Schema = z.object({
     if (action.state === 'OUTCOME_UNKNOWN' && action.failureCode !== 'REVISION_OUTCOME_UNKNOWN') {
       context.addIssue({ code: 'custom', path: ['revisionActions', index, 'failureCode'], message: 'Unknown revision outcome requires its exact failure code' })
     }
+    if (action.callId !== deriveProposalRevisionCallIdV2(action.actionId, action.inputDigest)) {
+      context.addIssue({ code: 'custom', path: ['revisionActions', index, 'callId'], message: 'Revision call id must bind its durable action and input' })
+    }
     if (action.state === 'SUCCEEDED') {
       const child = value.proposalRevisions.find(revision => revision.revisionSource?.actionId === action.actionId)
       const source = child?.revisionSource
@@ -2396,6 +2427,12 @@ const NativeProposalLineageV2Schema = z.object({
         || action.parentProposalId !== source.parentProposalId
         || action.parentProposalRevision !== source.parentProposalRevision
         || action.parentProposalDigest !== source.parentProposalDigest
+        || child.generationResultReceiptDigest !== deriveProposalRevisionGenerationReceiptDigestV2({
+          actionId: action.actionId,
+          callId: action.callId,
+          inputDigest: action.inputDigest,
+          skillBytesDigest: child.body.skillBytesDigest,
+        })
         || action.resultProposalRef?.digest !== expectedResultDigest
       ) context.addIssue({ code: 'custom', path: ['revisionActions', index], message: 'Successful revision action must bind its exact parent and child revisions' })
     }
