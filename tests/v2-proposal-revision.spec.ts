@@ -4,8 +4,11 @@ import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import {
   V2ProposalRevisionCoordinator,
   V2ProposalRevisionError,
+  V2ProposalReviewCoordinator,
   deriveV2ProposalRef,
 } from '../src/application/review/index.js'
+import { V2CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/v2-current-scope-authorizer.js'
+import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
 import {
   GlobalV2Schema,
   ProposalLineageV2Schema,
@@ -24,7 +27,7 @@ import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 const NOW = '2026-08-27T02:00:00.000Z'
 const ACTION_ID = `rev_${'a'.repeat(64)}`
 
-async function seed() {
+async function seed(projectPath?: string) {
   const domain = createMemoryRun2skillV2Domain()
   const fixture = createMinimalV2Fixtures()
   await domain.global.set(GlobalV2Schema.parse({
@@ -55,11 +58,20 @@ async function seed() {
     SessionBatchV2Schema.parse(fixture.sessionBatch),
   )
   await domain.table('experience_intents').put(fixture.proposalReadyIntent.intentId, fixture.proposalReadyIntent)
-  await domain.table('proposal_lineages').put(
-    fixture.nativeActiveProposalLineage.lineageId,
-    fixture.nativeActiveProposalLineage,
-  )
-  const lineage = ProposalLineageV2Schema.parse(fixture.nativeActiveProposalLineage)
+  const storedLineage = projectPath === undefined
+    ? fixture.nativeActiveProposalLineage
+    : {
+        ...fixture.nativeActiveProposalLineage,
+        proposalRevisions: fixture.nativeActiveProposalLineage.proposalRevisions.map(proposal => ({
+          ...proposal,
+          projectScopeBinding: {
+            workspaceId: 'workspace-v2',
+            scopeIdentityDigest: deriveProjectScopeIdentityDigest(projectPath),
+          },
+        })),
+      }
+  await domain.table('proposal_lineages').put(storedLineage.lineageId, storedLineage)
+  const lineage = ProposalLineageV2Schema.parse(storedLineage)
   if (lineage.origin !== 'RUN2SKILL_V2') throw new Error('expected native lineage')
   return { domain, fixture, lineage, proposalRef: deriveV2ProposalRef(lineage) }
 }
@@ -131,6 +143,52 @@ function legacySucceededLineage(
       : candidate),
   })
   return { lineage, anchor }
+}
+
+function reservedLineage(
+  raw: ReturnType<typeof ProposalLineageV2Schema.parse>,
+  actionId = ACTION_ID,
+) {
+  if (raw.origin !== 'RUN2SKILL_V2') throw new Error('expected native reserved lineage')
+  const parentRef = deriveV2ProposalRef(raw)
+  const inputDigest = sha256Utf8(canonicalJson({ lineageId: raw.lineageId, actionId }))
+  return ProposalLineageV2Schema.parse({
+    ...raw,
+    revision: raw.revision + 1,
+    revisionActions: [...raw.revisionActions, {
+      actionId,
+      parentProposalId: parentRef.proposalId,
+      parentProposalRevision: parentRef.revision,
+      parentProposalDigest: parentRef.digest,
+      feedbackDigest: sha256Utf8('revise'),
+      feedbackSummary: 'revise',
+      inputDigest,
+      callId: legacyRevisionCallId(actionId, inputDigest),
+      state: 'CALL_RESERVED',
+      createdAt: NOW,
+    }],
+  })
+}
+
+async function installUserActionJournal(
+  domain: ReturnType<typeof createMemoryRun2skillV2Domain>,
+  ownerId: string,
+) {
+  const before = domain.global.get()
+  const journal = {
+    schemaVersion: 1 as const,
+    mutationId: deriveProposalCatalogMutationIdV2({
+      ownerId,
+      kind: 'USER_ACTION',
+      inputCatalogEpoch: before.proposalCatalogEpoch,
+    }),
+    ownerId,
+    kind: 'USER_ACTION' as const,
+    phase: 'PREPARED' as const,
+    preparedAt: NOW,
+  }
+  await domain.global.set(GlobalV2Schema.parse({ ...before, proposalCatalogMutationJournal: journal }))
+  return { before, journal }
 }
 
 describe('v2 Proposal revision coordinator', () => {
@@ -547,7 +605,7 @@ describe('v2 Proposal revision coordinator', () => {
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
   })
 
-  it('fails closed without hiding the child when a legacy journal has multiple exact candidates', async () => {
+  it('keeps a durable recovery barrier when a legacy journal has multiple exact candidates', async () => {
     const seeded = await seed()
     const before = seeded.domain.global.get()
     const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
@@ -576,18 +634,116 @@ describe('v2 Proposal revision coordinator', () => {
       },
     }))
 
+    await expect(coordinator.recover()).rejects.toMatchObject({ code: 'REVISION_RECOVERY_CONFLICT' })
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: before.proposalCatalogEpoch,
+      proposalCatalogLastMutation: before.proposalCatalogLastMutation,
+      proposalCatalogMutationJournal: {
+        mutationId: legacy.anchor.mutationId,
+        ownerId: ACTION_ID,
+      },
+    })
+    const reviews = new V2ProposalReviewCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain), now: () => NOW,
+    })
+    await expect(reviews.reject({
+      lineageId: legacy.lineage.lineageId,
+      expectedLineageRevision: legacy.lineage.revision,
+      proposalRef: deriveV2ProposalRef(legacy.lineage),
+    })).rejects.toMatchObject({ code: 'REVIEW_BUSY' })
+  })
+
+  it('keeps a mismatched post-child journal as the fail-closed barrier through inspect and current scope', async () => {
+    const projectPath = 'D:\\repo'
+    const seeded = await seed(projectPath)
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      generate: async input => ({
+        name: input.parent.name,
+        description: 'Mismatched committed child.',
+        whenToUse: 'Use after tests.',
+        content: '# Mismatched committed child\n\nRun tests.',
+      }),
+      now: () => NOW,
+    })
+    const revised = await coordinator.revise(request(seeded))
+    const committed = seeded.domain.global.get()
+    const ownerId = deriveProposalRevisionMutationOwnerIdV2(revised.lineage.lineageId, ACTION_ID)
+    const { journal } = await installUserActionJournal(seeded.domain, ownerId)
+
+    await expect(coordinator.recover()).rejects.toMatchObject({ code: 'REVISION_RECOVERY_CONFLICT' })
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: committed.proposalCatalogEpoch,
+      proposalCatalogLastMutation: committed.proposalCatalogLastMutation,
+      proposalCatalogMutationJournal: journal,
+    })
+
+    const reviews = new V2ProposalReviewCoordinator(seeded.domain, {
+      revalidate: async () => ({ status: 'STALE' }),
+      now: () => NOW,
+    })
+    const inspected = await reviews.inspect({
+      lineageId: revised.lineage.lineageId,
+      expectedLineageRevision: revised.lineage.revision,
+      proposalRef: revised.proposalRef,
+    })
+    expect(inspected.lineage.proposalRevisions.at(-1)).toMatchObject({ reviewFailureCode: 'CATALOG_CHANGED' })
+
+    const authorizer = new V2CurrentScopeAuthorizer(async workspaceId => ({ workspaceId, canonicalPath: projectPath }))
+    await expect(authorizer.project(seeded.domain, {
+      kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-v2',
+    })).resolves.toEqual([])
+    await expect(reviews.reject({
+      lineageId: inspected.lineage.lineageId,
+      expectedLineageRevision: inspected.lineage.revision,
+      proposalRef: deriveV2ProposalRef(inspected.lineage),
+    })).rejects.toMatchObject({ code: 'REVIEW_BUSY' })
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: committed.proposalCatalogEpoch,
+      proposalCatalogLastMutation: committed.proposalCatalogLastMutation,
+      proposalCatalogMutationJournal: journal,
+    })
+  })
+
+  it('keeps the journal barrier when multiple legacy calls could be the pre-child owner', async () => {
+    const seeded = await seed()
+    const reserved = reservedLineage(seeded.lineage)
+    await seeded.domain.table('proposal_lineages').put(reserved.lineageId, reserved)
+    await seeded.domain.table('proposal_lineages').put(`lin_${'f'.repeat(64)}`, reserved)
+    const { before, journal } = await installUserActionJournal(seeded.domain, ACTION_ID)
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain), generate: vi.fn(), now: () => NOW,
+    })
+
+    await expect(coordinator.recover()).rejects.toMatchObject({ code: 'REVISION_RECOVERY_CONFLICT' })
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: before.proposalCatalogEpoch,
+      proposalCatalogLastMutation: before.proposalCatalogLastMutation,
+      proposalCatalogMutationJournal: journal,
+    })
+  })
+
+  it('clears a uniquely lineage-bound pre-child journal before marking its call outcome unknown', async () => {
+    const seeded = await seed()
+    const reserved = reservedLineage(seeded.lineage)
+    await seeded.domain.table('proposal_lineages').put(reserved.lineageId, reserved)
+    const ownerId = deriveProposalRevisionMutationOwnerIdV2(reserved.lineageId, ACTION_ID)
+    const { before } = await installUserActionJournal(seeded.domain, ownerId)
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain), generate: vi.fn(), now: () => NOW,
+    })
+
     await expect(coordinator.recover()).resolves.toBe('RECOVERED')
     expect(seeded.domain.global.get()).toMatchObject({
       proposalCatalogEpoch: before.proposalCatalogEpoch,
       proposalCatalogLastMutation: before.proposalCatalogLastMutation,
     })
     expect(seeded.domain.global.get().proposalCatalogMutationJournal).toBeUndefined()
-    const stillVisible = ProposalLineageV2Schema.parse(
-      seeded.domain.table('proposal_lineages').get(legacy.lineage.lineageId),
-    )
-    if (stillVisible.origin !== 'RUN2SKILL_V2') throw new Error('expected visible native child')
-    expect(stillVisible.currentProposalRevision).toBe(2)
-    expect(stillVisible.revisionActions.at(-1)?.state).toBe('SUCCEEDED')
+    const recovered = ProposalLineageV2Schema.parse(seeded.domain.table('proposal_lineages').get(reserved.lineageId))
+    if (recovered.origin !== 'RUN2SKILL_V2') throw new Error('expected recovered lineage')
+    expect(recovered.revisionActions.at(-1)).toMatchObject({
+      state: 'OUTCOME_UNKNOWN', failureCode: 'REVISION_OUTCOME_UNKNOWN',
+    })
   })
 
   it('finalizes only the exact lineage-bound mutation after a child commit crash', async () => {

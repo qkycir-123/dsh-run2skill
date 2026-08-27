@@ -539,35 +539,50 @@ export class V2ProposalRevisionCoordinator {
       kind: 'USER_ACTION',
       inputCatalogEpoch: global.proposalCatalogEpoch,
     })
-    const ownedSucceeded = [...this.#lineages.entries()].filter(([, raw]) => {
+    const ownedActions = [...this.#lineages.entries()].flatMap(([, raw]) => {
       const parsed = ProposalLineageV2Schema.safeParse(raw)
-      if (!parsed.success || parsed.data.origin !== 'RUN2SKILL_V2') return false
+      if (!parsed.success || parsed.data.origin !== 'RUN2SKILL_V2') return []
       const lineage = parsed.data
       const currentRef = deriveV2ProposalRef(lineage)
-      return lineage.revisionActions.some(action => {
+      return lineage.revisionActions.flatMap(action => {
         const ownsJournal = legacyUnbound
           ? action.actionId === journal.ownerId
           : deriveProposalRevisionMutationOwnerIdV2(lineage.lineageId, action.actionId) === journal.ownerId
+        if (!ownsJournal) return []
         const child = lineage.proposalRevisions.find(proposal => proposal.revisionSource?.actionId === action.actionId)
-        return ownsJournal
-          && action.state === 'SUCCEEDED'
+        const exactCommitted = action.state === 'SUCCEEDED'
           && action.resultProposalRef !== undefined
           && sameRef(action.resultProposalRef, currentRef)
           && child?.catalogEpoch === expectedAnchor.epoch
           && child.catalogMutationReceiptDigest === expectedAnchor.digest
+        return [{ action, child, exactCommitted }]
       })
     })
-    if (ownedSucceeded.length === 1) await this.#finalizeMutation(journal.ownerId)
-    else {
+    const exactCommitted = ownedActions.filter(candidate => candidate.exactCommitted)
+    if (exactCommitted.length === 1) {
+      await this.#finalizeMutation(journal.ownerId)
+      return true
+    }
+    const provablePreChild = exactCommitted.length === 0
+      ? ownedActions.filter(candidate => candidate.action.state === 'CALL_RESERVED' && candidate.child === undefined)
+      : []
+    if (provablePreChild.length === 1) {
       await this.#global.runExclusive(async current => {
-        if (current.proposalCatalogMutationJournal?.mutationId !== journal.mutationId) {
+        if (
+          current.proposalCatalogMutationJournal?.mutationId !== journal.mutationId
+          || current.proposalCatalogMutationJournal.ownerId !== journal.ownerId
+          || current.proposalCatalogMutationJournal.kind !== journal.kind
+          || current.proposalCatalogEpoch !== global.proposalCatalogEpoch
+          || current.proposalCatalogLastMutation.digest !== global.proposalCatalogLastMutation.digest
+        ) {
           throw new V2ProposalRevisionError('REVISION_RECOVERY_CONFLICT')
         }
         const { proposalCatalogMutationJournal: _journal, ...rest } = current
         return { value: undefined, global: rest }
       })
+      return true
     }
-    return true
+    throw new V2ProposalRevisionError('REVISION_RECOVERY_CONFLICT')
   }
 
   async #markFailed(lineageId: string, actionId: string, failureCode: RevisionAction['failureCode']): Promise<void> {
