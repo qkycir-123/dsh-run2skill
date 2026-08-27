@@ -2238,6 +2238,40 @@ const NativeProposalRevisionV2Schema = z.object({
   }
 })
 
+export function deriveNativeProposalRefDigestV2(facts: {
+  readonly lineageId: string
+  readonly persistenceScope: z.infer<typeof PersistenceScopeV2Schema>
+  readonly behaviorSignature: string
+  readonly proposal: z.infer<typeof NativeProposalRevisionV2Schema>
+}): string {
+  const proposal = facts.proposal
+  return sha256Utf8(canonicalJson({
+    contract: 'run2skill-v2-proposal-ref-v1',
+    lineageId: facts.lineageId,
+    persistenceScope: facts.persistenceScope,
+    behaviorSignature: facts.behaviorSignature,
+    proposal: {
+      revision: proposal.revision,
+      proposalId: proposal.proposalId,
+      ownerIntentId: proposal.ownerIntentId,
+      ownerIntentRevision: proposal.ownerIntentRevision,
+      action: proposal.action,
+      body: proposal.body,
+      runtimeCatalogDigest: proposal.runtimeCatalogDigest,
+      pendingCatalogDigest: proposal.pendingCatalogDigest,
+      generationResultReceiptDigest: proposal.generationResultReceiptDigest,
+      catalogMutationReceiptDigest: proposal.catalogMutationReceiptDigest,
+      catalogEpoch: proposal.catalogEpoch,
+      ...(proposal.targetIdentityDigest === undefined ? {} : { targetIdentityDigest: proposal.targetIdentityDigest }),
+      ...(proposal.baseSkillBytesDigest === undefined ? {} : { baseSkillBytesDigest: proposal.baseSkillBytesDigest }),
+      ...(proposal.baseSkillBytes === undefined ? {} : { baseSkillBytes: proposal.baseSkillBytes }),
+      ...(proposal.projectScopeBinding === undefined ? {} : { projectScopeBinding: proposal.projectScopeBinding }),
+      ...(proposal.revisionSource === undefined ? {} : { revisionSource: proposal.revisionSource }),
+      createdAt: proposal.createdAt,
+    },
+  }))
+}
+
 const NativeSkillRevisionV2Schema = z.object({
   revision: positiveSafeInteger,
   origin: z.enum(['ADOPTED_BASE', 'RUN2SKILL']),
@@ -2315,10 +2349,17 @@ const NativeProposalLineageV2Schema = z.object({
     }
     if (index > 0 && revision.revisionSource !== undefined) {
       const parent = value.proposalRevisions[index - 1]
+      const expectedParentDigest = parent === undefined ? undefined : deriveNativeProposalRefDigestV2({
+        lineageId: value.lineageId,
+        persistenceScope: value.persistenceScope,
+        behaviorSignature: value.behaviorSignature,
+        proposal: parent,
+      })
       if (
         parent === undefined
         || revision.revisionSource.parentProposalId !== parent.proposalId
         || revision.revisionSource.parentProposalRevision !== parent.revision
+        || revision.revisionSource.parentProposalDigest !== expectedParentDigest
       ) context.addIssue({ code: 'custom', path: ['proposalRevisions', index, 'revisionSource'], message: 'Proposal revision source must bind its direct immutable parent' })
     }
   })
@@ -2339,6 +2380,24 @@ const NativeProposalLineageV2Schema = z.object({
     }
     if (action.state === 'OUTCOME_UNKNOWN' && action.failureCode !== 'REVISION_OUTCOME_UNKNOWN') {
       context.addIssue({ code: 'custom', path: ['revisionActions', index, 'failureCode'], message: 'Unknown revision outcome requires its exact failure code' })
+    }
+    if (action.state === 'SUCCEEDED') {
+      const child = value.proposalRevisions.find(revision => revision.revisionSource?.actionId === action.actionId)
+      const source = child?.revisionSource
+      const expectedResultDigest = child === undefined ? undefined : deriveNativeProposalRefDigestV2({
+        lineageId: value.lineageId,
+        persistenceScope: value.persistenceScope,
+        behaviorSignature: value.behaviorSignature,
+        proposal: child,
+      })
+      if (
+        child === undefined
+        || source === undefined
+        || action.parentProposalId !== source.parentProposalId
+        || action.parentProposalRevision !== source.parentProposalRevision
+        || action.parentProposalDigest !== source.parentProposalDigest
+        || action.resultProposalRef?.digest !== expectedResultDigest
+      ) context.addIssue({ code: 'custom', path: ['revisionActions', index], message: 'Successful revision action must bind its exact parent and child revisions' })
     }
   })
   value.proposalRevisions.forEach((revision, index) => {

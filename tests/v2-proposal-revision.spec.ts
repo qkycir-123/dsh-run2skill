@@ -118,6 +118,29 @@ describe('v2 Proposal revision coordinator', () => {
       parent: expect.objectContaining({ exactSkillBytes: seeded.lineage.proposalRevisions[0]!.body.exactSkillBytes }),
     }))
 
+    const forgedParentDigest = structuredClone(revised.lineage)
+    forgedParentDigest.proposalRevisions[1]!.revisionSource!.parentProposalDigest = 'f'.repeat(64)
+    forgedParentDigest.revisionActions[0]!.parentProposalDigest = 'f'.repeat(64)
+    expect(ProposalLineageV2Schema.safeParse(forgedParentDigest).success).toBe(false)
+
+    for (const field of ['parentProposalId', 'parentProposalRevision', 'parentProposalDigest'] as const) {
+      const forgedActionParent = structuredClone(revised.lineage)
+      const action = forgedActionParent.revisionActions[0]!
+      if (field === 'parentProposalId') action.parentProposalId = `prop_${'f'.repeat(64)}`
+      else if (field === 'parentProposalRevision') action.parentProposalRevision += 1
+      else action.parentProposalDigest = 'f'.repeat(64)
+      expect(ProposalLineageV2Schema.safeParse(forgedActionParent).success).toBe(false)
+    }
+
+    for (const field of ['proposalId', 'revision', 'digest'] as const) {
+      const forgedResultRef = structuredClone(revised.lineage)
+      const resultRef = forgedResultRef.revisionActions[0]!.resultProposalRef!
+      if (field === 'proposalId') resultRef.proposalId = `prop_${'f'.repeat(64)}`
+      else if (field === 'revision') resultRef.revision += 1
+      else resultRef.digest = 'f'.repeat(64)
+      expect(ProposalLineageV2Schema.safeParse(forgedResultRef).success).toBe(false)
+    }
+
     await expect(coordinator.revise({ ...request(seeded), actionId: `rev_${'b'.repeat(64)}` }))
       .rejects.toMatchObject({ code: 'STALE_PROPOSAL_REF' })
   })

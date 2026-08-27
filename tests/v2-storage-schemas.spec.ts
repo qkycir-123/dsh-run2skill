@@ -240,6 +240,14 @@ describe('run2skill_v2 storage contract', () => {
     expect(LegacyItemV2Schema.parse(fixture.legacyItem)).toEqual(fixture.legacyItem)
   })
 
+  it('loads pre-revision native lineages with an empty durable revision action log', () => {
+    const { revisionActions: _revisionActions, ...persistedBeforeProposalRevision } =
+      createMinimalV2Fixtures().nativeActiveProposalLineage
+
+    expect(ProposalLineageV2Schema.parse(persistedBeforeProposalRevision))
+      .toMatchObject({ revisionActions: [] })
+  })
+
   it('keeps published 0.2.0 observations and batches readable without Turn start coordinates', () => {
     const fixture = createMinimalV2Fixtures()
     const { turnStartSeq: _turnStartSeq, ...legacyObservation } = fixture.turnObservation
