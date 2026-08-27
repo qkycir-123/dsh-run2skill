@@ -10,6 +10,7 @@ export interface V2PipelineBatchScheduler {
     readonly changed: boolean
     readonly disposition: 'EMPTY' | 'PROCESSING' | 'QUEUED'
   }>
+  afterStageTransition?(): Promise<void>
   wake(): void
   settle(): Promise<void>
   dispose(): Promise<void>
@@ -169,6 +170,11 @@ export class Run2skillV2PipelineRuntime {
         if (this.#disposed) return
         if (outcome === 'PROCESSED') {
           processed = true
+          // The scheduler feedback is part of this counted stage transition.
+          // It can freeze newly unblocked durable requests, but never recurses
+          // into this drain or consumes another transition from the budget.
+          await this.#batchScheduler.afterStageTransition?.()
+          if (this.#disposed) return
           break
         }
       }

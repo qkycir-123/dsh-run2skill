@@ -84,6 +84,14 @@ export class SessionBatchScheduler {
     return await this.#enqueue(async () => await this.#coordinator.requestSynthesis(sessionLifecycleKey))
   }
 
+  async afterStageTransition(): Promise<void> {
+    if (this.#disposed) throw new Error('SessionBatchScheduler is disposed')
+    if (!this.#started) await this.start()
+    await this.#enqueue(async () => {
+      await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
+    })
+  }
+
   wake(): void {
     if (!this.#started || this.#disposed) return
     void this.#enqueue(async () => {

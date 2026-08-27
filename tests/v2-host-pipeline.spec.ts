@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createDshV2PipelineRuntime } from '../src/host/v2-pipeline.js'
+import { projectDshTurnObservationV2 } from '../src/adapters/dsh-session/v2-turn-observation.js'
+import { SessionBatchCoordinator } from '../src/application/batch/index.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
 import type { OwnershipObservationPort } from '../src/application/ownership/index.js'
@@ -48,6 +50,36 @@ function turnEvents(turn: number): DshSessionEvent[] {
       data: { turn, reason: { kind: 'completed' } },
     },
   ]
+}
+
+async function seedActiveBatchWithLaterManualRequest(
+  domain: ReturnType<typeof createMemoryRun2skillV2Domain>,
+): Promise<void> {
+  const coordinator = new SessionBatchCoordinator(domain, {
+    captureBaseline: async () => ({
+      observedAt: new Date(CREATED_AT - 1).toISOString(),
+      rootManifestDigest: '1'.repeat(64), runtimeCatalogDigest: '2'.repeat(64), complete: true,
+    }),
+    captureRouteSnapshot: async () => ({
+      provider: 'deepseek-official', model: 'deepseek-chat', policyVersion: 'batch-detector-v1',
+      maxInputBytes: 128 * 1024, maxOutputBytes: 8 * 1024,
+    }),
+  })
+  const workspace = {
+    resolve: async () => ({ status: 'BOUND' as const, workspaceId: 'workspace-1', canonicalPath: CWD }),
+  }
+  const events = turnEvents(0)
+  const first = await projectDshTurnObservationV2(header, events, 4, workspace)
+  if (first.status !== 'OBSERVED') throw new Error('failed to seed first observation')
+  await coordinator.recordObservation(first.observation)
+  await coordinator.requestSynthesis(lifecycleKey())
+  await coordinator.flushRequested(async () => true)
+
+  events.push(...turnEvents(1))
+  const second = await projectDshTurnObservationV2(header, events, 14, workspace)
+  if (second.status !== 'OBSERVED') throw new Error('failed to seed second observation')
+  await coordinator.recordObservation(second.observation)
+  await coordinator.requestSynthesis(lifecycleKey())
 }
 
 describe('v2 Host pipeline assembly', () => {
@@ -205,6 +237,125 @@ describe('v2 Host pipeline assembly', () => {
     await runtime.start()
     await runtime.start()
     expect(modelCalls).toBe(0)
+    await runtime.dispose()
+  })
+
+  it.each(['NONE', 'READY'] as const)(
+    'automatically freezes one later manual request after a recovered active batch commits %s',
+    async oldResult => {
+      const domain = createMemoryRun2skillV2Domain()
+      await seedActiveBatchWithLaterManualRequest(domain)
+      let detectorCalls = 0
+      const runtime = createDshV2PipelineRuntime(domain, {
+        llm: {
+          resolveModelInfo: async () => ({ context: { contextWindow: 32_000 }, defaultMaxTokens: 4_096 }),
+          stream: async function * () {
+            detectorCalls += 1
+            let output = JSON.stringify({ result: 'NONE' })
+            if (detectorCalls === 1 && oldResult === 'READY') {
+              const claimed = [...domain.sessionBatches.values()]
+                .find(batch => batch.state === 'DETECTION_CLAIMED')!
+              const observationId = claimed.observationManifest.at(-1)!.observationId
+              const evidenceDigest = domain.turnObservations.get(observationId)!.evidenceDigest
+              output = JSON.stringify({
+                result: 'READY',
+                intents: [{
+                  persistenceScope: 'PROJECT', experienceType: 'WORKFLOW',
+                  applicabilitySummary: '记录旧批次中的可复用流程',
+                  keySteps: ['保留经过验证的步骤'], prohibitions: [], evidenceDigests: [evidenceDigest],
+                  completeness: { status: 'COMPLETE', blockers: [] },
+                }],
+              })
+            }
+            yield { type: 'block-start' as const, index: 0, blockType: 'text' }
+            yield { type: 'block-end' as const, index: 0, block: { type: 'text', text: output } }
+            yield { type: 'usage' as const, usage: { inputTokens: 20, outputTokens: 10 } }
+            yield { type: 'finish' as const, reason: { kind: 'stop' } }
+          },
+        },
+        baseline: {
+          capture: async () => ({
+            observedAt: new Date(CREATED_AT - 1).toISOString(),
+            rootManifestDigest: '1'.repeat(64), runtimeCatalogDigest: '2'.repeat(64), complete: true,
+          }),
+        },
+        activity: { observe: async () => ({
+          complete: true, activeAgent: false, durableLatestTurnEndSeq: 14,
+          durableOpenTurn: false, activityRevision: 'stable-14',
+        }) },
+        ownership: { observe: async () => ({ status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }) },
+        catalog: {
+          recall: {
+            snapshot: async () => { throw new Error('old intent must remain behind the newer Session tail') },
+            read: async () => undefined,
+          },
+          generation: {
+            snapshot: async () => { throw new Error('old intent must remain behind the newer Session tail') },
+            read: async () => undefined,
+          },
+        },
+      })
+
+      await runtime.start()
+
+      expect(detectorCalls).toBe(2)
+      const batches = [...domain.sessionBatches.values()]
+        .sort((left, right) => left.lastTurnEndSeq - right.lastTurnEndSeq)
+      expect(batches).toHaveLength(2)
+      expect(batches[0]).toMatchObject({ state: `COMMITTED_${oldResult}`, lastTurnEndSeq: 4 })
+      expect(batches[1]).toMatchObject({
+        state: 'COMMITTED_NONE',
+        firstTurnEndSeq: 14,
+        lastTurnEndSeq: 14,
+        triggerReasons: ['EXPLICIT'],
+      })
+      expect(domain.global.get().sessions[lifecycleKey()]).toMatchObject({
+        detectedThroughTurnEndSeq: 14,
+      })
+      expect(domain.global.get().sessions[lifecycleKey()]?.manualSynthesisRequest).toBeUndefined()
+      await runtime.dispose()
+    },
+  )
+
+  it('keeps the later manual request queued when post-stage quiescence still denies it', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    await seedActiveBatchWithLaterManualRequest(domain)
+    let detectorCalls = 0
+    const runtime = createDshV2PipelineRuntime(domain, {
+      llm: {
+        resolveModelInfo: async () => ({ context: { contextWindow: 32_000 }, defaultMaxTokens: 4_096 }),
+        stream: async function * () {
+          detectorCalls += 1
+          yield { type: 'block-start' as const, index: 0, blockType: 'text' }
+          yield { type: 'block-end' as const, index: 0, block: { type: 'text', text: '{"result":"NONE"}' } }
+          yield { type: 'usage' as const, usage: { inputTokens: 10, outputTokens: 4 } }
+          yield { type: 'finish' as const, reason: { kind: 'stop' } }
+        },
+      },
+      baseline: {
+        capture: async () => ({
+          observedAt: new Date(CREATED_AT - 1).toISOString(),
+          rootManifestDigest: '1'.repeat(64), runtimeCatalogDigest: '2'.repeat(64), complete: true,
+        }),
+      },
+      activity: { observe: async () => ({
+        complete: true, activeAgent: true, durableLatestTurnEndSeq: 14,
+        durableOpenTurn: false, activityRevision: 'still-active',
+      }) },
+      ownership: { observe: async () => ({ status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }) },
+      catalog: {
+        recall: { snapshot: async () => { throw new Error('unused') }, read: async () => undefined },
+        generation: { snapshot: async () => { throw new Error('unused') }, read: async () => undefined },
+      },
+    })
+
+    await runtime.start()
+
+    expect(detectorCalls).toBe(1)
+    expect(domain.sessionBatches.size).toBe(1)
+    expect(domain.global.get().sessions[lifecycleKey()]?.manualSynthesisRequest).toMatchObject({
+      throughTurnEndSeq: 14,
+    })
     await runtime.dispose()
   })
 
