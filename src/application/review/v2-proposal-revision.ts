@@ -528,22 +528,35 @@ export class V2ProposalRevisionCoordinator {
   }
 
   async #recoverMutationJournal(): Promise<boolean> {
-    const journal = this.#global.get().proposalCatalogMutationJournal
+    const global = this.#global.get()
+    const journal = global.proposalCatalogMutationJournal
     if (journal?.kind !== 'USER_ACTION') return false
     const legacyUnbound = /^rev_[a-f0-9]{64}$/.test(journal.ownerId)
     const lineageBound = /^revop_[a-f0-9]{64}$/.test(journal.ownerId)
     if (!legacyUnbound && !lineageBound) return false
-    const ownedSucceeded = lineageBound
-      ? [...this.#lineages.entries()].filter(([, raw]) => {
-          const parsed = ProposalLineageV2Schema.safeParse(raw)
-          return parsed.success
-            && parsed.data.origin === 'RUN2SKILL_V2'
-            && parsed.data.revisionActions.some(action => (
-              action.state === 'SUCCEEDED'
-              && deriveProposalRevisionMutationOwnerIdV2(parsed.data.lineageId, action.actionId) === journal.ownerId
-            ))
-        })
-      : []
+    const expectedAnchor = deriveProposalCatalogMutationAnchorV2({
+      ownerId: journal.ownerId,
+      kind: 'USER_ACTION',
+      inputCatalogEpoch: global.proposalCatalogEpoch,
+    })
+    const ownedSucceeded = [...this.#lineages.entries()].filter(([, raw]) => {
+      const parsed = ProposalLineageV2Schema.safeParse(raw)
+      if (!parsed.success || parsed.data.origin !== 'RUN2SKILL_V2') return false
+      const lineage = parsed.data
+      const currentRef = deriveV2ProposalRef(lineage)
+      return lineage.revisionActions.some(action => {
+        const ownsJournal = legacyUnbound
+          ? action.actionId === journal.ownerId
+          : deriveProposalRevisionMutationOwnerIdV2(lineage.lineageId, action.actionId) === journal.ownerId
+        const child = lineage.proposalRevisions.find(proposal => proposal.revisionSource?.actionId === action.actionId)
+        return ownsJournal
+          && action.state === 'SUCCEEDED'
+          && action.resultProposalRef !== undefined
+          && sameRef(action.resultProposalRef, currentRef)
+          && child?.catalogEpoch === expectedAnchor.epoch
+          && child.catalogMutationReceiptDigest === expectedAnchor.digest
+      })
+    })
     if (ownedSucceeded.length === 1) await this.#finalizeMutation(journal.ownerId)
     else {
       await this.#global.runExclusive(async current => {

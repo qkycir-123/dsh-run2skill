@@ -205,11 +205,7 @@ export function deriveProposalCatalogMutationAnchorV2(
 }
 
 export function deriveProposalRevisionCallIdV2(actionId: string, inputDigest: string): `call_${string}` {
-  return `call_${sha256Utf8(canonicalJson({
-    contract: 'run2skill-v2-proposal-revision-call-v1',
-    actionId,
-    inputDigest,
-  }))}`
+  return `call_${sha256Utf8(canonicalJson({ actionId, inputDigest }))}`
 }
 
 export function deriveProposalRevisionGenerationReceiptDigestV2(facts: {
