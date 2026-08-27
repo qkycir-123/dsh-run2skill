@@ -542,12 +542,14 @@ CP-LLM-001 已在 Windows 验证：`foldRequestHeader` 的 last-wins route 可�
 架构硬边界：
 
 - Detector 只接收冻结 TurnObservation 与最多 3 个有界 DEFER carry；
+- direct-user evidence 先脱敏，再在 TurnObservation 共享预算内按“显式保存、禁止项、验收/验证、顺序步骤、约束、尾部、头部”做确定性选择；不得只保留固定长度前缀；
+- Detector 对整个 batch 再应用一个严格、可计算的 evidence 总字节预算，按同一优先级选择并保留来源标签；被压缩的 envelope excerpt 使用自己的 digest，仍只能绑定回完整 Observation evidence digest；
 - Catalog summary 必须全量分类，超限稳定分页，未完整扫描时 CREATE=0；
 - 候选正文无固定单体 8 KiB 上限，必须完整读取并按 route 总安全输入预算分组；
 - 一个大候选可以独占 coverage Envelope；正文不得静默截断；
 - Tool/Error 只保留与 ExperienceIntent 相关的摘要；
 - Output 使用 stage-specific maxTokens；只有 generation 允许一次格式/截断恢复；
-- 超限时先移除低信任辅助内容、较旧非必要观察和低排名候选；任一 summary 分类为 RELEVANT/POSSIBLE 的候选无法完整容纳时进入 NEEDS_ATTENTION，CREATE=0。
+- 超限时先移除低信任辅助内容、较旧非必要观察和低排名候选；direct-user evidence 必须优先保留关键步骤、禁止项、验收条件与显式保存语义；任一 summary 分类为 RELEVANT/POSSIBLE 的候选无法完整容纳时进入 NEEDS_ATTENTION，CREATE=0。
 
 具体字节、token、`MAX_CATALOG_SCAN_CALLS`、`MAX_COVERAGE_CALLS` 和 timeout 在实现 PR 中以模型矩阵测试冻结，属于版本化内部 policy constant，不暴露为 v0.2 Settings。
 

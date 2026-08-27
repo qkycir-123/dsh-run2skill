@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { projectDshTurnObservationV2 } from '../src/adapters/dsh-session/v2-turn-observation.js'
 import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
 import { deriveProjectScopeIdentityDigest } from '../src/domain/purge/index.js'
-import { TurnObservationV2Schema } from '../src/domain/v2/index.js'
+import { RUN2SKILL_V2_LIMITS, TurnObservationV2Schema } from '../src/domain/v2/index.js'
 
 const header: DshSessionHeader = {
   version: 0,
@@ -183,6 +183,71 @@ describe('DSH TurnObservationV2 projection', () => {
     expect(result.observation.completeness).toBe('COMPLETE')
     expect(result.observation.directUserEvidence[0]?.excerpt).toContain('> 用户确认的长期约束')
     expect(result.observation.directUserEvidence[0]?.excerpt).toContain('先校验输入,再执行操作')
+  })
+
+  it('retains late Chinese workflow steps, prohibitions, acceptance, and explicit save beyond 512 bytes', async () => {
+    const workflow = [
+      '背景材料：' + '这里只是无关的历史说明。'.repeat(700),
+      '关键步骤：第一步先读取当前配置，第二步只修改目标字段，第三步重新读取并核验结果。',
+      '禁止项：不得跳过重新读取，不要把未验证结果标记为成功。',
+      '验收条件：typecheck、lint 和完整单元测试全部通过。',
+      '请把以上流程保存成 Skill，以后遇到同类任务时复用。',
+    ].join('\n')
+
+    const result = await projectDshTurnObservationV2(header, completeTurn(workflow), 8, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    const excerpt = result.observation.directUserEvidence.map(item => item.excerpt).join('\n')
+    expect(result.observation.explicitSaveRequested).toBe(true)
+    expect(excerpt).toContain('第三步重新读取并核验结果')
+    expect(excerpt).toContain('不得跳过重新读取')
+    expect(excerpt).toContain('完整单元测试全部通过')
+    expect(excerpt).toContain('保存成 Skill')
+    expect(Buffer.byteLength(excerpt, 'utf8')).toBeLessThanOrEqual(
+      RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes,
+    )
+  })
+
+  it('retains late English workflow constraints and acceptance beyond 512 bytes', async () => {
+    const workflow = [
+      `Background only: ${'this sentence is intentionally irrelevant. '.repeat(300)}`,
+      'Required steps: first inspect the current state, then make one scoped change, finally read it back.',
+      'Never skip the read-back check and do not report success when verification failed.',
+      'Acceptance criteria: typecheck, lint, and the complete unit test suite must pass.',
+      'Remember this workflow as a Skill for future reuse.',
+    ].join('\n')
+
+    const result = await projectDshTurnObservationV2(header, completeTurn(workflow), 8, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    const excerpt = result.observation.directUserEvidence.map(item => item.excerpt).join('\n')
+    expect(excerpt).toContain('finally read it back')
+    expect(excerpt).toContain('Never skip the read-back check')
+    expect(excerpt).toContain('complete unit test suite must pass')
+    expect(excerpt).toContain('Remember this workflow as a Skill')
+  })
+
+  it('redacts secrets before adaptive selection and keeps UTF-8 excerpts inside the shared byte budget', async () => {
+    const syntheticSecret = 'synthetic-issue-143-provider-value'
+    const workflow = [
+      '多字节背景：' + '甲乙丙丁🙂。'.repeat(1_200),
+      `禁止项：不得记录凭据，deepseek_key=${syntheticSecret}`,
+      '验收条件：重新读取安全输出并确认已经脱敏。请记住这个流程。',
+    ].join('\n')
+
+    const result = await projectDshTurnObservationV2(header, completeTurn(workflow), 8, workspace)
+
+    expect(result.status).toBe('OBSERVED')
+    if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+    const excerpt = result.observation.directUserEvidence.map(item => item.excerpt).join('\n')
+    expect(excerpt).not.toContain(syntheticSecret)
+    expect(excerpt).toContain('[REDACTED]')
+    expect(excerpt).not.toContain('\uFFFD')
+    expect(Buffer.byteLength(excerpt, 'utf8')).toBeLessThanOrEqual(
+      RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes,
+    )
   })
 
   it('fails closed for image-only direct-user content instead of recording complete empty evidence', async () => {

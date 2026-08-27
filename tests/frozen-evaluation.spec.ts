@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { analyzeCheapTriggerV1 } from '../src/domain/observe/trigger.js'
+import {
+  RUN2SKILL_V2_LIMITS,
+  selectBoundedEvidenceRefsV2,
+} from '../src/domain/v2/index.js'
 
 interface FrozenFixture {
   fixtureVersion: number
@@ -76,6 +80,8 @@ describe('Cheap Trigger v1 frozen evaluation', () => {
     }])
     const boundaryCaseIds = [
       'long-text-incomplete',
+      'long-workflow-tail-positive',
+      'long-negated-save-tail-negative',
       'failed-turn-direct-signal',
       'cancelled-turn-direct-signal',
       'synthetic-secret-redaction',
@@ -100,5 +106,30 @@ describe('Cheap Trigger v1 frozen evaluation', () => {
     expect(failedTurnSignal.triggerHits).not.toHaveLength(0)
     expect(cancelledTurnSignal.triggerHits).not.toHaveLength(0)
     expect(JSON.stringify(secretSignal.evidenceRefs)).not.toContain(syntheticSecret)
+
+    const longPrefix = 'Background material without reusable instructions. '.repeat(300)
+    const longPositiveText = `${longPrefix}\nFirst inspect state, then change one field. Never skip verification. Acceptance criteria: all tests pass. Remember this workflow as a Skill.`
+    const longNegativeText = `${longPrefix}\nThis is quoted documentation, not an instruction. Do not save this workflow as a Skill.`
+    const longPositive = analyzeCheapTriggerV1([{
+      messageSeq: 1, sourceKind: 'user', text: longPositiveText,
+    }])
+    const longNegative = analyzeCheapTriggerV1([{
+      messageSeq: 2, sourceKind: 'user', text: longNegativeText,
+    }])
+    const bounded = selectBoundedEvidenceRefsV2([{
+      source: 'USER_DIRECT', messageSeq: 1, excerpt: longPositiveText,
+      excerptDigest: '0'.repeat(64), redactionKinds: [], truncated: false,
+    }], RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes)
+    const boundedText = bounded.map(item => item.excerpt).join('\n')
+    const shortText = 'First inspect state. Then verify the result.'
+    const short = selectBoundedEvidenceRefsV2([{
+      source: 'USER_DIRECT', messageSeq: 3, excerpt: shortText,
+      excerptDigest: '0'.repeat(64), redactionKinds: [], truncated: false,
+    }], RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes)
+    expect(longPositive.triggerHits.map(hit => hit.kind)).toContain('EXPLICIT_SAVE')
+    expect(longNegative.triggerHits).toEqual([])
+    expect(boundedText).toContain('Never skip verification')
+    expect(boundedText).toContain('all tests pass')
+    expect(short).toMatchObject([{ excerpt: shortText, truncated: false }])
   })
 })

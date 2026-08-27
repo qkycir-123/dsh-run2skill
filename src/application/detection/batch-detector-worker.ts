@@ -10,6 +10,7 @@ import {
   deriveExperienceIntentIdV2,
   deriveBehaviorSignatureV2,
   RUN2SKILL_V2_LIMITS,
+  selectBoundedEvidenceRefsV2,
   type ExperienceIntentV2,
   type SessionBatchV2,
   type TurnObservationV2,
@@ -66,7 +67,7 @@ function detectorModelFailureCode(error: unknown): string {
 
 function normalizeDetectorEvidenceDigests(
   value: unknown,
-  observations: readonly TurnObservationV2[],
+  observations: BatchDetectorInput['observations'],
 ): unknown {
   if (!Array.isArray(value)) return value
   const observationByDigest = new Map<string, Set<string>>()
@@ -90,7 +91,7 @@ function normalizeDetectorEvidenceDigests(
  */
 function normalizeDetectorOutput(
   raw: unknown,
-  observations: readonly TurnObservationV2[],
+  observations: BatchDetectorInput['observations'],
 ): unknown {
   if (!isRecord(raw) || typeof raw.result !== 'string') return raw
   if (raw.result === 'NONE') {
@@ -209,7 +210,7 @@ export class BatchDetectorWorker {
       return 'PROCESSED'
     }
     const outputDigest = this.#outputDigest(raw)
-    const parsed = detectorOutputSchema.safeParse(normalizeDetectorOutput(raw, claimed.observations))
+    const parsed = detectorOutputSchema.safeParse(normalizeDetectorOutput(raw, claimed.input.observations))
     if (!parsed.success || !this.#evidenceIsBound(parsed.data, claimed)) {
       await this.#commitAttention(claimed, 'SUCCEEDED', 'INVALID_DETECTOR_OUTPUT', outputDigest)
       return 'PROCESSED'
@@ -299,6 +300,18 @@ export class BatchDetectorWorker {
         }))
         return { value: { rejectedBatch } }
       }
+      const boundedEvidence = selectBoundedEvidenceRefsV2(observations.flatMap(item => (
+        item.directUserEvidence.map(evidence => ({
+          ...evidence,
+          observationId: item.observationId,
+        }))
+      )), RUN2SKILL_V2_LIMITS.maxBatchEvidenceTotalBytes)
+      const evidenceByObservation = new Map<string, typeof boundedEvidence>()
+      for (const evidence of boundedEvidence) {
+        const existing = evidenceByObservation.get(evidence.observationId) ?? []
+        existing.push(evidence)
+        evidenceByObservation.set(evidence.observationId, existing)
+      }
       const input: BatchDetectorInput = {
         batchId: batch.batchId,
         sessionLifecycleKey: batch.sessionLifecycleKey,
@@ -307,7 +320,10 @@ export class BatchDetectorWorker {
         observations: observations.map(item => ({
           observationId: item.observationId,
           turnEndSeq: item.turnEndSeq,
-          directUserEvidence: item.directUserEvidence,
+          directUserEvidence: (evidenceByObservation.get(item.observationId) ?? []).map(({
+            observationId: _observationId,
+            ...evidence
+          }) => evidence),
           assistantOutcomeSummary: item.assistantOutcomeSummary,
           toolOutcomeSummary: item.toolOutcomeSummary,
           completeness: item.completeness,
