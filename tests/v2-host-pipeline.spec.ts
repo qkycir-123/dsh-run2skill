@@ -208,6 +208,101 @@ describe('v2 Host pipeline assembly', () => {
     await runtime.dispose()
   })
 
+  it('extends a waiting manual request to the final observed tail before real quiescence releases it', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    let modelCalls = 0
+    let ownershipCalls = 0
+    let activeAgent = true
+    let durableLatestTurnEndSeq = 34
+    const runtime = createDshV2PipelineRuntime(domain, {
+      llm: {
+        resolveModelInfo: async () => ({ context: { contextWindow: 32_000 }, defaultMaxTokens: 4_096 }),
+        stream: async function * () {
+          modelCalls += 1
+          const evidenceDigest = [...domain.turnObservations.values()].at(-1)!.evidenceDigest
+          const output = JSON.stringify({
+            result: 'READY',
+            intents: [{
+              persistenceScope: 'PROJECT', experienceType: 'WORKFLOW',
+              applicabilitySummary: '完成一个可复用的五步流程',
+              keySteps: ['依次完成五个步骤'], prohibitions: [], evidenceDigests: [evidenceDigest],
+              completeness: { status: 'COMPLETE', blockers: [] },
+            }],
+          })
+          yield { type: 'block-start' as const, index: 0, blockType: 'text' }
+          yield { type: 'block-end' as const, index: 0, block: { type: 'text', text: output } }
+          yield { type: 'usage' as const, usage: { inputTokens: 20, outputTokens: 10 } }
+          yield { type: 'finish' as const, reason: { kind: 'stop' } }
+        },
+      },
+      baseline: {
+        capture: async () => ({
+          observedAt: new Date(CREATED_AT - 1).toISOString(),
+          rootManifestDigest: '1'.repeat(64), runtimeCatalogDigest: '2'.repeat(64), complete: true,
+        }),
+      },
+      activity: { observe: async () => ({
+        complete: true, activeAgent, durableLatestTurnEndSeq,
+        durableOpenTurn: false, activityRevision: `activity-${durableLatestTurnEndSeq}`,
+      }) },
+      ownership: {
+        observe: async () => {
+          ownershipCalls += 1
+          return { status: 'UNAVAILABLE', reasonCode: 'OBSERVATION_FAILED' }
+        },
+      },
+      catalog: {
+        recall: {
+          snapshot: async () => { throw new Error('ownership must fail closed first') },
+          read: async () => undefined,
+        },
+        generation: {
+          snapshot: async () => { throw new Error('ownership must fail closed first') },
+          read: async () => undefined,
+        },
+      },
+    })
+    await runtime.start()
+    await runtime.prepareSessionWindow(lifecycleKey())
+    const events: DshSessionEvent[] = []
+    for (let turn = 0; turn < 4; turn += 1) {
+      events.push(...turnEvents(turn))
+      await runtime.observeTurn(header, events, turn * 10 + 4, {
+        resolve: async () => ({ status: 'BOUND', workspaceId: 'workspace-1', canonicalPath: CWD }),
+      })
+    }
+    await expect(runtime.requestSynthesis(lifecycleKey())).resolves.toMatchObject({ disposition: 'QUEUED' })
+    runtime.wake()
+    await runtime.settle()
+    expect(modelCalls).toBe(0)
+
+    activeAgent = false
+    durableLatestTurnEndSeq = 44
+    events.push(...turnEvents(4))
+    await runtime.observeTurn(header, events, 44, {
+      resolve: async () => ({ status: 'BOUND', workspaceId: 'workspace-1', canonicalPath: CWD }),
+    })
+
+    expect(modelCalls).toBe(1)
+    expect([...domain.sessionBatches.values()]).toHaveLength(1)
+    expect([...domain.sessionBatches.values()][0]).toMatchObject({
+      lastTurnEndSeq: 44,
+      triggerReasons: ['EXPLICIT', 'THRESHOLD'],
+      state: 'COMMITTED_READY',
+    })
+    expect(ownershipCalls).toBe(1)
+    expect([...domain.experienceIntents.values()][0]).toMatchObject({
+      status: 'NEEDS_CONFIRMATION',
+      quiescence: {
+        state: 'SATISFIED',
+        batchLastTurnEndSeq: 44,
+        observedThroughTurnEndSeq: 44,
+        detectedThroughTurnEndSeq: 44,
+      },
+    })
+    await runtime.dispose()
+  })
+
   it('automatically wakes a READY checkpoint after 30 minutes without requiring a new Turn', async () => {
     const domain = createMemoryRun2skillV2Domain()
     let now = CREATED_AT + 44

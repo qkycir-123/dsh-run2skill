@@ -118,7 +118,7 @@ describe('v2 SessionBatch coordinator', () => {
     )).resolves.toEqual({ changed: false, disposition: 'EMPTY' })
   })
 
-  it('keeps a manual request durable until complete idle Session facts permit one freeze', async () => {
+  it('extends a durable manual request through new observations and recovery before one permitted freeze', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const first = new SessionBatchCoordinator(domain, coordinatorOptions())
     await first.recordObservation(observation({ seq: 10, observedAt: MINUTE }))
@@ -129,13 +129,43 @@ describe('v2 SessionBatch coordinator', () => {
     ])
     expect(receipts.filter(receipt => receipt.changed)).toHaveLength(1)
     expect(await first.flushRequested(async () => false)).toEqual([])
+    await first.recordObservation(observation({ seq: 20, observedAt: 2 * MINUTE }))
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toMatchObject({
+      throughTurnEndSeq: 20,
+    })
+    const crashWindowObservation = observation({ seq: 30, observedAt: 3 * MINUTE })
+    await domain.table('turn_observations').put(
+      crashWindowObservation.observationId,
+      crashWindowObservation,
+    )
     expect(domain.sessionBatches.size).toBe(0)
 
     const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
-    await recovered.recover(MINUTE)
+    await recovered.recover(40 * MINUTE)
     expect(domain.sessionBatches.size).toBe(0)
-    expect(await recovered.flushRequested(async () => true)).toHaveLength(1)
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toMatchObject({
+      throughTurnEndSeq: 30,
+    })
+    await expect(recovered.recordObservation(crashWindowObservation)).resolves.toMatchObject({
+      observationChanged: false,
+      batchChanged: false,
+    })
+    for (const seq of [40, 50, 60]) {
+      await recovered.recordObservation(observation({ seq, observedAt: seq / 10 * MINUTE }))
+    }
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toMatchObject({
+      throughTurnEndSeq: 60,
+    })
+    expect(await recovered.flushRequested(async () => false)).toEqual([])
+    const frozen = await recovered.flushRequested(async () => true)
+    expect(frozen).toHaveLength(1)
+    expect(frozen[0]).toMatchObject({
+      firstTurnEndSeq: 10,
+      lastTurnEndSeq: 60,
+      triggerReasons: ['EXPLICIT', 'THRESHOLD'],
+    })
     expect(domain.sessionBatches.size).toBe(1)
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
   })
 
   it('persists ordinary turns without a model claim and freezes exactly at the fifth complete turn', async () => {

@@ -222,15 +222,18 @@ describe('v2 SessionBatch scheduler', () => {
 
     expect(permitRequestedSynthesis).toHaveBeenCalledTimes(2)
     expect(domain.sessionBatches.size).toBe(0)
-    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeDefined()
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toMatchObject({
+      throughTurnEndSeq: 50,
+    })
     permit = true
     restarted.wake()
     await restarted.settle()
     expect([...domain.sessionBatches.values()]).toHaveLength(1)
     expect([...domain.sessionBatches.values()][0]).toMatchObject({
-      lastTurnEndSeq: 40,
-      triggerReasons: ['EXPLICIT'],
+      lastTurnEndSeq: 50,
+      triggerReasons: ['EXPLICIT', 'THRESHOLD'],
     })
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
     expect(onIdleBatchFrozen).toHaveBeenCalledOnce()
     await restarted.dispose()
   })

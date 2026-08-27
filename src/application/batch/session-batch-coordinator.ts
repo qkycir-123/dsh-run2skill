@@ -186,14 +186,23 @@ export class SessionBatchCoordinator {
           ? await this.#safeBaseline(observation.sessionLifecycleKey, windowStart, false)
           : undefined
       )
+      const observedThroughTurnEndSeq = Math.max(
+        cursor?.observedThroughTurnEndSeq ?? 0,
+        observation.turnEndSeq,
+      )
       const nextCursor: SessionCursorV2 = {
-        observedThroughTurnEndSeq: Math.max(cursor?.observedThroughTurnEndSeq ?? 0, observation.turnEndSeq),
+        observedThroughTurnEndSeq,
         detectedThroughTurnEndSeq: cursor?.detectedThroughTurnEndSeq ?? 0,
         ...sessionRecoveryMetadata(cursor, observation.sessionRecovery),
         ...(cursor?.activeBatchId === undefined ? {} : { activeBatchId: cursor.activeBatchId }),
         ...(cursor?.manualSynthesisRequest === undefined
           ? {}
-          : { manualSynthesisRequest: cursor.manualSynthesisRequest }),
+          : {
+              manualSynthesisRequest: {
+                ...cursor.manualSynthesisRequest,
+                throughTurnEndSeq: observedThroughTurnEndSeq,
+              },
+            }),
         lastActivityAt: latestIso(cursor?.lastActivityAt, observation.observedAt),
         ...(baseline === undefined ? {} : { batchManifestBaseline: baseline }),
         openExperienceCarry: cursor?.openExperienceCarry ?? [],
@@ -356,8 +365,12 @@ export class SessionBatchCoordinator {
       values.sort((left, right) => left.turnEndSeq - right.turnEndSeq)
       const tail = values.at(-1)!
       const existing = sessions[lifecycleKey]
+      const observedThroughTurnEndSeq = Math.max(
+        existing?.observedThroughTurnEndSeq ?? 0,
+        tail.turnEndSeq,
+      )
       sessions[lifecycleKey] = {
-        observedThroughTurnEndSeq: Math.max(existing?.observedThroughTurnEndSeq ?? 0, tail.turnEndSeq),
+        observedThroughTurnEndSeq,
         detectedThroughTurnEndSeq: Math.max(
           existing?.detectedThroughTurnEndSeq ?? 0,
           detectedBySession.get(lifecycleKey) ?? 0,
@@ -366,7 +379,12 @@ export class SessionBatchCoordinator {
         ...(existing?.activeBatchId === undefined ? {} : { activeBatchId: existing.activeBatchId }),
         ...(existing?.manualSynthesisRequest === undefined
           ? {}
-          : { manualSynthesisRequest: existing.manualSynthesisRequest }),
+          : {
+              manualSynthesisRequest: {
+                ...existing.manualSynthesisRequest,
+                throughTurnEndSeq: observedThroughTurnEndSeq,
+              },
+            }),
         lastActivityAt: latestIso(existing?.lastActivityAt, tail.observedAt),
         ...(existing?.batchManifestBaseline === undefined
           ? {}
@@ -617,11 +635,17 @@ export class SessionBatchCoordinator {
         break
       }
     }
-    const immediateIndexes = [explicitIndex, manualIndex, thresholdIndex].filter(index => index >= 0)
+    if (allowManualRequest && cursor.manualSynthesisRequest !== undefined) {
+      if (manualIndex < 0) return undefined
+      const reasons: SessionBatchV2['triggerReasons'][number][] = ['EXPLICIT']
+      if (thresholdIndex >= 0 && thresholdIndex <= manualIndex) reasons.push('THRESHOLD')
+      return { observations: pending.slice(0, manualIndex + 1), reasons }
+    }
+    const immediateIndexes = [explicitIndex, thresholdIndex].filter(index => index >= 0)
     if (immediateIndexes.length > 0) {
       const endIndex = Math.min(...immediateIndexes)
       const reasons: SessionBatchV2['triggerReasons'][number][] = []
-      if (explicitIndex === endIndex || manualIndex === endIndex) reasons.push('EXPLICIT')
+      if (explicitIndex === endIndex) reasons.push('EXPLICIT')
       if (thresholdIndex === endIndex) reasons.push('THRESHOLD')
       return { observations: pending.slice(0, endIndex + 1), reasons }
     }
