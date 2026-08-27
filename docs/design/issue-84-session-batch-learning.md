@@ -1,14 +1,18 @@
 # SessionBatch 语义检测、完整召回与分阶段学习设计
 
-状态：PROPOSED
+状态：`0.2.0` 核心设计已接受并落地；`0.3.0` 继续适用；`main` 未发布增量单独标记
 
 对应 Issue：[#84](https://github.com/qkycir-123/dsh-run2skill/issues/84)
 
-更新时间：2026-08-22
+更新时间：2026-08-27
+
+适用版本：`0.2.0`–`0.3.0`；以及文中明确标记的 `main` 未发布增量
 
 ## 1. 范围审计
 
-本设计只重构 Run2Skill 从会话观察到 Proposal 生成之前的核心流水线。当前插件尚无外部用户，`run2skill_v1` 中的 Proposal 和中间缓存不做兼容迁移。
+本设计只重构 Run2Skill 从会话观察到 Proposal 生成之前的核心流水线。设计时决定以 fresh activation 进入 `run2skill_v2`，`run2skill_v1` 中的 Proposal 和中间缓存不做兼容迁移；该历史迁移边界已在 `0.2.0` 发布前落地。
+
+`main` 在 `v0.3.0` tag 之后增加两项仍受本设计约束的未发布实现：#141 的 durable manual synthesis request 与低噪声状态投影，以及 #143 的 TurnObservation/Detector 两层共享 evidence 预算。二者不改变批次单飞、Session quiescence、Agent-first、完整 Catalog 或人工批准边界。
 
 本设计包含：
 
@@ -194,6 +198,8 @@ idle deadline 是最后一个 durable TurnObservation 的 `observedAt + 30m`。�
 
 显式“保存为 Skill/记住该流程”等由 TurnObservation 的 direct-user evidence 确定性标记。该标记不直接生成 Skill，只在当前 Turn 完成后立即冻结从 `detectedThrough + 1` 到当前 Turn 的范围。若此前有 DEFER carry，一并作为有界数据输入。显式保存不等待 5 Turn 或 30 分钟，但必须先确认没有新 Turn、Agent 未运行并取得同一 Session quiescence fence；否则延后，不能与 Agent 并发生成。之后仍必须经过 detector、所有权、完整 recall 和 coverage。
 
+`main` 的 #141 还允许用户在设置页对当前已持久、尚未检测的 Session 尾部提交一次 durable manual synthesis request。请求排队期间，新 observation 会单调扩展其尾部；只有 quiescence permit 通过后才能以 `EXPLICIT` reason 冻结最终稳定范围。恢复、普通 threshold/idle 或已有 active batch 不得提前消费请求；stage 释放 active batch 后必须重新唤醒 scheduler，但 permit 失败时不得忙循环。
+
 ### 4.4 single-flight
 
 - 每个 Session lifecycle 同时最多一个 active SessionBatch worker；
@@ -205,7 +211,7 @@ idle deadline 是最后一个 durable TurnObservation 的 `observedAt + 30m`。�
 
 Detector 输入只包含冻结 batch 的有界 TurnObservation、最多 3 个 DEFER carry、来源标签和 route，不包含 Skill Catalog。
 
-TurnObservation 不再对每条 direct-user message 只截取固定前缀。文本必须先完成 secret 与控制字符处理，再在整个观察窗口共享的严格 UTF-8 byte 预算内，确定性为显式保存、禁止项、验收/验证、顺序步骤、约束和真实最新尾部分别保留最低配额，再填充其余语义；任一类都有上限，不得吞掉其他强语义。显式保存分类必须复用 Cheap Trigger 的完整分句、请求上下文、否定和解释语义，并在通用 byte splitting 前把正向命中的有界、可复验最小投影作为原子 mandatory unit；否定、解释或引用的保存文字不得占用正向保存配额。Detector 随后对整个 batch 使用第二层严格 evidence 总预算，并以实际 system prompt 与序列化 user JSON 计算 route 输入总量。超限时先有界压缩 assistant/tool/carry 辅助字段，再按上述配额缩减 direct-user evidence；必须保留 observation/evidence 绑定，最小安全 envelope 仍无法容纳时才 fail closed。模型调用与 durable claim 共用同一投影，`inputDigest` 精确绑定实际发送数据；不发送完整 Session，不增加逐 Turn LLM。
+`main` 的 #143 不再对每条 direct-user message 只截取固定前缀。文本必须先完成 secret 与控制字符处理，再在整个观察窗口共享的严格 UTF-8 byte 预算内，确定性为显式保存、禁止项、验收/验证、顺序步骤、约束和真实最新尾部分别保留最低配额，再填充其余语义；任一类都有上限，不得吞掉其他强语义。显式保存分类必须复用 Cheap Trigger 的完整分句、请求上下文、否定和解释语义，并在通用 byte splitting 前把正向命中的有界、可复验最小投影作为原子 mandatory unit；否定、解释或引用的保存文字不得占用正向保存配额。Detector 随后对整个 batch 使用第二层严格 evidence 总预算，并以实际 system prompt 与序列化 user JSON 计算 route 输入总量。超限时先有界压缩 assistant/tool/carry 辅助字段，再按上述配额缩减 direct-user evidence；必须保留 observation/evidence 绑定，最小安全 envelope 仍无法容纳时才 fail closed。模型调用与 durable claim 共用同一投影，`inputDigest` 精确绑定实际发送数据；不发送完整 Session，不增加逐 Turn LLM。
 
 输出：
 
@@ -450,7 +456,7 @@ schema 测试必须为所有 v2 records 提供“除 `schemaVersion` 外全部�
 
 - COMMITTED 前可直接停用新包；v1、已发布 Skill 和 Session Log 均未变化。
 - COMMITTED 后旧版本不会理解 v2 新事实；回退到旧版本只意味着放弃 v2 中间缓存，不会删除已发布 Skill 或 Session Log。
-- 当前无外部用户，不承诺保留 v1/v2 中间缓存；进入稳定版前再单独设计长期升级兼容策略。
+- 已发布规则是：`0.2.0 → 0.3.0` 保留 v2 状态；降级到 Alpha 会放弃 v2 中间缓存，但不删除已发布 Skill 或 Session Log。未来 schema/domain 变更需单独的升级与回退设计。
 
 ## 13. Action Queue 与静默状态
 
@@ -478,7 +484,9 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 - Purge preview/confirm、崩溃恢复和最终“无正常可见残留”校验必须重建派生 Catalog，并证明已删除/隐藏 Proposal 不再出现、没有 dangling signature reservation 或 lease；
 - 已发布 Skill 与 DSH Session Log 永不由 Run2Skill Purge 删除。
 
-## 15. 实现切片
+## 15. 历史实现切片
+
+以下切片已作为一条完整 v2 流水线于 `0.2.0` 发布前落地：
 
 1. Design/ADR 与 PRD/Architecture/storage 文档同步。
 2. `run2skill_v2` schema、最小有效夹具和 fresh activation。
@@ -489,7 +497,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 7. coverage/generation 分离、BehaviorSignatureIndex、ProposalGenerationLease 和唯一 Proposal lineage。
 8. Action Queue、Host v2 cutover、真实 DSH E2E 与发布说明。
 
-#84 使用一个完整架构 PR 完成上述切片；在 v2 全链闭环和验收通过前不得合并半条新流水线。
+#84 当时使用一个完整架构 PR 完成上述切片，遵守了“v2 全链闭环和验收通过前不合并半条新流水线”的历史门禁。
 
 ## 16. 验收矩阵
 
@@ -497,7 +505,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 |---|---|
 | 调度 | 1～4 Turn 未 idle 为 0 调用；第 5 Turn、idle、explicit 各只 claim 一个确定性 batch |
 | 竞争 | 重复 turn/end、idle 边界新 Turn、重启和并发 Session 不重复 Detector |
-| 检测 | 长工作流尾部关键步骤、禁止项、验收条件和显式保存语义在观察/批次共享预算内可见；近似否定语义不误学；NONE/DEFER 后 recall、coverage、generation 全为 0 |
+| 检测 | 已发布核心：NONE/DEFER 后 recall、coverage、generation 全为 0；`main` #143：长工作流尾部关键步骤、禁止项、验收条件和显式保存语义在观察/批次共享预算内可见，近似否定语义不误学 |
 | 所有权 | Agent exact 保存后后续模型 0；证据不完整不把 absence 当 proof |
 | 召回 | “保存刚才流程”使用 ExperienceIntent；全 Catalog 分页扫描，不以 Top N 证明不存在 |
 | 大候选 | 8940-byte 与 14/20 KiB Skill 在 route 总预算允许时完整 coverage，不触发固定大小失败 |
@@ -509,9 +517,9 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 | schema | 冻结 fixture 只改变 schemaVersion 即精确触发 literal 拒绝 |
 | 安全 | 脱敏、来源标签、scope、CAS、exact readback、Purge 和 fail-open/fail-closed 边界保持 |
 
-稳定 HEAD 最后运行 typecheck、lint、完整单元测试、fresh-activation/crash/concurrency/call-budget/duplicate probes，以及真实 DSH Web/learning E2E。
+历史 `0.2.0` 发布验收要求在稳定 HEAD 运行 typecheck、lint、完整单元测试、fresh-activation/crash/concurrency/call-budget/duplicate probes，以及真实 DSH Web/learning E2E。`main` 的 #141/#143 增量已增加对应调度、重启恢复、真实 envelope、长工作流和 frozen-evaluation 覆盖，但不属于 `0.3.0` 的发布证据。
 
-## 17. Roadmap 状态
+## 17. 历史 Roadmap 状态
 
 - #48 stock root contract 迁移与运行探针已经完成。
-- C7 publication 主切片仍未开始；#84 不提前启动或改变 C7 验收。
+- C7 publication 在 #84 设计时尚未开始；它后续已在 `0.2.0` 的安全审核、发布与 exact readback 闭环中落地。

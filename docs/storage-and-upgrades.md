@@ -1,6 +1,6 @@
 # 数据存储与升级
 
-这份文档说明当前 `dsh-run2skill@0.3.0` 稳定版及 #84 批次学习重构会保存什么，以及升级、降级和卸载时应该注意什么。
+这份文档说明当前 [`dsh-run2skill@0.3.0`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.0) 稳定版中由 #84 落地的批次学习流程会保存什么，以及升级、降级和卸载时应该注意什么。`main` 在该 tag 之后的未发布存储增量单独标记，不代表新的稳定版升级承诺。
 
 ## 保存的数据
 
@@ -30,7 +30,17 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 | proposal_lineages | 唯一活动 lineage、Proposal、审核/发布关联 |
 | legacy_items | 当前首次启用和正常流程均不写入的保留表 |
 
-完整决策和状态机见 [`docs/design/issue-84-session-batch-learning.md`](design/issue-84-session-batch-learning.md)。Host 只打开 v2 Domain；旧 v1 中间缓存不参与正常读取、学习、展示或清理。
+完整决策和状态机见 [SessionBatch 批次学习设计](design/issue-84-session-batch-learning.md)。Host 只打开 v2 Domain；旧 v1 中间缓存不参与正常读取、学习、展示或清理。
+
+### `main` 的未发布增量
+
+`main` 仍使用 `run2skill_v2` Domain version `1`，没有增加 table，也没有修改 `package.json` 版本号。tag 后的 additive/defaulted 字段包括：
+
+- Session cursor 的可选 `manualSynthesisRequest`，只保存一次“立即整理”请求所绑定的未处理 durable 尾部；请求消费、重启恢复和新 observation 扩展均由同一 batch coordinator 对账。
+- `proposal_lineages` 的 `revisionActions` 和完整 child Proposal snapshots，用于绑定修改意见 action、父/子 immutable ref、模型调用结果与 Catalog mutation recovery；旧记录缺少 action log 时按空数组读取。
+- TurnObservation 与 SessionBatch 仍只保存有界、脱敏证据，但 `main` 使用共享预算选择关键片段并让 excerpt digest 绑定回完整 Observation evidence digest；它不复制完整 Session。
+
+这些是当前主分支事实，不属于 `v0.3.0` 安装包。未来发布仍须在 Release 中给出明确升级与回退结论。
 
 如果存储格式不匹配，插件会显示“当前功能受限”或“当前版本不兼容”（内部状态码：`DEGRADED` / `INCOMPATIBLE`）并停止写入，而不是把旧数据误认为空库。DSH 主 Agent 仍可继续工作，原数据不会被自动删除或重建。
 
@@ -48,6 +58,8 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 从 Alpha 升级到 `0.2.0` 时，v2 首次启用采用 fresh activation：不迁移 `run2skill_v1` 的 Proposal、WorkItem、Lineage 或其他中间缓存。插件只为现有 durable root Session 保存当前完整 Turn 的末尾水位，历史 Turn 不重新学习；启用后新观察只写 v2。已发布的原生 Skill 和 DSH Session Log 不属于这些中间缓存，不会被删除或改写。
 
 从 `0.2.0` 升级到 `0.3.0` 不改变 Storage Domain 或 schema version；已有 v2 状态和已发布 Skill 会原样保留。
+
+当前 `main` 的上述 tag 后变化同样保持 Domain version `1` 并兼容缺少新增可选/defaulted 字段的 v2 记录；这是未发布实现的当前事实，不替代未来版本的发布验证。
 
 从 `0.3.0` 降级到 Alpha 会放弃 v2 的新中间缓存。已发布 Skill 和 DSH Session Log 仍会保留。
 

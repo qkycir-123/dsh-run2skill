@@ -1,14 +1,15 @@
-# dsh-run2skill v0.2 架构基线
+# dsh-run2skill v0.2 核心流程架构基线
 
-状态：已接受的发布基线 + #84 核心流程修订待 Design PR 评审
+状态：`0.2.0` 核心架构已接受并落地；`0.3.0` 继续适用；`main` 的未发布增量单独标记
 文档版本：v0.2
-更新时间：2026-08-22
+更新时间：2026-08-27
 产品输入：docs/product/prd.md v0.2
-DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
+原始设计证据 baseline：`99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）
+当前 `0.3.0` 兼容性 baseline：`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`（`0.1.1-rc.2`），见 [`docs/compatibility.md`](../compatibility.md)
 
 ## 1. 文档目的与效力
 
-本文把产品需求转化为 v0.2 的模块职责、稳定契约、状态模型和验证边界。它约束后续 Contract Probe、纵向切片 Design 和实现，但不改变 PRD。
+本文把产品需求转化为 v0.2 的模块职责、稳定契约、状态模型和验证边界。它是 `0.2.0`–`0.3.0` 核心流程的已发布架构记录；明确标记为 `main` 的段落描述 `v0.3.0` tag 之后尚未发布到稳定包的实现。文中“切片开始前”、“必须先探针”等措辞记录当时的交付门禁，不表示当前尚未实现。
 
 维护者已于 2026-08-19 接受本 Architecture Baseline。该决定允许进入阶段 3 的可丢弃 Contract Probe，但不等于允许跳过探针开始大规模生产实现：
 
@@ -25,6 +26,8 @@ DSH baseline：99f6f02fecdb7dff40c3fbc9470f5907c29f74ca（0.1.0-rc.7）
 2026-08-21，维护者进一步接受“无感自动沉淀且同一保存意图不能让 Agent 与 run2skill 各生成一次”的产品决定。显式保存和其他 `HIGH` evidence 在 run2skill Learning 前必须先做 durable ownership arbitration：有效 Agent Skill 已经与当前意图精确绑定时以 `RESOLVED_BY_AGENT` 静默完成；只有完整证据证明本回合没有发生 Skill 生成行为时，run2skill 才取得生成所有权。该窄修订不授权自动发布，也不能退化为两边生成后再去重。
 
 2026-08-22，#84 把逐 Turn Cheap Trigger/WorkItem/单阶段 Learning 替换为 `TurnObservation -> SessionBatch -> ExperienceIntent`：每 5 个完整 Turn、idle 30 分钟或显式保存触发一次批次检测，随后依次执行 Agent-first ownership、complete Catalog 全量摘要筛选、完整候选 coverage 与独立 generation。完整状态机、调用账本和 `run2skill_v2` 首次启用 ADR 见 [`docs/design/issue-84-session-batch-learning.md`](../design/issue-84-session-batch-learning.md)；与本节旧机制冲突的逐 Turn描述均以该 Design 和本文修订段落为准。
+
+2026-08-27，`main` 在不改变上述发布边界的前提下增加三项未发布增量：持久化的“立即整理”请求和低噪声用户状态；TurnObservation 与 Detector route 的两层共享 evidence 预算；由 Host 依据有界修改意见生成新的不可变 Proposal revision。三者继续复用 Session quiescence、单一所有者、完整 Catalog、人工审核和 Publication CAS；内部批次计数不进入用户状态。
 
 本文中的“必须”来自冻结 PRD 或为满足它而不可缺少的技术约束；“候选”表示可在 Design 中细化但不得破坏稳定契约；“Contract Probe”表示源码不足以证明、必须在固定 DSH baseline 上运行验证的事项。
 
@@ -124,6 +127,8 @@ flowchart LR
 
 ProposalSnapshot 一经进入 PENDING_REVIEW 即不可修改。任何证据、内容、Scope、目标或 Base 改变都生成新 proposalId/revision/digest，旧 Approval 永久失效。
 
+`main` 的未发布草稿修订入口延续这一规则：Client 只提交有界修改意见、完整 ProposalRef 和 action identity；Host 使用父版本完整正文重新生成完整 child snapshot，并以父/子引用、输入与生成 receipt、Catalog mutation journal 绑定一次动作。旧版本保留为审计事实但退出当前审核，新版本必须重新 Review；浏览器不能提交最终 Skill bytes，也没有自由编辑或自动发布权限。
+
 digest 使用 canonical JSON envelope 的 SHA-256，至少覆盖：
 
 - 完整最终 Skill bytes；
@@ -138,7 +143,7 @@ digest 使用 canonical JSON envelope 的 SHA-256，至少覆盖：
 
 #### Lineage
 
-Lineage 以 scope + canonical target identity 为 key，保存完整 Revision snapshot，不保存 delta。完整 snapshot 让审核、冲突比较、Purge 和恢复更直接；磁盘当前内容仍优先于 Lineage。
+Lineage identity 由 persistence scope + behavior signature 确定，保存完整 Revision snapshot，不保存 delta；Proposal 中另行绑定 canonical target identity。完整 snapshot 让审核、冲突比较、Purge 和恢复更直接；磁盘当前内容仍优先于 Lineage。
 
 首次 CREATE 产生 r1。首次收养 unmanaged Skill 进行 MERGE 时，当前 Base 记为 r1，审核后的结果记为 r2。
 
@@ -217,6 +222,8 @@ Client 只负责：
 - 安全呈现 Evidence、Diff、Skill bytes 和状态；
 - 提交 proposalId/revision/digest、Reject 确认、Retry 或 Purge 意图；
 - 根据 Host 结果更新界面。
+
+`main` 的未发布 Client 还可读取当前 Session 的低噪声整理状态，并提交“立即整理”或一条草稿修改意见。状态只投影用户可理解的等待、处理、查重、已覆盖与需要处理，不包含内部阈值、批次水位或进度分数；所有 scope、幂等和 mutation 授权仍由 Host 判定。
 
 Client 不缓存权威 Proposal 内容，不生成 digest，不上传完整替代内容，不决定 publish outcome。
 
@@ -389,6 +396,8 @@ Web profile 的 JSON Storage 每次写入会发布整个 domain。TurnObservatio
 - 队列没有无限内存副本，权威队列来自 Store；
 - 进程全局并发另设固定小上限，避免多 Session 形成模型风暴。
 
+`main` 的未发布“立即整理”把当前已持久、尚未检测的 Session 尾部记录为 durable manual synthesis request。等待期间新的 durable observation 会单调扩展请求尾部；只有 quiescence permit 通过时才以 `EXPLICIT` 语义冻结一次最终稳定范围。重启恢复、已有 active batch、普通 threshold/idle 与 stage 完成反馈都不得吞掉请求、绕过 permit 或形成第二个 batch。
+
 同一 batch/intent 只产生一个用户可见终态。`NONE`、`DEFER`、普通自动 Intent 的 `COVERED` 和 `RESOLVED_BY_AGENT` 静默收口；显式保存 Intent 的 COVERED 必须进入确认项并展示目标/理由，其他确需用户恢复或决策的状态进入统一 Action Queue。
 
 ### 8.4 启动恢复
@@ -467,10 +476,10 @@ Storage Domain 不提供跨表事务，因此采用可恢复 saga：
 - 已发布 `run2skill_v1` schema 不改写；旧记录字段缺失不能解释为 `RUN2SKILL_OWNED`。
 - D2 的 `completedPurgeFences` 是 GlobalV1 可选字段，domain version 保持不变；fence 只含版本、purgeId、时间边界和最小 scope identity digest，不含路径、Evidence、候选 ID 或删除审计内容。
 - #84 选择独立 `run2skill_v2` Domain version 1，并在首次启用时执行 fresh activation；COMMITTED 前 v2 对 worker/UI 不可见。
-- 当前插件尚无外部用户，`run2skill_v1` 的 Proposal、WorkItem、Lineage 和其他中间缓存不迁移、不重放。
+- #84 实现时决定以 fresh activation 进入 `run2skill_v2`；Alpha 时期 `run2skill_v1` 的 Proposal、WorkItem、Lineage 和其他中间缓存不迁移、不重放。
 - listener 先注册，再从没有 open Turn 的 durable root Session tail 建立 activation watermark；半个 Turn、日志缺口或读取失败均延后启用。
 - COMMITTED 后只处理水位之后的新 Turn。已发布 Skill 和 DSH Session Log 不删除、不改写。
-- 当前开发阶段不承诺中间缓存跨版本保留；稳定发布前另行制定长期升级兼容策略。
+- `0.2.0 → 0.3.0` 不改变 Storage Domain 或 schema version，已有 v2 状态原样保留；未来变更继续遵守显式迁移与回退规则。
 - Storage Domain 对版本不匹配会 fail loud，故任何未来 domain version bump 必须先有独立 Migration ADR、备份/回退证据和升级测试。
 - 在首个公开 alpha 前的开发数据可以显式导出后重建，但不得把这种做法用于已发布用户数据。
 
@@ -487,7 +496,7 @@ Purge 是只作用于 v2 中间缓存的持久 saga：
 
 设置页只调用 `ALL` preview/confirm，不接受 `workspaceId`，也不向用户暴露 PROJECT/USER 内部术语；`status` 与 `retry` 只使用 journal 标识。
 
-崩溃后继续同一 purgeId，恢复期间所有 v2 学习、审核和发布写操作保持关闭。当前无外部用户，不读取或清理 `run2skill_v1`、诊断 sidecar 或其他历史中间缓存。
+崩溃后继续同一 purgeId，恢复期间所有 v2 学习、审核和发布写操作保持关闭。v2 Purge 不读取或清理 `run2skill_v1`、诊断 sidecar 或其他历史中间缓存。
 
 每次新建 journal 固化 `targetWorkItems` 与 `targetLineages`。最终 receipt 使用该 durable 目标计数，因此即使进程在物理删除完成、进度计数写回之前终止，恢复后也不会少报。旧 journal 缺少目标字段时继续按既有累计计数恢复。
 
@@ -540,6 +549,8 @@ CP-LLM-001 已在 Windows 验证：`foldRequestHeader` 的 last-wins route 可�
 ### 10.4 有界 Envelope
 
 架构硬边界：
+
+下列 direct-user evidence 共享预算、真实 route envelope 和 claim/input digest 绑定是 `main` 在 `v0.3.0` tag 之后合入的未发布强化；其余有界调用与 fail-closed 原则继续来自已发布核心架构。
 
 - Detector 只接收冻结 TurnObservation 与最多 3 个有界 DEFER carry；
 - direct-user evidence 先脱敏，再在 TurnObservation 共享预算内为“显式保存、禁止项、验收/验证、顺序步骤、约束、真实最新尾部”分别保留最低配额并限制每类上限，再填充其余语义；显式保存直接复用 Cheap Trigger 的完整分句、请求上下文、否定和解释判定，并在通用 byte splitting 前将其正向命中的有界、可复验最小投影作为原子证据，否定/解释/引用文字不占用正向保存配额；不得只保留固定长度前缀；
@@ -958,7 +969,9 @@ storageDomain, workspaceRegistry, connection
 
 缺少必需 service 时 Cordis 保持插件 pending；兼容性失败时 run2skill 自身不可用，但 DSH 主应用不能被破坏。
 
-## 20. 纵向切片映射
+## 20. 历史纵向切片映射
+
+下表是 `0.2.0` 的交付切片与当时门禁；各切片和安全闭环已在 `0.2.0` 发布前落地。
 
 | 切片 | 交付的真实纵向能力 | 依赖的已验证契约 |
 |---|---|---|
@@ -969,7 +982,7 @@ storageDomain, workspaceRegistry, connection
 | C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-003、CP-PUB-001、CP-WEB-001 |
 | D Productize | Inbox 完善、v2 Purge、升级策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
 
-每个切片开始前仍需独立 Design。切片 A/B 不得宣称 Run -> Skill 闭环成功；只有切片 C 通过 Web Human Review 和回读后才可以。
+当时的交付规则是：切片 A/B 不得宣称 Run -> Skill 闭环成功，只有切片 C 通过 Web Human Review 和回读后才可以。`0.3.0` 在该已落地闭环上完善真实 Web 草稿生成、审核/刷新体验和 DSH 兼容性；tag 后的进一步主链修复以 [CHANGELOG](../../CHANGELOG.md) 的 `main` 未发布条目为准。
 
 ## 21. 被否决的替代方案
 
@@ -994,9 +1007,11 @@ storageDomain, workspaceRegistry, connection
 | 自动 Git commit/push | 不属于 Skill publication |
 | 多 npm 子包 | v0.1 没有足够收益，增加发布和安装复杂度 |
 
-## 22. Contract Probes 与开放架构问题
+## 22. Contract Probes 与后续架构问题
 
-### 22.1 阻塞探针
+### 22.1 历史发布阻塞探针
+
+下表记录 `0.2.0` 发布前的阻塞条件；这些契约已通过当时的发布验证。`0.3.0` 对 DSH `0.1.1-rc.2` 的当前验证结论以 [`docs/compatibility.md`](../compatibility.md) 为准。
 
 | ID | 要证明的契约 | 失败影响 |
 |---|---|---|
@@ -1009,7 +1024,7 @@ storageDomain, workspaceRegistry, connection
 | CP-WEB-001 | 外部双面插件、header slot、/run2skill loopback、LAN/cross-origin 拒绝 | Web Review 边界不成立 |
 | CP-INS-001 | plugin add、web profile、disable、upgrade、uninstall；Skill 卸载后仍可用 | v0.2 不能发布 |
 
-### 22.2 尚待 Design 细化但不改变架构的问题
+### 22.2 历史实现参数与后续计划
 
 - 各 stage Envelope 的精确字节/token/timeout 和调用硬上限；
 - reasoning effort 是继承 Session 还是使用 Adapter default；
@@ -1020,21 +1035,25 @@ storageDomain, workspaceRegistry, connection
 - Publication backup 在成功后保留多久。
 - batch baseline manifest 的性能预算、缓存和测量阈值；不得退化为每个 Turn 全量扫描。
 
-这些问题不得改变冻结的 provider/scope/review/publication 语义。若实测要求改变产品行为，必须回到 PRD。
+其中已发布核心参数由 `0.2.0`–`0.3.0` 的代码和测试冻结；`main` 在 tag 后对 evidence 选择、真实 route envelope、手动整理调度和 Proposal revision 做了本文已明确标记的未发布强化。本文不重复具体 policy constant；未来调整仍不得改变冻结的 provider/scope/review/publication 语义。若实测要求改变产品行为，必须回到 PRD。
 
 ## 23. 需求追踪
 
 | PRD 需求组 | 责任模块 | 主要验证 |
 |---|---|---|
 | REQ-OBS-001..008 | session-adapter、batch-coordinator、store | Unit + 5-Turn/idle/explicit + CP-SES-001 + restart integration |
-| REQ-OBS-009..010 | ownership-arbitrator、skill-query-adapter、store | 全 root contract + BatchManifest replay/policy-mismatch + intent-binding + generation-evidence + restart/CAS integration |
+| REQ-OBS-009..011 | ownership-arbitrator、skill-query-adapter、store | 全 root contract + BatchManifest replay/policy-mismatch + intent-binding + generation-evidence + restart/CAS integration |
+| REQ-OBS-012（`main`） | learning-status RPC、batch scheduler/coordinator、settings client | current-scope + durable manual request + quiescence/restart/stage-feedback + no internal-counter UI |
 | REQ-LRN-001..007 | stage envelope builders、sensitive-filter、staged-learning-engine | Unit + stage-ledger/call-budget + CP-LLM-001 + frozen evaluation |
+| REQ-LRN-008（`main`） | evidence selector、Detector envelope/claim、stage client | UTF-8 shared budgets + semantic quotas + actual-envelope digest + long-workflow evaluation |
 | REQ-SCP-001..004 | scope-and-target-resolver、workspace adapter | Unit + CP-ROOT-003 |
 | REQ-CUR-001..007 | skill-query-adapter、coverage/generation Guards | complete summary pagination + 9/14/20 KiB candidates + CP-SKL-001 + adversarial fixtures |
-| REQ-REV-001..010 | web-rpc-host、web-client、Proposal aggregate | Browser integration + accessibility + CP-WEB-001 |
+| REQ-REV-001..011 | web-rpc-host、web-client、Proposal aggregate | Browser integration + accessibility + CP-WEB-001 |
+| REQ-REV-012（`main`） | revision coordinator、LLM adapter、Proposal RPC/client | immutable parent/child refs + action/call/catalog receipts + crash recovery + stale client cache |
 | REQ-PUB-001..009 | publication-service、CAS adapter、Registry readback | CP-PUB-001 + CP-SKL-001 + security integration |
 | REQ-LFC-001..005 | Lineage aggregate、reconciliation、installer | State-machine unit + manual edit/delete E2E + CP-INS-001 |
 | REQ-CFG-001..004 | settings adapter、Purge saga | Settings conflict integration + purge crash tests |
+| REQ-CFG-005（`main`） | learning-status RPC、settings client | low-noise states + disabled/loading/error/narrow layouts + idempotent request |
 | 状态与恢复 | SessionBatch/Intent aggregates、activation/Purge/publication journals | fresh-activation + crash matrix + restart E2E |
 | Generation lease 恢复 | call ledger、sealed result、commit authorization、body/index、unresolved barrier 八类组合 | crash matrix：不重复调用、不丢去重屏障、全局 lease 不永久阻塞 |
 | 隐私/安全/fail-open | filter、Guards、loopback RPC、observer boundary | adversarial unit/integration + fault injection |
@@ -1054,12 +1073,12 @@ storageDomain, workspaceRegistry, connection
 - 接受 ADR-0001 的 stock DSH 版本化 root contract；配置或身份无法证明时禁用相应 Scope publication；
 - 接受 ownership observation 与 publication RootBinding 分离：前者覆盖全部有效 filesystem roots，并以 exact readback + IntentBinding 支持 durable `RESOLVED_BY_AGENT`；
 - 接受正常 `RESOLVED_BY_AGENT` 复用 Agent 既有回复/工具结果且不额外显示 Toast/Proposal；歧义只进入统一待处理入口；
-- 接受阶段 3 探针通过后才进入对应纵向切片 Design。
+- 接受阶段 3 探针通过后才进入对应纵向切片 Design（历史交付门禁，已完成）。
 
 批准记录：
 
 - 当前：已批准；
 - 接受方：项目维护者；
 - 批准日期：2026-08-19；
-- 批准的原基线版本：v0.1；#84 v0.2 修订待对应 Design PR 评审；
-- 接受范围：原发布与安全边界继续有效；2026-08-22 #84 以 `docs/design/issue-84-session-batch-learning.md` 作为批次核心流程和 activation gate，实施按该文档切片推进。
+- 批准的原基线版本：v0.1；2026-08-22 接受 #84 v0.2 核心流程修订；
+- 当前适用：原发布与安全边界继续有效；#84 的 SessionBatch 核心流程已于 `0.2.0` 落地，`0.3.0` 继续沿用。

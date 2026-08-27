@@ -1,10 +1,14 @@
 # 同一 Skill 保存意图的单一生成所有者设计
 
-状态：`PROPOSED`
+状态：原则已接受并落地；原逐 Turn 机制已由 #84 取代；`main` 继续适用
 
 对应 Issue：[#71](https://github.com/qkycir-123/dsh-run2skill/issues/71)
 
 适用范围：受支持的 stock DSH `web` profile、默认 filesystem Skill roots、内置 `standard` / `code` preset
+
+适用版本：`0.2.0`–`0.3.0`；`main` 继续适用
+
+当前事实：Agent-first、完整观察和 fail-closed 的单一所有者原则继续有效；本文的逐 Turn WorkItem/TurnBaseline 方案是历史设计，已由 [`SessionBatch -> ExperienceIntent` 设计](issue-84-session-batch-learning.md) 及实现取代。当前 DSH baseline 见 [兼容性声明](../compatibility.md)。
 
 ## 1. 范围审计
 
@@ -26,7 +30,7 @@
 - 不阻止 Agent 正常修改项目文件；
 - 不依赖修改 DSH 源码；
 - 不把按钮、命令或人工选通道变成正常流程；
-- 不提前实现本设计或拆分尚未评审的实现 Issue。
+- 在当时设计评审完成前，不提前实现或拆分实现 Issue。
 
 ## 2. 问题与不变量
 
@@ -244,7 +248,7 @@ WorkItem.processingState = CAPTURED
 ## 8. 性能与无感要求
 
 - 实现前必须增加共享的 Cheap Trigger prefilter：在每个 turn 的 `step=1`、执行任何昂贵 manifest/catalog 读取前，仅对 direct-user messages 运行与最终 capture 相同版本的无副作用规则；明确 miss 时不建基线，hit/UNKNOWN 才进入基线观察。
-- prefilter 与 turn-end policy 必须共享版本和 fixture；若 prefilter miss、最终 turn-end 却 hit，因缺少基线只能进入 `NEEDS_CONFIRMATION`，不得补猜 `RUN2SKILL_OWNED`。该性能工作是后续实现前置风险，本 PR 不实现运行时代码。
+- prefilter 与 turn-end policy 必须共享版本和 fixture；若 prefilter miss、最终 turn-end 却 hit，因缺少基线只能进入 `NEEDS_CONFIRMATION`，不得补猜 `RUN2SKILL_OWNED`。这是原逐 Turn 方案在设计时记录的性能前置风险。
 - `agent/pre-step` 对 prefilter hit/UNKNOWN 的 turn 只在 `step=1` 建一次基线，后续 step 不重复扫描。
 - 观察有明确的文件数、字节数和墙钟时间预算；超预算放行 Agent 并标为不完整。
 - manifest 使用流式摘要，不把所有 Skill 正文同时留在内存。
@@ -274,9 +278,9 @@ WorkItem.processingState = CAPTURED
 - 新旧记录均须遵守现有 Purge fence、revision CAS 和不可见数据不复活规则；
 - 具体 Domain version、迁移/回退步骤必须由后续实现 Design/Issue 明确，不能静默重建 Storage。
 
-## 11. 后续实现验收矩阵
+## 11. 历史实现验收矩阵
 
-后续实现至少测试：
+当时的后续实现至少测试：
 
 - 直接文件工具新增/更新有效 `SKILL.md`：`RESOLVED_BY_AGENT`，Learning Job `0`；
 - Shell/PowerShell 间接新增不同名称 Skill：`RESOLVED_BY_AGENT`，Learning Job `0`；
@@ -293,4 +297,4 @@ WorkItem.processingState = CAPTURED
 - rc.2 stock DSH 上验证首 step 基线、filesystem watcher 延迟和 catalog complete 行为；
 - 持久化快照、日志、RPC 与 UI 不包含 Skill 正文、Shell 命令、工具参数、绝对路径或凭据。
 
-在这份 Design 获批前，不进入实现，也不据此提前拆分实现 Issue。
+以上是当时的实施验收与评审门禁。当前单一所有者原则已由 #84 的批次流水线落地；未来变更仍必须保持“同一意图最多一个生成所有者”和证据不完整时 fail closed。
