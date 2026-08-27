@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
-import { isExplicitSaveRequestV1 } from '../src/domain/observe/trigger.js'
+import {
+  EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1,
+  explicitSaveMatchesV1,
+  isExplicitSaveRequestV1,
+} from '../src/domain/observe/trigger.js'
 import { selectBoundedEvidenceRefsV2 } from '../src/domain/v2/index.js'
 
 function ref(messageSeq: number, excerpt: string) {
@@ -27,6 +31,7 @@ describe('v2 bounded evidence selection', () => {
     ['The quoted example says "save this workflow as a skill".', false],
   ])('reuses full cheap-trigger explicit-save semantics: %s', (text, expected) => {
     expect(isExplicitSaveRequestV1(text as string)).toBe(expected)
+    expect(explicitSaveMatchesV1(text as string).length > 0).toBe(expected)
   })
 
   it.each([8 * 1024, 16 * 1024])(
@@ -56,6 +61,68 @@ describe('v2 bounded evidence selection', () => {
         .toBeLessThanOrEqual(budget)
     },
   )
+
+  it.each([
+    {
+      label: 'English',
+      boundary: `${'x'.repeat(497)}, Please capture this workflow as a skill`,
+      request: 'Please capture this workflow as a skill',
+    },
+    {
+      label: 'Chinese',
+      boundary: `${'甲'.repeat(166)}，请把这个流程记录为技能`,
+      request: '请把这个流程记录为技能',
+    },
+  ])('keeps an explicit-save clause crossing the 512-byte split in $label', ({ boundary, request }) => {
+    expect(isExplicitSaveRequestV1(boundary)).toBe(true)
+    const [match] = explicitSaveMatchesV1(boundary)
+    expect(match?.projectedText).toContain(request)
+    expect(Buffer.byteLength(match?.projectedText ?? '', 'utf8'))
+      .toBeLessThanOrEqual(EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1)
+    expect(isExplicitSaveRequestV1(match?.projectedText ?? '')).toBe(true)
+
+    const selected = selectBoundedEvidenceRefsV2([
+      ref(1, `${boundary}. ${'background '.repeat(1_200)}`),
+      ref(2, `Do not save this workflow as a skill. ${'negative context. '.repeat(500)}`),
+      ref(3, `Acceptance criteria: all verification tests pass. ${'acceptance context. '.repeat(500)}`),
+      ref(4, `Required steps: first inspect, then change, finally verify. ${'ordered context. '.repeat(500)}`),
+      ref(5, `${'latest context. '.repeat(500)}TRUE_LATEST_TAIL`),
+    ], 8 * 1024)
+    const text = selected.map(item => item.excerpt).join('\n')
+
+    expect(text).toContain(request)
+    expect(selected.reduce((total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'), 0))
+      .toBeLessThanOrEqual(8 * 1024)
+  })
+
+  it('bounds a very long unpunctuated save clause without crowding out other mandatory semantics', () => {
+    const longSaveClause = [
+      `Please capture this workflow as a skill ${'long context '.repeat(2_000)} Do not skip verification.`,
+      'Acceptance criteria: all tests must pass.',
+      'Required steps: first inspect, then change, finally verify.',
+      'Only edit the target.',
+    ].join(' ')
+    expect(isExplicitSaveRequestV1(longSaveClause)).toBe(true)
+    const [match] = explicitSaveMatchesV1(longSaveClause)
+    expect(Buffer.byteLength(match?.projectedText ?? '', 'utf8'))
+      .toBeLessThanOrEqual(EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1)
+    expect(isExplicitSaveRequestV1(match?.projectedText ?? '')).toBe(true)
+
+    const selected = selectBoundedEvidenceRefsV2([
+      ref(1, longSaveClause),
+      ref(2, `${'latest context. '.repeat(500)}TRUE_LATEST_TAIL`),
+    ], 8 * 1024)
+    const text = selected.map(item => item.excerpt).join('\n')
+
+    expect(text).toContain('Please capture this workflow as a skill')
+    expect(text).toContain('Do not skip verification')
+    expect(text).toContain('Acceptance criteria')
+    expect(text).toContain('first inspect, then change, finally verify')
+    expect(text).toContain('Only edit the target')
+    expect(text).toContain('TRUE_LATEST_TAIL')
+    expect(selected.reduce((total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'), 0))
+      .toBeLessThanOrEqual(8 * 1024)
+  })
 
   it('reserves every strong semantic class and the true latest tail before competitive fill', () => {
     const saveFlood = Array.from({ length: 20 }, (_, index) => (

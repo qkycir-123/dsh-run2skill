@@ -111,7 +111,7 @@ const localPathRules = [
 
 function run(executable, args, options = {}) {
   const result = spawnSync(executable, args, {
-    cwd: root, encoding: 'utf8', windowsHide: true, ...options,
+    cwd: root, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024, ...options,
   })
   if (result.status !== 0) throw new Error(`${executable} failed with exit ${String(result.status)}`)
   return result.stdout

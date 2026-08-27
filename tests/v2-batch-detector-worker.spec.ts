@@ -4,6 +4,7 @@ import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-dom
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
+import { isExplicitSaveRequestV1 } from '../src/domain/observe/trigger.js'
 import {
   RUN2SKILL_V2_LIMITS,
   SessionBatchV2Schema,
@@ -11,6 +12,7 @@ import {
   deriveSessionBatchIdV2,
   deriveTurnObservationContentDigestV2,
   deriveTurnObservationIdV2,
+  selectBoundedEvidenceRefsV2,
 } from '../src/domain/v2/index.js'
 
 async function seedFrozenBatch() {
@@ -311,16 +313,32 @@ describe('v2 Batch Detector worker', () => {
 
   it('keeps detector evidence within one strict batch budget without adding a model call', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
-    const importantTails = [
-      'Please capture this workflow as a Skill.',
-      `Never skip verification. ${'Do not save this workflow as a Skill. '.repeat(20)}`,
-      `Acceptance criteria: typecheck, lint, and all tests pass. ${'Explain how to save this workflow as a Skill. '.repeat(20)}`,
-      `Required steps: first inspect, then change, finally read the value back. Only change the target field. ${'The docs say "save this workflow as a Skill". '.repeat(20)}`,
-      'TRUE_BATCH_TAIL: the user finally corrected the publication directory.',
+    const boundaryCases = [
+      {
+        boundary: `${'x'.repeat(497)}, Please capture this workflow as a Skill`,
+        request: 'Please capture this workflow as a Skill',
+      },
+      {
+        boundary: `${'甲'.repeat(166)}，请把这个流程记录为技能`,
+        request: '请把这个流程记录为技能',
+      },
     ]
-    const observations = importantTails.map((importantTail, index) => {
-      const excerpt = `${'irrelevant background. '.repeat(260)}${importantTail}`
-      const directUserEvidence = [{
+    for (const { boundary, request } of boundaryCases) {
+      const requestStartBytes = Buffer.byteLength(boundary.slice(0, boundary.indexOf(request)), 'utf8')
+      expect(requestStartBytes).toBeLessThan(512)
+      expect(Buffer.byteLength(boundary.slice(0, boundary.indexOf(request) + request.length), 'utf8'))
+        .toBeGreaterThan(512)
+      expect(isExplicitSaveRequestV1(boundary)).toBe(true)
+    }
+    const rawExcerpts = [
+      `${boundaryCases[0]!.boundary}. ${'irrelevant background. '.repeat(500)}${'Do not save this workflow as a Skill. '.repeat(20)}`,
+      `${boundaryCases[1]!.boundary}。${'无关背景。'.repeat(1_500)}${'请解释如何把流程保存成技能。'.repeat(20)}`,
+      `${'irrelevant background. '.repeat(500)}Acceptance criteria: typecheck, lint, and all tests pass.`,
+      `${'irrelevant background. '.repeat(500)}Required steps: first inspect, then change, finally read the value back. Only change the target field.`,
+      `${'irrelevant background. '.repeat(500)}TRUE_BATCH_TAIL: the user finally corrected the publication directory.`,
+    ]
+    const observations = rawExcerpts.map((excerpt, index) => {
+      const unboundedEvidence = [{
         source: 'USER_DIRECT' as const,
         messageSeq: index + 1,
         excerpt,
@@ -328,6 +346,18 @@ describe('v2 Batch Detector worker', () => {
         redactionKinds: [],
         truncated: false,
       }]
+      const directUserEvidence = selectBoundedEvidenceRefsV2(
+        unboundedEvidence,
+        RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes,
+      )
+      expect(directUserEvidence.reduce(
+        (total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'),
+        0,
+      )).toBeLessThanOrEqual(RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes)
+      if (index < boundaryCases.length) {
+        expect(directUserEvidence.map(item => item.excerpt).join('\n'))
+          .toContain(boundaryCases[index]!.request)
+      }
       const turnEndSeq = 8 + index
       const turnInstanceDigest = sha256Utf8(`issue-143-turn-${index}`)
       const evidenceDigest = sha256Utf8(canonicalJson(directUserEvidence))
@@ -337,7 +367,7 @@ describe('v2 Batch Detector worker', () => {
         toolOutcomeSummary: fixtures.turnObservation.toolOutcomeSummary,
         routeObservation: fixtures.turnObservation.routeObservation,
         completeness: 'COMPLETE' as const,
-        explicitSaveRequested: true,
+        explicitSaveRequested: index < boundaryCases.length,
         scopeBinding: fixtures.turnObservation.scopeBinding,
         evidenceDigest,
       }
@@ -354,7 +384,7 @@ describe('v2 Batch Detector worker', () => {
         }),
         directUserEvidence,
         evidenceDigest,
-        explicitSaveRequested: true,
+        explicitSaveRequested: index < boundaryCases.length,
         contentDigest: deriveTurnObservationContentDigestV2(content),
       })
     })
@@ -413,8 +443,9 @@ describe('v2 Batch Detector worker', () => {
       .map(item => item.excerpt).join('\n') ?? ''
     expect(model.calls).toBe(1)
     expect(evidenceBytes).toBeLessThanOrEqual(RUN2SKILL_V2_LIMITS.maxBatchEvidenceTotalBytes)
-    expect(selectedText).toContain('Please capture this workflow as a Skill')
-    expect(selectedText).toContain('Never skip verification')
+    expect(selectedText).toContain(boundaryCases[0]!.request)
+    expect(selectedText).toContain(boundaryCases[1]!.request)
+    expect(selectedText).toContain('Do not save this workflow as a Skill')
     expect(selectedText).toContain('Acceptance criteria')
     expect(selectedText).toContain('first inspect, then change, finally read the value back')
     expect(selectedText).toContain('Only change the target field')

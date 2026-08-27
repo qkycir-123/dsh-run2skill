@@ -542,7 +542,7 @@ CP-LLM-001 已在 Windows 验证：`foldRequestHeader` 的 last-wins route 可�
 架构硬边界：
 
 - Detector 只接收冻结 TurnObservation 与最多 3 个有界 DEFER carry；
-- direct-user evidence 先脱敏，再在 TurnObservation 共享预算内为“显式保存、禁止项、验收/验证、顺序步骤、约束、真实最新尾部”分别保留最低配额并限制每类上限，再填充其余语义；显式保存直接复用 Cheap Trigger 的完整分句、请求上下文、否定和解释判定，否定/解释/引用文字不占用正向保存配额；不得只保留固定长度前缀；
+- direct-user evidence 先脱敏，再在 TurnObservation 共享预算内为“显式保存、禁止项、验收/验证、顺序步骤、约束、真实最新尾部”分别保留最低配额并限制每类上限，再填充其余语义；显式保存直接复用 Cheap Trigger 的完整分句、请求上下文、否定和解释判定，并在通用 byte splitting 前将其正向命中的有界、可复验最小投影作为原子证据，否定/解释/引用文字不占用正向保存配额；不得只保留固定长度前缀；
 - Detector 对整个 batch 再应用一个严格、可计算的 evidence 总字节预算，并以实际 system prompt + 序列化 user JSON 校验 route 总预算；超限时先压缩 assistant/tool/carry 辅助字段，再按语义配额缩减 excerpt。被压缩的 excerpt 使用自己的 digest，仍只能绑定回完整 Observation evidence digest；最小安全 envelope 超限时 fail closed；
 - Detector durable claim 与真实 Stage Client 共用同一 envelope 投影，账本 `inputDigest` 精确绑定实际发送的输入，不得在 claim 后再改写输入；
 - Catalog summary 必须全量分类，超限稳定分页，未完整扫描时 CREATE=0；

@@ -1,8 +1,12 @@
 import { sha256Utf8 } from '../observe/hashing.js'
-import { isExplicitSaveRequestV1 } from '../observe/trigger.js'
+import {
+  EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1,
+  explicitSaveMatchesV1,
+  isExplicitSaveRequestV1,
+} from '../observe/trigger.js'
 
 const OMISSION_MARKER = '\n…\n'
-const MAX_SEMANTIC_UNIT_BYTES = 512
+const MAX_SEMANTIC_UNIT_BYTES = EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1
 
 type SemanticClass = 'EXPLICIT_SAVE' | 'PROHIBITION' | 'ACCEPTANCE' | 'ORDERED_STEPS' | 'CONSTRAINT' | 'LATEST_TAIL'
 
@@ -67,13 +71,36 @@ function splitUtf8(value: string, maxBytes: number): string[] {
   return result
 }
 
-function semanticUnits(value: string): string[] {
+function splitGenericSemanticUnits(value: string): string[] {
   const units = value.match(/[^.!?。！？；;\n]+[.!?。！？；;]?|\n+/gu) ?? [value]
   return units
     .filter(unit => !/^\s+$/u.test(unit))
     .flatMap(unit => splitUtf8(unit, MAX_SEMANTIC_UNIT_BYTES))
     .map(unit => unit.trim())
     .filter(Boolean)
+}
+
+function semanticUnits(value: string): string[] {
+  const explicitSaveMatches = explicitSaveMatchesV1(value)
+  if (explicitSaveMatches.length === 0) return splitGenericSemanticUnits(value)
+
+  const units: string[] = []
+  let cursor = 0
+  for (const match of explicitSaveMatches) {
+    const [firstSpan, ...remainingSpans] = match.projectedSpans
+    if (firstSpan === undefined) continue
+    units.push(...splitGenericSemanticUnits(value.slice(cursor, firstSpan.start)))
+    for (const [index, span] of remainingSpans.entries()) {
+      const previous = match.projectedSpans[index]!
+      units.push(...splitGenericSemanticUnits(value.slice(previous.end, span.start)))
+    }
+    const lastSpan = match.projectedSpans.at(-1)!
+    const trailingDelimiter = value.slice(lastSpan.end).match(/^[。！？!?;；,.，]/u)?.[0] ?? ''
+    units.push(`${match.projectedText}${trailingDelimiter}`)
+    cursor = lastSpan.end + trailingDelimiter.length
+  }
+  units.push(...splitGenericSemanticUnits(value.slice(cursor)))
+  return units
 }
 
 function semanticClasses(value: string): SemanticClass[] {
