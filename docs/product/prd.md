@@ -460,6 +460,9 @@ v0.2 不提供 Approve All、完整 Markdown Editor、inline Scope 切换后直�
 **REQ-REV-011**
 打开审核和提交 Approve 时，Host 都必须重新取得 complete Runtime/Pending Catalog 并重做 coverage/target binding 校验。若其他 Session、Agent 或外部文件变化已经覆盖该 Intent，Proposal 必须标记为 `covered` 或 `stale` 并退出可发布状态；不得依赖 Proposal 生成时的旧 Catalog，也不得要求 DSH 为 Proposal 提供 Catalog CAS/共享锁。
 
+**REQ-REV-012**
+用户可对当前可审核 Proposal 提交一条有长度上限的修改意见。浏览器只提交意见和 immutable Proposal 引用，Host 根据旧版完整正文生成新的完整 Proposal，并重做 scope、Catalog、coverage、target/Base、secret、format 与 CAS 校验。新版必须有新的 immutable revision/digest，旧版和其 Approval 永久失效，新版必须重新审核；修改意见不得改变 Scope、授权发布或让浏览器提交最终 `SKILL.md` 正文。
+
 ### 10.6 发布与回读
 
 **REQ-PUB-001**

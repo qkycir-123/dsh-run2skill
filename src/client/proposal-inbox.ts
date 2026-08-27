@@ -21,11 +21,12 @@ const endpoint = {
   reject: 'proposals/reject',
   retry: 'proposals/retry',
   refresh: 'proposals/refresh',
+  revise: 'proposals/revise',
   confirmDiscard: 'coverage/confirm-discard',
 } as const
 
 type HealthStatus = 'READY' | 'RECOVERING' | 'DEGRADED' | 'INCOMPATIBLE'
-type ProcessingState = 'READY_FOR_REVIEW' | 'PUBLISHING' | 'NEEDS_ATTENTION' | 'TERMINAL'
+type ProcessingState = 'READY_FOR_REVIEW' | 'REVISING' | 'PUBLISHING' | 'NEEDS_ATTENTION' | 'TERMINAL'
 type PublicationOutcome =
   | 'PENDING_REVIEW' | 'DISCARDED' | 'NEEDS_ATTENTION' | 'NEEDS_REFRESH' | 'PUBLISHED' | 'PUBLISH_FAILED'
 
@@ -104,6 +105,7 @@ export function describeProposalScope(
 }
 
 export function describeProposalOutcome(detail: Pick<ProposalDetail, 'processingState' | 'publicationOutcome'>): string {
+  if (detail.processingState === 'REVISING') return '正在按修改意见生成新草稿'
   if (detail.publicationOutcome === 'PUBLISHED') return 'Skill 已保存，DSH 已确认可以使用'
   if (detail.publicationOutcome === 'DISCARDED') return '技能草稿已放弃，Skill 未更改'
   if (detail.publicationOutcome === 'NEEDS_REFRESH') return '保存目标已变化，需要生成新的技能草稿'
@@ -127,6 +129,7 @@ export function describeReviewDecision(decision: ProposalDetail['reviewDecision'
 }
 
 export function describeProcessingState(state: ProposalDetail['processingState']): string {
+  if (state === 'REVISING') return '正在生成新草稿'
   if (state === 'PUBLISHING') return '正在保存'
   if (state === 'NEEDS_ATTENTION') return '需要处理'
   if (state === 'TERMINAL') return '已结束'
@@ -201,6 +204,12 @@ export interface SafeProposalDetail {
   readonly supportingExperienceIds: readonly string[]
   readonly catalogObservationDigest: string
   readonly curationRationale: string
+  readonly revisionParent?: {
+    readonly proposalId: string
+    readonly revision: number
+    readonly digest: string
+    readonly exactSkillBytes: string
+  }
   readonly actionBinding?:
     | {
         readonly kind: 'CREATE'
@@ -290,6 +299,12 @@ export class ProposalInboxController {
   #removeFocus: (() => void) | undefined
   #removeVisibility: (() => void) | undefined
   #removeOnline: (() => void) | undefined
+  #revisionAttempt: {
+    readonly workItemId: string
+    readonly proposalRef: ProposalRefV1
+    readonly feedback: string
+    readonly actionId: string
+  } | undefined
 
   constructor(
     private readonly workspaceId: string,
@@ -467,6 +482,72 @@ export class ProposalInboxController {
     })
   }
 
+  async revise(feedback: string): Promise<void> {
+    await this.whenIdle()
+    const detail = this.#state.detail
+    const normalized = feedback.normalize('NFKC').trim()
+    if (
+      this.#disposed
+      || detail === undefined
+      || this.#state.mutationPending
+      || normalized.length === 0
+      || new TextEncoder().encode(normalized).byteLength > 2_048
+    ) return
+    const proposalRef: ProposalRefV1 = detail.action?.proposalRef ?? {
+      proposalId: detail.proposal.proposalId,
+      revision: detail.proposal.revision,
+      digest: detail.proposal.digest,
+    }
+    const action = this.#scopeAccess().actions.find(candidate => (
+      candidate.proposalRef.proposalId === proposalRef.proposalId
+    )) ?? detail.action
+    if (action === undefined) return
+    const attempt = this.#revisionAttempt?.workItemId === detail.workItemId
+      && sameProposalRef(this.#revisionAttempt.proposalRef, proposalRef)
+      && this.#revisionAttempt.feedback === normalized
+      ? this.#revisionAttempt
+      : { workItemId: detail.workItemId, proposalRef, feedback: normalized, actionId: createRevisionActionId() }
+    this.#revisionAttempt = attempt
+    await this.#execute(async signal => {
+      this.#publish({ ...this.#state, mutationPending: true, announcement: '正在按修改意见生成新草稿…' })
+      const raw = await this.call(endpoint.revise, {
+        apiVersion: 1,
+        workItemId: detail.workItemId,
+        workItemRevision: detail.workItemRevision,
+        proposalRef,
+        currentScope: this.#scopeAccess().currentScope,
+        action,
+        actionId: attempt.actionId,
+        feedback: normalized,
+      }, signal)
+      const receipt = parseMutationReceipt(raw)
+      if (receipt === undefined) {
+        if (raw !== null && typeof raw === 'object' && 'ok' in raw && raw.ok === false) {
+          this.#revisionAttempt = undefined
+        }
+        throw new Error('invalid revision receipt')
+      }
+      this.#revisionAttempt = undefined
+      this.#publish({
+        ...this.#state,
+        mutationPending: false,
+        selectedProposalId: receipt.proposalRef.proposalId,
+        detailPhase: 'LOADING',
+        detail: undefined,
+        announcement: '已生成新草稿，请重新审核',
+      })
+      await this.#loadListWithin(signal)
+    }, () => {
+      this.#publish({
+        ...this.#state,
+        mutationPending: false,
+        detailPhase: 'ERROR',
+        detail: undefined,
+        announcement: '修改未完成，原草稿未被替换；请重新打开后重试',
+      })
+    })
+  }
+
   dispose(): void {
     if (this.#disposed) return
     this.#disposed = true
@@ -523,7 +604,7 @@ export class ProposalInboxController {
 
   async #refreshPublishingDetailWithin(signal: AbortSignal): Promise<void> {
     const selected = this.#state.selectedProposalId
-    if (selected !== undefined && this.#state.detail?.processingState === 'PUBLISHING') {
+    if (selected !== undefined && ['PUBLISHING', 'REVISING'].includes(this.#state.detail?.processingState ?? '')) {
       const scopeAccess = this.#scopeAccess()
       const action = scopeAccess.actions.find(candidate => candidate.proposalRef.proposalId === selected)
       if (action === undefined) return
@@ -622,6 +703,18 @@ export class ProposalInboxController {
       actions: [],
     }
   }
+}
+
+function createRevisionActionId(): string {
+  const bytes = new Uint8Array(32)
+  globalThis.crypto.getRandomValues(bytes)
+  return `rev_${Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')}`
+}
+
+function sameProposalRef(left: ProposalRefV1, right: ProposalRefV1): boolean {
+  return left.proposalId === right.proposalId
+    && left.revision === right.revision
+    && left.digest === right.digest
 }
 
 const formatCharacters = new Map<number, string>([

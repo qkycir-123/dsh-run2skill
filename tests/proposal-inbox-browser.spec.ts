@@ -2,7 +2,7 @@
 
 import { createElement } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { ProposalReviewStore } from '../src/adapters/dsh-storage/proposal-review-store.js'
 import { ProposalDetailView, ProposalInboxHeaderAction } from '../src/client/proposal-inbox-view.js'
@@ -152,6 +152,7 @@ describe('Proposal Inbox browser accessibility', () => {
       onReject: () => undefined,
       onRetry: () => undefined,
       onRefresh: () => undefined,
+      onRevise: () => undefined,
       onConfirmDiscard: () => undefined,
     }))
 
@@ -168,5 +169,68 @@ describe('Proposal Inbox browser accessibility', () => {
     expect(technicalDetails?.textContent).not.toContain('user-dsh')
     expect(screen.getByLabelText('已有技能匹配技术信息')).toBeTruthy()
     expect(screen.queryByLabelText('保存目标技术信息')).toBeNull()
+  })
+
+  it('keeps revision input bounded, keyboard-accessible, and disabled while submitting', () => {
+    const item = makeLearnedWorkItem()
+    const proposal = makeMergeProposalSnapshot(item)
+    const onRevise = vi.fn()
+    const detail = {
+      workItemId: item.workItemId,
+      workItemRevision: item.revision,
+      processingState: 'READY_FOR_REVIEW' as const,
+      reviewDecision: 'PENDING' as const,
+      publicationOutcome: 'PENDING_REVIEW' as const,
+      proposal: {
+        ...proposal,
+        revision: 2,
+        revisionParent: {
+          proposalId: `prop_${'9'.repeat(64)}`,
+          revision: 1,
+          digest: '8'.repeat(64),
+          exactSkillBytes: proposal.exactSkillBytes.replace('Generated', 'Previous'),
+        },
+      },
+      sessionCoordinate: {
+        rootSessionId: item.signalKey.rootSessionId,
+        sessionCreatedAt: item.signalKey.sessionCreatedAt,
+        turn: item.signalKey.turn,
+        turnEndSeq: item.signalKey.turnEndSeq,
+      },
+      evidenceRefs: item.evidenceRefs,
+      experiences: item.learning!.experiences!,
+    }
+    const renderView = (mutationPending: boolean) => createElement(ProposalDetailView, {
+      detail: detail as never,
+      textMode: 'SAFE' as const,
+      setTextMode: () => undefined,
+      mutationPending,
+      onApprove: () => undefined,
+      onReject: () => undefined,
+      onRetry: () => undefined,
+      onRefresh: () => undefined,
+      onRevise,
+      canRevise: true,
+      onConfirmDiscard: () => undefined,
+    })
+    const view = render(renderView(false))
+    const textbox = screen.getByRole('textbox', { name: '想怎么修改？' })
+    const submit = screen.getByRole('button', { name: '按意见生成新草稿' })
+    expect(textbox.getAttribute('aria-describedby')).toContain('run2skill-revision-help')
+    expect(screen.getByLabelText('相对上一版草稿的变化').textContent).toMatch(/[+-]/)
+    expect((submit as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(textbox, { target: { value: '请补充先运行测试。' } })
+    expect((submit as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(submit)
+    expect(onRevise).toHaveBeenCalledWith('请补充先运行测试。')
+
+    fireEvent.change(textbox, { target: { value: '界'.repeat(700) } })
+    expect(screen.getByRole('alert').textContent).toContain('/ 2048 字节')
+    expect((submit as HTMLButtonElement).disabled).toBe(true)
+
+    view.rerender(renderView(true))
+    expect((screen.getByRole('textbox', { name: '想怎么修改？' }) as HTMLTextAreaElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '正在生成新草稿…' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })

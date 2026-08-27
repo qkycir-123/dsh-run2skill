@@ -65,6 +65,7 @@ function projectLineage(lineage: NativeLineage): ProjectedV2AttentionAction | un
     createdAt: proposal.createdAt,
     updatedAt: lineage.updatedAt,
   }
+  const revisionPending = lineage.revisionActions.at(-1)?.state === 'CALL_RESERVED'
   if (proposal.reviewDecision === undefined) {
     const reasonCode = proposal.reviewFailureCode ?? 'PROPOSAL_READY'
     if (proposal.reviewFailureCode === 'CATALOG_CHANGED') {
@@ -82,7 +83,7 @@ function projectLineage(lineage: NativeLineage): ProjectedV2AttentionAction | un
       actionKey: actionKey(lineage, 'REVIEW_PROPOSAL', reasonCode),
       kind: 'REVIEW_PROPOSAL',
       reasonCode,
-      availableActions: ['APPROVE', 'REJECT'],
+      availableActions: revisionPending ? [] : ['APPROVE', 'REJECT', 'REVISE'],
     }
   }
   const failure = proposal.publicationFailureCode
@@ -107,7 +108,7 @@ function projectLineage(lineage: NativeLineage): ProjectedV2AttentionAction | un
       actionKey: actionKey(lineage, 'RETRY_PUBLICATION', reasonCode),
       kind: 'RETRY_PUBLICATION',
       reasonCode,
-      availableActions: ['RETRY'],
+      availableActions: revisionPending ? [] : ['RETRY', 'REVISE'],
     }
   }
   return undefined

@@ -10,9 +10,11 @@ import {
 import {
   deriveV2ProposalRef,
   V2ProposalRefreshError,
+  V2ProposalRevisionError,
   V2ProposalReviewError,
   type V2ProposalRef,
   type V2ProposalRefreshCoordinator,
+  type V2ProposalRevisionCoordinator,
   type V2ProposalReviewCoordinator,
 } from '../../application/review/index.js'
 import {
@@ -27,6 +29,7 @@ import {
   PROPOSALS_GET_ENDPOINT,
   PROPOSALS_LIST_ENDPOINT,
   PROPOSALS_REJECT_ENDPOINT,
+  PROPOSALS_REVISE_ENDPOINT,
   PROPOSALS_REFRESH_ENDPOINT,
   PROPOSALS_RETRY_ENDPOINT,
   PROPOSAL_SUMMARY_ENDPOINT,
@@ -37,6 +40,7 @@ import {
   mutationRequestSchema,
   receiptSchema,
   rejectRequestSchema,
+  reviseRequestSchema,
   safeProposalSchema,
   summaryRequestSchema,
   summaryResponseSchema,
@@ -69,6 +73,7 @@ const supported = new Set([
   PROPOSALS_REJECT_ENDPOINT,
   PROPOSALS_REFRESH_ENDPOINT,
   PROPOSALS_RETRY_ENDPOINT,
+  PROPOSALS_REVISE_ENDPOINT,
 ])
 
 export interface V2CompatibleProposalPresentation {
@@ -91,6 +96,7 @@ export interface V2ProposalRpcOptions {
   }) => Promise<V2CompatibleProposalPresentation>
   readonly publications: (domain: Run2skillV2Domain) => V2ProposalPublicationCoordinator | undefined
   readonly refreshes: (domain: Run2skillV2Domain) => V2ProposalRefreshCoordinator | undefined
+  readonly revisions?: (domain: Run2skillV2Domain) => V2ProposalRevisionCoordinator | undefined
   readonly readHealth?: () => {
     readonly status: 'READY' | 'RECOVERING' | 'DEGRADED' | 'INCOMPATIBLE'
     readonly recoveryLag: boolean
@@ -127,6 +133,9 @@ function activeDomain(getDomain: () => Run2skillV2Domain | undefined): Run2skill
 function stateOf(lineage: NativeLineage) {
   const proposal = lineage.proposalRevisions.at(-1)
   if (proposal === undefined) return undefined
+  if (lineage.revisionActions.at(-1)?.state === 'CALL_RESERVED') {
+    return { processingState: 'REVISING' as const, reviewDecision: 'PENDING' as const, publicationOutcome: 'PENDING_REVIEW' as const }
+  }
   if (lineage.state === 'REFRESHING') {
     return {
       processingState: 'PUBLISHING' as const,
@@ -208,6 +217,17 @@ function mappedError(value: unknown): ObserveRpcResult<never> {
       case 'REFRESH_REVISION_CONFLICT':
       case 'STALE_PROPOSAL_REF': return error('conflict')
       case 'INVALID_REFRESH_STATE': return error('invalid-state')
+      default: return error('internal')
+    }
+  }
+  if (value instanceof V2ProposalRevisionError) {
+    switch (value.code) {
+      case 'REVISION_LINEAGE_NOT_FOUND': return error('not-found')
+      case 'REVISION_REVISION_CONFLICT':
+      case 'STALE_PROPOSAL_REF':
+      case 'REVISION_BUSY': return error('conflict')
+      case 'INVALID_REVISION_STATE': return error('invalid-state')
+      case 'REVISION_INPUT_INVALID': return error('bad-request')
       default: return error('internal')
     }
   }
@@ -345,7 +365,7 @@ export function createV2ProposalRpcHandler(
         let lineage = authorized.lineage
         let proposal = lineage.proposalRevisions.at(-1)!
         if (proposal.proposalId !== request.data.proposalId) return error('conflict')
-        if (proposal.reviewDecision === undefined) {
+        if (proposal.reviewDecision === undefined && lineage.revisionActions.at(-1)?.state !== 'CALL_RESERVED') {
           const reviews = options.reviews(domain)
           if (reviews === undefined) return error('internal')
           const inspected = await reviews.inspect({
@@ -385,19 +405,60 @@ export function createV2ProposalRpcHandler(
     if (endpoint === COVERAGE_CONFIRM_DISCARD_ENDPOINT) return error('invalid-state')
     const parsed = endpoint === PROPOSALS_REJECT_ENDPOINT
       ? rejectRequestSchema.safeParse(payload)
+      : endpoint === PROPOSALS_REVISE_ENDPOINT
+        ? reviseRequestSchema.safeParse(payload)
       : mutationRequestSchema.safeParse(payload)
     if (!parsed.success) return error('bad-request')
+    const revisionData = endpoint === PROPOSALS_REVISE_ENDPOINT
+      ? reviseRequestSchema.parse(payload)
+      : undefined
     try {
       const required = endpoint === PROPOSALS_APPROVE_ENDPOINT
         ? 'APPROVE'
         : endpoint === PROPOSALS_REJECT_ENDPOINT
           ? 'REJECT'
+          : endpoint === PROPOSALS_REVISE_ENDPOINT
+            ? 'REVISE'
           : endpoint === PROPOSALS_REFRESH_ENDPOINT
             ? 'REFRESH'
             : 'RETRY'
-      const authorized = await options.authorizer.authorize(
-        domain, parsed.data.currentScope, parsed.data.action as V2AttentionActionIdentity, required,
-      )
+      let authorized
+      try {
+        authorized = await options.authorizer.authorize(
+          domain, parsed.data.currentScope, parsed.data.action as V2AttentionActionIdentity, required,
+        )
+      } catch (caught) {
+        if (revisionData === undefined) throw caught
+        const visible = await options.authorizer.visibleLineages(domain, parsed.data.currentScope)
+        const duplicate = visible.find(candidate => (
+          deriveV2ActionSubjectId(candidate.lineageId) === parsed.data.workItemId
+          && candidate.revisionActions.some(action => (
+            action.actionId === revisionData.actionId
+            && action.parentProposalId === parsed.data.proposalRef.proposalId
+            && action.parentProposalRevision === parsed.data.proposalRef.revision
+            && action.parentProposalDigest === parsed.data.proposalRef.digest
+          ))
+        ))
+        if (duplicate === undefined) throw caught
+        const revisions = options.revisions?.(domain)
+        if (revisions === undefined) return error('internal')
+        const result = await revisions.revise({
+          lineageId: duplicate.lineageId,
+          expectedLineageRevision: parsed.data.workItemRevision,
+          proposalRef: parsed.data.proposalRef,
+          actionId: revisionData.actionId,
+          feedback: revisionData.feedback,
+        })
+        const state = stateOf(result.lineage)!
+        return { ok: true, value: receiptSchema.parse({
+          apiVersion: 1,
+          workItemId: parsed.data.workItemId,
+          workItemRevision: result.lineage.revision,
+          proposalRef: result.proposalRef,
+          changed: result.changed,
+          ...state,
+        }) }
+      }
       if (
         authorized.action.subjectId !== parsed.data.workItemId
         || authorized.lineage.revision !== parsed.data.workItemRevision
@@ -405,6 +466,19 @@ export function createV2ProposalRpcHandler(
       ) return error('conflict')
       let lineage = authorized.lineage
       let changed = false
+      if (revisionData !== undefined) {
+        const revisions = options.revisions?.(domain)
+        if (revisions === undefined) return error('internal')
+        const result = await revisions.revise({
+          lineageId: lineage.lineageId,
+          expectedLineageRevision: lineage.revision,
+          proposalRef: deriveV2ProposalRef(lineage),
+          actionId: revisionData.actionId,
+          feedback: revisionData.feedback,
+        })
+        lineage = result.lineage
+        changed = result.changed
+      }
       if (endpoint === PROPOSALS_REFRESH_ENDPOINT) {
         const refreshes = options.refreshes(domain)
         if (refreshes === undefined) return error('internal')

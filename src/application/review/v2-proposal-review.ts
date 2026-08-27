@@ -1,14 +1,13 @@
 import { Run2skillV2GlobalStore } from '../../adapters/dsh-storage/v2-global-store.js'
 import type { Run2skillV2Domain } from '../../adapters/dsh-storage/v2-types.js'
 import type { Run2skillTable } from '../../adapters/dsh-storage/types.js'
-import { canonicalJson } from '../../domain/learn/identity.js'
-import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import {
   ExperienceIntentV2Schema,
   ProposalLineageV2Schema,
   SessionBatchV2Schema,
   deriveProposalCatalogMutationAnchorV2,
   deriveProposalCatalogMutationIdV2,
+  deriveNativeProposalRefDigestV2,
   deriveProposalReviewReceiptDigestV2,
   type ExperienceIntentV2,
   type ProposalLineageV2,
@@ -76,41 +75,6 @@ export class V2ProposalReviewError extends Error {
   }
 }
 
-function immutableProposalFacts(lineage: NativeProposalLineageV2, proposal: NativeProposalRevisionV2) {
-  return {
-    contract: 'run2skill-v2-proposal-ref-v1',
-    lineageId: lineage.lineageId,
-    persistenceScope: lineage.persistenceScope,
-    behaviorSignature: lineage.behaviorSignature,
-    proposal: {
-      revision: proposal.revision,
-      proposalId: proposal.proposalId,
-      ownerIntentId: proposal.ownerIntentId,
-      ownerIntentRevision: proposal.ownerIntentRevision,
-      action: proposal.action,
-      body: proposal.body,
-      runtimeCatalogDigest: proposal.runtimeCatalogDigest,
-      pendingCatalogDigest: proposal.pendingCatalogDigest,
-      generationResultReceiptDigest: proposal.generationResultReceiptDigest,
-      catalogMutationReceiptDigest: proposal.catalogMutationReceiptDigest,
-      catalogEpoch: proposal.catalogEpoch,
-      ...(proposal.targetIdentityDigest === undefined
-        ? {}
-        : { targetIdentityDigest: proposal.targetIdentityDigest }),
-      ...(proposal.baseSkillBytesDigest === undefined
-        ? {}
-        : { baseSkillBytesDigest: proposal.baseSkillBytesDigest }),
-      ...(proposal.baseSkillBytes === undefined
-        ? {}
-        : { baseSkillBytes: proposal.baseSkillBytes }),
-      ...(proposal.projectScopeBinding === undefined
-        ? {}
-        : { projectScopeBinding: proposal.projectScopeBinding }),
-      createdAt: proposal.createdAt,
-    },
-  }
-}
-
 export function deriveV2ProposalRef(lineage: ProposalLineageV2): V2ProposalRef {
   if (lineage.origin !== 'RUN2SKILL_V2') throw new TypeError('Legacy lineage has no native v2 Proposal ref')
   const proposal = lineage.proposalRevisions.at(-1)
@@ -118,7 +82,12 @@ export function deriveV2ProposalRef(lineage: ProposalLineageV2): V2ProposalRef {
   return {
     proposalId: proposal.proposalId,
     revision: proposal.revision,
-    digest: sha256Utf8(canonicalJson(immutableProposalFacts(lineage, proposal))),
+    digest: deriveNativeProposalRefDigestV2({
+      lineageId: lineage.lineageId,
+      persistenceScope: lineage.persistenceScope,
+      behaviorSignature: lineage.behaviorSignature,
+      proposal,
+    }),
   }
 }
 

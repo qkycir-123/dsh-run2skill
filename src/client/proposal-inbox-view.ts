@@ -234,6 +234,8 @@ export function ProposalInboxPanel(props: {
       onReject: () => { props.setRejectConfirm(true) },
       onRetry: () => { void controller.mutate('RETRY') },
       onRefresh: () => { void controller.mutate('REFRESH') },
+      onRevise: feedback => { void controller.revise(feedback) },
+      canRevise: false,
       onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD') },
     }),
     createElement('div', { 'aria-live': 'polite', 'aria-atomic': true }, state.announcement),
@@ -376,9 +378,17 @@ export function ProposalDetailView(props: {
   readonly onReject: (trigger?: HTMLButtonElement) => void
   readonly onRetry: () => void
   readonly onRefresh: () => void
+  readonly onRevise: (feedback: string) => void
+  readonly canRevise?: boolean
   readonly onConfirmDiscard: () => void
 }): ReactElement {
   const { detail, mutationPending } = props
+  const [revisionFeedback, setRevisionFeedback] = useState('')
+  const [revisionSubmitted, setRevisionSubmitted] = useState(false)
+  useEffect(() => {
+    setRevisionFeedback('')
+    setRevisionSubmitted(false)
+  }, [detail.proposal.proposalId])
   const proposal = detail.proposal
   const action = proposalDetailAction(detail, mutationPending)
   const actionable = action === 'REVIEW'
@@ -393,6 +403,11 @@ export function ProposalDetailView(props: {
     ? proposal.actionBinding.coveringCandidateBinding
     : undefined
   const diff = baseBytes === undefined ? [] : makeExactLineDiff(baseBytes, proposal.exactSkillBytes)
+  const revisionDiff = proposal.revisionParent === undefined
+    ? []
+    : makeExactLineDiff(proposal.revisionParent.exactSkillBytes, proposal.exactSkillBytes)
+  const revisionFeedbackBytes = new TextEncoder().encode(revisionFeedback.trim()).byteLength
+  const revisionFeedbackValid = revisionFeedback.trim().length > 0 && revisionFeedbackBytes <= 2_048
 
   return createElement(Fragment, null,
     createElement('h3', null, coveringCandidate === undefined
@@ -506,6 +521,13 @@ export function ProposalDetailView(props: {
       mode: props.textMode,
       label: coveringCandidate === undefined ? '确认要保存的技能说明' : '用于判断的草稿内容',
     }),
+    proposal.revisionParent === undefined ? null : createElement(Fragment, null,
+      createElement('h4', null, '相对上一版草稿的变化'),
+      createElement('p', { className: css.muted }, '“+”表示新增内容，“-”表示被替换的内容。修改后需要重新审核。'),
+      createElement('pre', { 'aria-label': '相对上一版草稿的变化' },
+        revisionDiff.map(line => `${line.kind === 'ADD' ? '+' : line.kind === 'REMOVE' ? '-' : ' '} ${makeSafeText(line.text)}`).join('\n'),
+      ),
+    ),
     baseBytes === undefined ? null : createElement(Fragment, null,
       createElement('h4', null, '现有技能内容'),
       createElement(ProposalTextView, { value: baseBytes, mode: props.textMode, label: '现有技能内容' }),
@@ -515,6 +537,37 @@ export function ProposalDetailView(props: {
         diff.map(line => `${line.kind === 'ADD' ? '+' : line.kind === 'REMOVE' ? '-' : ' '} ${makeSafeText(line.text)}`).join('\n'),
       ),
     ),
+    proposal.kind === 'DISCARD' || props.canRevise !== true
+      ? null
+      : createElement('section', { className: css.revisionBox, 'aria-label': '要求修改技能草稿' },
+          createElement('label', { htmlFor: `run2skill-revision-${proposal.proposalId}` }, '想怎么修改？'),
+          createElement('p', { id: `run2skill-revision-help-${proposal.proposalId}`, className: css.muted },
+            '写一条简短意见。Run2Skill 会重新生成完整草稿，原草稿不会直接发布。',
+          ),
+          createElement('textarea', {
+            id: `run2skill-revision-${proposal.proposalId}`,
+            value: revisionFeedback,
+            rows: 3,
+            disabled: mutationPending,
+            'aria-describedby': `run2skill-revision-help-${proposal.proposalId} run2skill-revision-count-${proposal.proposalId}`,
+            onChange: (event: { currentTarget: HTMLTextAreaElement }) => {
+              setRevisionFeedback(event.currentTarget.value)
+            },
+          }),
+          createElement('span', {
+            id: `run2skill-revision-count-${proposal.proposalId}`,
+            className: revisionFeedbackBytes > 2_048 ? css.danger : css.muted,
+            role: revisionFeedbackBytes > 2_048 ? 'alert' : undefined,
+          }, `${String(revisionFeedbackBytes)} / 2048 字节`),
+          createElement(Button, {
+            variant: 'outline',
+            disabled: mutationPending || !revisionFeedbackValid,
+            onClick: () => {
+              setRevisionSubmitted(true)
+              props.onRevise(revisionFeedback)
+            },
+          }, mutationPending && revisionSubmitted ? '正在生成新草稿…' : '按意见生成新草稿'),
+        ),
     coveringBytes === undefined ? null : createElement(Fragment, null,
       createElement('h4', null, '将继续使用的已有技能内容'),
       createElement(ProposalTextView, { value: coveringBytes, mode: props.textMode, label: '将继续使用的已有技能内容' }),

@@ -677,6 +677,16 @@ function ProposalSettingsSection(props: {
     }
   }, [controller, props.active])
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot, controller.snapshot)
+  useEffect(() => {
+    const selected = state.selectedProposalId
+    if (
+      props.active
+      && selected !== undefined
+      && state.detailPhase === 'LOADING'
+      && state.announcement === '已生成新草稿，请重新审核'
+      && scopeAccessRef.current.actions.some(action => action.proposalRef.proposalId === selected)
+    ) void controller.select(selected)
+  }, [controller, props.active, props.actions, state.announcement, state.detailPhase, state.selectedProposalId])
   const [filter, setFilter] = useState('')
   const [textMode, setTextMode] = useState<'SAFE' | 'RAW'>('SAFE')
   const [rejectConfirm, setRejectConfirm] = useState(false)
@@ -751,6 +761,11 @@ function ProposalSettingsSection(props: {
           },
           onRetry: () => { void controller.mutate('RETRY').finally(props.onMutationSettled) },
           onRefresh: () => { void controller.mutate('REFRESH').finally(props.onMutationSettled) },
+          onRevise: feedback => { void controller.revise(feedback).finally(props.onMutationSettled) },
+          canRevise: props.actions.some(action => (
+            action.proposalRef?.proposalId === state.detail?.proposal.proposalId
+            && action.availableActions?.includes('REVISE') === true
+          )),
           onConfirmDiscard: () => { void controller.mutate('CONFIRM_DISCARD').finally(props.onMutationSettled) },
         }),
       ),

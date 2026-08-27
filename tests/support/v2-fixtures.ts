@@ -219,6 +219,7 @@ export function createMinimalV2Fixtures() {
     ownerIntentRevision: experienceIntent.revision,
     currentProposalRevision: 0,
     proposalRevisions: [],
+    revisionActions: [],
     currentSkillRevision: 0,
     skillRevisions: [],
     createdAt: now,

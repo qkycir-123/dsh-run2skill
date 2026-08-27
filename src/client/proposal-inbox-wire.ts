@@ -12,7 +12,7 @@ const nonNegativeInteger = z.number().int().safe().nonnegative()
 const proposalId = z.string().regex(/^prop_[a-f0-9]{64}$/)
 const workItemId = z.string().regex(/^wi_[a-f0-9]{64}$/)
 const proposalRef = z.object({ proposalId, revision: positiveInteger, digest: sha256 }).strict()
-const processingState = z.enum(['READY_FOR_REVIEW', 'PUBLISHING', 'NEEDS_ATTENTION', 'TERMINAL'])
+const processingState = z.enum(['READY_FOR_REVIEW', 'REVISING', 'PUBLISHING', 'NEEDS_ATTENTION', 'TERMINAL'])
 const publicationOutcome = z.enum([
   'PENDING_REVIEW', 'DISCARDED', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISHED', 'PUBLISH_FAILED',
 ])
@@ -92,6 +92,12 @@ const proposal = z.object({
   supportingExperienceIds: z.array(z.string().regex(/^exp_[a-f0-9]{64}$/)).min(1).max(3),
   catalogObservationDigest: sha256,
   curationRationale: z.string().min(1).max(4_096),
+  revisionParent: z.object({
+    proposalId,
+    revision: positiveInteger,
+    digest: sha256,
+    exactSkillBytes: z.string().min(1).max(65_536),
+  }).strict().optional(),
   actionBinding: actionBinding.optional(),
   proposalId,
   digest: sha256,
@@ -148,7 +154,7 @@ const listItem = z.object({
   description: z.string().min(1).max(2_048),
   persistenceScope: z.enum(['PROJECT', 'USER']),
   createdAt: z.string().min(1).max(64),
-  processingState: z.enum(['READY_FOR_REVIEW', 'PUBLISHING', 'NEEDS_ATTENTION']),
+  processingState: z.enum(['READY_FOR_REVIEW', 'REVISING', 'PUBLISHING', 'NEEDS_ATTENTION']),
   publicationOutcome: z.enum(['PENDING_REVIEW', 'NEEDS_ATTENTION', 'NEEDS_REFRESH', 'PUBLISH_FAILED']),
 }).strict()
 const listPage = z.object({
@@ -224,7 +230,7 @@ export function parseMutationReceipt(value: unknown): {
   readonly workItemRevision: number
   readonly proposalRef: { readonly proposalId: string; readonly revision: number; readonly digest: string }
   readonly changed: boolean
-  readonly processingState: 'READY_FOR_REVIEW' | 'PUBLISHING' | 'NEEDS_ATTENTION' | 'TERMINAL'
+  readonly processingState: 'READY_FOR_REVIEW' | 'REVISING' | 'PUBLISHING' | 'NEEDS_ATTENTION' | 'TERMINAL'
   readonly reviewDecision: 'PENDING' | 'APPROVED' | 'REJECTED'
   readonly publicationOutcome: 'PENDING_REVIEW' | 'DISCARDED' | 'NEEDS_ATTENTION' | 'NEEDS_REFRESH' | 'PUBLISHED' | 'PUBLISH_FAILED'
 } | undefined {

@@ -160,6 +160,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       options.now === undefined ? {} : { now: options.now },
     )
     this.proposals = new V2ProposalHostServices(domain, {
+      llm: options.llm,
       registry: options.skills,
       resolveSession: lifecycleKey => {
         const session = options.resolveSession(lifecycleKey)
@@ -213,6 +214,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     await this.purge.recover()
     await this.attention.recover()
     await this.proposals.refreshes.recover()
+    await this.proposals.revisions.recover()
     await this.proposals.reviews.recover()
     await this.proposals.publications.recover()
     await this.pipeline.start()
@@ -276,6 +278,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     try {
       await this.pipeline.dispose()
     } finally {
+      this.proposals.dispose()
       await this.#domain.close()
     }
   }
