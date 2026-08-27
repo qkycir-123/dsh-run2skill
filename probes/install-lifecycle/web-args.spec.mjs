@@ -31,12 +31,14 @@ test('candidate probe selects the current user-facing proposal label', async () 
   assert.doesNotMatch(source, /CREATE · generated-file-hygiene/u)
 })
 
-test('stable release probe covers the published 0.2.0 package before the 0.3.0 candidate', async () => {
+test('stable release probe covers published 0.2.0 and 0.3.0 before the 0.3.1 candidate', async () => {
   const probe = await readFile(fileURLToPath(new URL('release-upgrade-probe.mjs', import.meta.url)), 'utf8')
   const runner = await readFile(fileURLToPath(new URL('../run-install-lifecycle-probe.ps1', import.meta.url)), 'utf8')
 
-  assert.match(probe, /<0\.1\.1-alpha\.tgz> <0\.2\.0\.tgz> <0\.3\.0\.tgz>/u)
-  assert.match(probe, /candidateManifest\.version, '0\.3\.0'/u)
+  assert.match(probe, /<0\.1\.1-alpha\.tgz> <0\.2\.0\.tgz> <0\.3\.0\.tgz> <0\.3\.1\.tgz>/u)
+  assert.match(probe, /candidateManifest\.version, '0\.3\.1'/u)
+  assert.match(probe, /currentManifest\.version, '0\.3\.0'/u)
   assert.match(probe, /stableManifest\.version, '0\.2\.0'/u)
   assert.match(runner, /npm pack dsh-run2skill@0\.2\.0/u)
+  assert.match(runner, /npm pack dsh-run2skill@0\.3\.0/u)
 })

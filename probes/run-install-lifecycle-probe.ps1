@@ -32,6 +32,8 @@ $previousReleaseArchive = Join-Path $work 'previous-release-archive'
 $previousReleasePackLog = Join-Path $work 'previous-release-pack.log'
 $stableReleaseArchive = Join-Path $work 'stable-release-archive'
 $stableReleasePackLog = Join-Path $work 'stable-release-pack.log'
+$currentReleaseArchive = Join-Path $work 'current-release-archive'
+$currentReleasePackLog = Join-Path $work 'current-release-pack.log'
 $releaseUpgrade = Join-Path $work 'release-upgrade'
 $uiProbeFixture = Join-Path $work 'run2skill-ui-probe-fixture.json'
 
@@ -102,6 +104,7 @@ if ($LASTEXITCODE -ne 0) { throw "Candidate install lifecycle probe failed: $LAS
 if ($hasReleaseCandidate) {
   New-Item -ItemType Directory -Path $previousReleaseArchive | Out-Null
   New-Item -ItemType Directory -Path $stableReleaseArchive | Out-Null
+  New-Item -ItemType Directory -Path $currentReleaseArchive | Out-Null
   $savedPreference = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
@@ -124,7 +127,18 @@ if ($hasReleaseCandidate) {
   if ($stableReleasePackExitCode -ne 0) { throw 'Unable to download the published 0.2.0 package' }
   $stableTarballs = @(Get-ChildItem -LiteralPath $stableReleaseArchive -Filter '*.tgz' -File)
   if ($stableTarballs.Count -ne 1) { throw 'Stable release fetch must produce exactly one tarball' }
-  & node $releaseUpgradeProbe $clone $previousTarballs[0].FullName $stableTarballs[0].FullName $releaseCandidate $releaseUpgrade $ReleaseCandidateSha256
+  $savedPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & npm pack dsh-run2skill@0.3.0 --pack-destination $currentReleaseArchive *> $currentReleasePackLog
+    $currentReleasePackExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $savedPreference
+  }
+  if ($currentReleasePackExitCode -ne 0) { throw 'Unable to download the published 0.3.0 package' }
+  $currentTarballs = @(Get-ChildItem -LiteralPath $currentReleaseArchive -Filter '*.tgz' -File)
+  if ($currentTarballs.Count -ne 1) { throw 'Current release fetch must produce exactly one tarball' }
+  & node $releaseUpgradeProbe $clone $previousTarballs[0].FullName $stableTarballs[0].FullName $currentTarballs[0].FullName $releaseCandidate $releaseUpgrade $ReleaseCandidateSha256
   if ($LASTEXITCODE -ne 0) { throw "Stable release upgrade probe failed: $LASTEXITCODE" }
 }
 

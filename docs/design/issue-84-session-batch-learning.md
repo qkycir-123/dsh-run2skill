@@ -1,18 +1,18 @@
 # SessionBatch 语义检测、完整召回与分阶段学习设计
 
-状态：`0.2.0` 核心设计已接受并落地；`0.3.0` 继续适用；`main` 未发布增量单独标记
+状态：`0.2.0` 核心设计已接受并落地；`0.3.1` 继续适用
 
 对应 Issue：[#84](https://github.com/qkycir-123/dsh-run2skill/issues/84)
 
-更新时间：2026-08-27
+更新时间：2026-08-28
 
-适用版本：`0.2.0`–`0.3.0`；以及文中明确标记的 `main` 未发布增量
+适用版本：`0.2.0`–`0.3.1`
 
 ## 1. 范围审计
 
 本设计只重构 Run2Skill 从会话观察到 Proposal 生成之前的核心流水线。设计时决定以 fresh activation 进入 `run2skill_v2`，`run2skill_v1` 中的 Proposal 和中间缓存不做兼容迁移；该历史迁移边界已在 `0.2.0` 发布前落地。
 
-`main` 在 `v0.3.0` tag 之后增加两项仍受本设计约束的未发布实现：#141 的 durable manual synthesis request 与低噪声状态投影，以及 #143 的 TurnObservation/Detector 两层共享 evidence 预算。二者不改变批次单飞、Session quiescence、Agent-first、完整 Catalog 或人工批准边界。
+`0.3.1` 增加两项仍受本设计约束的实现：#141 的 durable manual synthesis request 与低噪声状态投影，以及 #143 的 TurnObservation/Detector 两层共享 evidence 预算。二者不改变批次单飞、Session quiescence、Agent-first、完整 Catalog 或人工批准边界。
 
 本设计包含：
 
@@ -456,7 +456,7 @@ schema 测试必须为所有 v2 records 提供“除 `schemaVersion` 外全部�
 
 - COMMITTED 前可直接停用新包；v1、已发布 Skill 和 Session Log 均未变化。
 - COMMITTED 后旧版本不会理解 v2 新事实；回退到旧版本只意味着放弃 v2 中间缓存，不会删除已发布 Skill 或 Session Log。
-- 已发布规则是：`0.2.0 → 0.3.0` 保留 v2 状态；降级到 Alpha 会放弃 v2 中间缓存，但不删除已发布 Skill 或 Session Log。未来 schema/domain 变更需单独的升级与回退设计。
+- 已发布规则是：`0.2.0 → 0.3.0 → 0.3.1` 保留 v2 状态；降级到 Alpha 会放弃 v2 中间缓存，但不删除已发布 Skill 或 Session Log。未来 schema/domain 变更需单独的升级与回退设计。
 
 ## 13. Action Queue 与静默状态
 
@@ -517,7 +517,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 | schema | 冻结 fixture 只改变 schemaVersion 即精确触发 literal 拒绝 |
 | 安全 | 脱敏、来源标签、scope、CAS、exact readback、Purge 和 fail-open/fail-closed 边界保持 |
 
-历史 `0.2.0` 发布验收要求在稳定 HEAD 运行 typecheck、lint、完整单元测试、fresh-activation/crash/concurrency/call-budget/duplicate probes，以及真实 DSH Web/learning E2E。`main` 的 #141/#143 增量已增加对应调度、重启恢复、真实 envelope、长工作流和 frozen-evaluation 覆盖，但不属于 `0.3.0` 的发布证据。
+历史 `0.2.0` 发布验收要求在稳定 HEAD 运行 typecheck、lint、完整单元测试、fresh-activation/crash/concurrency/call-budget/duplicate probes，以及真实 DSH Web/learning E2E。`0.3.1` 的 #141/#143 增量已增加对应调度、重启恢复、真实 envelope、长工作流和 frozen-evaluation 覆盖。
 
 ## 17. 历史 Roadmap 状态
 
