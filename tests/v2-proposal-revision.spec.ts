@@ -312,6 +312,57 @@ describe('v2 Proposal revision coordinator', () => {
     expect(generate).toHaveBeenCalledTimes(2)
   })
 
+  it('blocks a new revision before revalidation, reservation, or generation while a durable barrier exists', async () => {
+    const seeded = await seed()
+    const lineageBefore = structuredClone(seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId))
+    const ownerId = deriveProposalRevisionMutationOwnerIdV2(
+      seeded.lineage.lineageId,
+      `rev_${'b'.repeat(64)}`,
+    )
+    const { journal } = await installUserActionJournal(seeded.domain, ownerId)
+    const revalidate = vi.fn(async () => currentCatalog(seeded.domain))
+    const generate = vi.fn(async () => ({
+      name: 'blocked-revision',
+      description: 'Must never be generated.',
+      whenToUse: 'Never.',
+      content: '# Must not run\n',
+    }))
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate, generate, now: () => NOW,
+    })
+
+    await expect(coordinator.revise(request(seeded))).rejects.toMatchObject({ code: 'REVISION_BUSY' })
+    expect(revalidate).not.toHaveBeenCalled()
+    expect(generate).not.toHaveBeenCalled()
+    expect(seeded.domain.table('proposal_lineages').get(seeded.lineage.lineageId)).toEqual(lineageBefore)
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toEqual(journal)
+  })
+
+  it('returns an exact durable duplicate before applying the mutation availability preflight', async () => {
+    const seeded = await seed()
+    const generate = vi.fn(async () => ({
+      name: seeded.lineage.proposalRevisions[0]!.body.name,
+      description: 'A completed immutable revision.',
+      whenToUse: 'Use after tests.',
+      content: '# Completed revision\n\nRun tests.',
+    }))
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain), generate, now: () => NOW,
+    })
+    const first = await coordinator.revise(request(seeded))
+    const ownerId = deriveProposalRevisionMutationOwnerIdV2(
+      seeded.lineage.lineageId,
+      `rev_${'b'.repeat(64)}`,
+    )
+    const { journal } = await installUserActionJournal(seeded.domain, ownerId)
+
+    await expect(coordinator.revise(request(seeded))).resolves.toMatchObject({
+      changed: false, proposalRef: first.proposalRef,
+    })
+    expect(generate).toHaveBeenCalledOnce()
+    expect(seeded.domain.global.get().proposalCatalogMutationJournal).toEqual(journal)
+  })
+
   it('keeps an old approval on the superseded parent and requires fresh review for the revision', async () => {
     const seeded = await seed()
     const reviewCatalog = currentCatalog(seeded.domain)
@@ -567,6 +618,55 @@ describe('v2 Proposal revision coordinator', () => {
     expect(recoveredB.revisionActions[0]).toMatchObject({
       state: 'OUTCOME_UNKNOWN', failureCode: 'REVISION_OUTCOME_UNKNOWN',
     })
+  })
+
+  it('does not clear a legacy pre-child journal beside an unsettled committed child', async () => {
+    const seeded = await seed()
+    const beforeLineageA = seeded.domain.global.get()
+    const coordinator = new V2ProposalRevisionCoordinator(seeded.domain, {
+      revalidate: async () => currentCatalog(seeded.domain),
+      generate: async input => ({
+        name: input.parent.name,
+        description: 'Unsettled lineage A child.',
+        whenToUse: 'Use after tests.',
+        content: '# Unsettled A\n\nRun tests.',
+      }),
+      now: () => NOW,
+    })
+    const revisedA = await coordinator.revise(request(seeded))
+    const legacyA = legacySucceededLineage(revisedA.lineage, beforeLineageA.proposalCatalogEpoch)
+    await seeded.domain.table('proposal_lineages').put(legacyA.lineage.lineageId, legacyA.lineage)
+    const differentLastMutation = deriveProposalCatalogMutationAnchorV2({
+      ownerId: `rev_${'d'.repeat(64)}`,
+      kind: 'USER_ACTION',
+      inputCatalogEpoch: beforeLineageA.proposalCatalogEpoch,
+    })
+    await seeded.domain.global.set(GlobalV2Schema.parse({
+      ...beforeLineageA,
+      proposalCatalogEpoch: differentLastMutation.epoch,
+      proposalCatalogLastMutation: differentLastMutation,
+    }))
+
+    const behaviorSignature = '8'.repeat(64)
+    const lineageId = deriveNativeProposalLineageIdV2(seeded.lineage.persistenceScope, behaviorSignature)
+    const lineageBBase = ProposalLineageV2Schema.parse({
+      ...seeded.lineage,
+      lineageId,
+      behaviorSignature,
+    })
+    const lineageB = reservedLineage(lineageBBase)
+    await seeded.domain.table('proposal_lineages').put(lineageId, lineageB)
+    const { before, journal } = await installUserActionJournal(seeded.domain, ACTION_ID)
+
+    await expect(coordinator.recover()).rejects.toMatchObject({ code: 'REVISION_RECOVERY_CONFLICT' })
+    expect(seeded.domain.global.get()).toMatchObject({
+      proposalCatalogEpoch: before.proposalCatalogEpoch,
+      proposalCatalogLastMutation: before.proposalCatalogLastMutation,
+      proposalCatalogMutationJournal: journal,
+    })
+    const blockedB = ProposalLineageV2Schema.parse(seeded.domain.table('proposal_lineages').get(lineageId))
+    if (blockedB.origin !== 'RUN2SKILL_V2') throw new Error('expected blocked lineage B')
+    expect(blockedB.revisionActions.at(-1)?.state).toBe('CALL_RESERVED')
   })
 
   it('finalizes a real legacy child-committed journal only from its exact catalog receipt', async () => {

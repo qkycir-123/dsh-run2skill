@@ -15,6 +15,7 @@ import {
   deriveProposalRevisionGenerationReceiptDigestV2,
   deriveProposalRevisionMutationOwnerIdV2,
   type ExperienceIntentV2,
+  type GlobalV2,
   type ProposalLineageV2,
   type SessionBatchV2,
 } from '../../domain/v2/index.js'
@@ -90,6 +91,28 @@ function sameRef(left: V2ProposalRef, right: V2ProposalRef): boolean {
   return left.proposalId === right.proposalId
     && left.revision === right.revision
     && left.digest === right.digest
+}
+
+function isSettledHistoricalChild(
+  child: NativeProposal | undefined,
+  mutationOwnerId: string,
+  global: GlobalV2,
+): boolean {
+  if (child === undefined || child.catalogEpoch < 1) return false
+  const anchor = deriveProposalCatalogMutationAnchorV2({
+    ownerId: mutationOwnerId,
+    kind: 'USER_ACTION',
+    inputCatalogEpoch: child.catalogEpoch - 1,
+  })
+  return anchor.epoch === child.catalogEpoch
+    && anchor.digest === child.catalogMutationReceiptDigest
+    && (
+      child.catalogEpoch < global.proposalCatalogEpoch
+      || (
+        child.catalogEpoch === global.proposalCatalogEpoch
+        && child.catalogMutationReceiptDigest === global.proposalCatalogLastMutation.digest
+      )
+    )
 }
 
 function hasFormatControls(value: string): boolean {
@@ -212,6 +235,7 @@ export class V2ProposalRevisionCoordinator {
         ) throw new V2ProposalRevisionError('REVISION_INPUT_INVALID')
         return this.#duplicateResult(parsed.data, duplicate)
       }
+      this.#assertMutationAvailable()
       const lineage = this.#matchingLineage(parsed.data, request)
       const parent = lineage.proposalRevisions.at(-1)!
       const { intent, batch } = this.#inputs(lineage)
@@ -462,13 +486,7 @@ export class V2ProposalRevisionCoordinator {
     snapshot: Extract<V2ProposalReviewRevalidation, { readonly status: 'CURRENT' }>,
   ) {
     return await this.#global.runExclusive(async current => {
-      if (
-        current.migration.phase !== 'COMMITTED'
-        || current.activation === undefined
-        || current.proposalGenerationLease !== undefined
-        || current.proposalCatalogMutationJournal !== undefined
-        || current.purgeJournal !== undefined
-      ) throw new V2ProposalRevisionError('REVISION_BUSY')
+      this.#assertMutationAvailable(current)
       if (
         current.proposalCatalogEpoch !== snapshot.catalogEpoch
         || current.proposalCatalogLastMutation.digest !== snapshot.catalogMutationReceiptDigest
@@ -545,9 +563,10 @@ export class V2ProposalRevisionCoordinator {
       const lineage = parsed.data
       const currentRef = deriveV2ProposalRef(lineage)
       return lineage.revisionActions.flatMap(action => {
-        const ownsJournal = legacyUnbound
-          ? action.actionId === journal.ownerId
-          : deriveProposalRevisionMutationOwnerIdV2(lineage.lineageId, action.actionId) === journal.ownerId
+        const mutationOwnerId = legacyUnbound
+          ? action.actionId
+          : deriveProposalRevisionMutationOwnerIdV2(lineage.lineageId, action.actionId)
+        const ownsJournal = mutationOwnerId === journal.ownerId
         if (!ownsJournal) return []
         const child = lineage.proposalRevisions.find(proposal => proposal.revisionSource?.actionId === action.actionId)
         const exactCommitted = action.state === 'SUCCEEDED'
@@ -555,7 +574,9 @@ export class V2ProposalRevisionCoordinator {
           && sameRef(action.resultProposalRef, currentRef)
           && child?.catalogEpoch === expectedAnchor.epoch
           && child.catalogMutationReceiptDigest === expectedAnchor.digest
-        return [{ action, child, exactCommitted }]
+        const settledHistorical = action.state === 'SUCCEEDED'
+          && isSettledHistoricalChild(child, mutationOwnerId, global)
+        return [{ action, child, exactCommitted, settledHistorical }]
       })
     })
     const exactCommitted = ownedActions.filter(candidate => candidate.exactCommitted)
@@ -564,6 +585,11 @@ export class V2ProposalRevisionCoordinator {
       return true
     }
     const provablePreChild = exactCommitted.length === 0
+      && !ownedActions.some(candidate => (
+        candidate.action.state === 'SUCCEEDED'
+        && !candidate.exactCommitted
+        && !candidate.settledHistorical
+      ))
       ? ownedActions.filter(candidate => candidate.action.state === 'CALL_RESERVED' && candidate.child === undefined)
       : []
     if (provablePreChild.length === 1) {
@@ -583,6 +609,16 @@ export class V2ProposalRevisionCoordinator {
       return true
     }
     throw new V2ProposalRevisionError('REVISION_RECOVERY_CONFLICT')
+  }
+
+  #assertMutationAvailable(current: GlobalV2 = this.#global.get()): void {
+    if (
+      current.migration.phase !== 'COMMITTED'
+      || current.activation === undefined
+      || current.proposalGenerationLease !== undefined
+      || current.proposalCatalogMutationJournal !== undefined
+      || current.purgeJournal !== undefined
+    ) throw new V2ProposalRevisionError('REVISION_BUSY')
   }
 
   async #markFailed(lineageId: string, actionId: string, failureCode: RevisionAction['failureCode']): Promise<void> {
