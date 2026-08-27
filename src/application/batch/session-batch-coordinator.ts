@@ -396,9 +396,10 @@ export class SessionBatchCoordinator {
     for (const [lifecycleKey, detectedThrough] of detectedBySession.entries()) {
       const cursor = sessions[lifecycleKey]
       if (cursor === undefined) continue
+      const detectedThroughTurnEndSeq = Math.max(cursor.detectedThroughTurnEndSeq, detectedThrough)
       sessions[lifecycleKey] = {
-        ...withoutUndefinedActiveBatch(cursor),
-        detectedThroughTurnEndSeq: Math.max(cursor.detectedThroughTurnEndSeq, detectedThrough),
+        ...consumeManualSynthesisRequest(withoutUndefinedActiveBatch(cursor), detectedThroughTurnEndSeq),
+        detectedThroughTurnEndSeq,
         openExperienceCarry: carryBySession.get(lifecycleKey)?.carry ?? cursor.openExperienceCarry,
         updatedAt: this.#isoNow(),
       }
@@ -407,7 +408,12 @@ export class SessionBatchCoordinator {
       if (active.length !== 1) throw new SessionBatchStateConflictError('Multiple active batches for one Session lifecycle')
       const cursor = sessions[lifecycleKey]
       if (cursor === undefined) throw new SessionBatchStateConflictError('Active batch has no durable Session cursor')
-      sessions[lifecycleKey] = { ...cursor, activeBatchId: active[0]!.batchId, updatedAt: this.#isoNow() }
+      const batch = active[0]!
+      sessions[lifecycleKey] = {
+        ...consumeManualSynthesisRequest(cursor, batch.lastTurnEndSeq),
+        activeBatchId: batch.batchId,
+        updatedAt: this.#isoNow(),
+      }
     }
     for (const [lifecycleKey, cursor] of Object.entries(sessions)) {
       const windowStart = this.#windowStart(cursor)

@@ -11,6 +11,7 @@ import {
   SessionBatchCoordinator,
   SessionBatchIdentityConflictError,
 } from '../src/application/batch/index.js'
+import { BatchDetectorWorker } from '../src/application/detection/index.js'
 import { DshV2RouteSnapshotAdapter } from '../src/adapters/dsh-llm/v2-route-snapshot.js'
 import type { DshLlmPort } from '../src/adapters/dsh-llm/restricted-learning-client.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -263,6 +264,103 @@ describe('v2 SessionBatch coordinator', () => {
     await reattached.recover(40 * MINUTE)
     expect(domain.global.get().sessions[batch.sessionLifecycleKey]?.activeBatchId).toBe(batch.batchId)
     expect(domain.sessionBatches.size).toBe(1)
+  })
+
+  it('consumes a covered manual request when recovery reattaches a FROZEN batch', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const first = new SessionBatchCoordinator(domain, coordinatorOptions())
+    const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+    await first.recordObservation(observation({ seq: 10, observedAt: MINUTE }))
+    await first.requestSynthesis(lifecycleKey)
+    const beforeCursorCommit = domain.global.get()
+    const frozen = await first.flushRequested(async () => true)
+    expect(frozen).toHaveLength(1)
+    await domain.global.set(beforeCursorCommit)
+
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await recovered.recover(MINUTE)
+    await recovered.recover(MINUTE)
+
+    expect(domain.global.get().sessions[lifecycleKey]).toMatchObject({
+      activeBatchId: frozen[0]!.batchId,
+      detectedThroughTurnEndSeq: 0,
+    })
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
+    const detector = new BatchDetectorWorker(domain, {
+      client: { detect: async () => ({ result: 'NONE' }) },
+    })
+    await expect(detector.runOnce()).resolves.toBe('PROCESSED')
+    expect(domain.global.get().sessions[lifecycleKey]).toMatchObject({
+      detectedThroughTurnEndSeq: 10,
+      openExperienceCarry: [],
+    })
+    expect(domain.global.get().sessions[lifecycleKey]?.activeBatchId).toBeUndefined()
+  })
+
+  it('consumes a covered manual request when recovery commits a route-failure terminal batch', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const options = coordinatorOptions({
+      captureRouteSnapshot: async () => { throw new Error('route unavailable') },
+    })
+    const first = new SessionBatchCoordinator(domain, options)
+    const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+    await first.recordObservation(observation({ seq: 10, observedAt: MINUTE }))
+    await first.requestSynthesis(lifecycleKey)
+    const beforeCursorCommit = domain.global.get()
+    const terminal = await first.flushRequested(async () => true)
+    expect(terminal).toHaveLength(1)
+    expect(terminal[0]).toMatchObject({
+      lastTurnEndSeq: 10,
+      state: 'NEEDS_ATTENTION',
+      routeSnapshot: { failureCode: 'ROUTE_UNAVAILABLE' },
+    })
+    await domain.global.set(beforeCursorCommit)
+
+    const recovered = new SessionBatchCoordinator(domain, options)
+    await expect(recovered.recover(MINUTE)).resolves.toBeUndefined()
+    await expect(recovered.recover(MINUTE)).resolves.toBeUndefined()
+
+    expect(domain.global.get().sessions[lifecycleKey]).toMatchObject({
+      detectedThroughTurnEndSeq: 10,
+      openExperienceCarry: [],
+    })
+    expect(domain.global.get().sessions[lifecycleKey]?.activeBatchId).toBeUndefined()
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
+  })
+
+  it('preserves a manual request beyond a recovered active batch and freezes it after detector commit', async () => {
+    const domain = createMemoryRun2skillV2Domain()
+    const first = new SessionBatchCoordinator(domain, coordinatorOptions())
+    const lifecycleKey = createMinimalV2Fixtures().turnObservation.sessionLifecycleKey
+    await first.recordObservation(observation({ seq: 10, observedAt: MINUTE }))
+    await first.requestSynthesis(lifecycleKey)
+    const firstBatch = (await first.flushRequested(async () => true))[0]!
+    await first.recordObservation(observation({ seq: 20, observedAt: 2 * MINUTE }))
+    await first.requestSynthesis(lifecycleKey)
+
+    const recovered = new SessionBatchCoordinator(domain, coordinatorOptions())
+    await recovered.recover(2 * MINUTE)
+
+    expect(domain.global.get().sessions[lifecycleKey]).toMatchObject({
+      activeBatchId: firstBatch.batchId,
+      manualSynthesisRequest: { throughTurnEndSeq: 20 },
+    })
+    const detector = new BatchDetectorWorker(domain, {
+      client: { detect: async () => ({ result: 'NONE' }) },
+    })
+    await expect(detector.runOnce()).resolves.toBe('PROCESSED')
+    expect(domain.global.get().sessions[lifecycleKey]).toMatchObject({
+      detectedThroughTurnEndSeq: 10,
+      manualSynthesisRequest: { throughTurnEndSeq: 20 },
+    })
+    const later = await recovered.flushRequested(async () => true)
+    expect(later).toHaveLength(1)
+    expect(later[0]).toMatchObject({
+      firstTurnEndSeq: 20,
+      lastTurnEndSeq: 20,
+      triggerReasons: ['EXPLICIT'],
+    })
+    expect(domain.global.get().sessions[lifecycleKey]?.manualSynthesisRequest).toBeUndefined()
   })
 
   it('coalesces concurrent startup recovery so a frozen batch is dispatched once', async () => {
