@@ -59,7 +59,7 @@ Save this workflow as a Skill so it can be reused later.
 
 You can also give an explicit correction, describe a durable constraint, or teach a reusable ordered workflow during ordinary work. You do not need to stop and manually reconstruct a `SKILL.md` file.
 
-Run2Skill performs a lightweight check after a conversation turn. It does not run a model retrospective on every turn; deeper analysis begins only after an explicit learning signal is found.
+After each conversation turn, Run2Skill records only low-cost observations; it does not call a model to review every turn. Batch detection runs at bounded batch boundaries, when the session becomes idle, or when you explicitly request saving or immediate synthesis. Only reusable experience proceeds to Skill lookup and draft generation.
 
 When something needs your attention, DSH shows one native notification. To review a draft:
 
