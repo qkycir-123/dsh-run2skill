@@ -37,11 +37,22 @@ interface MatchedRule {
   matchIndex: number
 }
 
-interface TextClause {
-  text: string
+interface TextSpan {
   start: number
   end: number
 }
+
+interface TextClause extends TextSpan {
+  text: string
+}
+
+export interface ExplicitSaveMatchV1 extends TextClause {
+  readonly matchIndex: number
+  readonly projectedText: string
+  readonly projectedSpans: readonly TextSpan[]
+}
+
+export const EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1 = 512
 
 const WORD_BOUNDARY = String.raw`(?:^|[\s，。！？,.!?;；:：])`
 const WORD_END = String.raw`(?=$|[\s，。！？,.!?;；:：])`
@@ -88,13 +99,39 @@ const correctionPatterns = [correctionAnchor] as const
 const constraintPatterns = [persistentScope] as const
 const workflowPatterns = [reusableScope] as const
 
-function firstMatchIndex(text: string, patterns: readonly RegExp[]): number | undefined {
-  let first: number | undefined
+interface IndexedMatch {
+  readonly index: number
+  readonly text: string
+}
+
+function firstMatch(text: string, patterns: readonly RegExp[]): IndexedMatch | undefined {
+  let first: IndexedMatch | undefined
   for (const pattern of patterns) {
-    const index = pattern.exec(text)?.index
-    if (index !== undefined && (first === undefined || index < first)) first = index
+    const match = pattern.exec(text)
+    if (match !== null && (first === undefined || match.index < first.index)) {
+      first = { index: match.index, text: match[0] }
+    }
   }
   return first
+}
+
+function firstMatchIndex(text: string, patterns: readonly RegExp[]): number | undefined {
+  return firstMatch(text, patterns)?.index
+}
+
+function widestMatch(text: string, patterns: readonly RegExp[]): IndexedMatch | undefined {
+  let widest: IndexedMatch | undefined
+  for (const pattern of patterns) {
+    const match = pattern.exec(text)
+    if (match === null) continue
+    const candidate = { index: match.index, text: match[0] }
+    const candidateEnd = candidate.index + candidate.text.length
+    const widestEnd = widest === undefined ? -1 : widest.index + widest.text.length
+    if (candidateEnd > widestEnd || (candidateEnd === widestEnd && candidate.index < (widest?.index ?? 0))) {
+      widest = candidate
+    }
+  }
+  return widest
 }
 
 function textClauses(
@@ -129,20 +166,86 @@ function textClauses(
   return clauses
 }
 
-function explicitSaveIndices(clauses: readonly TextClause[]): number[] {
-  const matches: number[] = []
+function explicitSaveCandidate(clause: string): IndexedMatch | undefined {
+  const candidate = widestMatch(clause, explicitSavePatterns)
+  return candidate !== undefined
+    && explicitSaveRequestContext.test(clause)
+    && !explicitSaveNegation.test(clause)
+    && !explicitSaveExplanation.test(clause)
+    ? candidate
+    : undefined
+}
+
+interface ExplicitSaveProjection {
+  readonly text: string
+  readonly spans: readonly TextSpan[]
+}
+
+function verifiableExplicitSaveProjection(
+  clause: string,
+  candidate: IndexedMatch,
+): ExplicitSaveProjection | undefined {
+  const candidateEnd = candidate.index + candidate.text.length
+  const contiguous = clause.slice(0, candidate.index + candidate.text.length)
+  if (
+    Buffer.byteLength(contiguous, 'utf8') <= EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1
+    && explicitSaveCandidate(contiguous) !== undefined
+  ) return { text: contiguous, spans: [{ start: 0, end: candidateEnd }] }
+
+  if (explicitSaveCandidate(candidate.text) !== undefined) {
+    return {
+      text: candidate.text,
+      spans: [{ start: candidate.index, end: candidateEnd }],
+    }
+  }
+
+  let prefixEnd = 0
+  for (const character of clause.slice(0, candidate.index)) {
+    prefixEnd += character.length
+    const projected = `${clause.slice(0, prefixEnd)} ${candidate.text}`
+    if (Buffer.byteLength(projected, 'utf8') > EXPLICIT_SAVE_PROJECTION_MAX_BYTES_V1) break
+    if (explicitSaveCandidate(projected) !== undefined) {
+      return {
+        text: projected,
+        spans: [
+          { start: 0, end: prefixEnd },
+          { start: candidate.index, end: candidateEnd },
+        ],
+      }
+    }
+  }
+  return undefined
+}
+
+function explicitSaveMatches(clauses: readonly TextClause[]): ExplicitSaveMatchV1[] {
+  const matches: ExplicitSaveMatchV1[] = []
   for (const clause of clauses) {
-    const candidateIndex = firstMatchIndex(clause.text, explicitSavePatterns)
-    if (
-      candidateIndex !== undefined
-      && explicitSaveRequestContext.test(clause.text)
-      && !explicitSaveNegation.test(clause.text)
-      && !explicitSaveExplanation.test(clause.text)
-    ) {
-      matches.push(clause.start + candidateIndex)
+    const candidate = explicitSaveCandidate(clause.text)
+    if (candidate === undefined) continue
+    const projection = verifiableExplicitSaveProjection(clause.text, candidate)
+    if (projection !== undefined) {
+      matches.push({
+        ...clause,
+        matchIndex: clause.start + (firstMatchIndex(clause.text, explicitSavePatterns) ?? candidate.index),
+        projectedText: projection.text,
+        projectedSpans: projection.spans.map(span => ({
+          start: clause.start + span.start,
+          end: clause.start + span.end,
+        })),
+      })
     }
   }
   return matches
+}
+
+/** Returns recognized clauses and their bounded, source-backed positive-request projections. */
+export function explicitSaveMatchesV1(text: string): ExplicitSaveMatchV1[] {
+  return explicitSaveMatches(textClauses(text, true, true))
+}
+
+/** Uses the complete Cheap Trigger v1 clause, request, negation, and explanation semantics. */
+export function isExplicitSaveRequestV1(text: string): boolean {
+  return explicitSaveMatchesV1(text).length > 0
 }
 
 function firstCorrectionIndex(clauses: readonly TextClause[]): number | undefined {
@@ -221,7 +324,7 @@ function hasOrderedSteps(text: string): boolean {
 function matchRules(text: string): MatchedRule[] {
   const matches: MatchedRule[] = []
   const sentenceClauses = textClauses(text, false)
-  const saveIndices = explicitSaveIndices(textClauses(text, true, true))
+  const saveIndices = explicitSaveMatchesV1(text).map(match => match.matchIndex)
   const explicitSaveIndex = saveIndices[0]
   if (explicitSaveIndex !== undefined) {
     matches.push({

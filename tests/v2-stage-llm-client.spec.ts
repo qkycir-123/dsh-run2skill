@@ -67,6 +67,51 @@ function detectorInput(): BatchDetectorInput {
   }
 }
 
+function largeDetectorInput(): BatchDetectorInput {
+  const observations = Array.from({ length: 5 }, (_, index) => {
+    const critical = [
+      '请把这套流程记录为技能，以后复用。',
+      '禁止跳过读回核验。',
+      '验收条件：typecheck、lint 和完整单元测试全部通过。',
+      'Required steps: first inspect, then change, finally read back.',
+      'LATEST_TAIL: only publish after the final verification succeeds.',
+    ][index]!
+    const excerpt = `${'auxiliary user background. '.repeat(115)}${critical}`
+    return {
+      observationId: `obs_${String(index + 1).repeat(64)}`,
+      turnEndSeq: index + 1,
+      directUserEvidence: [{
+        source: 'USER_DIRECT' as const,
+        messageSeq: index + 1,
+        excerpt,
+        excerptDigest: digest(String(index + 1)),
+        redactionKinds: [],
+        truncated: false,
+      }],
+      assistantOutcomeSummary: '辅助的 assistant 结果摘要。'.repeat(180),
+      toolOutcomeSummary: Array.from({ length: 32 }, (_, toolIndex) => ({
+        toolName: `tool-${String(toolIndex)}`,
+        outcome: 'SUCCEEDED',
+        contentDigest: digest('f'),
+      })),
+      completeness: 'COMPLETE' as const,
+      evidenceDigest: digest(String(5 + index)),
+    }
+  })
+  return {
+    ...detectorInput(),
+    triggerReasons: ['EXPLICIT'],
+    route: { ...route, maxInputBytes: 29_440 },
+    observations,
+    carry: Array.from({ length: 3 }, (_, index) => ({
+      summary: `${'deferred auxiliary summary. '.repeat(75)}${String(index)}`,
+      behaviorSignatureDraft: digest(String(index + 1)),
+      evidenceDigests: [observations[index]!.evidenceDigest],
+      remainingBatches: 2 as const,
+    })),
+  }
+}
+
 describe('DshV2StageLlmClient', () => {
   it('uses the frozen batch route and a detector-only, data-bound JSON contract', async () => {
     const output = { result: 'NONE' }
@@ -90,6 +135,38 @@ describe('DshV2StageLlmClient', () => {
     expect(llm.calls[0]?.system).toContain('Do not reason aloud')
     expect(llm.calls[0]?.system).not.toContain('Skill Markdown')
     expect(llm.calls[0]?.messages[0]?.content[0]?.text).toContain('"batchId"')
+  })
+
+  it('projects the real detector system and user envelope under the frozen route budget', async () => {
+    const input = largeDetectorInput()
+    const llm = new RecordingLlm([chunks('{"result":"NONE"}')])
+    const client = new DshV2StageLlmClient(llm)
+
+    await expect(client.detect(input)).resolves.toEqual({ result: 'NONE' })
+
+    const call = llm.calls[0]!
+    const userText = call.messages[0]!.content[0]!.text
+    expect(Buffer.byteLength(call.system, 'utf8') + Buffer.byteLength(userText, 'utf8'))
+      .toBeLessThanOrEqual(input.route.maxInputBytes)
+    const sent = JSON.parse(userText.slice('INPUT_DATA:\n'.length)) as BatchDetectorInput
+    expect(sent.observations.map(item => ({
+      observationId: item.observationId,
+      turnEndSeq: item.turnEndSeq,
+      evidenceDigest: item.evidenceDigest,
+    }))).toEqual(input.observations.map(item => ({
+      observationId: item.observationId,
+      turnEndSeq: item.turnEndSeq,
+      evidenceDigest: item.evidenceDigest,
+    })))
+    const evidence = sent.observations.flatMap(item => item.directUserEvidence)
+      .map(item => item.excerpt).join('\n')
+    expect(evidence).toContain('记录为技能')
+    expect(evidence).toContain('禁止跳过读回核验')
+    expect(evidence).toContain('验收条件')
+    expect(evidence).toContain('first inspect, then change, finally read back')
+    expect(evidence).toContain('LATEST_TAIL')
+    expect(sent.observations.some(item => item.assistantOutcomeSummary.length
+      < input.observations[0]!.assistantOutcomeSummary.length)).toBe(true)
   })
 
   it('requires a completed explicit save request to become READY instead of waiting for another turn', async () => {

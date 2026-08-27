@@ -8,6 +8,7 @@ import {
   TurnObservationV2Schema,
   deriveTurnObservationContentDigestV2,
   deriveTurnObservationIdV2,
+  selectBoundedEvidenceRefsV2,
   type TurnObservationV2,
 } from '../../domain/v2/index.js'
 import type { WorkspaceBindingPort } from '../../application/capture/turn-capture-processor.js'
@@ -15,7 +16,6 @@ import { buildTurnObservation } from './observation.js'
 import type { DshSessionEvent, DshSessionHeader } from './types.js'
 
 const MAX_ASSISTANT_SUMMARY_BYTES = 4 * 1024
-const MAX_EVIDENCE_BYTES = 512
 const MAX_TOOL_SUMMARIES = 32
 const TRUNCATION_MARKER = '\n…\n'
 const SUPPORTED_TURN_EVENT_TYPES = new Set([
@@ -161,18 +161,17 @@ function projectDirectEvidence(
   ) return { value: { evidence: [], explicitSaveRequested: false }, complete: false }
 
   try {
-    const evidence = candidates.map(candidate => {
+    const evidence = selectBoundedEvidenceRefsV2(candidates.map(candidate => {
       const processed = preprocessPersistentText(candidate.text)
-      const bounded = boundUtf8(processed.text, MAX_EVIDENCE_BYTES)
       return {
         source: 'USER_DIRECT' as const,
         messageSeq: candidate.messageSeq,
-        excerpt: bounded.text,
-        excerptDigest: sha256Utf8(bounded.text),
+        excerpt: processed.text,
+        excerptDigest: sha256Utf8(processed.text),
         redactionKinds: processed.redactionKinds,
-        truncated: bounded.truncated,
+        truncated: false,
       }
-    })
+    }), RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes)
     return {
       value: {
         evidence,

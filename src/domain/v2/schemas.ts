@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { canonicalJson } from '../learn/identity.js'
-import { EvidenceRefSchema, CaptureWorkItemV1Schema } from '../observe/schemas.js'
+import { CaptureWorkItemV1Schema, RedactionKindSchema } from '../observe/schemas.js'
+import { OBSERVE_LIMITS } from '../observe/constants.js'
 import { sha256Utf8 } from '../observe/hashing.js'
 import { CompletedPurgeFencesV1Schema } from '../purge/schemas.js'
 import { LineageV1Schema } from '../publication/schemas.js'
@@ -23,11 +24,26 @@ const positiveSafeInteger = z.number().refine(
 
 export const RUN2SKILL_V2_LIMITS = Object.freeze({
   maxObservationEvidence: 16,
+  maxObservationEvidenceTotalBytes: 8 * 1024,
+  maxBatchEvidenceTotalBytes: 16 * 1024,
   maxBatchObservations: 256,
   maxBatchTriggerReasons: 3,
   maxIntentsPerBatch: 3,
   sessionIdleMs: 30 * 60_000,
 } as const)
+
+const EvidenceRefV2Schema = z.object({
+  source: z.literal('USER_DIRECT'),
+  messageSeq: safeNonNegativeInteger,
+  excerpt: utf8Limited(RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes),
+  excerptDigest: sha256Hex,
+  redactionKinds: z.array(RedactionKindSchema).max(OBSERVE_LIMITS.maxRedactionKinds),
+  truncated: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.excerptDigest !== sha256Utf8(value.excerpt)) {
+    context.addIssue({ code: 'custom', path: ['excerptDigest'], message: 'Evidence digest does not match excerpt' })
+  }
+})
 
 export const PersistenceScopeV2Schema = z.enum(['PROJECT', 'USER'])
 
@@ -322,7 +338,7 @@ export const TurnObservationV2Schema = z.object({
   completeness: z.enum(['COMPLETE', 'INCOMPLETE']),
   explicitSaveRequested: z.boolean(),
   scopeBinding: ScopeBindingV2Schema,
-  directUserEvidence: z.array(EvidenceRefSchema).max(RUN2SKILL_V2_LIMITS.maxObservationEvidence),
+  directUserEvidence: z.array(EvidenceRefV2Schema).max(RUN2SKILL_V2_LIMITS.maxObservationEvidence),
   evidenceDigest: sha256Hex,
   contentDigest: sha256Hex,
   sessionRecovery: z.object({
@@ -338,6 +354,17 @@ export const TurnObservationV2Schema = z.object({
   }
   if (value.completeness === 'INCOMPLETE' && value.directUserEvidence.length > 0) {
     context.addIssue({ code: 'custom', path: ['directUserEvidence'], message: 'Incomplete observations must remain metadata-only' })
+  }
+  const evidenceBytes = value.directUserEvidence.reduce(
+    (total, evidence) => total + Buffer.byteLength(evidence.excerpt, 'utf8'),
+    0,
+  )
+  if (evidenceBytes > RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes) {
+    context.addIssue({
+      code: 'custom',
+      path: ['directUserEvidence'],
+      message: `Observation evidence exceeds ${RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes} UTF-8 bytes`,
+    })
   }
   if (value.evidenceDigest !== sha256Utf8(canonicalJson(value.directUserEvidence))) {
     context.addIssue({ code: 'custom', path: ['evidenceDigest'], message: 'Observation evidence digest does not match evidence' })

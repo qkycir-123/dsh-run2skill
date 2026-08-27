@@ -2,7 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { BatchDetectorWorker, type BatchDetectorClient } from '../src/application/detection/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
-import { SessionBatchV2Schema } from '../src/domain/v2/index.js'
+import { canonicalJson } from '../src/domain/learn/identity.js'
+import { sha256Utf8 } from '../src/domain/observe/hashing.js'
+import { isExplicitSaveRequestV1 } from '../src/domain/observe/trigger.js'
+import {
+  RUN2SKILL_V2_LIMITS,
+  SessionBatchV2Schema,
+  TurnObservationV2Schema,
+  deriveSessionBatchIdV2,
+  deriveTurnObservationContentDigestV2,
+  deriveTurnObservationIdV2,
+  selectBoundedEvidenceRefsV2,
+} from '../src/domain/v2/index.js'
 
 async function seedFrozenBatch() {
   const domain = createMemoryRun2skillV2Domain()
@@ -277,6 +288,196 @@ describe('v2 Batch Detector worker', () => {
     })
     await worker.runOnce()
     expect(route).toEqual(fixtures.sessionBatch.routeSnapshot)
+  })
+
+  it('claims the exact projected input that the detector client receives', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    let received: Parameters<BatchDetectorClient['detect']>[0] | undefined
+    const model: BatchDetectorClient = {
+      projectInput: input => ({
+        ...input,
+        observations: input.observations.map(item => ({ ...item, assistantOutcomeSummary: '' })),
+      }),
+      detect: async input => {
+        received = input
+        return { result: 'NONE' }
+      },
+    }
+
+    await new BatchDetectorWorker(domain, { client: model }).runOnce()
+
+    expect(received).toBeDefined()
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)?.detector.calls[0]?.inputDigest)
+      .toBe(sha256Utf8(canonicalJson(received)))
+  })
+
+  it('keeps detector evidence within one strict batch budget without adding a model call', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const boundaryCases = [
+      {
+        boundary: `${'x'.repeat(497)}, Please capture this workflow as a Skill`,
+        request: 'Please capture this workflow as a Skill',
+      },
+      {
+        boundary: `${'甲'.repeat(166)}，请把这个流程记录为技能`,
+        request: '请把这个流程记录为技能',
+      },
+    ]
+    for (const { boundary, request } of boundaryCases) {
+      const requestStartBytes = Buffer.byteLength(boundary.slice(0, boundary.indexOf(request)), 'utf8')
+      expect(requestStartBytes).toBeLessThan(512)
+      expect(Buffer.byteLength(boundary.slice(0, boundary.indexOf(request) + request.length), 'utf8'))
+        .toBeGreaterThan(512)
+      expect(isExplicitSaveRequestV1(boundary)).toBe(true)
+    }
+    const rawExcerpts = [
+      `${boundaryCases[0]!.boundary}. ${'irrelevant background. '.repeat(500)}${'Do not save this workflow as a Skill. '.repeat(20)}`,
+      `${boundaryCases[1]!.boundary}。${'无关背景。'.repeat(1_500)}${'请解释如何把流程保存成技能。'.repeat(20)}`,
+      `${'irrelevant background. '.repeat(500)}Acceptance criteria: typecheck, lint, and all tests pass.`,
+      `${'irrelevant background. '.repeat(500)}Required steps: first inspect, then change, finally read the value back. Only change the target field.`,
+      `${'irrelevant background. '.repeat(500)}TRUE_BATCH_TAIL: the user finally corrected the publication directory.`,
+    ]
+    const observations = rawExcerpts.map((excerpt, index) => {
+      const unboundedEvidence = [{
+        source: 'USER_DIRECT' as const,
+        messageSeq: index + 1,
+        excerpt,
+        excerptDigest: sha256Utf8(excerpt),
+        redactionKinds: [],
+        truncated: false,
+      }]
+      const directUserEvidence = selectBoundedEvidenceRefsV2(
+        unboundedEvidence,
+        RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes,
+      )
+      expect(directUserEvidence.reduce(
+        (total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'),
+        0,
+      )).toBeLessThanOrEqual(RUN2SKILL_V2_LIMITS.maxObservationEvidenceTotalBytes)
+      if (index < boundaryCases.length) {
+        expect(directUserEvidence.map(item => item.excerpt).join('\n'))
+          .toContain(boundaryCases[index]!.request)
+      }
+      const turnEndSeq = 8 + index
+      const turnInstanceDigest = sha256Utf8(`issue-143-turn-${index}`)
+      const evidenceDigest = sha256Utf8(canonicalJson(directUserEvidence))
+      const content = {
+        outcomeKind: fixtures.turnObservation.outcomeKind,
+        assistantOutcomeSummary: fixtures.turnObservation.assistantOutcomeSummary,
+        toolOutcomeSummary: fixtures.turnObservation.toolOutcomeSummary,
+        routeObservation: fixtures.turnObservation.routeObservation,
+        completeness: 'COMPLETE' as const,
+        explicitSaveRequested: index < boundaryCases.length,
+        scopeBinding: fixtures.turnObservation.scopeBinding,
+        evidenceDigest,
+      }
+      return TurnObservationV2Schema.parse({
+        ...fixtures.turnObservation,
+        turn: index + 1,
+        turnStartSeq: turnEndSeq - 1,
+        turnEndSeq,
+        turnInstanceDigest,
+        observationId: deriveTurnObservationIdV2({
+          sessionLifecycleKey: fixtures.turnObservation.sessionLifecycleKey,
+          turnEndSeq,
+          turnInstanceDigest,
+        }),
+        directUserEvidence,
+        evidenceDigest,
+        explicitSaveRequested: index < boundaryCases.length,
+        contentDigest: deriveTurnObservationContentDigestV2(content),
+      })
+    })
+    const observationManifest = observations.map(item => ({
+      observationId: item.observationId,
+      turnStartSeq: item.turnStartSeq,
+      turnEndSeq: item.turnEndSeq,
+      evidenceDigest: item.evidenceDigest,
+      completeness: item.completeness,
+    }))
+    const batchFacts = {
+      sessionLifecycleKey: fixtures.sessionBatch.sessionLifecycleKey,
+      firstTurnEndSeq: observations[0]!.turnEndSeq,
+      lastTurnEndSeq: observations.at(-1)!.turnEndSeq,
+      detectorPolicyVersion: fixtures.sessionBatch.detectorPolicyVersion,
+    }
+    const batch = SessionBatchV2Schema.parse({
+      ...fixtures.sessionBatch,
+      ...batchFacts,
+      batchId: deriveSessionBatchIdV2(batchFacts),
+      observationManifest,
+      observationManifestDigest: sha256Utf8(canonicalJson(observationManifest)),
+    })
+    domain.turnObservations.clear()
+    for (const observation of observations) domain.turnObservations.set(observation.observationId, observation)
+    domain.sessionBatches.clear()
+    domain.sessionBatches.set(batch.batchId, batch)
+    const global = domain.global.get()
+    await domain.global.set({
+      ...global,
+      sessions: {
+        [batch.sessionLifecycleKey]: {
+          ...global.sessions[batch.sessionLifecycleKey]!,
+          observedThroughTurnEndSeq: batch.lastTurnEndSeq,
+          activeBatchId: batch.batchId,
+        },
+      },
+    })
+    let received: Parameters<BatchDetectorClient['detect']>[0] | undefined
+    const model = {
+      calls: 0,
+      detect: async (input: Parameters<BatchDetectorClient['detect']>[0]) => {
+        model.calls += 1
+        received = input
+        return { result: 'NONE' as const }
+      },
+    }
+    const worker = new BatchDetectorWorker(domain, { client: model })
+
+    await worker.runOnce()
+
+    const evidenceBytes = received?.observations
+      .flatMap(item => item.directUserEvidence)
+      .reduce((total, item) => total + Buffer.byteLength(item.excerpt, 'utf8'), 0) ?? 0
+    const selectedText = received?.observations.flatMap(item => item.directUserEvidence)
+      .map(item => item.excerpt).join('\n') ?? ''
+    expect(model.calls).toBe(1)
+    expect(evidenceBytes).toBeLessThanOrEqual(RUN2SKILL_V2_LIMITS.maxBatchEvidenceTotalBytes)
+    expect(selectedText).toContain(boundaryCases[0]!.request)
+    expect(selectedText).toContain(boundaryCases[1]!.request)
+    expect(selectedText).toContain('Do not save this workflow as a Skill')
+    expect(selectedText).toContain('Acceptance criteria')
+    expect(selectedText).toContain('first inspect, then change, finally read the value back')
+    expect(selectedText).toContain('Only change the target field')
+    expect(selectedText).toContain('TRUE_BATCH_TAIL')
+  })
+
+  it('fails a minimum-envelope projection closed without invoking the detector', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    let calls = 0
+    const failure = Object.assign(new Error('minimum envelope is too large'), {
+      code: 'INPUT_BUDGET_EXCEEDED',
+    })
+    const worker = new BatchDetectorWorker(domain, {
+      client: {
+        projectInput: () => { throw failure },
+        detect: async () => {
+          calls += 1
+          return { result: 'NONE' }
+        },
+      },
+    })
+
+    await expect(worker.runOnce()).resolves.toBe('PROCESSED')
+
+    expect(calls).toBe(0)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)).toMatchObject({
+      state: 'NEEDS_ATTENTION',
+      detector: {
+        failureCode: 'INPUT_BUDGET_EXCEEDED',
+        calls: [{ outcome: 'FAILED', failureCode: 'INPUT_BUDGET_EXCEEDED' }],
+      },
+    })
   })
 
   it('rejects whitespace-only READY semantics', async () => {

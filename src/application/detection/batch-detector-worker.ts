@@ -10,6 +10,7 @@ import {
   deriveExperienceIntentIdV2,
   deriveBehaviorSignatureV2,
   RUN2SKILL_V2_LIMITS,
+  selectBoundedEvidenceRefsV2,
   type ExperienceIntentV2,
   type SessionBatchV2,
   type TurnObservationV2,
@@ -66,7 +67,7 @@ function detectorModelFailureCode(error: unknown): string {
 
 function normalizeDetectorEvidenceDigests(
   value: unknown,
-  observations: readonly TurnObservationV2[],
+  observations: BatchDetectorInput['observations'],
 ): unknown {
   if (!Array.isArray(value)) return value
   const observationByDigest = new Map<string, Set<string>>()
@@ -90,7 +91,7 @@ function normalizeDetectorEvidenceDigests(
  */
 function normalizeDetectorOutput(
   raw: unknown,
-  observations: readonly TurnObservationV2[],
+  observations: BatchDetectorInput['observations'],
 ): unknown {
   if (!isRecord(raw) || typeof raw.result !== 'string') return raw
   if (raw.result === 'NONE') {
@@ -153,6 +154,7 @@ export interface BatchDetectorInput {
 }
 
 export interface BatchDetectorClient {
+  projectInput?(input: BatchDetectorInput): BatchDetectorInput
   detect(input: BatchDetectorInput): Promise<unknown>
 }
 
@@ -168,6 +170,7 @@ interface ClaimedBatch {
   readonly input: BatchDetectorInput
   readonly inputDigest: string
   readonly callId: string
+  readonly projectionFailureCode?: string
 }
 
 interface RejectedBatch {
@@ -201,6 +204,10 @@ export class BatchDetectorWorker {
       await this.#advanceCursor(claimed.rejectedBatch)
       return 'PROCESSED'
     }
+    if (claimed.projectionFailureCode !== undefined) {
+      await this.#commitAttention(claimed, 'FAILED', claimed.projectionFailureCode)
+      return 'PROCESSED'
+    }
     let raw: unknown
     try {
       raw = await this.#client.detect(claimed.input)
@@ -209,7 +216,7 @@ export class BatchDetectorWorker {
       return 'PROCESSED'
     }
     const outputDigest = this.#outputDigest(raw)
-    const parsed = detectorOutputSchema.safeParse(normalizeDetectorOutput(raw, claimed.observations))
+    const parsed = detectorOutputSchema.safeParse(normalizeDetectorOutput(raw, claimed.input.observations))
     if (!parsed.success || !this.#evidenceIsBound(parsed.data, claimed)) {
       await this.#commitAttention(claimed, 'SUCCEEDED', 'INVALID_DETECTOR_OUTPUT', outputDigest)
       return 'PROCESSED'
@@ -299,7 +306,19 @@ export class BatchDetectorWorker {
         }))
         return { value: { rejectedBatch } }
       }
-      const input: BatchDetectorInput = {
+      const boundedEvidence = selectBoundedEvidenceRefsV2(observations.flatMap(item => (
+        item.directUserEvidence.map(evidence => ({
+          ...evidence,
+          observationId: item.observationId,
+        }))
+      )), RUN2SKILL_V2_LIMITS.maxBatchEvidenceTotalBytes)
+      const evidenceByObservation = new Map<string, typeof boundedEvidence>()
+      for (const evidence of boundedEvidence) {
+        const existing = evidenceByObservation.get(evidence.observationId) ?? []
+        existing.push(evidence)
+        evidenceByObservation.set(evidence.observationId, existing)
+      }
+      const rawInput: BatchDetectorInput = {
         batchId: batch.batchId,
         sessionLifecycleKey: batch.sessionLifecycleKey,
         triggerReasons: batch.triggerReasons,
@@ -307,13 +326,23 @@ export class BatchDetectorWorker {
         observations: observations.map(item => ({
           observationId: item.observationId,
           turnEndSeq: item.turnEndSeq,
-          directUserEvidence: item.directUserEvidence,
+          directUserEvidence: (evidenceByObservation.get(item.observationId) ?? []).map(({
+            observationId: _observationId,
+            ...evidence
+          }) => evidence),
           assistantOutcomeSummary: item.assistantOutcomeSummary,
           toolOutcomeSummary: item.toolOutcomeSummary,
           completeness: item.completeness,
           evidenceDigest: item.evidenceDigest,
         })),
         carry: cursor.openExperienceCarry,
+      }
+      let input = rawInput
+      let projectionFailureCode: string | undefined
+      try {
+        input = this.#client.projectInput?.(rawInput) ?? rawInput
+      } catch (error) {
+        projectionFailureCode = detectorModelFailureCode(error)
       }
       const inputDigest = sha256Utf8(canonicalJson(input))
       const callId = `call_${sha256Utf8(canonicalJson({
@@ -349,7 +378,16 @@ export class BatchDetectorWorker {
           updatedAt: this.#isoNow(),
         })
       })
-      return { value: { batch: claimed, observations, input, inputDigest, callId } }
+      return {
+        value: {
+          batch: claimed,
+          observations,
+          input,
+          inputDigest,
+          callId,
+          ...(projectionFailureCode === undefined ? {} : { projectionFailureCode }),
+        },
+      }
     })
   }
 

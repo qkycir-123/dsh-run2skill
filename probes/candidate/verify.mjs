@@ -34,7 +34,6 @@ const permittedFixtureLocations = new Set([
   ['probes/support/safe-diagnostics.mjs', 'AUTHORIZATION', 38],
   ['probes/support/safe-diagnostics.mjs', 'SECRET_ASSIGNMENT', 'provider_credential', 3],
   ['src/domain/observe/redaction.ts', 'AUTHORIZATION', 112],
-  ['tests/frozen-evaluation.spec.ts', 'SECRET_ASSIGNMENT', 'synthetic_secret', 71],
   ['tests/observe-summary-rpc.spec.ts', 'SECRET_ASSIGNMENT', 'token', 60],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 13],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 81],
@@ -112,7 +111,7 @@ const localPathRules = [
 
 function run(executable, args, options = {}) {
   const result = spawnSync(executable, args, {
-    cwd: root, encoding: 'utf8', windowsHide: true, ...options,
+    cwd: root, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024, ...options,
   })
   if (result.status !== 0) throw new Error(`${executable} failed with exit ${String(result.status)}`)
   return result.stdout

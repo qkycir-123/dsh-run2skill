@@ -205,6 +205,8 @@ idle deadline 是最后一个 durable TurnObservation 的 `observedAt + 30m`。�
 
 Detector 输入只包含冻结 batch 的有界 TurnObservation、最多 3 个 DEFER carry、来源标签和 route，不包含 Skill Catalog。
 
+TurnObservation 不再对每条 direct-user message 只截取固定前缀。文本必须先完成 secret 与控制字符处理，再在整个观察窗口共享的严格 UTF-8 byte 预算内，确定性为显式保存、禁止项、验收/验证、顺序步骤、约束和真实最新尾部分别保留最低配额，再填充其余语义；任一类都有上限，不得吞掉其他强语义。显式保存分类必须复用 Cheap Trigger 的完整分句、请求上下文、否定和解释语义，并在通用 byte splitting 前把正向命中的有界、可复验最小投影作为原子 mandatory unit；否定、解释或引用的保存文字不得占用正向保存配额。Detector 随后对整个 batch 使用第二层严格 evidence 总预算，并以实际 system prompt 与序列化 user JSON 计算 route 输入总量。超限时先有界压缩 assistant/tool/carry 辅助字段，再按上述配额缩减 direct-user evidence；必须保留 observation/evidence 绑定，最小安全 envelope 仍无法容纳时才 fail closed。模型调用与 durable claim 共用同一投影，`inputDigest` 精确绑定实际发送数据；不发送完整 Session，不增加逐 Turn LLM。
+
 输出：
 
 - `NONE`：没有稳定、可复用且有真实执行证据的经验；
@@ -495,7 +497,7 @@ Action Queue 只展示用户能采取的动作和必要原因，不在会话 Hea
 |---|---|
 | 调度 | 1～4 Turn 未 idle 为 0 调用；第 5 Turn、idle、explicit 各只 claim 一个确定性 batch |
 | 竞争 | 重复 turn/end、idle 边界新 Turn、重启和并发 Session 不重复 Detector |
-| 检测 | NONE/DEFER 后 recall、coverage、generation 全为 0 |
+| 检测 | 长工作流尾部关键步骤、禁止项、验收条件和显式保存语义在观察/批次共享预算内可见；近似否定语义不误学；NONE/DEFER 后 recall、coverage、generation 全为 0 |
 | 所有权 | Agent exact 保存后后续模型 0；证据不完整不把 absence 当 proof |
 | 召回 | “保存刚才流程”使用 ExperienceIntent；全 Catalog 分页扫描，不以 Top N 证明不存在 |
 | 大候选 | 8940-byte 与 14/20 KiB Skill 在 route 总预算允许时完整 coverage，不触发固定大小失败 |
