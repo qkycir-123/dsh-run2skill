@@ -39,6 +39,21 @@ function error(code: string, message: string): ObserveRpcResult<never> {
   return { ok: false, error: { code, message, details: {} } }
 }
 
+async function sessionMatchesCurrentScope(
+  session: LearningStatusSession,
+  currentScope: z.infer<typeof CurrentScopeV1Schema>,
+  resolveWorkspace: CurrentWorkspaceResolver,
+): Promise<boolean> {
+  if (currentScope.kind === 'USER_ONLY') return session.workspaceBinding === undefined
+  const binding = session.workspaceBinding
+  if (binding === undefined) return false
+  const workspace = await resolveWorkspace(currentScope.workspaceId)
+  return workspace !== undefined
+    && binding.workspaceId === workspace.workspaceId
+    && deriveProjectScopeIdentityDigest(binding.canonicalPath)
+      === deriveProjectScopeIdentityDigest(workspace.canonicalPath)
+}
+
 function statusForIntents(
   domain: Run2skillV2Domain,
   intents: readonly ExperienceIntentV2[],
@@ -118,15 +133,11 @@ export function createV2LearningStatusRpcHandler(
       })
       if (matches.length !== 1) return error('conflict', 'current Session unavailable')
       const match = matches[0]!
-      if (request.data.currentScope.kind === 'WORKSPACE') {
-        const workspace = await options.resolveWorkspace(request.data.currentScope.workspaceId)
-        if (
-          workspace === undefined
-          || match.session.workspaceBinding?.workspaceId !== workspace.workspaceId
-          || deriveProjectScopeIdentityDigest(match.session.workspaceBinding.canonicalPath)
-            !== deriveProjectScopeIdentityDigest(workspace.canonicalPath)
-        ) return error('conflict', 'current Session scope changed')
-      }
+      if (!await sessionMatchesCurrentScope(
+        match.session,
+        request.data.currentScope,
+        options.resolveWorkspace,
+      )) return error('conflict', 'current Session scope changed')
       if (endpoint === LEARNING_STATUS_ENDPOINT) {
         return { ok: true, value: { apiVersion: 1, ...projectV2LearningStatus(domain, match.sessionLifecycleKey) } }
       }

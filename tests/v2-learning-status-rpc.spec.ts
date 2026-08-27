@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createV2LearningStatusRpcHandler } from '../src/adapters/dsh-connection/v2-learning-status-rpc.js'
 import { SessionBatchCoordinator } from '../src/application/batch/index.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -68,4 +68,62 @@ describe('v2 learning status RPC', () => {
       sessionId: 'session-a',
     }, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
   })
+
+  it.each(['learning/status', 'learning/request'] as const)(
+    'rejects %s when a Workspace-bound Session is projected through USER_ONLY',
+    async endpoint => {
+      const domain = createMemoryRun2skillV2Domain()
+      const fixture = createMinimalV2Fixtures()
+      const coordinator = new SessionBatchCoordinator(domain, {
+        captureBaseline: async () => fixture.sessionBatch.batchManifestBaseline,
+        captureRouteSnapshot: async () => fixture.sessionBatch.routeSnapshot,
+      })
+      await coordinator.recordObservation(fixture.turnObservation)
+      const requestSynthesis = vi.fn((lifecycleKey: string) => coordinator.requestSynthesis(lifecycleKey))
+      const handler = createV2LearningStatusRpcHandler(() => domain, {
+        resolveSession: () => ({
+          sessionId: 'session-a',
+          workspaceBinding: { workspaceId: 'workspace-a', canonicalPath: 'D:/workspace-a' },
+        }),
+        resolveWorkspace: async workspaceId => ({ workspaceId, canonicalPath: 'D:/workspace-a' }),
+        requestSynthesis,
+      })
+
+      await expect(handler(endpoint, {
+        apiVersion: 1,
+        currentScope: { kind: 'USER_ONLY', generation: 1 },
+        sessionId: 'session-a',
+      }, new AbortController().signal)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'conflict' },
+      })
+      expect(requestSynthesis).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['learning/status', 'learning/request'] as const)(
+    'allows %s through USER_ONLY only when the Session has no Workspace binding',
+    async endpoint => {
+      const domain = createMemoryRun2skillV2Domain()
+      const fixture = createMinimalV2Fixtures()
+      const coordinator = new SessionBatchCoordinator(domain, {
+        captureBaseline: async () => fixture.sessionBatch.batchManifestBaseline,
+        captureRouteSnapshot: async () => fixture.sessionBatch.routeSnapshot,
+      })
+      await coordinator.recordObservation(fixture.turnObservation)
+      const requestSynthesis = vi.fn((lifecycleKey: string) => coordinator.requestSynthesis(lifecycleKey))
+      const handler = createV2LearningStatusRpcHandler(() => domain, {
+        resolveSession: () => ({ sessionId: 'session-a' }),
+        resolveWorkspace: async () => undefined,
+        requestSynthesis,
+      })
+
+      await expect(handler(endpoint, {
+        apiVersion: 1,
+        currentScope: { kind: 'USER_ONLY', generation: 1 },
+        sessionId: 'session-a',
+      }, new AbortController().signal)).resolves.toMatchObject({ ok: true })
+      expect(requestSynthesis).toHaveBeenCalledTimes(endpoint === 'learning/request' ? 1 : 0)
+    },
+  )
 })

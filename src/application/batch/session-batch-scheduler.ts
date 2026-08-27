@@ -47,6 +47,8 @@ export class SessionBatchScheduler {
     if (this.#startAttempt !== undefined) return await this.#startAttempt
     const attempt = this.#enqueue(async () => {
       await this.#coordinator.recover(this.#now())
+      const requested = await this.#coordinator.flushRequested(this.#permitRequestedSynthesis)
+      if (requested.length > 0) this.#onIdleBatchFrozen()
     })
     this.#startAttempt = attempt
     try {
