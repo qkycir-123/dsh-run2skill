@@ -16,7 +16,7 @@ Run2Skill does not let an agent silently create permanent rules for itself. Ever
 
 > The current stable release is [`0.3.0`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.0). It supports DSH Web `0.1.1-rc.2` only.
 
-The repository's `main` branch also contains unreleased changes: the settings page can describe the current learning stage without exposing internal batch counters and can request immediate synthesis of the current experience; review feedback can produce a new immutable draft that must be reviewed again; and long-workflow evidence preserves important steps, prohibitions, and acceptance criteria within shared bounded budgets. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. The npm `0.3.0` package does not include these changes; see the [changelog](CHANGELOG.md) for the exact boundary.
+The repository's `main` branch also contains unreleased changes: the settings page can describe the current learning stage without exposing internal batch counters and can request immediate synthesis of the current experience; one review instruction can produce a new complete immutable draft that must be reviewed again; and long-workflow evidence preserves important steps, prohibitions, and acceptance criteria within shared bounded budgets. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. The npm `0.3.0` package does not include these changes; see the [changelog](CHANGELOG.md) for the exact boundary.
 
 ## See the complete flow
 
@@ -24,7 +24,8 @@ The repository's `main` branch also contains unreleased changes: the settings pa
 
 1. **Find the draft** — Run2Skill only notifies you when action is required and places the draft under **Settings → Plugins → Run2Skill**.
 2. **Review its evidence and scope** — inspect the rationale, filtered conversation evidence, target scope, and the complete `SKILL.md` that would be written.
-3. **Save only after approval** — successful results appear under Recent activity and remain ordinary native DSH Skills.
+3. **Request a revision if needed (unreleased on `main`)** — leave one short instruction and Run2Skill generates a new complete draft; the old version is not published and the new one still needs review.
+4. **Save only after approval** — successful results appear under Recent activity and remain ordinary native DSH Skills.
 
 <details>
 <summary>View the three key screenshots</summary>
@@ -65,10 +66,10 @@ When something needs your attention, DSH shows one native notification. To revie
 
 1. Open **Settings → Plugins → Run2Skill**.
 2. Review the draft, its intended scope, evidence, and complete content.
-3. Approve and save it, discard it, or retry a failed save.
+3. Approve and save it, discard it, or retry a failed save; the unreleased `main` version can request a revision first.
 4. After a successful save, it is an ordinary native DSH Skill and remains usable even if Run2Skill is later uninstalled.
 
-On the unreleased `main` branch, you may also submit one revision request before approving or discarding. The Host generates a complete new immutable draft, invalidates the old approval, and requires another review.
+On the unreleased `main` branch, if a draft is not right, submit one revision request of at most 2,048 UTF-8 bytes. The Host uses the current complete draft to generate a new immutable version, records the parent/child relationship, and invalidates the old approval. You must inspect and approve the new version. This is not a free-form editor and does not bypass lookup, human review, or safe publication.
 
 Drafts can target the current project (`PROJECT`) or the current user (`USER`). The current release writes only to DSH's default Skill storage. If you replace or disable that storage, Run2Skill stops safely instead of guessing a path.
 
