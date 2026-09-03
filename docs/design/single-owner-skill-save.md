@@ -4,9 +4,9 @@
 
 对应 Issue：[#71](https://github.com/qkycir-123/dsh-run2skill/issues/71)
 
-适用范围：受支持的 stock DSH `web` profile、默认 filesystem Skill roots；`0.3.1` 支持内置 `standard` / `code` preset，`main` / `0.4.0` 因 DSH RC1 删除 `code` 而只支持 `standard`
+适用范围：受支持的 stock DSH `web` profile、默认 filesystem Skill roots；`0.3.1` 支持内置 `standard` / `code` preset，`0.4.0` 因 DSH RC1 删除 `code` 而只支持 `standard`
 
-适用版本：`0.2.0`–`0.3.1`；`main` 继续适用
+适用版本：`0.2.0`–`0.4.0`
 
 当前事实：Agent-first、完整观察和 fail-closed 的单一所有者原则继续有效；本文的逐 Turn WorkItem/TurnBaseline 方案是历史设计，已由 [`SessionBatch -> ExperienceIntent` 设计](issue-84-session-batch-learning.md) 及实现取代。当前 DSH baseline 见 [兼容性声明](../compatibility.md)。
 
