@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url'
 import AgentPresets from '@deepseek-ai/dsh-agent-presets'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore from '@deepseek-ai/dsh-session'
-import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
@@ -173,9 +174,11 @@ async function mountStockDsh(
   }
   try {
     await track(ctx.plugin(SkillRegistry))
+    await track(ctx.plugin(SessionProjectionRegistry))
     await track(ctx.plugin(AgentPresets, {
       default: composition.presetId,
       roots: [{ path: presetRoot, trust: 'system' }],
+      includeShippedRoot: false,
       includeUserRoot: false,
     }))
     await ctx.agentPresets.mount(agentScope.ctx, composition.presetId)
@@ -183,7 +186,9 @@ async function mountStockDsh(
     await track(ctx.plugin(StorageSqlite, { path: join(base, 'storage.db') }))
     await track(ctx.plugin(StorageDomain, { backend: 'sqlite' }))
     await track(ctx.plugin(SessionStore))
-    await track(ctx.plugin(SqliteSessionPersistence, { path: join(base, 'sessions.db') }))
+    await track(ctx.plugin(JsonlSessionPersistence, {
+      root: join(base, 'sessions'), compression: 'none',
+    }))
     await track(ctx.plugin(WorkspaceRegistry))
   } catch (error) {
     await dispose()
@@ -197,8 +202,8 @@ async function mountStockDsh(
       await ctx.agentPresets.recompose(agentScope.ctx, next.presetId)
     },
     async remountSkills() {
-      await writePresetComposition(presetRoot, 'code', agentsHome, {})
-      await ctx.agentPresets.recompose(agentScope.ctx, 'code')
+      await writePresetComposition(presetRoot, 'standard', agentsHome, {})
+      await ctx.agentPresets.recompose(agentScope.ctx, 'standard')
     },
     dispose,
   }
@@ -475,18 +480,15 @@ async function publish(scope: Scope, decision: Decision, verifyRemount: boolean)
 }
 
 describe('CP-ROOT-003 stock DSH publication root contract', () => {
-  it('pins the exact supported standard and code preset compositions', async () => {
+  it('pins the exact supported standard preset composition', async () => {
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
-      ],
-      code: [
-        'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
+        'f18dd942686aa71f43ffc4fd328a712f79af113fb67a35b54cb6de4fc3b84bda',
       ],
     })
-    for (const presetId of ['standard', 'code'] as const) {
+    for (const presetId of ['standard'] as const) {
       const content = await readFile(join(
-        process.cwd(), 'apps', 'cli', 'config', 'agent-presets', presetId, 'agent.cordis.yml',
+        process.cwd(), 'packages', 'preset', 'agent-presets', 'presets', presetId, 'agent.cordis.yml',
       ))
       expect(STOCK_PRESET_COMPOSITION_DIGESTS[presetId])
         .toContain(createHash('sha256').update(content).digest('hex'))

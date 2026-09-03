@@ -593,10 +593,13 @@ describe('run2skill native settings surface', () => {
     await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
   })
 
-  it('registers one independent settings.plugins.tab and a header lifecycle mount with no persistent DOM', () => {
+  it('registers one independent settings.plugins.tab and a header lifecycle mount with no persistent DOM', async () => {
     const registrations: Array<{ name: string; id?: string; label?: string }> = []
     const context = {
-      connection: { rpc: { call: vi.fn() } },
+      remote: {
+        $mount: vi.fn(async () => async () => undefined),
+        run2skill: { query: vi.fn(), command: vi.fn() },
+      },
       settingsScope: { bind: vi.fn(() => ({
         getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
         subscribe: () => () => undefined,
@@ -614,7 +617,7 @@ describe('run2skill native settings surface', () => {
       effect: vi.fn((install: () => () => void) => { install() }),
     }
 
-    applyRun2skillClient(context as never)
+    await applyRun2skillClient(context as never)
 
     expect(registrations).toContainEqual(expect.objectContaining({
       name: 'settings.plugins.tab', id: 'run2skill', label: 'Run2Skill',
@@ -831,7 +834,10 @@ describe('run2skill native settings surface', () => {
       },
     }))
     const context = {
-      connection: { rpc: { call: vi.fn() } },
+      remote: {
+        $mount: vi.fn(async () => async () => undefined),
+        run2skill: { query: vi.fn(), command: vi.fn() },
+      },
       settingsScope: { bind: vi.fn(() => ({
         getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
         subscribe: () => () => undefined, set: vi.fn(),
@@ -846,7 +852,7 @@ describe('run2skill native settings surface', () => {
       },
       effect: vi.fn((install: () => unknown) => { install() }),
     }
-    applyRun2skillClient(context as never)
+    await applyRun2skillClient(context as never)
     function Harness() {
       const useWorkspaces = <T,>(selector: (value: typeof snapshot) => T) => useSyncExternalStore(
         listener => { listeners.add(listener); return () => { listeners.delete(listener) } },

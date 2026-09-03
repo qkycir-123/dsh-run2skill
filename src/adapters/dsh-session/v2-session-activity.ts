@@ -12,7 +12,7 @@ import type {
 
 export interface DshLiveSessionProjection {
   readonly header: DshSessionHeader
-  readonly events: readonly DshSessionEvent[]
+  snapshotEvents(): readonly DshSessionEvent[]
 }
 
 export interface DshLiveSessionRegistryPort {
@@ -194,9 +194,11 @@ export class DshSessionActivityAdapter {
     durableEvents: readonly DshSessionEvent[],
   ): LiveSample | undefined {
     const live = this.#sessions.get(sessionId)
+    const liveEvents = live?.snapshotEvents()
     if (live !== undefined && (
       lifecycleKey(live.header) !== sessionLifecycleKey
-      || !sameSessionPrefix(live.events, durableEvents)
+      || liveEvents === undefined
+      || !sameSessionPrefix(liveEvents, durableEvents)
     )) return undefined
     const agent = this.#agents.get(sessionId)
     if (agent !== undefined && (
@@ -209,7 +211,7 @@ export class DshSessionActivityAdapter {
     )) return undefined
     return {
       live,
-      liveCoordinates: canonicalJson(eventCoordinates(live?.events ?? [])),
+      liveCoordinates: canonicalJson(eventCoordinates(liveEvents ?? [])),
       agent,
       agentStatus: agent?.status ?? 'absent',
     }

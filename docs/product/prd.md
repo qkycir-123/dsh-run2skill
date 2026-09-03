@@ -517,7 +517,7 @@ Publication Outcome 才能记为 `PUBLISHED`。
 run2skill 只负责 Skill publication，不负责 source-control publication；不得自动执行 `git add`、`git commit`、`git push` 或创建 PR。
 
 **REQ-PUB-009**
-Proposal/Review/Publication RPC 只允许本机可信浏览器上下文使用，必须复用 DSH browser-trust/reachability fence，限制为 loopback，并在业务 dispatch 前拒绝 cross-origin、非可信 Host 和远程请求。没有明确认证授权层前，不支持远程审批或发布。
+Proposal/Review/Publication RPC 只允许 DSH 已认证的 Web profile 浏览器上下文使用，必须复用 DSH 提供的 browser-trust/reachability/authentication fence，不能由插件另开未认证端口或自建旁路。`0.3.1` 在 DSH `0.1.1-rc.2` 上使用 loopback Host/Origin fence；`0.4.0` 在 DSH `0.1.2-rc.1` 上使用一次性启动令牌换取的 Cookie 与 Remote/API Gateway。网络监听和远程可达策略由 DSH 控制；run2skill 仍须在业务 dispatch 前校验严格 DTO、读写路由、revision/digest 与发布权限，不增加独立的远程认证或公开 API。
 
 **REQ-PUB-010**
 真正写文件前必须再次取得 complete Runtime/Pending Catalog 并验证 Proposal 仍未被覆盖、CREATE expected-absence 或 MERGE Base 仍成立。该检查与 target 文件 CAS 共同 fail closed；外部 Catalog 变化最多使 Proposal 进入 `NEEDS_REFRESH`/`DISCARDED`，不得发布重复 Skill。

@@ -16,6 +16,8 @@ Run2Skill does not let an agent silently create permanent rules for itself. Ever
 
 > The current stable release is [`0.3.1`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.1). It supports DSH Web `0.1.1-rc.2` only.
 
+> `main` is preparing `0.4.0`: it uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and supports only the retained built-in `standard` preset. `0.4.0` is not released yet; do not use the stable installation command below with DSH `0.1.2-rc.1`.
+
 `0.3.1` adds low-noise learning status, **Synthesize this experience now**, revision requests that generate a new draft, and bounded preservation of important long-workflow evidence. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. Internal batch counters are not shown in the settings page.
 
 ## See the complete flow

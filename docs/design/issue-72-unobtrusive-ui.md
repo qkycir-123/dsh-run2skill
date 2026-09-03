@@ -1,6 +1,6 @@
 # 无感提醒与插件设置页 Design
 
-状态：已发布核心继续适用；`0.3.1` 已发布 #141 增量
+状态：已发布核心继续适用；`0.3.1` 已发布 #141 增量，`0.4.0` 只替换 DSH Web 传输层
 
 首次落地版本：`0.1.1-alpha`
 
@@ -9,6 +9,8 @@
 设计日期：2026-08-21
 
 DSH 源码基线：本设计最初在 `deepseek-ai/deepseek-harness@99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）上取证；当前 `0.3.1` 支持的 DSH baseline 见 [兼容性声明](../compatibility.md)。
+
+`main` / `0.4.0` 在 DSH `0.1.2-rc.1` 上保留相同 UI、DTO 和 Host 权威边界，但用 Remote/API Gateway 与 DSH 浏览器认证替换下文的 `/run2skill` loopback RPC。下文具体 loopback 路径是 `0.3.1` 的历史实现；当前兼容层见 [`docs/architecture/dsh-compatibility.md`](../architecture/dsh-compatibility.md)。
 
 文档中的实施顺序与“获批前”门禁是历史决策记录；#73 已完成实现。`0.3.1` 的已发布事实是：正常状态不常驻占用会话 Header，只在存在可操作事项时提示，持久信息和操作集中在插件设置页。
 

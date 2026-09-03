@@ -12,11 +12,11 @@
 - publication 跨平台探针需要带 Node.js 的 WSL2/Linux；
 - 安装生命周期探针需要 Microsoft Edge、Google Chrome 或 DSH Playwright 可用的 Chromium。
 
-准备一个官方、干净、固定 commit 的 DSH checkout。当前默认验证 `0.1.1-rc.2`：
+准备一个官方、干净、固定 commit 的 DSH checkout。`main` / `0.4.0` 当前默认验证 `0.1.2-rc.1`：
 
 ```powershell
 git clone https://github.com/deepseek-ai/deepseek-harness.git <dsh-source>
-git -C <dsh-source> checkout b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+git -C <dsh-source> checkout a66e4702047846cdaa10c66c9d3df3951f5ea70d
 git -C <dsh-source> status --porcelain
 ```
 
@@ -29,29 +29,32 @@ git -C <dsh-source> status --porcelain
 ```powershell
 powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source>
 powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <dsh-source>
+powershell -File probes/run-dsh-rc1-profile-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1
-powershell -File probes/run-install-lifecycle-probe.ps1 -DshSource <dsh-source>
 ```
 
 验证另一个已支持 commit 时，给 DSH 相关 runner 传入 `-ExpectedDshHead <commit>`。
 
 这些命令分别覆盖：
 
-- Session、Storage、Learning、LLM/Skill Adapter、Web RPC、Settings 和 Purge 契约；
+- Session、Storage、Learning、LLM/Skill Adapter、Remote/API Gateway、Settings 和 Purge 契约；
 - 默认 `PROJECT` / `USER` Skill roots、CREATE/MERGE、并发保护和 Registry 回读；
+- RC1 Profile 的真实候选包 add、disable、upgrade、uninstall、认证 Web 调用和 Client 加载；
 - Windows 与 Linux/WSL 上的原子发布和崩溃恢复；
-- 真实候选 tarball 的 add、disable、upgrade、uninstall 和 Web Client 生命周期。
+
+旧版 `run-install-lifecycle-probe.ps1` 是 `0.3.1` / DSH `0.1.1-rc.2` 发布线的稳定候选升级探针。维护该版本时仍需显式传入旧 baseline 和精确候选 tarball：
 
 发布稳定版时，把已经完成候选内容扫描、并将用于 npm 与 GitHub Release 的同一个 tarball 传给安装生命周期 runner：
 
 ```powershell
 powershell -File probes/run-install-lifecycle-probe.ps1 `
   -DshSource <dsh-source> `
+  -ExpectedDshHead b150a551b8d465e31e418e1b2eaf5e79bbb7d28e `
   -ReleaseCandidateTarball <dsh-run2skill-0.3.1.tgz> `
   -ReleaseCandidateSha256 <sha256>
 ```
 
-runner 会从 npm 下载已发布的 `0.1.1-alpha`（固定 SHA-256 `c674dad6102426054d59a2843270ee86aecd36789e83604c02dd6efd345fbb26`）、`0.2.0` 和 `0.3.0`，再用传入的精确候选文件验证 `0.1.1-alpha → 0.2.0 → 0.3.0 → 0.3.1`。它会检查旧 v1 数据未被改写、v2 fresh activation 未迁移旧中间项、稳定版升级保留 v2 状态和原生 Skill，以及候选版卸载后数据仍保留。
+该 runner 会从 npm 下载已发布的 `0.1.1-alpha`（固定 SHA-256 `c674dad6102426054d59a2843270ee86aecd36789e83604c02dd6efd345fbb26`）、`0.2.0` 和 `0.3.0`，再用传入的精确候选文件验证 `0.1.1-alpha → 0.2.0 → 0.3.0 → 0.3.1`。它会检查旧 v1 数据未被改写、v2 fresh activation 未迁移旧中间项、稳定版升级保留 v2 状态和原生 Skill，以及候选版卸载后数据仍保留。
 
 此外：
 

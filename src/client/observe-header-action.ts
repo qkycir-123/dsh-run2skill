@@ -8,8 +8,9 @@ import {
 } from 'react'
 import {
   OBSERVE_SUMMARY_ENDPOINT,
-  RUN2SKILL_RPC_CHANNEL,
 } from '../adapters/dsh-connection/observe-summary-rpc.js'
+import type { TypertClientRemote, TypertDisposer } from '@deepseek-ai/dsh-typert-protocol'
+import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
 import {
   ObserveSummaryPoller,
   type ObserveSummaryCall,
@@ -19,19 +20,8 @@ import type { ProposalReviewCall } from './proposal-inbox.js'
 import { ProposalInboxHeaderAction } from './proposal-inbox-view.js'
 import { describeRun2skillHealth } from './status-copy.js'
 
-export interface ObserveSummaryClientConnection {
-  readonly rpc: {
-    call(
-      channel: string,
-      endpoint: string,
-      payload: unknown,
-      signal?: AbortSignal,
-    ): Promise<unknown>
-  }
-}
-
 export interface ObserveSummaryClientContext {
-  readonly connection: ObserveSummaryClientConnection
+  readonly remote: TypertClientRemote
   readonly workspaces: {
     readonly list: {
       getSnapshot(): {
@@ -57,7 +47,7 @@ export interface ObserveSummaryClientContext {
   }
 }
 
-export const inject = ['connection', 'slots', 'workspaces'] as const
+export const inject = ['remote', 'slots', 'workspaces'] as const
 
 function summaryFacts(state: Extract<ObserveSummaryClientState, { summary: unknown }>): string[] {
   const { summary } = state
@@ -133,19 +123,12 @@ export function Run2skillHeaderAction(props: {
   )
 }
 
-export function applyObserveSummaryClient(ctx: ObserveSummaryClientContext): void {
-  const callSummary: ObserveSummaryCall = async (payload, signal) => await ctx.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL,
-    OBSERVE_SUMMARY_ENDPOINT,
-    payload,
-    signal,
+export async function applyObserveSummaryClient(ctx: ObserveSummaryClientContext): Promise<TypertDisposer> {
+  const mounted = await createRun2skillRemoteCaller(ctx.remote)
+  const callSummary: ObserveSummaryCall = async (payload, signal) => await mounted.call(
+    OBSERVE_SUMMARY_ENDPOINT, payload, signal,
   )
-  const callReview: ProposalReviewCall = async (endpoint, payload, signal) => await ctx.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL,
-    endpoint,
-    payload,
-    signal,
-  )
+  const callReview: ProposalReviewCall = mounted.call
   const getWorkspaceId = (sessionId: string): string => ctx.workspaces.list.getSnapshot().items
     .find(workspace => workspace.sessionIds.includes(sessionId))?.workspaceId
     ?? sessionId
@@ -158,4 +141,5 @@ export function applyObserveSummaryClient(ctx: ObserveSummaryClientContext): voi
       inject: () => ({ callSummary, callReview, getWorkspaceId }),
     }, Run2skillHeaderAction),
   )
+  return mounted.dispose
 }

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
@@ -31,11 +30,9 @@ type Backend = 'json' | 'sqlite'
 async function mount(directory: string, backend: Backend) {
   const ctx = new Context()
   const sessionStoreFiber = await ctx.plugin(SessionStore)
-  const persistenceFiber = backend === 'json'
-    ? await ctx.plugin(JsonlSessionPersistence, {
-        root: join(directory, 'sessions'), compression: 'none',
-      })
-    : await ctx.plugin(SqliteSessionPersistence, { path: join(directory, 'sessions.db') })
+  const persistenceFiber = await ctx.plugin(JsonlSessionPersistence, {
+    root: join(directory, 'sessions'), compression: 'none',
+  })
   const storageFiber = await ctx.plugin(Storage)
   const storageBackendFiber = backend === 'json'
     ? await ctx.plugin(StorageJson, { root: join(directory, 'storages') })
@@ -98,7 +95,7 @@ function scannerFor(instance: Awaited<ReturnType<typeof mount>>, processed: Set<
 describe('A4 bounded recovery on real DSH persistence', () => {
   it.each([
     { backend: 'json' as const, medium: 'Web JSONL + JSON Storage' },
-    { backend: 'sqlite' as const, medium: 'SQLite Session + Storage' },
+    { backend: 'sqlite' as const, medium: 'JSONL Session + SQLite Storage' },
   ])('fences old history, captures a changed revision, and skips it after restart on $medium', async ({ backend }) => {
     const directory = await mkdtemp(join(tmpdir(), `dsh-run2skill-a4-${backend}-`))
     temporaryDirectories.push(directory)

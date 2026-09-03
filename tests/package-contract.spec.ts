@@ -31,10 +31,10 @@ const workspace = readPortableText('../pnpm-workspace.yaml')
 const thirdPartyNotices = readPortableText('../THIRD_PARTY_NOTICES.md')
 
 describe('published package contract', () => {
-  it('pins the public 0.3 identity and portable repository metadata', () => {
+  it('pins the public 0.4 identity and portable repository metadata', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
-      version: '0.3.1',
+      version: '0.4.0',
       description: 'Turn explicit DSH session experience into reviewable native Skills',
       keywords: [
         'deepseek-harness',
@@ -61,6 +61,8 @@ describe('published package contract', () => {
     expect(manifest.exports).toMatchObject({
       '.': { default: './lib/index.js' },
       './client': { default: './lib/client.js' },
+      './typert': { default: './lib/typert.host.js' },
+      './remote': { default: './lib/typert.remote-client.js' },
       './package.json': './package.json',
     })
     expect(manifest.files).toEqual([
@@ -72,16 +74,16 @@ describe('published package contract', () => {
       'THIRD_PARTY_NOTICES.md',
     ])
     expect(manifest.peerDependencies).toEqual({
-      '@deepseek-ai/dsh-agent-presets': '0.1.1-rc.2',
-      '@deepseek-ai/dsh-client-ui-primitives': '0.1.1-rc.2',
+      '@deepseek-ai/cordis': '4.0.2',
+      '@deepseek-ai/dsh-agent-presets': '0.1.2-rc.1',
+      '@deepseek-ai/dsh-client-ui-primitives': '0.1.2-rc.1',
+      '@deepseek-ai/dsh-typert-protocol': '0.1.2-rc.1',
     })
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },
       client: {
         platform: 'web',
         inject: [
-          '@deepseek-ai/dsh-client-connection',
-          '@deepseek-ai/dsh-client-runtime',
           '@deepseek-ai/dsh-client-ui-primitives',
           '@deepseek-ai/dsh-client-ui-settings',
           '@deepseek-ai/dsh-client-ui-settings-plugins',
@@ -99,7 +101,8 @@ describe('published package contract', () => {
 
   it('runs the exact candidate verifier and permits only the required build helper', () => {
     expect(manifest.scripts?.['verify:candidate']).toContain('probes/candidate/verify.mjs')
-    expect(workspace).toBe("packages:\n  - '.'\n\nallowBuilds:\n  esbuild: true\n")
+    expect(workspace).toContain("packages:\n  - '.'\n\nallowBuilds:\n  esbuild: true\n")
+    expect(workspace).toContain("'@deepseek-ai/dsh-typert-protocol@0.1.2-rc.1'")
   })
 
   it('inserts only the run2skill Host row and never mounts later-slice services', () => {

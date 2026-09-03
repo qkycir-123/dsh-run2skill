@@ -10,11 +10,15 @@ import {
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const packageDirectory = resolve(root, '.probe-work', 'package')
-const expectedPackageFiles = [
+const fixedPackageFiles = [
   'cordis.patch.yml',
   'lib/client.js',
   'lib/index.d.ts',
   'lib/index.js',
+  'lib/typert.host.d.ts',
+  'lib/typert.host.js',
+  'lib/typert.remote-client.d.ts',
+  'lib/typert.remote-client.js',
   'LICENSE',
   'package.json',
   'README.en.md',
@@ -34,7 +38,7 @@ const permittedFixtureLocations = new Set([
   ['probes/support/safe-diagnostics.mjs', 'AUTHORIZATION', 38],
   ['probes/support/safe-diagnostics.mjs', 'SECRET_ASSIGNMENT', 'provider_credential', 3],
   ['src/domain/observe/redaction.ts', 'AUTHORIZATION', 112],
-  ['tests/observe-summary-rpc.spec.ts', 'SECRET_ASSIGNMENT', 'token', 60],
+  ['tests/observe-summary-rpc.spec.ts', 'SECRET_ASSIGNMENT', 'token', 33],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 13],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 81],
   ['tests/redaction.spec.ts', 'AUTHORIZATION', 84],
@@ -164,9 +168,13 @@ function scan(name, content) {
     ].includes(normalized)
     const selfDescribingConstant = literalValue.toLowerCase() === normalized
     const location = `${name}:SECRET_ASSIGNMENT:${normalized}:${String(line)}`
+    const bundledZodOutputName = name === 'package/lib/client.js'
+      && normalized === 'out_key'
+      && assignedValue === 'keyResult.value'
     const safeFixture = literalValue === '[REDACTED]'
       || permittedSyntheticSecrets.has(literalValue)
       || permittedFixtureLocations.has(location)
+      || bundledZodOutputName
     if (!coordinateKey && !selfDescribingConstant && !safeFixture) {
       findings.push(location)
     }
@@ -211,6 +219,9 @@ const packOutput = process.env.npm_execpath === undefined
   : run(process.execPath, [process.env.npm_execpath, ...packArgs])
 const packed = JSON.parse(packOutput)
 const packageFiles = packed.files.map(file => file.path).sort()
+const contractChunks = packageFiles.filter(file => /^lib\/contract-[A-Za-z0-9_-]+\.js$/u.test(file))
+assert.equal(contractChunks.length, 1, 'candidate must ship exactly one generated Remote contract chunk')
+const expectedPackageFiles = [...fixedPackageFiles, contractChunks[0]]
 assert.deepEqual(packageFiles, [...expectedPackageFiles].sort(), 'candidate tarball file allowlist changed')
 const tarballPath = resolve(root, packed.filename)
 const archiveFiles = run('tar', ['-tzf', tarballPath])
@@ -238,7 +249,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.3.1',
+  version: '0.4.0',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   keywords: [
     'deepseek-harness',
@@ -261,6 +272,8 @@ assert.deepEqual({
   exports: {
     '.': { types: './lib/index.d.ts', default: './lib/index.js' },
     './client': { default: './lib/client.js' },
+    './typert': { types: './lib/typert.host.d.ts', default: './lib/typert.host.js' },
+    './remote': { types: './lib/typert.remote-client.d.ts', default: './lib/typert.remote-client.js' },
     './package.json': './package.json',
   },
   dsh: {
@@ -268,8 +281,6 @@ assert.deepEqual({
     client: {
       platform: 'web',
       inject: [
-        '@deepseek-ai/dsh-client-connection',
-        '@deepseek-ai/dsh-client-runtime',
         '@deepseek-ai/dsh-client-ui-primitives',
         '@deepseek-ai/dsh-client-ui-settings',
         '@deepseek-ai/dsh-client-ui-settings-plugins',
@@ -278,8 +289,10 @@ assert.deepEqual({
     },
   },
   peerDependencies: {
-    '@deepseek-ai/dsh-agent-presets': '0.1.1-rc.2',
-    '@deepseek-ai/dsh-client-ui-primitives': '0.1.1-rc.2',
+    '@deepseek-ai/cordis': '4.0.2',
+    '@deepseek-ai/dsh-agent-presets': '0.1.2-rc.1',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.1.2-rc.1',
+    '@deepseek-ai/dsh-typert-protocol': '0.1.2-rc.1',
   },
 }, 'candidate package metadata changed')
 assert.equal(

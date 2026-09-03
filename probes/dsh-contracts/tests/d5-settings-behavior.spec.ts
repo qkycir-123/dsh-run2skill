@@ -1,5 +1,5 @@
 import { Context } from '@deepseek-ai/cordis'
-import { SettingsProvider, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
@@ -118,7 +118,7 @@ describe('D5 Automatic Learning semantics on stock DSH Settings and Storage', ()
     const domain = await openRun2skillDomain(ctx)
     try {
       const policy = registerAutomaticLearningSettings(ctx.settings as unknown as DshSettingsPort)
-      const namespace = settingsNamespace('run2skill')
+      const namespace = 'run2skill' as SettingsNamespace
       expect(policy.snapshot()).toEqual({ automaticLearning: true })
       await ctx.settings.update(namespace, { automaticLearning: false })
       expect(policy.snapshot()).toEqual({ automaticLearning: false })

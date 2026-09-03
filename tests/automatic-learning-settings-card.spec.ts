@@ -38,14 +38,20 @@ function scopeFixture() {
 }
 
 describe('Automatic Learning native settings card', () => {
-  it('registers a run2skill-keyed card and binds the native settings scope', () => {
+  it('registers a run2skill-keyed card and binds the native settings scope', async () => {
     const fixture = scopeFixture()
     const install = vi.fn((_name: string, callback: () => unknown) => callback())
     const register = vi.fn((_options: Record<string, unknown>, _component: unknown) => () => {})
     const bind = vi.fn(() => fixture.scope)
 
-    applyAutomaticLearningSettingsClient({
-      connection: { rpc: { call: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })) } },
+    await applyAutomaticLearningSettingsClient({
+      remote: {
+        $mount: vi.fn(async () => async () => undefined),
+        run2skill: {
+          query: vi.fn(async () => ({ ok: true, value: { ok: true, value: { apiVersion: 1, state: 'IDLE' } } })),
+          command: vi.fn(),
+        },
+      } as never,
       workspaces: { list: { getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }) } },
       settingsScope: { bind: bind as never },
       slots: { inject: install, register },
@@ -69,7 +75,7 @@ describe('Automatic Learning native settings card', () => {
 
   it('wires USER Purge through the loopback channel without a Workspace identity', async () => {
     const fixture = scopeFixture()
-    const rpc = vi.fn(async (_channel: string, endpoint: string) => endpoint === 'purge/preview'
+    const rpc = vi.fn(async (endpoint: string) => endpoint === 'purge/preview'
       ? {
           ok: true,
           value: {
@@ -102,8 +108,15 @@ describe('Automatic Learning native settings card', () => {
       return () => undefined
     })
 
-    applyAutomaticLearningSettingsClient({
-      connection: { rpc: { call: rpc } },
+    const query = vi.fn(async (request: { endpoint: string }) => ({
+      ok: true as const,
+      value: await rpc(request.endpoint),
+    }))
+    await applyAutomaticLearningSettingsClient({
+      remote: {
+        $mount: vi.fn(async () => async () => undefined),
+        run2skill: { query, command: vi.fn() },
+      } as never,
       workspaces: {
         list: {
           getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }),
@@ -115,12 +128,10 @@ describe('Automatic Learning native settings card', () => {
 
     await face!.purgeController.whenIdle()
     await face!.purgeController.preview('USER')
-    expect(rpc).toHaveBeenCalledWith(
-      '/run2skill',
-      'purge/preview',
-      { apiVersion: 1, scope: 'USER' },
-      expect.any(AbortSignal),
-    )
+    expect(query).toHaveBeenCalledWith({
+      endpoint: 'purge/preview',
+      payload: { apiVersion: 1, scope: 'USER' },
+    }, expect.any(AbortSignal))
   })
 
   it('uses native revision-fenced writes and reports when the requested value did not land', async () => {

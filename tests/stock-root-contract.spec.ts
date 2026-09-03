@@ -48,7 +48,7 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('accepts the rc.2 stock preset composition and rejects the retired rc.7 digest', async () => {
+  it('accepts the rc.1 stock preset composition and rejects an unpinned digest', async () => {
     const agent = { ctx: {} }
     const rc7Content = '- id: skill-filesystem\n  name: rc.7\n'
     const rc2Content = '- id: skill-filesystem\n  name: rc.2\n'
@@ -58,10 +58,7 @@ describe('stock DSH root contract', () => {
       resolve: async () => ({ id: 'standard', trust: 'system' as const }),
       read: async () => content,
     }
-    const digests = {
-      standard: [sha256Utf8(rc2Content)],
-      code: ['f'.repeat(64)],
-    }
+    const digests = { standard: [sha256Utf8(rc2Content)] }
 
     await expect(resolvePinnedStockPresetConfiguration(service, agent, digests))
       .resolves.toEqual(configuration())
@@ -83,7 +80,7 @@ describe('stock DSH root contract', () => {
       resolve: async (id: string) => ({ id, trust: 'system' as const }),
       read: async () => content,
     }
-    const digests = { standard: [sha256Utf8(content)], code: ['f'.repeat(64)] }
+    const digests = { standard: [sha256Utf8(content)] }
 
     await expect(resolvePinnedStockPresetConfigurationById(
       presets,
@@ -111,14 +108,11 @@ describe('stock DSH root contract', () => {
     )).resolves.toBeUndefined()
   })
 
-  it('pins the rc.2 baseline and exact stock preset digest allowlists', () => {
-    expect(STOCK_DSH_BASELINE_COMMIT).toBe('b150a551b8d465e31e418e1b2eaf5e79bbb7d28e')
+  it('pins the 0.1.2-rc.1 baseline and exact stock preset digest allowlist', () => {
+    expect(STOCK_DSH_BASELINE_COMMIT).toBe('a66e4702047846cdaa10c66c9d3df3951f5ea70d')
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
-      ],
-      code: [
-        'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
+        'f18dd942686aa71f43ffc4fd328a712f79af113fb67a35b54cb6de4fc3b84bda',
       ],
     })
   })

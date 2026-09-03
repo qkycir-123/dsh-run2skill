@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e'
+  [string]$ExpectedDshHead = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,9 +39,9 @@ Write-Output "PNPM_VERSION=$(& pnpm --version)"
 Write-Output "OS_VERSION=$([System.Environment]::OSVersion.VersionString)"
 Write-Output "PROBE_RUN_ID=$runId"
 
-& git clone --local --no-hardlinks --no-checkout $DshSource $cloneRoot
+& git -c core.longpaths=true clone --local --no-hardlinks --no-checkout $DshSource $cloneRoot
 if ($LASTEXITCODE -ne 0) { throw 'Failed to create disposable stock DSH clone.' }
-& git -C $cloneRoot checkout --detach $ExpectedDshHead
+& git -c core.longpaths=true -C $cloneRoot checkout --detach $ExpectedDshHead
 if ($LASTEXITCODE -ne 0) { throw 'Failed to check out the pinned stock DSH commit.' }
 
 Push-Location $cloneRoot

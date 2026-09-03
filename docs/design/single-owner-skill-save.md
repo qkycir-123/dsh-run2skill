@@ -4,7 +4,7 @@
 
 对应 Issue：[#71](https://github.com/qkycir-123/dsh-run2skill/issues/71)
 
-适用范围：受支持的 stock DSH `web` profile、默认 filesystem Skill roots、内置 `standard` / `code` preset
+适用范围：受支持的 stock DSH `web` profile、默认 filesystem Skill roots；`0.3.1` 支持内置 `standard` / `code` preset，`main` / `0.4.0` 因 DSH RC1 删除 `code` 而只支持 `standard`
 
 适用版本：`0.2.0`–`0.3.1`；`main` 继续适用
 

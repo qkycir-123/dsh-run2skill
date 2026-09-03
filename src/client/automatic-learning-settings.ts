@@ -4,7 +4,8 @@ import {
   useSyncExternalStore,
   type ReactElement,
 } from 'react'
-import { RUN2SKILL_RPC_CHANNEL } from '../adapters/dsh-connection/observe-summary-rpc.js'
+import type { TypertClientRemote, TypertDisposer } from '@deepseek-ai/dsh-typert-protocol'
+import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
 import {
   PurgeSettingsController,
   PurgeSettingsSection,
@@ -142,16 +143,7 @@ export function AutomaticLearningSettingsCard(props: {
 }
 
 export interface AutomaticLearningSettingsClientContext {
-  readonly connection: {
-    readonly rpc: {
-      call(
-        channel: string,
-        endpoint: string,
-        payload: unknown,
-        signal?: AbortSignal,
-      ): Promise<unknown>
-    }
-  }
+  readonly remote: TypertClientRemote
   readonly workspaces: {
     readonly list: {
       getSnapshot(): {
@@ -172,15 +164,17 @@ export interface AutomaticLearningSettingsClientContext {
 
 export function applyAutomaticLearningSettingsClient(
   context: AutomaticLearningSettingsClientContext,
-): void {
+): Promise<TypertDisposer> {
+  return applyAutomaticLearningSettingsClientRemote(context)
+}
+
+async function applyAutomaticLearningSettingsClientRemote(
+  context: AutomaticLearningSettingsClientContext,
+): Promise<TypertDisposer> {
+  const mounted = await createRun2skillRemoteCaller(context.remote)
   const scope = context.settingsScope.bind<AutomaticLearningClientSettings>({ namespace: 'run2skill' })
   const controller = new AutomaticLearningSettingsController(scope)
-  const callPurge: PurgeCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL,
-    endpoint,
-    payload,
-    signal,
-  )
+  const callPurge: PurgeCall = mounted.call
   const purgeController = new PurgeSettingsController(callPurge, () => {
     const snapshot = context.workspaces.list.getSnapshot()
     return snapshot.recentWorkspaceId
@@ -195,4 +189,5 @@ export function applyAutomaticLearningSettingsClient(
     key: 'run2skill',
     inject: () => ({ controller, purgeController }),
   }, AutomaticLearningSettingsCard))
+  return mounted.dispose
 }

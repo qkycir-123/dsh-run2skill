@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   OBSERVE_SUMMARY_ENDPOINT,
-  RUN2SKILL_RPC_CHANNEL,
-  registerObserveSummaryRpc,
-  type ObserveSummaryRpcHandler,
+  createObserveSummaryRpcHandler,
 } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
 
 const summary = {
@@ -16,42 +14,17 @@ const summary = {
 }
 
 describe('Observe Summary RPC', () => {
-  it('registers one loopback-only unary endpoint and disposes it', async () => {
-    let handler: ObserveSummaryRpcHandler | undefined
-    const remove = vi.fn(async () => undefined)
-    const connection = {
-      rpc: {
-        handle: vi.fn((channel, nextHandler, options) => {
-          expect(channel).toBe(RUN2SKILL_RPC_CHANNEL)
-          expect(options).toEqual({ authority: 'loopback' })
-          handler = nextHandler
-          return remove
-        }),
-      },
-    }
+  it('creates the unary summary handler consumed by the Remote service', async () => {
     const readSummary = vi.fn(() => summary)
-
-    const dispose = registerObserveSummaryRpc(connection, readSummary)
-    expect(await handler?.(OBSERVE_SUMMARY_ENDPOINT, { apiVersion: 1 }, new AbortController().signal))
+    const handler = createObserveSummaryRpcHandler(readSummary)
+    expect(await handler(OBSERVE_SUMMARY_ENDPOINT, { apiVersion: 1 }, new AbortController().signal))
       .toEqual({ ok: true, value: summary })
     expect(readSummary).toHaveBeenCalledTimes(1)
-
-    await dispose()
-    expect(remove).toHaveBeenCalledTimes(1)
   })
 
   it('rejects unknown endpoints and non-empty or wrong-version payloads before reading state', async () => {
-    let handler: ObserveSummaryRpcHandler | undefined
-    const connection = {
-      rpc: {
-        handle: (_channel: string, nextHandler: ObserveSummaryRpcHandler) => {
-          handler = nextHandler
-          return async () => undefined
-        },
-      },
-    }
     const readSummary = vi.fn(() => summary)
-    registerObserveSummaryRpc(connection, readSummary)
+    const handler = createObserveSummaryRpcHandler(readSummary)
 
     for (const [endpoint, payload] of [
       ['other', { apiVersion: 1 }],
@@ -59,7 +32,7 @@ describe('Observe Summary RPC', () => {
       [OBSERVE_SUMMARY_ENDPOINT, { apiVersion: 2 }],
       [OBSERVE_SUMMARY_ENDPOINT, { apiVersion: 1, token: 'synthetic-value' }],
     ] as const) {
-      const result = await handler?.(endpoint, payload, new AbortController().signal)
+      const result = await handler(endpoint, payload, new AbortController().signal)
       expect(result).toMatchObject({ ok: false, error: { code: 'bad-request' } })
       expect(JSON.stringify(result)).not.toContain('synthetic-value')
     }
@@ -67,17 +40,11 @@ describe('Observe Summary RPC', () => {
   })
 
   it('returns generic cancellation and internal errors without leaking exception text', async () => {
-    let handler: ObserveSummaryRpcHandler | undefined
-    registerObserveSummaryRpc({
-      rpc: {
-        handle: (_channel: string, nextHandler: ObserveSummaryRpcHandler) => {
-          handler = nextHandler
-          return async () => undefined
-        },
-      },
-    }, () => { throw new Error('synthetic secret and D:\\private\\path') })
+    const handler = createObserveSummaryRpcHandler(
+      () => { throw new Error('synthetic secret and D:\\private\\path') },
+    )
 
-    const failed = await handler?.(
+    const failed = await handler(
       OBSERVE_SUMMARY_ENDPOINT,
       { apiVersion: 1 },
       new AbortController().signal,
@@ -88,7 +55,7 @@ describe('Observe Summary RPC', () => {
 
     const aborted = new AbortController()
     aborted.abort()
-    await expect(handler?.(OBSERVE_SUMMARY_ENDPOINT, { apiVersion: 1 }, aborted.signal))
+    await expect(handler(OBSERVE_SUMMARY_ENDPOINT, { apiVersion: 1 }, aborted.signal))
       .resolves.toMatchObject({ ok: false, error: { code: 'cancelled' } })
   })
 })

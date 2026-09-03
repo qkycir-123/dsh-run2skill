@@ -2,7 +2,13 @@
 
 ## 未发布 — `main`
 
-暂无尚未发布的变化。
+下一个版本为 `0.4.0`，面向官方 DSH `0.1.2-rc.1`（`a66e4702047846cdaa10c66c9d3df3951f5ea70d`），尚未发布。
+
+- 用两条严格的 DSH Remote/API Gateway 方法 `run2skill/query` 和 `run2skill/command`，替换上游已删除的私有 `ApiProxy` / `dsh-client-runtime` 通道。
+- Host 与 Client 共享请求/响应 codec，查询与命令分路，并增加取消和 fail-closed 错误映射。
+- 适配 RC1 的 Session 快照、JSONL Session 持久化、认证 Web 启动、Client 组合包、Settings、Storage/Profile 与 Skill Registry 契约。
+- 将 stock Skill root baseline 提升到 RC1，并把内置 preset 支持收敛为 `standard`；上游已删除旧 `code` preset。
+- `0.3.1` 继续作为 DSH `0.1.1-rc.2` 的维护线；本次兼容改造不增加数据迁移或新产品行为。
 
 ## 0.3.1 — 2026-08-28
 

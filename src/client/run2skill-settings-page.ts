@@ -24,7 +24,8 @@ import {
   Pill,
   Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { RUN2SKILL_RPC_CHANNEL } from '../adapters/dsh-connection/observe-summary-rpc.js'
+import type { TypertClientRemote, TypertDisposer } from '@deepseek-ai/dsh-typert-protocol'
+import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
 import {
   AutomaticLearningSettingsController,
   type AutomaticLearningClientSettings,
@@ -1310,9 +1311,7 @@ export function Run2skillSettingsPage(props: {
 }
 
 export interface Run2skillClientContext {
-  readonly connection: { readonly rpc: { call(
-    channel: string, endpoint: string, payload: unknown, signal?: AbortSignal,
-  ): Promise<unknown> } }
+  readonly remote: TypertClientRemote
   readonly settingsScope: { bind<T>(spec: { readonly namespace: string }): ClientSettingsScope<T> }
   readonly sessions?: { readonly list: {
     getSnapshot(): { readonly current?: string }
@@ -1339,25 +1338,18 @@ function workspaceFor(context: Run2skillClientContext, sessionId: string | undef
     .find(workspace => workspace.sessionIds?.includes(sessionId))?.workspaceId
 }
 
-export function applyRun2skillClient(context: Run2skillClientContext): void {
+export async function applyRun2skillClient(context: Run2skillClientContext): Promise<TypertDisposer> {
+  const mounted = await createRun2skillRemoteCaller(context.remote)
   const controller = new AutomaticLearningSettingsController(
     context.settingsScope.bind<AutomaticLearningClientSettings>({ namespace: 'run2skill' }),
   )
-  const callReview: ProposalReviewCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL, endpoint, payload, signal,
+  const callReview: ProposalReviewCall = mounted.call
+  const callAttention: AttentionCall = async (payload, signal) => await mounted.call('attention', payload, signal)
+  const callActivity: RecentSkillActivityCall = async (payload, signal) => await mounted.call(
+    'recent-activity/list', payload, signal,
   )
-  const callAttention: AttentionCall = async (payload, signal) => await context.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL, 'attention', payload, signal,
-  )
-  const callActivity: RecentSkillActivityCall = async (payload, signal) => await context.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL, 'recent-activity/list', payload, signal,
-  )
-  const callLearningStatus: LearningStatusCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL, endpoint, payload, signal,
-  )
-  const callPurge: PurgeCall = async (endpoint, payload, signal) => await context.connection.rpc.call(
-    RUN2SKILL_RPC_CHANNEL, endpoint, payload, signal,
-  )
+  const callLearningStatus: LearningStatusCall = mounted.call
+  const callPurge: PurgeCall = mounted.call
   const purgeController = new PurgeSettingsController(callPurge, () => (
     workspaceFor(context, currentSessionId(context))
   ))
@@ -1409,4 +1401,5 @@ export function applyRun2skillClient(context: Run2skillClientContext): void {
       callAttention: props.callAttention,
     })
   }))
+  return mounted.dispose
 }
