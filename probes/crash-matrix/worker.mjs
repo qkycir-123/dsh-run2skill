@@ -159,6 +159,7 @@ const context = {
     resolveByPath: async () => ({ id: 'workspace-v2', path: 'D:/workspace' }),
     get: () => ({ id: 'workspace-v2', path: 'D:/workspace' }),
   },
+  reflect: { provide() {} },
   connection: { rpc: { handle: () => async () => {} } },
   on: () => {},
 }

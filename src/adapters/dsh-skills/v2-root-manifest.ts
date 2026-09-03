@@ -483,7 +483,7 @@ export class DshV2RootManifestAdapter {
   ): Promise<string | undefined> {
     if (
       configuration.profile !== 'web'
-      || (configuration.presetId !== 'standard' && configuration.presetId !== 'code')
+      || configuration.presetId !== 'standard'
       || configuration.providerName.trim().length === 0
       || (configuration.usesContextFileSystem === true && filesystem === undefined)
     ) return undefined

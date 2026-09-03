@@ -1,15 +1,17 @@
 # dsh-run2skill v0.2 核心流程架构基线
 
-状态：`0.2.0` 核心架构已接受并落地；`0.3.1` 继续适用
+状态：`0.2.0` 核心架构已接受并落地；`0.3.1` 已发布，`0.4.0` 兼容层在 `main` 上实现
 文档版本：v0.2
-更新时间：2026-08-28
+更新时间：2026-09-04
 产品输入：docs/product/prd.md v0.2
 原始设计证据 baseline：`99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）
-当前 `0.3.1` 兼容性 baseline：`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`（`0.1.1-rc.2`），见 [`docs/compatibility.md`](../compatibility.md)
+当前 `main` / `0.4.0` 兼容性 baseline：`a66e4702047846cdaa10c66c9d3df3951f5ea70d`（`0.1.2-rc.1`）；已发布 `0.3.1` 继续绑定 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`（`0.1.1-rc.2`），见 [`docs/compatibility.md`](../compatibility.md)
 
 ## 1. 文档目的与效力
 
 本文把产品需求转化为 v0.2 的模块职责、稳定契约、状态模型和验证边界。它是 `0.2.0`–`0.3.1` 核心流程的已发布架构记录。文中“切片开始前”、“必须先探针”等措辞记录当时的交付门禁，不表示当前尚未实现。
+
+`0.4.0` 不改动上述产品流程、状态机或存储格式，只替换 DSH `0.1.2-rc.1` 已删除的宿主集成层。当前覆盖规则见 [`dsh-compatibility.md`](dsh-compatibility.md)：浏览器请求通过 DSH Remote/API Gateway 和一次性启动令牌换取的认证 Cookie 到达 Host；本文后续出现的 `/run2skill` 私有 loopback RPC 是 `0.3.1` 的历史实现，不再描述 `0.4.0`。
 
 维护者已于 2026-08-19 接受本 Architecture Baseline。该决定允许进入阶段 3 的可丢弃 Contract Probe，但不等于允许跳过探针开始大规模生产实现：
 
@@ -70,7 +72,7 @@ dsh-run2skill 是一个双面 DSH 插件：Host 在每个 durable root turn/end 
 ```mermaid
 flowchart LR
     User["本机用户"] --> Web["DSH Web + run2skill Client"]
-    Web -->|"loopback RPC；只传 id/revision/digest"| Host["run2skill Host"]
+    Web -->|"DSH Remote/API Gateway；认证后只传 id/revision/digest"| Host["run2skill Host"]
     DSHSession["DSH Session / Session Log"] -->|"session/event：turn/end"| Host
     Host --> Core["run2skill Application + Domain Core"]
     Core --> Store["DSH Storage Domain<br/>run2skill aggregates"]
@@ -101,7 +103,7 @@ flowchart LR
 | Skill 文件格式 | DSH Skill name、frontmatter、invocation 语义 | canonical renderer、Proposal digest、secret/path/Base Guards |
 | Settings | ctx.settings namespace、默认值、revision、live watch | run2skill 可编辑字段及 Analysis 启动快照 |
 | Storage | ctx.storage.domain、backend durability、单 domain 写序列 | v2 TurnObservation/SessionBatch/Intent/Lineage schema、fresh activation、恢复 saga、Purge 语义 |
-| Web transport | ctx.connection、Host/Origin fence、client module system、slot | /run2skill loopback RPC、DTO、Client Inbox 与轮询 |
+| Web transport | DSH Remote/API Gateway、浏览器启动令牌/Cookie、client module system、slot | `run2skill/query` / `run2skill/command` 严格 DTO、Client Inbox 与轮询 |
 | 文件发布 | DSH home path helper、原子 staging/锁工具可复用部分 | compare-and-exchange、journal、路径证明、回读事务 |
 | 插件生命周期 | Cordis Loader、dsh.client、profile/plugin 命令 | 一个可发布包的 Host/Client entry、兼容检查与安装验收 |
 
@@ -867,7 +869,7 @@ Proposal 最终 bytes 做独立 secret scan。HIGH evidence 也不能绕过。
 - 所有 path 判断使用 resolved path 与平台正确的相对路径包含关系，不用字符串前缀；
 - 检查每个已存在 ancestor 的 symlink/junction/reparse point；
 - root 或 target 身份变化使 Approval 失效；
-- RPC 强制 loopback 并依赖 DSH browser trust fence；
+- Web 调用只通过 DSH Remote/API Gateway；网络可达性和浏览器身份由 DSH 启动令牌/Cookie 授权，run2skill 仍在 Host 端校验严格 DTO、查询/命令路由和业务授权；
 - 错误 DTO 不返回 secret、未裁剪原始事件或无必要绝对 Home。
 
 ## 17. 故障语义与 fail-open

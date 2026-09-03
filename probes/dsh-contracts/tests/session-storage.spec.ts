@@ -7,7 +7,6 @@ import { z } from 'zod'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
@@ -27,14 +26,10 @@ async function freshDirectory(prefix: string): Promise<string> {
   return directory
 }
 
-type SessionPersistenceKind = 'jsonl' | 'sqlite'
-
-async function mountSessionPersistence(path: string, backend: SessionPersistenceKind) {
+async function mountSessionPersistence(path: string) {
   const ctx = new Context()
   const sessionStoreFiber = await ctx.plugin(SessionStore)
-  const persistenceFiber = backend === 'jsonl'
-    ? await ctx.plugin(JsonlSessionPersistence, { root: path, compression: 'none' })
-    : await ctx.plugin(SqliteSessionPersistence, { path })
+  const persistenceFiber = await ctx.plugin(JsonlSessionPersistence, { root: path, compression: 'none' })
   return { ctx, sessionStoreFiber, persistenceFiber }
 }
 
@@ -45,12 +40,11 @@ async function disposeSessionPersistence(mount: Awaited<ReturnType<typeof mountS
 
 describe('CP-SES-001 session observation and restart recovery', () => {
   it.each([
-    { backend: 'jsonl' as const, medium: 'Web profile JSONL', path: (directory: string) => join(directory, 'sessions') },
-    { backend: 'sqlite' as const, medium: 'portable SQLite', path: (directory: string) => join(directory, 'sessions.db') },
-  ])('contains observer failure, distinguishes roots, scans a durable gap, and releases live sessions with $medium', async ({ backend, path }) => {
-    const directory = await freshDirectory(`dsh-run2skill-session-${backend}-`)
+    { medium: 'Web profile JSONL', path: (directory: string) => join(directory, 'sessions') },
+  ])('contains observer failure, distinguishes roots, scans a durable gap, and releases live sessions with $medium', async ({ path }) => {
+    const directory = await freshDirectory('dsh-run2skill-session-jsonl-')
     const persistencePath = path(directory)
-    const first = await mountSessionPersistence(persistencePath, backend)
+    const first = await mountSessionPersistence(persistencePath)
     const rootId = SessionId('run2skill-probe-root')
     const childId = SessionId('run2skill-probe-child')
     const observed: SessionEvent[] = []
@@ -81,7 +75,7 @@ describe('CP-SES-001 session observation and restart recovery', () => {
     root.append('turn/start', { turn: 1 })
     root.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     await ownerContext.sessions.flush(root)
-    const checkpoint = root.events.length
+    const checkpoint = root.seq
     const before = await first.ctx.sessionPersistence.listSnapshots()
     const beforeRevision = before.find(snapshot => snapshot.header.id === rootId)?.revision
     expect(beforeRevision).toBeDefined()
@@ -121,7 +115,7 @@ describe('CP-SES-001 session observation and restart recovery', () => {
     expect(disposed.map(String).sort()).toEqual([String(rootId), String(childId)].sort())
     await disposeSessionPersistence(first)
 
-    const second = await mountSessionPersistence(persistencePath, backend)
+    const second = await mountSessionPersistence(persistencePath)
     try {
       const listed = await second.ctx.sessionPersistence.list()
       expect(listed.map(header => header.id).sort()).toEqual([childId, rootId].sort())

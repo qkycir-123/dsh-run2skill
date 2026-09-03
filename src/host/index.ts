@@ -27,10 +27,11 @@ import type {
 import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
 import { SessionCoordinateIngress } from '../adapters/dsh-session/ingress.js'
 import {
-  registerObserveSummaryRpc,
-  type ObserveSummaryHostConnection,
+  createObserveSummaryRpcHandler,
   type ObserveSummaryRpcHandler,
 } from '../adapters/dsh-connection/observe-summary-rpc.js'
+import { Run2skillRemoteService } from '../adapters/dsh-remote/service.js'
+import type { Context } from '@deepseek-ai/cordis'
 import { createPurgeRpcHandler } from '../adapters/dsh-connection/purge-rpc.js'
 import { projectRuntimeAttention } from '../adapters/dsh-connection/attention-rpc.js'
 import { createV2RecentSkillActivityRpcHandler } from '../adapters/dsh-connection/v2-recent-skill-activity-rpc.js'
@@ -118,7 +119,6 @@ export const inject = [
   'sessionPersistence',
   'storageDomain',
   'workspaceRegistry',
-  'connection',
   'llm',
   'skills',
   'settings',
@@ -158,7 +158,6 @@ export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly sessions: unknown
   readonly sessionPersistence: SessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
-  readonly connection: ObserveSummaryHostConnection
   readonly llm: DshLlmPort
   readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
   readonly settings: DshSettingsPort
@@ -1087,11 +1086,11 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     resolveCurrentWorkspace,
     v2LearningStatusRpc,
   )
-  const disposeRpc = registerObserveSummaryRpc(
-    context.connection,
+  const remoteHandler = createObserveSummaryRpcHandler(
     readSummary,
     v2Rpc,
   )
+  new Run2skillRemoteService(context as unknown as Context, remoteHandler)
 
   try {
     await lifecycle.start()
@@ -1103,13 +1102,9 @@ export async function apply(context: Run2skillHostContext): Promise<() => Promis
     accepting = false
     stopWatchingSettings()
     try {
-      await disposeRpc()
+      await lifecycle.dispose()
     } finally {
-      try {
-        await lifecycle.dispose()
-      } finally {
-        scopes.clear()
-      }
+      scopes.clear()
     }
   }
 }

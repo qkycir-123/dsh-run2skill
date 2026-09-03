@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
-import type { ObserveSummaryRpcHandler } from '../src/adapters/dsh-connection/observe-summary-rpc.js'
+import type { Run2skillRemoteService } from '../src/adapters/dsh-remote/service.js'
 import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
 import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
@@ -60,6 +60,7 @@ function services() {
       async standingKeyFor(id?: string) { return { agentPreset: id ?? 'standard' } },
     },
     fs: {},
+    reflect: { provide() {} },
     emit() {},
   }
 }
@@ -73,7 +74,6 @@ describe('Host plugin v2 production cutover', () => {
       'sessionPersistence',
       'storageDomain',
       'workspaceRegistry',
-      'connection',
       'llm',
       'skills',
       'settings',
@@ -92,7 +92,7 @@ describe('Host plugin v2 production cutover', () => {
     let present = false
     let revision = 'rev-1'
     let eventListener: ((session: { header: DshSessionHeader }, event: DshSessionEvent) => void) | undefined
-    let rpcHandler: ObserveSummaryRpcHandler | undefined
+    let remoteService: Run2skillRemoteService | undefined
     const stream = vi.fn(async function * () { yield { type: 'finish' as const, reason: { kind: 'stop' } } })
     const context = {
       ...services(),
@@ -111,10 +111,11 @@ describe('Host plugin v2 production cutover', () => {
         async resolveByPath() { return { id: 'workspace-1', path: 'D:/workspace' } },
         get() { return { id: 'workspace-1', path: 'D:/workspace' } },
       },
-      connection: { rpc: { handle(_channel: string, handler: ObserveSummaryRpcHandler) {
-        rpcHandler = handler
-        return async () => { order.push('rpc-dispose') }
-      } } },
+      reflect: {
+        provide(name: string, service: unknown) {
+          if (name === 'run2skillRemote') remoteService = service as Run2skillRemoteService
+        },
+      },
       on(event: string, listener: (...args: never[]) => unknown) {
         order.push(`listener:${event}`)
         if (event === 'session/event') eventListener = listener as unknown as typeof eventListener
@@ -129,20 +130,26 @@ describe('Host plugin v2 production cutover', () => {
     await vi.waitFor(() => expect(domain.turnObservations.size).toBe(1))
     expect(domain.sessionBatches.size).toBe(0)
     expect(stream).not.toHaveBeenCalled()
-    await expect(rpcHandler?.('observe-summary', { apiVersion: 1 }, new AbortController().signal))
+    await expect(remoteService?.query(
+      { endpoint: 'observe-summary', payload: { apiVersion: 1 } }, new AbortController().signal,
+    ))
       .resolves.toMatchObject({ ok: true, value: { status: 'READY', capturedCount: 1 } })
-    await expect(rpcHandler?.('recent-activity/list', {
-      apiVersion: 1,
-      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-1' },
+    await expect(remoteService?.query({
+      endpoint: 'recent-activity/list',
+      payload: {
+        apiVersion: 1,
+        currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: 'workspace-1' },
+      },
     }, new AbortController().signal))
       .resolves.toMatchObject({ ok: true, value: { items: [] } })
-    await expect(rpcHandler?.('purge/status', { apiVersion: 1 }, new AbortController().signal))
+    await expect(remoteService?.query(
+      { endpoint: 'purge/status', payload: { apiVersion: 1 } }, new AbortController().signal,
+    ))
       .resolves.toMatchObject({ ok: true, value: { state: 'IDLE' } })
     expect(order.filter(item => item === 'run2skill_v2-open')).toHaveLength(1)
 
     await dispose()
     expect(close).toHaveBeenCalledOnce()
-    expect(order.indexOf('rpc-dispose')).toBeLessThan(order.indexOf('domain-close'))
   })
 
   it('does not reinterpret durable history that predates fresh v2 activation', async () => {
@@ -298,7 +305,7 @@ describe('Host plugin v2 production cutover', () => {
     await dispose()
   })
 
-  it('closes the v2 runtime even when RPC disposal fails', async () => {
+  it('closes the v2 runtime during plugin disposal', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const close = vi.fn(async () => undefined)
     domain.close = close
@@ -307,12 +314,11 @@ describe('Host plugin v2 production cutover', () => {
       sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
-      connection: { rpc: { handle() { return async () => { throw new Error('synthetic rpc dispose failure') } } } },
       on() {},
     }
     const dispose = await apply(context)
 
-    await expect(dispose()).rejects.toThrow('synthetic rpc dispose failure')
+    await expect(dispose()).resolves.toBeUndefined()
     expect(close).toHaveBeenCalledOnce()
   })
 })

@@ -80,7 +80,13 @@ describe('Observe Header action', () => {
       injectedDispose = install()
     })
     const context = {
-      connection: { rpc: { call: vi.fn() } },
+      remote: {
+        $mount: vi.fn(async () => async () => undefined),
+        run2skill: {
+          query: vi.fn(async () => ({ ok: true, value: { ok: true, value: {} } })),
+          command: vi.fn(),
+        },
+      },
       workspaces: {
         list: {
           getSnapshot: () => ({ items: [{ workspaceId: 'workspace-a', sessionIds: ['session-a'] }] }),
@@ -89,7 +95,7 @@ describe('Observe Header action', () => {
       slots: { inject, register },
     }
 
-    applyObserveSummaryClient(context)
+    await applyObserveSummaryClient(context as never)
 
     expect(inject).toHaveBeenCalledWith('conversation.session.header.actions', expect.any(Function))
     expect(register).toHaveBeenCalledWith(expect.objectContaining({
@@ -108,9 +114,9 @@ describe('Observe Header action', () => {
     expect(face.getWorkspaceId('unbound-session')).toBe('unbound-session')
     const signal = new AbortController().signal
     await face.callReview('proposals/list', { apiVersion: 1 }, signal)
-    expect(context.connection.rpc.call).toHaveBeenCalledWith(
-      '/run2skill', 'proposals/list', { apiVersion: 1 }, signal,
-    )
+    expect(context.remote.run2skill.query).toHaveBeenCalledWith({
+      endpoint: 'proposals/list', payload: { apiVersion: 1 },
+    }, signal)
     injectedDispose?.()
     expect(remove).toHaveBeenCalledTimes(1)
   })

@@ -54,7 +54,7 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
       }, { surfaceOp: 'append' })
       session.append('step/end', { turn: 1, step: 1 })
       session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
-      const capturedEndSeq = session.events.at(-1)!.seq
+      const capturedEndSeq = session.snapshotEvents().at(-1)!.seq
 
       session.append('turn/start', { turn: 2 })
       session.append('user/message', createUserMessage({

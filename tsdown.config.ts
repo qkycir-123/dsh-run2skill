@@ -41,7 +41,11 @@ function inlineCssModules() {
 export default defineConfig([
   {
     name: 'dsh-run2skill',
-    entry: { index: 'src/host/index.ts' },
+    entry: {
+      index: 'src/host/index.ts',
+      'typert.host': 'src/adapters/dsh-remote/typert.ts',
+      'typert.remote-client': 'src/adapters/dsh-remote/remote.ts',
+    },
     outDir: 'lib',
     format: 'esm',
     platform: 'node',
@@ -50,8 +54,8 @@ export default defineConfig([
     fixedExtension: false,
     clean: true,
     deps: {
-      neverBundle: ['zod'],
-      dts: { neverBundle: ['zod'] },
+      neverBundle: ['zod', '@deepseek-ai/cordis', '@deepseek-ai/dsh-typert-protocol'],
+      dts: { neverBundle: ['zod', '@deepseek-ai/cordis', '@deepseek-ai/dsh-typert-protocol'] },
     },
   },
   {

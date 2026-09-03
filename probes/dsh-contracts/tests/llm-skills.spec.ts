@@ -17,7 +17,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import SessionStore, { foldRequestHeader, SessionId } from '@deepseek-ai/dsh-session'
-import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import Storage from '@deepseek-ai/dsh-storage'
@@ -142,7 +142,7 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
         },
         reason: 'change',
       })
-      const inherited = foldRequestHeader(session.events)
+      const inherited = foldRequestHeader(session.snapshotEvents())
       if (inherited === undefined) throw new Error('missing folded Session request route')
 
       const result = await runJsonWithOneRepair(ctx, inherited.config.provider, inherited.config.model)
@@ -339,7 +339,9 @@ async function mountWorkspaceAndSkills(base: string) {
   const sqliteFiber = await ctx.plugin(StorageSqlite, { path: join(base, 'storage.db') })
   const domainFiber = await ctx.plugin(StorageDomain, { backend: 'sqlite' })
   const sessionStoreFiber = await ctx.plugin(SessionStore)
-  const persistenceFiber = await ctx.plugin(SqliteSessionPersistence, { path: join(base, 'sessions.db') })
+  const persistenceFiber = await ctx.plugin(JsonlSessionPersistence, {
+    root: join(base, 'sessions'), compression: 'none',
+  })
   const workspaceFiber = await ctx.plugin(WorkspaceRegistry)
   const skillRegistryFiber = await ctx.plugin(SkillRegistry)
   return {

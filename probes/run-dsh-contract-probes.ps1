@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e',
+  [string]$ExpectedDshHead = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d',
   [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'learning-diagnostics-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'b2-v2-turn-observation.spec.ts', 'b2-v2-session-activity.spec.ts', 'b2-v2-route-manifest.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'd5-settings-behavior.spec.ts')
 )
 
@@ -41,9 +41,9 @@ Write-Output "PNPM_VERSION=$(& pnpm --version)"
 Write-Output "PLATFORM=$([System.Environment]::OSVersion.VersionString)"
 Write-Output "PROBE_RUN_ID=$runId"
 
-& git clone --local --no-hardlinks --no-checkout $DshSource $cloneRoot
+& git -c core.longpaths=true clone --local --no-hardlinks --no-checkout $DshSource $cloneRoot
 if ($LASTEXITCODE -ne 0) { throw 'Failed to create disposable DSH clone.' }
-& git -C $cloneRoot checkout --detach $ExpectedDshHead
+& git -c core.longpaths=true -C $cloneRoot checkout --detach $ExpectedDshHead
 if ($LASTEXITCODE -ne 0) { throw 'Failed to check out the pinned DSH commit.' }
 
 $probeDestination = Join-Path $cloneRoot 'packages\run2skill\contract-probes\tests'

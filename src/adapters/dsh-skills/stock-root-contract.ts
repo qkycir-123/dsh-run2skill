@@ -7,17 +7,14 @@ import {
   ROOT_RESOLVER_VERSION_V2,
 } from '../../domain/review/schemas.js'
 
-export const STOCK_DSH_BASELINE_COMMIT = 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e'
+export const STOCK_DSH_BASELINE_COMMIT = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
 export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
-const SUPPORTED_PRESETS = new Set(['standard', 'code'])
+const SUPPORTED_PRESETS = new Set(['standard'])
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
   standard: Object.freeze([
-    'fa14feb98daef20b810fef30bb7239a89a786de3c45c602b37743f7100d9a5af',
-  ]),
-  code: Object.freeze([
-    'bdecfe0b26a9d56a2ffcb79694fc123bc395247969e135c62945a1ec8fb92e87',
+    'f18dd942686aa71f43ffc4fd328a712f79af113fb67a35b54cb6de4fc3b84bda',
   ]),
 })
 
@@ -81,7 +78,7 @@ function contextUsesFileSystem(context: object): boolean {
 export async function resolvePinnedStockPresetConfiguration(
   presets: StockAgentPresetObservationPort,
   agent: { readonly ctx: object },
-  expectedDigests: Readonly<Record<'standard' | 'code', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
+  expectedDigests: Readonly<Record<'standard', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
 ): Promise<StockSkillRuntimeConfiguration | undefined> {
   const presetId = presets.composedPreset(agent.ctx)
   return resolvePinnedStockPresetConfigurationById(
@@ -96,9 +93,9 @@ export async function resolvePinnedStockPresetConfigurationById(
   presets: StockAgentPresetReadPort,
   presetId: string | undefined,
   usesContextFileSystem: boolean,
-  expectedDigests: Readonly<Record<'standard' | 'code', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
+  expectedDigests: Readonly<Record<'standard', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
 ): Promise<StockSkillRuntimeConfiguration | undefined> {
-  if (presetId !== 'standard' && presetId !== 'code') return undefined
+  if (presetId !== 'standard') return undefined
   try {
     const preset = await presets.resolve(presetId)
     if (preset.id !== presetId || preset.trust !== 'system') return undefined
@@ -158,7 +155,7 @@ export type StockRootContractResolution = {
   readonly status: 'SUPPORTED'
   readonly baselineCommit: typeof STOCK_DSH_BASELINE_COMMIT
   readonly profile: 'web'
-  readonly presetId: 'standard' | 'code'
+  readonly presetId: 'standard'
   readonly expectedProvider: 'filesystem'
   readonly expectedSource: 'project-dsh' | 'user-dsh'
   readonly resolverVersion: typeof STOCK_ROOT_RESOLVER_VERSION
@@ -278,7 +275,7 @@ function canonicalConfiguration(configuration: StockSkillRuntimeConfiguration) {
 
 function supportedConfiguration(
   configuration: StockSkillRuntimeConfiguration,
-): configuration is StockSkillRuntimeConfiguration & { readonly presetId: 'standard' | 'code' } {
+): configuration is StockSkillRuntimeConfiguration & { readonly presetId: 'standard' } {
   return configuration.profile === 'web'
     && configuration.presetId !== undefined
     && SUPPORTED_PRESETS.has(configuration.presetId)

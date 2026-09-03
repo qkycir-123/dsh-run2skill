@@ -10,7 +10,6 @@ export * from './status-copy.js'
 
 export const name = 'run2skill-client'
 export const inject = [
-  'connection',
   'slots',
   'workspaces',
   'sessions',
@@ -18,6 +17,6 @@ export const inject = [
   'settingsScope',
 ] as const
 
-export function apply(context: Run2skillClientContext): void {
-  applyRun2skillClient(context)
+export async function apply(context: Run2skillClientContext): Promise<() => Promise<void>> {
+  return await applyRun2skillClient(context)
 }

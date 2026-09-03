@@ -34,7 +34,7 @@ function harness(options: {
   const liveEvents = [...(options.liveEvents ?? events)]
   const live = {
     header,
-    events: liveEvents,
+    snapshotEvents: () => [...liveEvents],
   }
   const agent = {
     id: header.id,
