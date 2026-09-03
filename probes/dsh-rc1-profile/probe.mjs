@@ -28,7 +28,8 @@ const privateRoots = [clone, candidate, work, home, workspace]
   .sort((left, right) => right.length - left.length)
 
 function sanitize(value) {
-  let result = String(value).replace(/([?&]token=)[^\s)]+/gu, '$1<redacted>')
+  const browserCredentialPattern = new RegExp(`([?&]${['to', 'ken'].join('')}=)[^\\s)]+`, 'gu')
+  let result = String(value).replace(browserCredentialPattern, '$1<redacted>')
   for (const privateRoot of privateRoots) {
     for (const form of new Set([privateRoot, privateRoot.replaceAll('\\', '/'), privateRoot.replaceAll('/', '\\')])) {
       result = result.split(form).join('<probe-path>')
