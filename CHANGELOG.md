@@ -1,8 +1,8 @@
 # 版本变化
 
-## 未发布 — `main`
+## 0.4.0 — 2026-09-04
 
-下一个版本为 `0.4.0`，面向官方 DSH `0.1.2-rc.1`（`a66e4702047846cdaa10c66c9d3df3951f5ea70d`），尚未发布。
+`0.4.0` 面向官方 DSH `0.1.2-rc.1`（`a66e4702047846cdaa10c66c9d3df3951f5ea70d`），作为新的 npm 稳定兼容线发布。
 
 - 用两条严格的 DSH Remote/API Gateway 方法 `run2skill/query` 和 `run2skill/command`，替换上游已删除的私有 `ApiProxy` / `dsh-client-runtime` 通道。
 - Host 与 Client 共享请求/响应 codec，查询与命令分路，并增加取消和 fail-closed 错误映射。

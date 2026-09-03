@@ -14,11 +14,11 @@ Have you run into any of these situations?
 
 Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
 
-> The current stable release is [`0.3.1`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.1). It supports DSH Web `0.1.1-rc.2` only.
+> The current stable release is [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0). It supports DSH Web `0.1.2-rc.1` only.
 
-> `main` is preparing `0.4.0`: it uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and supports only the retained built-in `standard` preset. `0.4.0` is not released yet; do not use the stable installation command below with DSH `0.1.2-rc.1`.
+`0.4.0` uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and adapts its Session, Storage/Profile, Settings, and plugin-lifecycle changes. It supports only the retained built-in `standard` preset. Continue using `dsh-run2skill@0.3.1` with the older DSH `0.1.1-rc.2` line.
 
-`0.3.1` adds low-noise learning status, **Synthesize this experience now**, revision requests that generate a new draft, and bounded preservation of important long-workflow evidence. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. Internal batch counters are not shown in the settings page.
+Low-noise learning status, **Synthesize this experience now**, revision requests that generate a new draft, and bounded preservation of important long-workflow evidence remain available. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. Internal batch counters are not shown in the settings page.
 
 ## See the complete flow
 
@@ -42,10 +42,10 @@ Run2Skill does not let an agent silently create permanent rules for itself. Ever
 
 ## Install
 
-First confirm that you use DSH Web `0.1.1-rc.2`, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available in your terminal. Then run:
+First confirm that you use DSH Web `0.1.2-rc.1`, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available in your terminal. Then run:
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.3.1
+dsh plugin --profile web add dsh-run2skill@0.4.0
 ```
 
 Restart DSH Web. Open **Settings → Plugins**; the plugin is loaded when the **Run2Skill** tab appears.

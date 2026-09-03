@@ -16,11 +16,11 @@
 
 它不会让 Agent 偷偷给自己立规矩。每份技能草稿都可以先看来源、适用范围和完整内容，然后由你决定确认保存还是放弃草稿。只有确认后，它才会写入 DSH 的原生 Skill 目录。
 
-> 当前稳定版为 [`0.3.1`](https://github.com/qkycir-123/dsh-run2skill/releases/tag/v0.3.1)。目前仅支持 DSH Web `0.1.1-rc.2`。
+> 当前稳定版为 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)。目前仅支持 DSH Web `0.1.2-rc.1`。
 
-> `main` 正在准备 `0.4.0`：它改用 DSH `0.1.2-rc.1` 的 Remote/API Gateway 与浏览器认证契约，只支持该版本保留的内置 `standard` preset。`0.4.0` 尚未发布，请勿把下面的稳定版安装命令用于 DSH `0.1.2-rc.1`。
+`0.4.0` 改用 DSH `0.1.2-rc.1` 的 Remote/API Gateway 与浏览器认证契约，并适配 Session、Storage/Profile、Settings 和插件生命周期变化。它只支持 RC1 保留的内置 `standard` preset；使用旧 DSH `0.1.1-rc.2` 时请继续安装 `dsh-run2skill@0.3.1`。
 
-`0.3.1` 增加了低噪声整理状态、“立即整理本次经验”、按意见生成新版草稿，以及长工作流关键证据保留。“立即整理”仍会等待 Agent 停止运行和事实完整，并继续经过查重、审核与发布安全门；设置页不会展示内部批次计数。
+低噪声整理状态、“立即整理本次经验”、按意见生成新版草稿，以及长工作流关键证据保留继续保留。“立即整理”仍会等待 Agent 停止运行和事实完整，并继续经过查重、审核与发布安全门；设置页不会展示内部批次计数。
 
 ## 看一遍完整流程
 
@@ -44,10 +44,10 @@
 
 ## 安装
 
-先确认你使用 DSH Web `0.1.1-rc.2`，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。然后执行：
+先确认你使用 DSH Web `0.1.2-rc.1`，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。然后执行：
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.3.1
+dsh plugin --profile web add dsh-run2skill@0.4.0
 ```
 
 重启 DSH Web。打开 **Settings → Plugins**，看到 **run2skill** 卡片就说明插件已加载。

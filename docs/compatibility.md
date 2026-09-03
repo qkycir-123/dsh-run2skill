@@ -4,12 +4,12 @@ run2skill 按 DSH 主线分成两条明确的兼容线：
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 结果 |
 |---|---|---|---|---|
-| `0.4.0` | `main`，未发布 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | Remote/API Gateway、认证 Web、Session、Skill、LLM、Settings、Storage/Profile 与根目录契约通过 |
+| `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | Remote/API Gateway、认证 Web、Session、Skill、LLM、Settings、Storage/Profile 与根目录契约通过 |
 | `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 完整契约、原生 UI、存储、发布和真实安装生命周期通过 |
 
 核验日期：2026-09-04。
 
-`0.4.0` 是 DSH `0.1.2-rc.1` 的新兼容线，不能理解为已发布。`0.3.1` 继续只支持 DSH `0.1.1-rc.2`；不要跨两条 DSH 主线混装。
+`0.4.0` 是 DSH `0.1.2-rc.1` 的当前 npm 稳定版。`0.3.1` 继续只支持 DSH `0.1.1-rc.2`；不要跨两条 DSH 主线混装。
 
 ## `0.4.0` 当前支持范围
 

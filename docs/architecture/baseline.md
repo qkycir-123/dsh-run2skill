@@ -1,15 +1,15 @@
 # dsh-run2skill v0.2 核心流程架构基线
 
-状态：`0.2.0` 核心架构已接受并落地；`0.3.1` 已发布，`0.4.0` 兼容层在 `main` 上实现
+状态：`0.2.0` 核心架构已接受并落地；`0.4.0` 已作为当前 npm 稳定兼容线发布
 文档版本：v0.2
 更新时间：2026-09-04
 产品输入：docs/product/prd.md v0.2
 原始设计证据 baseline：`99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`（`0.1.0-rc.7`）
-当前 `main` / `0.4.0` 兼容性 baseline：`a66e4702047846cdaa10c66c9d3df3951f5ea70d`（`0.1.2-rc.1`）；已发布 `0.3.1` 继续绑定 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`（`0.1.1-rc.2`），见 [`docs/compatibility.md`](../compatibility.md)
+当前稳定版 `0.4.0` 的兼容性 baseline：`a66e4702047846cdaa10c66c9d3df3951f5ea70d`（`0.1.2-rc.1`）；旧版 `0.3.1` 继续绑定 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`（`0.1.1-rc.2`），见 [`docs/compatibility.md`](../compatibility.md)
 
 ## 1. 文档目的与效力
 
-本文把产品需求转化为 v0.2 的模块职责、稳定契约、状态模型和验证边界。它是 `0.2.0`–`0.3.1` 核心流程的已发布架构记录。文中“切片开始前”、“必须先探针”等措辞记录当时的交付门禁，不表示当前尚未实现。
+本文把产品需求转化为 v0.2 的模块职责、稳定契约、状态模型和验证边界。它是 `0.2.0`–`0.4.0` 核心流程的已发布架构记录。文中“切片开始前”、“必须先探针”等措辞记录当时的交付门禁，不表示当前尚未实现。
 
 `0.4.0` 不改动上述产品流程、状态机或存储格式，只替换 DSH `0.1.2-rc.1` 已删除的宿主集成层。当前覆盖规则见 [`dsh-compatibility.md`](dsh-compatibility.md)：浏览器请求通过 DSH Remote/API Gateway 和一次性启动令牌换取的认证 Cookie 到达 Host；本文后续出现的 `/run2skill` 私有 loopback RPC 是 `0.3.1` 的历史实现，不再描述 `0.4.0`。
 
@@ -984,7 +984,7 @@ storageDomain, workspaceRegistry, connection
 | C 最小安全闭环 | complete lookup、Web Review、immutable Approval、CREATE/MERGE、Registry 回读 | CP-SKL-001、CP-ROOT-003、CP-PUB-001、CP-WEB-001 |
 | D Productize | Inbox 完善、v2 Purge、升级策略、可访问性、安装/升级/禁用/卸载 | CP-INS-001、完整 E2E |
 
-当时的交付规则是：切片 A/B 不得宣称 Run -> Skill 闭环成功，只有切片 C 通过 Web Human Review 和回读后才可以。`0.3.0` 在该已落地闭环上完善真实 Web 草稿生成、审核/刷新体验和 DSH 兼容性；`0.3.1` 发布后续整理、修订与长证据强化。进一步变化以 [CHANGELOG](../../CHANGELOG.md) 的 `main` 未发布条目为准。
+当时的交付规则是：切片 A/B 不得宣称 Run -> Skill 闭环成功，只有切片 C 通过 Web Human Review 和回读后才可以。`0.3.0` 在该已落地闭环上完善真实 Web 草稿生成、审核/刷新体验和 DSH 兼容性；`0.3.1` 发布后续整理、修订与长证据强化；`0.4.0` 只替换 DSH 兼容层。进一步变化以 [CHANGELOG](../../CHANGELOG.md) 为准。
 
 ## 21. 被否决的替代方案
 
@@ -1013,7 +1013,7 @@ storageDomain, workspaceRegistry, connection
 
 ### 22.1 历史发布阻塞探针
 
-下表记录 `0.2.0` 发布前的阻塞条件；这些契约已通过当时的发布验证。`0.3.1` 对 DSH `0.1.1-rc.2` 的当前验证结论以 [`docs/compatibility.md`](../compatibility.md) 为准。
+下表记录 `0.2.0` 发布前的阻塞条件；这些契约已通过当时的发布验证。当前 `0.4.0` 对 DSH `0.1.2-rc.1`、旧版 `0.3.1` 对 DSH `0.1.1-rc.2` 的验证结论以 [`docs/compatibility.md`](../compatibility.md) 为准。
 
 | ID | 要证明的契约 | 失败影响 |
 |---|---|---|
@@ -1037,7 +1037,7 @@ storageDomain, workspaceRegistry, connection
 - Publication backup 在成功后保留多久。
 - batch baseline manifest 的性能预算、缓存和测量阈值；不得退化为每个 Turn 全量扫描。
 
-其中已发布核心参数由 `0.2.0`–`0.3.1` 的代码和测试冻结；`0.3.1` 对 evidence 选择、真实 route envelope、手动整理调度和 Proposal revision 做了本文已明确记录的强化。本文不重复具体 policy constant；未来调整仍不得改变冻结的 provider/scope/review/publication 语义。若实测要求改变产品行为，必须回到 PRD。
+其中已发布核心参数由 `0.2.0`–`0.4.0` 的代码和测试冻结；`0.3.1` 对 evidence 选择、真实 route envelope、手动整理调度和 Proposal revision 做了本文已明确记录的强化。本文不重复具体 policy constant；未来调整仍不得改变冻结的 provider/scope/review/publication 语义。若实测要求改变产品行为，必须回到 PRD。
 
 ## 23. 需求追踪
 
@@ -1083,4 +1083,4 @@ storageDomain, workspaceRegistry, connection
 - 接受方：项目维护者；
 - 批准日期：2026-08-19；
 - 批准的原基线版本：v0.1；2026-08-22 接受 #84 v0.2 核心流程修订；
-- 当前适用：原发布与安全边界继续有效；#84 的 SessionBatch 核心流程已于 `0.2.0` 落地，`0.3.1` 继续沿用。
+- 当前适用：原发布与安全边界继续有效；#84 的 SessionBatch 核心流程已于 `0.2.0` 落地，`0.4.0` 继续沿用。
