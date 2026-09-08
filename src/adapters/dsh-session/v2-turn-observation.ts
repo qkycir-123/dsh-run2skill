@@ -31,6 +31,7 @@ const SUPPORTED_TURN_EVENT_TYPES = new Set([
   'step/end',
   'user/message',
   'assistant/chunk',
+  'assistant/attempt',
   'assistant/message',
   'tool/call',
   'tool/result',

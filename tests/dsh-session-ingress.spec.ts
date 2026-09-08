@@ -6,6 +6,7 @@ import {
 import type {
   DshSessionEvent,
   DshSessionHeader,
+  DshSessionPersistencePort,
   SessionPersistencePort,
 } from '../src/adapters/dsh-session/index.js'
 
@@ -148,23 +149,32 @@ describe('SessionCoordinateIngress', () => {
 })
 
 describe('DshSessionGapReader', () => {
-  it('returns detached snapshots and suffixes through the DSH persistence port', async () => {
+  it('returns detached snapshots and suffixes through alpha.2 read handles and closes them', async () => {
     const persistedEvent = event('turn/end', 4, {
       turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } },
     })
-    const persistence: SessionPersistencePort = {
-      async listSnapshots() {
+    const calls: string[] = []
+    const persistence = {
+      async list(options?: { readonly signal?: AbortSignal }) {
+        calls.push(`list:${String(options?.signal?.aborted ?? false)}`)
         return [{ header, revision: 'jsonl:rev-1' }]
       },
-      async readFrom(sessionId, fromSeq) {
+      async open(sessionId: string, access: 'read', options?: { readonly signal?: AbortSignal }) {
         expect(sessionId).toBe('session-a')
-        expect(fromSeq).toBe(4)
+        expect(access).toBe('read')
+        calls.push(`open:${String(options?.signal?.aborted ?? false)}`)
         return {
-          meta: header,
-          events: [persistedEvent],
+          header,
+          async read(fromSeq?: number, length?: number, readOptions?: { readonly signal?: AbortSignal }) {
+            expect(fromSeq).toBe(4)
+            expect(length).toBeUndefined()
+            calls.push(`read:${String(readOptions?.signal?.aborted ?? false)}`)
+            return { eventState: 'shared-frozen' as const, events: [persistedEvent] }
+          },
+          async close() { calls.push('close') },
         }
       },
-    }
+    } satisfies DshSessionPersistencePort
     const reader = new DshSessionGapReader(persistence)
 
     const snapshots = await reader.listSnapshots()
@@ -184,6 +194,29 @@ describe('DshSessionGapReader', () => {
     expect(snapshots.snapshots[0]?.header).not.toBe(header)
     expect(suffix.header).not.toBe(header)
     expect(suffix.events[0]).not.toBe(persistedEvent)
+    expect(calls).toEqual(['list:false', 'open:false', 'read:false', 'close'])
+  })
+
+  it('closes an alpha.2 read handle when the read fails', async () => {
+    let closeCount = 0
+    const persistence = {
+      async list() { return [] },
+      async open() {
+        return {
+          header,
+          async read() { throw new Error('synthetic backend detail') },
+          async close() { closeCount += 1 },
+        }
+      },
+    } satisfies DshSessionPersistencePort
+
+    await expect(new DshSessionGapReader(persistence).readFrom('session-a', 0)).resolves.toEqual({
+      status: 'UNAVAILABLE',
+      healthCode: 'SESSION_LOG_UNAVAILABLE',
+      sessionId: 'session-a',
+      fromSeq: 0,
+    })
+    expect(closeCount).toBe(1)
   })
 
   it('turns backend failures into explicit unavailable results without leaking errors', async () => {

@@ -1,0 +1,82 @@
+name: DSH alpha.2 compatibility
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/dsh-alpha2.yml
+      - package.json
+      - pnpm-lock.yaml
+      - probes/**
+      - src/adapters/dsh-session/**
+      - src/host/index.ts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DSH_HEAD: 82a5fd61a7cf5c293cec4bdff68f455398d685e9
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: run2skill
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ env.DSH_HEAD }}
+          path: deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - run: corepack enable
+      - name: Run alpha.2 contract probes
+        shell: pwsh
+        run: ./run2skill/probes/run-dsh-contract-probes.ps1 -DshSource ./deepseek-harness
+
+  skill-roots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: run2skill
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ env.DSH_HEAD }}
+          path: deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - run: corepack enable
+      - name: Run alpha.2 Skill root probes
+        shell: pwsh
+        run: ./run2skill/probes/run-dsh-root-contract-probe.ps1 -DshSource ./deepseek-harness
+
+  profile-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: run2skill
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ env.DSH_HEAD }}
+          path: deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - run: corepack enable
+      - name: Install candidate dependencies
+        working-directory: run2skill
+        run: pnpm install --frozen-lockfile
+      - name: Run alpha.2 profile lifecycle probe
+        shell: pwsh
+        run: ./run2skill/probes/run-dsh-rc1-profile-probe.ps1 -DshSource ./deepseek-harness

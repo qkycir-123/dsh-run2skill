@@ -498,6 +498,24 @@ describe('DSH TurnObservationV2 projection', () => {
     })
   })
 
+  it('accepts alpha.2 assistant attempt settlements without treating them as user-visible evidence', async () => {
+    const events = insertTurnEvent(completeTurn(), 'step/start', {
+      type: 'assistant/attempt',
+      data: { turn: 1, step: 1, stream: [{ type: 'error', error: { name: 'RetryableError' } }] },
+    })
+    const turnEndSeq = events.find(event => event.type === 'turn/end')!.seq
+
+    const result = await projectDshTurnObservationV2(header, events, turnEndSeq, workspace)
+
+    expect(result).toMatchObject({
+      status: 'OBSERVED',
+      observation: {
+        completeness: 'COMPLETE',
+        assistantOutcomeSummary: expect.stringContaining('已完成'),
+      },
+    })
+  })
+
   it('skips an unknown DSH event only when its envelope explicitly marks it ignorable', async () => {
     const events = insertTurnEvent(completeTurn('普通请求'), 'user/message', {
       type: 'plugin/optional-context', data: { payload: 'optional presentation fact' }, ignorable: true,

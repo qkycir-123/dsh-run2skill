@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
 import type { Run2skillRemoteService } from '../src/adapters/dsh-remote/service.js'
 import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
-import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
+import type {
+  DshSessionEvent,
+  DshSessionHeader,
+  DshSessionPersistencePort,
+  SessionPersistencePort,
+} from '../src/adapters/dsh-session/types.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 
@@ -38,6 +43,30 @@ function turnEvents(header: DshSessionHeader): DshSessionEvent[] {
     },
     { type: 'turn/end', seq: 4, time: header.createdAt + 5, data: { turn: 0, reason: { kind: 'completed' } } },
   ]
+}
+
+function alpha2Persistence(legacy: SessionPersistencePort): DshSessionPersistencePort {
+  return {
+    async list(options) {
+      return await legacy.listSnapshots(options?.signal)
+    },
+    async open(sessionId, _access, options) {
+      const snapshot = (await legacy.listSnapshots(options?.signal))
+        .find(candidate => candidate.header.id === sessionId)
+      if (snapshot === undefined) throw new Error('SESSION_NOT_FOUND')
+      return {
+        header: snapshot.header,
+        async read(offset = 0, length, readOptions) {
+          const loaded = await legacy.readFrom(sessionId, offset, readOptions?.signal)
+          return {
+            eventState: 'detached',
+            events: length === undefined ? loaded.events : loaded.events.slice(0, length),
+          }
+        },
+        async close() {},
+      }
+    },
+  }
 }
 
 function services() {
@@ -97,7 +126,7 @@ describe('Host plugin v2 production cutover', () => {
     const context = {
       ...services(),
       llm: { async resolveModelInfo() { return { context: { contextWindow: 16_384 } } }, stream },
-      sessionPersistence: {
+      sessionPersistence: alpha2Persistence({
         async listSnapshots() {
           order.push('list-snapshots')
           return present ? [{ header, revision }] : []
@@ -105,7 +134,7 @@ describe('Host plugin v2 production cutover', () => {
         async readFrom(_id: string, fromSeq: number) {
           return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
         },
-      },
+      }),
       storageDomain: { async open() { order.push('run2skill_v2-open'); return domain } },
       workspaceRegistry: {
         async resolveByPath() { return { id: 'workspace-1', path: 'D:/workspace' } },
@@ -158,12 +187,12 @@ describe('Host plugin v2 production cutover', () => {
     const events = turnEvents(header)
     const context = {
       ...services(),
-      sessionPersistence: {
+      sessionPersistence: alpha2Persistence({
         async listSnapshots() { return [{ header, revision: 'rev-1' }] },
         async readFrom(_id: string, fromSeq: number) {
           return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
         },
-      },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
@@ -181,7 +210,9 @@ describe('Host plugin v2 production cutover', () => {
     let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
-      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      sessionPersistence: alpha2Persistence({
+        async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
@@ -234,12 +265,12 @@ describe('Host plugin v2 production cutover', () => {
     let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
-      sessionPersistence: {
+      sessionPersistence: alpha2Persistence({
         async listSnapshots() { return present ? [{ header, revision: 'jsonl:4' }] : [] },
         async readFrom(_id: string, fromSeq: number) {
           return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
         },
-      },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: {
         async resolveByPath() { return { id: 'workspace-1', path: 'D:/workspace' } },
@@ -283,7 +314,9 @@ describe('Host plugin v2 production cutover', () => {
     let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
-      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      sessionPersistence: alpha2Persistence({
+        async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
@@ -311,7 +344,9 @@ describe('Host plugin v2 production cutover', () => {
     domain.close = close
     const context = {
       ...services(),
-      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      sessionPersistence: alpha2Persistence({
+        async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       on() {},

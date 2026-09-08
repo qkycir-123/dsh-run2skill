@@ -48,7 +48,7 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('accepts the rc.1 stock preset composition and rejects an unpinned digest', async () => {
+  it('accepts the alpha.2 stock preset composition and rejects an unpinned digest', async () => {
     const agent = { ctx: {} }
     const rc7Content = '- id: skill-filesystem\n  name: rc.7\n'
     const rc2Content = '- id: skill-filesystem\n  name: rc.2\n'
@@ -108,11 +108,11 @@ describe('stock DSH root contract', () => {
     )).resolves.toBeUndefined()
   })
 
-  it('pins the 0.1.2-rc.1 baseline and exact stock preset digest allowlist', () => {
-    expect(STOCK_DSH_BASELINE_COMMIT).toBe('a66e4702047846cdaa10c66c9d3df3951f5ea70d')
+  it('pins the 0.1.3-alpha.2 baseline and exact stock preset digest allowlist', () => {
+    expect(STOCK_DSH_BASELINE_COMMIT).toBe('82a5fd61a7cf5c293cec4bdff68f455398d685e9')
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        'f18dd942686aa71f43ffc4fd328a712f79af113fb67a35b54cb6de4fc3b84bda',
+        'b04961ebbee01fe0cf26a5cb4fdaeaea28c6c9ef9f980834443c5ed0fe35826a',
       ],
     })
   })

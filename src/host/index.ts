@@ -1,4 +1,7 @@
-import { DshSessionGapReader } from '../adapters/dsh-session/gap-reader.js'
+import {
+  DshSessionGapReader,
+  DshSessionPersistenceAdapter,
+} from '../adapters/dsh-session/gap-reader.js'
 import {
   RestrictedLearningClient,
   type DshLlmPort,
@@ -21,7 +24,7 @@ import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 import type {
   DshSessionEvent,
   DshSessionHeader,
-  SessionPersistencePort,
+  DshSessionPersistencePort,
   TurnIngressCandidate,
 } from '../adapters/dsh-session/types.js'
 import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
@@ -156,7 +159,7 @@ interface AgentDisposedPayload {
 export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly agents: unknown
   readonly sessions: unknown
-  readonly sessionPersistence: SessionPersistencePort
+  readonly sessionPersistence: DshSessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
   readonly llm: DshLlmPort
   readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
@@ -747,7 +750,9 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
   async #hydrateDormantSessions(): Promise<void> {
     let snapshots: readonly { readonly header: DshSessionHeader }[]
     try {
-      snapshots = await this.context.sessionPersistence.listSnapshots()
+      const listed = await new DshSessionGapReader(this.context.sessionPersistence).listSnapshots()
+      if (listed.status === 'UNAVAILABLE') return
+      snapshots = listed.snapshots
     } catch {
       return
     }
@@ -846,7 +851,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         ? this.context.agents as { get(id: string): never }
         : { get: (_id: string) => undefined }
       runtime = new DshV2ProductionRuntime(domain, {
-        persistence: this.context.sessionPersistence,
+        persistence: new DshSessionPersistenceAdapter(this.context.sessionPersistence),
         sessions,
         agents,
         llm: this.context.llm,

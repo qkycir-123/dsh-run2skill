@@ -35,6 +35,7 @@ describe('B2 TurnObservationV2 on real DSH Session persistence', () => {
       const session = ctx.sessions.create(SessionId('run2skill-b2-v2-observation'), {
         meta: { cwd: directory, createdAt: 100 },
       })
+      await ctx.sessionPersistence.create(session.header)
       session.append('turn/start', { turn: 1 })
       session.append('user/message', createUserMessage({
         content: [{ type: 'text', text: '把这个流程保存成 Skill，以后可以复用。' }],
@@ -57,6 +58,7 @@ describe('B2 TurnObservationV2 on real DSH Session persistence', () => {
           ],
           source: { kind: 'model', provider: 'session-provider', model: 'session-model' },
         }),
+        stream: [],
       }, { surfaceOp: 'append' })
       session.append('tool/call', {
         turn: 1, step: 1, callId, name: 'write', arguments: '{}',
@@ -81,7 +83,9 @@ describe('B2 TurnObservationV2 on real DSH Session persistence', () => {
       session.append('turn/end', { turn: 2, reason: { kind: 'cancelled' } })
       await ctx.sessions.flush(session)
 
-      const loaded = await ctx.sessionPersistence.load(session.id)
+      const readHandle = await ctx.sessionPersistence.open(session.id, 'read')
+      const loaded = { meta: readHandle.header, events: (await readHandle.read()).events }
+      await readHandle.close()
       const projected = await projectDshTurnObservationV2(
         loaded.meta,
         loaded.events,

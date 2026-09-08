@@ -6,6 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DshSessionActivityAdapter } from '../src/adapters/dsh-session/v2-session-activity.js'
+import { DshSessionPersistenceAdapter } from '../src/adapters/dsh-session/gap-reader.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 
 const temporaryDirectories: string[] = []
@@ -29,6 +30,7 @@ describe('B2 v2 quiescence activity on real DSH Session services', () => {
       const session = ctx.sessions.create(SessionId('run2skill-b2-v2-activity'), {
         meta: { cwd: directory, createdAt: 100 },
       })
+      await ctx.sessionPersistence.create(session.header)
       session.append('turn/start', { turn: 1 })
       session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
       await ctx.sessions.flush(session)
@@ -38,7 +40,7 @@ describe('B2 v2 quiescence activity on real DSH Session services', () => {
         sessionCwdDigest: deriveSessionCwdDigest(session.header.cwd),
       })
       const adapter = new DshSessionActivityAdapter({
-        persistence: ctx.sessionPersistence,
+        persistence: new DshSessionPersistenceAdapter(ctx.sessionPersistence),
         sessions: ctx.sessions,
         agents: { get: () => undefined },
       })

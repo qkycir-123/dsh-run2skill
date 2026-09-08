@@ -1,39 +1,43 @@
 # DSH 兼容性
 
-run2skill 按 DSH 主线分成两条明确的兼容线：
+run2skill 按 DSH 主线分成三条明确的兼容线：
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 结果 |
 |---|---|---|---|---|
+| `0.5.0-alpha.1` | 源码候选，验证中，未发布 | `0.1.3-alpha.2` | `82a5fd61a7cf5c293cec4bdff68f455398d685e9` | SessionHandle/v2 适配与本地自动化测试完成；完整源码/运行探针仍是合入门 |
 | `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | Remote/API Gateway、认证 Web、Session、Skill、LLM、Settings、Storage/Profile 与根目录契约通过 |
 | `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 完整契约、原生 UI、存储、发布和真实安装生命周期通过 |
 
-核验日期：2026-09-04。
+核验日期：2026-09-08。
 
-`0.4.0` 是 DSH `0.1.2-rc.1` 的当前 npm 稳定版。`0.3.1` 继续只支持 DSH `0.1.1-rc.2`；不要跨两条 DSH 主线混装。
+`0.5.0-alpha.1` 是仓库 `main` 面向 DSH `0.1.3-alpha.2` 的未发布兼容候选。npm 当前稳定版仍是 `0.4.0`，只支持 DSH `0.1.2-rc.1`；`0.3.1` 继续只支持 DSH `0.1.1-rc.2`。不要跨三条 DSH 主线混装。
 
-## `0.4.0` 当前支持范围
+## `0.5.0-alpha.1` 当前支持范围
 
-- 官方、未修改的 DSH `0.1.2-rc.1` `web` profile；
-- RC1 保留的内置 `standard` agent preset；
+- 官方、未修改、精确固定在 `dsh-v0.1.3-alpha.2` 的 DSH `web` profile；
+- alpha.2 保留的内置 `standard` agent preset；
 - DSH 默认 filesystem Skill provider 和默认 `PROJECT` / `USER` roots；
 - Web profile 的 JSON Storage 主路径，以及 SQLite Storage 的兼容对照路径；
 - Windows 上的插件 Host、认证 Web Client、Settings、技能草稿审核、数据清理和 Skill 发布；
 - Windows 与 Linux/WSL 上的原子 Skill 发布协议。
 
-DSH RC1 已删除旧 `code` preset，因此它不属于 `0.4.0` 的支持范围。`0.3.1` 在旧 DSH baseline 上的 `standard` / `code` 支持不受影响。
+DSH 已删除旧 `code` preset，因此它不属于 `0.4.0` 或 `0.5.0-alpha.1` 的支持范围。`0.3.1` 在旧 DSH baseline 上的 `standard` / `code` 支持不受影响。
 
-以下情况尚未作为 `0.4.0` 的兼容承诺：
+以下情况尚未作为 `0.5.0-alpha.1` 的兼容承诺：
 
 - DSH 的其他 profile；
 - 自定义 Skill provider、自定义 Skill roots 或 `includeDefaultRoots=false`；
 - 修改过源码或带本地补丁的 DSH；
+- `dsh-v0.1.3-alpha.2` 标签之后继续移动的 `origin/master`；
 - 比表中更新、但尚未完成验证的 DSH 版本。
 
 遇到不受支持或无法证明安全的组合时，run2skill 会停止相应的学习、审核变更或发布操作，不会猜测 Skill 写入位置，也不会阻断 DSH 主 Agent。
 
-## RC1 的重大变化
+## alpha.2 的重大变化
 
-DSH `0.1.2-rc.1` 删除了 `0.3.1` 依赖的私有 `ApiProxy` / `dsh-client-runtime` 通道，改为 Remote/API Gateway、一次性浏览器启动令牌与认证 Cookie；Session 查询、持久化、Client bundle/Profile 和 stock preset 契约也发生变化。因此必须使用新的 `0.4.0` 兼容层，不能只修改依赖版本。架构证据见 [`docs/architecture/dsh-compatibility.md`](architecture/dsh-compatibility.md)。
+DSH `0.1.3-alpha.2` 延续 alpha.1 的破坏性 Session 重构：service-level `listSnapshots` / `readFrom` 被 `list` / `open` 与生命周期所有的 `SessionHandle` 取代；会话格式使用 `assistant/attempt` 结算失败尝试，并要求 `assistant/message` 保存精确 stream。run2skill 的兼容层通过只读 handle 读取、在所有成功/失败路径关闭 handle，并把 `assistant/attempt` 视为已知但不进入用户证据的控制记录；未知 required event 仍 fail closed。
+
+alpha.2 还发布了完整的官方 npm 包线，使独立插件可以在不引用 DSH 本机源码的情况下锁定、构建和验证。本次适配不消费 persona 或普通 subprocess handle，因此 release notes 中这些变化不进入 run2skill 产品行为。
 
 ## 如何验证新 DSH 版本
 

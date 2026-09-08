@@ -34,6 +34,7 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
       const session = ctx.sessions.create(SessionId('run2skill-b2-window'), {
         meta: { cwd: directory, createdAt: 100 },
       })
+      await ctx.sessionPersistence.create(session.header)
       session.append('turn/start', { turn: 1 })
       const direct = session.append('user/message', createUserMessage({
         content: [{ type: 'text', text: 'Save this workflow as a Skill.' }],
@@ -51,6 +52,7 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
           content: [{ type: 'text', text: 'Captured the reusable workflow.' }],
           source: { provider: 'session-provider', model: 'session-model' },
         }),
+        stream: [],
       }, { surfaceOp: 'append' })
       session.append('step/end', { turn: 1, step: 1 })
       session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
@@ -73,12 +75,15 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
           content: [{ type: 'text', text: 'Future response.' }],
           source: { provider: 'future-provider', model: 'future-model' },
         }),
+        stream: [],
       }, { surfaceOp: 'append' })
       session.append('step/end', { turn: 2, step: 1 })
       session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
       await ctx.sessions.flush(session)
 
-      const loaded = await ctx.sessionPersistence.load(session.id)
+      const readHandle = await ctx.sessionPersistence.open(session.id, 'read')
+      const loaded = { meta: readHandle.header, events: (await readHandle.read()).events }
+      await readHandle.close()
       const observed = buildTurnObservation(loaded.meta, loaded.events, capturedEndSeq)
       if (observed.status !== 'OBSERVED') throw new Error('real DSH Turn was not observable')
       const analysis = analyzeCheapTriggerV1(observed.observation.directUserMessages.map(message => ({

@@ -1,5 +1,14 @@
 # 版本变化
 
+## 0.5.0-alpha.1 — 未发布
+
+`0.5.0-alpha.1` 是面向官方 DSH `0.1.3-alpha.2`（`82a5fd61a7cf5c293cec4bdff68f455398d685e9`）的源码兼容候选，不是 npm 稳定版。
+
+- 将 Session 持久化入口迁移到 `list` / `open` 和生命周期所有的只读 `SessionHandle`，确保成功、失败和异常路径都关闭 handle。
+- 识别 v2 `assistant/attempt` 结算记录，并继续对未知 required event fail closed。
+- 锁定 alpha.2 官方 npm 包与探针基线；不适配标签之后继续移动的 `origin/master`。
+- 不改变产品行为、`run2skill_v2` Domain version、数据格式或人工审核与发布安全门。
+
 ## 0.4.0 — 2026-09-04
 
 `0.4.0` 面向官方 DSH `0.1.2-rc.1`（`a66e4702047846cdaa10c66c9d3df3951f5ea70d`），作为新的 npm 稳定兼容线发布。
