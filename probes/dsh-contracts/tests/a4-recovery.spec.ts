@@ -9,8 +9,10 @@ import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
-import { DshSessionGapReader } from '../src/adapters/dsh-session/gap-reader.ts'
-import type { SessionPersistencePort } from '../src/adapters/dsh-session/types.ts'
+import {
+  DshSessionGapReader,
+  DshSessionPersistenceAdapter,
+} from '../src/adapters/dsh-session/gap-reader.ts'
 import { run2skillDomainSpec } from '../src/adapters/dsh-storage/domain.ts'
 import type { Run2skillDomain } from '../src/adapters/dsh-storage/types.ts'
 import { BoundedGapScanner } from '../src/application/capture/bounded-gap-scanner.ts'
@@ -76,7 +78,7 @@ function appendTurn(session: ReturnType<Context['sessions']['create']>, turn: nu
 function scannerFor(instance: Awaited<ReturnType<typeof mount>>, processed: Set<string>) {
   const checkpoint = new WriteBehindCheckpoint(instance.domain, { now: () => 0 })
   const reader = new DshSessionGapReader(
-    instance.ctx.sessionPersistence as unknown as SessionPersistencePort,
+    new DshSessionPersistenceAdapter(instance.ctx.sessionPersistence),
   )
   const scanner = new BoundedGapScanner(
     reader,
@@ -103,6 +105,7 @@ describe('A4 bounded recovery on real DSH persistence', () => {
     const sessionId = SessionId(`a4-${backend}-session`)
     try {
       const session = first.ownerContext.sessions.create(sessionId, { meta: { cwd: directory } })
+      await first.ctx.sessionPersistence.create(session.header)
       appendTurn(session, 1)
       await first.ownerContext.sessions.flush(session)
       const processed = new Set<string>()
@@ -149,6 +152,7 @@ describe('A4 bounded recovery on real DSH persistence', () => {
       SessionId('a4-large-session'),
       { meta: { cwd: directory } },
     )
+    await instance.ctx.sessionPersistence.create(session.header)
     for (let turn = 1; turn <= 5_001; turn += 1) appendTurn(session, turn)
     await instance.ownerContext.sessions.flush(session)
 

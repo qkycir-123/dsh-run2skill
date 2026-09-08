@@ -69,6 +69,30 @@ export interface SessionPersistenceSnapshot {
   readonly revision: string
 }
 
+export interface DshSessionReadHandlePort {
+  readonly header: DshSessionHeader
+  read(
+    offset?: number,
+    length?: number,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<{
+    readonly eventState: 'detached' | 'shared-frozen'
+    readonly events: readonly DshSessionEvent[]
+  }>
+  close(): Promise<void>
+}
+
+/** DSH 0.1.3-alpha.2 persistence service exposed as ctx.sessionPersistence. */
+export interface DshSessionPersistencePort {
+  list(options?: { readonly signal?: AbortSignal }): Promise<readonly SessionPersistenceSnapshot[]>
+  open(
+    sessionId: string,
+    access: 'read',
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<DshSessionReadHandlePort>
+}
+
+/** Internal, detached log reader used by the run2skill application pipeline. */
 export interface SessionPersistencePort {
   listSnapshots(signal?: AbortSignal): Promise<readonly SessionPersistenceSnapshot[]>
   readFrom(

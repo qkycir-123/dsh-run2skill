@@ -2,15 +2,15 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
+  [string]$ExpectedDshHead = '82a5fd61a7cf5c293cec4bdff68f455398d685e9'
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $dshPath = (Resolve-Path -LiteralPath $DshSource).Path
-$probe = (Resolve-Path (Join-Path $PSScriptRoot 'dsh-rc1-profile\probe.mjs')).Path
+$probe = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot 'dsh-rc1-profile') 'probe.mjs')).Path
 $id = "$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-$work = Join-Path $repoRoot ".probe-work\rc1-profile-$id"
+$work = Join-Path (Join-Path $repoRoot '.probe-work') "rc1-profile-$id"
 $clone = Join-Path $work 'deepseek-harness'
 $installLog = Join-Path $work 'pnpm-install.log'
 $buildLog = Join-Path $work 'dsh-build.log'
@@ -25,7 +25,7 @@ function Assert-DshUnmodified {
 }
 
 Assert-DshUnmodified
-Write-Output "CP_INS_RC1_RUN_ID=$id"
+Write-Output "CP_INS_ALPHA2_RUN_ID=$id"
 New-Item -ItemType Directory -Path $work | Out-Null
 
 Push-Location $repoRoot
@@ -45,6 +45,13 @@ Push-Location $clone
 try {
   & pnpm install --frozen-lockfile *> $installLog
   if ($LASTEXITCODE -ne 0) { throw "DSH dependency install failed; see ignored log for $id" }
+  if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Unix) {
+    & pnpm --filter '@deepseek-ai/dsh-web-frontend' exec playwright install chromium *> $installLog
+    if ($LASTEXITCODE -ne 0) {
+      Get-Content -LiteralPath $installLog -Tail 40
+      throw "Chromium install failed; see ignored log for $id"
+    }
+  }
   $savedPreference = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
@@ -59,7 +66,7 @@ try {
 }
 
 & node $probe $clone $repoRoot (Join-Path $work 'lifecycle')
-if ($LASTEXITCODE -ne 0) { throw "RC1 Profile lifecycle probe failed: $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "Alpha.2 Profile lifecycle probe failed: $LASTEXITCODE" }
 
 Assert-DshUnmodified
-Write-Output 'RC1_PROFILE_PROBE=PASS'
+Write-Output 'ALPHA2_PROFILE_PROBE=PASS'

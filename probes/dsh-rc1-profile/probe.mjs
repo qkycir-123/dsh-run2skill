@@ -236,30 +236,30 @@ async function observe(present) {
   }
 }
 
-const v1 = await stage('0.4.0-probe.1')
-const v2 = await stage('0.4.0-probe.2')
+const v1 = await stage('0.5.0-alpha.1.probe.1')
+const v2 = await stage('0.5.0-alpha.1.probe.2')
 
-console.log('CP_INS_RC1_STAGE=add')
+console.log('CP_INS_ALPHA2_STAGE=add')
 await dsh(['plugin', '--profile', 'web', 'add', v1])
 let manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 assert.ok(manifest.dsh.profile.bundles.includes(packageName))
 assert.ok((await dsh(['--profile', 'web', '--dump-config'])).stdout.includes('id: run2skill'))
 await observe(true)
 
-console.log('CP_INS_RC1_STAGE=disable')
+console.log('CP_INS_ALPHA2_STAGE=disable')
 await writeFile(patchPath, '- id: run2skill\n  disabled: true\n')
 await observe(false)
 
-console.log('CP_INS_RC1_STAGE=upgrade')
+console.log('CP_INS_ALPHA2_STAGE=upgrade')
 await writeFile(patchPath, '[]\n')
 await dsh(['plugin', '--profile', 'web', 'add', v2])
 const installed = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-assert.equal(installed.version, '0.4.0-probe.2')
+assert.equal(installed.version, '0.5.0-alpha.1.probe.2')
 await observe(true)
 const retainedStorage = (await readdir(join(home, 'storages'))).filter(entry => /run2skill/iu.test(entry))
 assert.ok(retainedStorage.length > 0)
 
-console.log('CP_INS_RC1_STAGE=uninstall')
+console.log('CP_INS_ALPHA2_STAGE=uninstall')
 await dsh(['plugin', '--profile', 'web', 'remove', packageName])
 manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 assert.equal(manifest.dsh.profile.bundles.includes(packageName), false)
@@ -270,4 +270,4 @@ assert.deepEqual(
   retainedStorage.sort(),
 )
 
-console.log('CP_INS_RC1=PASS')
+console.log('CP_INS_ALPHA2=PASS')

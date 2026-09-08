@@ -38,6 +38,16 @@ async function disposeSessionPersistence(mount: Awaited<ReturnType<typeof mountS
   await mount.sessionStoreFiber.dispose()
 }
 
+async function readStoredSession(ctx: Context, id: SessionId, offset = 0) {
+  const handle = await ctx.sessionPersistence.open(id, 'read')
+  try {
+    const read = await handle.read(offset)
+    return { meta: handle.header, events: read.events }
+  } finally {
+    await handle.close()
+  }
+}
+
 describe('CP-SES-001 session observation and restart recovery', () => {
   it.each([
     { medium: 'Web profile JSONL', path: (directory: string) => join(directory, 'sessions') },
@@ -67,6 +77,7 @@ describe('CP-SES-001 session observation and restart recovery', () => {
     ))
 
     const root = ownerContext.sessions.create(rootId, { meta: { cwd: directory } })
+    await first.ctx.sessionPersistence.create(root.header)
     expect(root.firstLiveSeq).toBe(0)
     expect(root.header).toMatchObject({ id: rootId, cwd: directory })
     expect(root.header.origin).toBeUndefined()
@@ -76,14 +87,14 @@ describe('CP-SES-001 session observation and restart recovery', () => {
     root.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     await ownerContext.sessions.flush(root)
     const checkpoint = root.seq
-    const before = await first.ctx.sessionPersistence.listSnapshots()
+    const before = await first.ctx.sessionPersistence.list()
     const beforeRevision = before.find(snapshot => snapshot.header.id === rootId)?.revision
     expect(beforeRevision).toBeDefined()
 
     root.append('turn/start', { turn: 2 })
     root.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
     await ownerContext.sessions.flush(root)
-    const after = await first.ctx.sessionPersistence.listSnapshots()
+    const after = await first.ctx.sessionPersistence.list()
     const afterRevision = after.find(snapshot => snapshot.header.id === rootId)?.revision
     expect(afterRevision).toBeDefined()
     expect(afterRevision).not.toBe(beforeRevision)
@@ -96,6 +107,7 @@ describe('CP-SES-001 session observation and restart recovery', () => {
         delegationDepth: 1,
       },
     })
+    await first.ctx.sessionPersistence.create(child.header)
     child.append('turn/start', { turn: 1 })
     child.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     await ownerContext.sessions.flush(child)
@@ -118,21 +130,21 @@ describe('CP-SES-001 session observation and restart recovery', () => {
     const second = await mountSessionPersistence(persistencePath)
     try {
       const listed = await second.ctx.sessionPersistence.list()
-      expect(listed.map(header => header.id).sort()).toEqual([childId, rootId].sort())
+      expect(listed.map(snapshot => snapshot.header.id).sort()).toEqual([childId, rootId].sort())
 
-      const rootLoaded = await second.ctx.sessionPersistence.load(rootId)
+      const rootLoaded = await readStoredSession(second.ctx, rootId)
       expect(rootLoaded.meta.origin).toBeUndefined()
       expect(rootLoaded.meta.delegationDepth ?? 0).toBe(0)
       expect(rootLoaded.events.map(event => event.seq)).toEqual([0, 1, 2, 3])
 
-      const childLoaded = await second.ctx.sessionPersistence.load(childId)
+      const childLoaded = await readStoredSession(second.ctx, childId)
       expect(childLoaded.meta).toMatchObject({
         parentSession: rootId,
         origin: 'subagent',
         delegationDepth: 1,
       })
 
-      const gap = await second.ctx.sessionPersistence.readFrom(rootId, checkpoint)
+      const gap = await readStoredSession(second.ctx, rootId, checkpoint)
       expect(gap.events.map(event => ({ seq: event.seq, type: event.type }))).toEqual([
         { seq: checkpoint, type: 'turn/start' },
         { seq: checkpoint + 1, type: 'turn/end' },

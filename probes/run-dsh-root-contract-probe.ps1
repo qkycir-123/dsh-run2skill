@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
+  [string]$ExpectedDshHead = '82a5fd61a7cf5c293cec4bdff68f455398d685e9'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,20 +56,20 @@ try {
   Pop-Location
 }
 
-$probeRoot = Join-Path $cloneRoot 'packages\run2skill\contract-probes'
+$probeRoot = Join-Path (Join-Path (Join-Path $cloneRoot 'packages') 'run2skill') 'contract-probes'
 $probeTests = Join-Path $probeRoot 'tests'
 $probeSupport = Join-Path $probeTests 'support'
 New-Item -ItemType Directory -Path $probeSupport -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\tests\cp-root-003.spec.ts') -Destination $probeTests
+Copy-Item -LiteralPath (Join-Path (Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'tests') 'cp-root-003.spec.ts') -Destination $probeTests
 foreach ($supportFile in @('learning-fixture.ts', 'memory-run2skill-domain.ts', 'review-fixture.ts', 'work-item-fixture.ts')) {
-  Copy-Item -LiteralPath (Join-Path $projectRoot "tests\support\$supportFile") -Destination $probeSupport
+  Copy-Item -LiteralPath (Join-Path (Join-Path (Join-Path $projectRoot 'tests') 'support') $supportFile) -Destination $probeSupport
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'src') -Destination (Join-Path $probeRoot 'src') -Recurse
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\vitest.config.ts') -Destination (Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts')
+Copy-Item -LiteralPath (Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'vitest.config.ts') -Destination (Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts')
 
 Push-Location $cloneRoot
 try {
-  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dsh-contracts\package.json') -Destination (Join-Path $probeRoot 'package.json')
+  Copy-Item -LiteralPath (Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'package.json') -Destination (Join-Path $probeRoot 'package.json')
   & pnpm install --no-frozen-lockfile --ignore-scripts --filter '@dsh-run2skill/contract-probes'
   if ($LASTEXITCODE -ne 0) { throw 'Failed to link the disposable stock probe workspace package.' }
   & pnpm exec vitest run --config run2skill.probe.vitest.config.ts

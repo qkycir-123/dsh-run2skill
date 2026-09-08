@@ -1,4 +1,4 @@
-export { DshSessionGapReader } from './gap-reader.js'
+export { DshSessionGapReader, DshSessionPersistenceAdapter } from './gap-reader.js'
 export * from './learning-window.js'
 export { SessionCoordinateIngress } from './ingress.js'
 export type { SessionCoordinateIngressOptions } from './ingress.js'
@@ -17,6 +17,8 @@ export type {
   DirectUserMessageObservation,
   DshSessionEvent,
   DshSessionHeader,
+  DshSessionPersistencePort,
+  DshSessionReadHandlePort,
   SessionIngressHealth,
   SessionLogReadResult,
   SessionPersistencePort,

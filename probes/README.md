@@ -12,11 +12,11 @@
 - publication 跨平台探针需要带 Node.js 的 WSL2/Linux；
 - 安装生命周期探针需要 Microsoft Edge、Google Chrome 或 DSH Playwright 可用的 Chromium。
 
-准备一个官方、干净、固定 commit 的 DSH checkout。`main` / `0.4.0` 当前默认验证 `0.1.2-rc.1`：
+准备一个官方、干净、固定 commit 的 DSH checkout。仓库 `main` 的未发布 `0.5.0-alpha.1` 源码候选当前默认验证 `0.1.3-alpha.2`：
 
 ```powershell
 git clone https://github.com/deepseek-ai/deepseek-harness.git <dsh-source>
-git -C <dsh-source> checkout a66e4702047846cdaa10c66c9d3df3951f5ea70d
+git -C <dsh-source> checkout 82a5fd61a7cf5c293cec4bdff68f455398d685e9
 git -C <dsh-source> status --porcelain
 ```
 
@@ -39,7 +39,7 @@ powershell -File probes/run-publication-contract-probe.ps1
 
 - Session、Storage、Learning、LLM/Skill Adapter、Remote/API Gateway、Settings 和 Purge 契约；
 - 默认 `PROJECT` / `USER` Skill roots、CREATE/MERGE、并发保护和 Registry 回读；
-- RC1 Profile 的真实候选包 add、disable、upgrade、uninstall、认证 Web 调用和 Client 加载；
+- alpha.2 Profile 的真实候选包 add、disable、upgrade、uninstall、认证 Web 调用和 Client 加载；
 - Windows 与 Linux/WSL 上的原子发布和崩溃恢复；
 
 旧版 `run-install-lifecycle-probe.ps1` 是 `0.3.1` / DSH `0.1.1-rc.2` 发布线的稳定候选升级探针。维护该版本时仍需显式传入旧 baseline 和精确候选 tarball：
