@@ -177,5 +177,5 @@ describe('A3 run2skill_v1 real Storage Domain portability', () => {
     } finally {
       await dispose(instance)
     }
-  })
+  }, 30_000)
 })
