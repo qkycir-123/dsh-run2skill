@@ -6,7 +6,7 @@
 
 - 适配 V4 Session 记录、`agent-preset-registry`、Profile 设置和认证 Web Client。
 - 官方 DSH 契约、PROJECT/USER 根目录发布与回读、插件安装/升级/卸载和 CI 已通过。
-- 使用 npm `next` 标签发布；默认 `latest` 继续指向稳定版 `0.4.0`。
+- 使用 npm `next` 标签发布；2026-09-25 将默认 `latest` 也指向此版本。旧 DSH `0.1.2-rc.1` 用户须明确安装 `0.4.0`。
 
 ## 0.5.0-alpha.1 — 未发布
 
