@@ -52,6 +52,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed in the disposable DSH clone.' }
   & pnpm run build:lib:host
   if ($LASTEXITCODE -ne 0) { throw 'DSH host package build failed.' }
+  & pnpm run build:native-system
+  if ($LASTEXITCODE -ne 0) { throw 'DSH native system build failed.' }
 
   $probeDestination = Join-Path (Join-Path (Join-Path (Join-Path $cloneRoot 'packages') 'run2skill') 'contract-probes') 'tests'
   New-Item -ItemType Directory -Path $probeDestination -Force | Out-Null
