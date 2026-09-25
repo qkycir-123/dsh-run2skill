@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 
-describe('CP-WEB-001 DSH 0.1.3-alpha.2 Remote and dual-face extension seams', () => {
+describe('CP-WEB-001 DSH 0.1.7-rc.2 Remote and dual-face extension seams', () => {
   it('pins the Gateway, Remote protocol, and Client export contracts', async () => {
     const require = createRequire(import.meta.url)
     const gatewayPath = require.resolve('@deepseek-ai/dsh-api-gateway/package.json')
@@ -14,7 +14,7 @@ describe('CP-WEB-001 DSH 0.1.3-alpha.2 Remote and dual-face extension seams', ()
         version?: string
         exports?: Record<string, unknown>
       }
-      expect(manifest.version).toBe('0.1.3-alpha.2')
+      expect(manifest.version).toBe('0.1.7-rc.2')
       expect(manifest.exports?.['.']).toBeDefined()
     }
     const gateway = JSON.parse(await readFile(gatewayPath, 'utf8')) as {

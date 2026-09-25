@@ -50,7 +50,7 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
         step: 1,
         message: createAssistantMessage({
           content: [{ type: 'text', text: 'Captured the reusable workflow.' }],
-          source: { provider: 'session-provider', model: 'session-model' },
+          source: { kind: 'model', provider: 'session-provider', model: 'session-model' },
         }),
         stream: [],
       }, { surfaceOp: 'append' })
@@ -61,7 +61,7 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
       session.append('turn/start', { turn: 2 })
       session.append('user/message', createUserMessage({
         content: [{ type: 'text', text: 'pass' + 'word=synthetic-future-value' }],
-        source: { kind: 'plugin', plugin: 'fixture' },
+        source: { kind: 'user' },
       }), { surfaceOp: 'append' })
       session.append('step/start', { turn: 2, step: 1 })
       session.append('request/header', {
@@ -73,7 +73,7 @@ describe('B2 Learning Window on real DSH Session persistence', () => {
         step: 1,
         message: createAssistantMessage({
           content: [{ type: 'text', text: 'Future response.' }],
-          source: { provider: 'future-provider', model: 'future-model' },
+          source: { kind: 'model', provider: 'future-provider', model: 'future-model' },
         }),
         stream: [],
       }, { surfaceOp: 'append' })

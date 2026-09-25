@@ -18,7 +18,7 @@
 
 > 当前稳定版为 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)。目前仅支持 DSH Web `0.1.2-rc.1`。
 
-仓库 `main` 正在验证未发布的 `0.5.0-alpha.1` 源码候选，它只面向 DSH `0.1.3-alpha.2`；在候选验证和发布完成前，请继续按上面的稳定版本安装。
+仓库正在验证未发布的 `0.5.0-alpha.2` 源码候选，它只面向 DSH `0.1.7-rc.2`；在候选验证和发布完成前，请继续按上面的稳定版本安装。
 
 `0.4.0` 改用 DSH `0.1.2-rc.1` 的 Remote/API Gateway 与浏览器认证契约，并适配 Session、Storage/Profile、Settings 和插件生命周期变化。它只支持 RC1 保留的内置 `standard` preset；使用旧 DSH `0.1.1-rc.2` 时请继续安装 `dsh-run2skill@0.3.1`。
 

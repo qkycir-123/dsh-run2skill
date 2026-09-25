@@ -257,20 +257,26 @@ function parseToolResult(event: DshSessionEvent, turn: number): ToolResultFact |
   const message = event.data['message']
   if (
     !isRecord(message)
-    || message['role'] !== 'user'
     || !isRecord(message['source'])
     || message['source']['kind'] !== 'tool'
   ) return undefined
   const callId = message['source']['callId']
-  const content = message['content']
-  if (!isCoordinateIdentity(callId) || !Array.isArray(content) || content.length !== 1 || !isRecord(content[0])) return undefined
-  const block = content[0]
-  if (
-    block['type'] !== 'tool-result'
-    || block['toolCallId'] !== callId
-    || !Array.isArray(block['content'])
-    || (block['isError'] !== undefined && typeof block['isError'] !== 'boolean')
-  ) return undefined
+  if (!isCoordinateIdentity(callId)) return undefined
+  let content: unknown
+  let isError: unknown
+  if (message['role'] === 'tool') {
+    if (message['toolCallId'] !== callId || !Array.isArray(message['content'])) return undefined
+    content = message['content']
+    isError = message['isError']
+  } else if (message['role'] === 'user') {
+    const blocks = message['content']
+    if (!Array.isArray(blocks) || blocks.length !== 1 || !isRecord(blocks[0])) return undefined
+    const block = blocks[0]
+    if (block['type'] !== 'tool-result' || block['toolCallId'] !== callId || !Array.isArray(block['content'])) return undefined
+    content = block['content']
+    isError = block['isError']
+  } else return undefined
+  if (isError !== undefined && typeof isError !== 'boolean') return undefined
   const error = event.data['error']
   if (
     error !== undefined
@@ -281,10 +287,10 @@ function parseToolResult(event: DshSessionEvent, turn: number): ToolResultFact |
       seq: event.seq,
       step: event.data['step'],
       callId,
-      failed: block['isError'] === true || error !== undefined,
+      failed: isError === true || error !== undefined,
       contentDigest: sha256Utf8(canonicalJson({
-        content: block['content'],
-        isError: block['isError'] === true,
+        content,
+        isError: isError === true,
         error: error ?? null,
       })),
     }

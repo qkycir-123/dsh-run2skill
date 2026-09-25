@@ -1,6 +1,6 @@
 # 数据存储与升级
 
-这份文档说明当前 [`dsh-run2skill@0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0) 稳定版，以及未发布的 `0.5.0-alpha.1` 源码候选中，由 #84 落地的批次学习流程会保存什么，以及升级、降级和卸载时应该注意什么。
+这份文档说明当前 [`dsh-run2skill@0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0) 稳定版，以及未发布的 `0.5.0-alpha.2` 源码候选中，由 #84 落地的批次学习流程会保存什么，以及升级、降级和卸载时应该注意什么。
 
 ## 保存的数据
 
@@ -46,7 +46,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 `0.4.0` 只把宿主集成迁移到 DSH `0.1.2-rc.1` 的 Remote/API Gateway、认证 Web、Session 和 Storage/Profile 契约；`run2skill_v2` 仍使用 Domain version `1`，不新增或迁移表与字段。
 
-未发布的 `0.5.0-alpha.1` 继续只替换 DSH 兼容层：它针对 `0.1.3-alpha.2` 使用生命周期所有的 SessionHandle 和 v2 会话记录，仍不改变 `run2skill_v2` Domain version、表或字段。
+未发布的 `0.5.0-alpha.2` 继续只替换 DSH 兼容层：它针对 `0.1.7-rc.2` 使用生命周期所有的 SessionHandle、V4 会话记录、新 preset registry 和 Profile 设置，仍不改变 `run2skill_v2` Domain version、表或字段。
 
 如果存储格式不匹配，插件会显示“当前功能受限”或“当前版本不兼容”（内部状态码：`DEGRADED` / `INCOMPATIBLE`）并停止写入，而不是把旧数据误认为空库。DSH 主 Agent 仍可继续工作，原数据不会被自动删除或重建。
 
@@ -63,7 +63,7 @@ run2skill 使用 DSH 自带的 Storage Domain，不创建旁路数据库，也�
 
 从 Alpha 升级到 `0.2.0` 时，v2 首次启用采用 fresh activation：不迁移 `run2skill_v1` 的 Proposal、WorkItem、Lineage 或其他中间缓存。插件只为现有 durable root Session 保存当前完整 Turn 的末尾水位，历史 Turn 不重新学习；启用后新观察只写 v2。已发布的原生 Skill 和 DSH Session Log 不属于这些中间缓存，不会被删除或改写。
 
-从 `0.2.0` 升级到 `0.3.0`、从 `0.3.0` 升级到 `0.3.1`，以及在各自匹配的 DSH 主线上使用 `0.4.0` 或未发布 `0.5.0-alpha.1`，都不改变 Storage Domain 或 schema version；已有 v2 状态和已发布 Skill 会原样保留。`0.5.0-alpha.1` 只面向 DSH `0.1.3-alpha.2`，`0.4.0` 只支持 DSH `0.1.2-rc.1`，`0.3.1` 只支持 DSH `0.1.1-rc.2`，不要跨 DSH 主线混装插件版本。
+从 `0.2.0` 升级到 `0.3.0`、从 `0.3.0` 升级到 `0.3.1`，以及在各自匹配的 DSH 主线上使用 `0.4.0` 或未发布 `0.5.0-alpha.2`，都不改变 Storage Domain 或 schema version；已有 v2 状态和已发布 Skill 会原样保留。`0.5.0-alpha.2` 只面向 DSH `0.1.7-rc.2`，`0.4.0` 只支持 DSH `0.1.2-rc.1`，`0.3.1` 只支持 DSH `0.1.1-rc.2`，不要跨 DSH 主线混装插件版本。
 
 `0.3.1` 可以读取缺少新增可选/defaulted 字段的 `0.3.0` v2 记录。反向降级到 `0.3.0` 不承诺理解 `0.3.1` 已写入的新字段；降级前应恢复升级前备份。无法识别格式时插件会停止写入，已发布 Skill 和 DSH Session Log 不会被删除。
 

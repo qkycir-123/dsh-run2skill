@@ -10,7 +10,7 @@ import {
   type RefObject,
 } from 'react'
 import { z } from 'zod'
-import { Button, IconRefreshOutline16, IconTrashOutline16, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconRefreshOutlineMedium, IconTrashOutlineMedium, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { trapDialogTab } from './dialog-focus.js'
 import css from './run2skill-settings-page.module.css'
 
@@ -619,7 +619,7 @@ function PurgeConfirmationDialog(props: {
       }, '取消清理'),
       createElement(Button, {
         variant: 'primary',
-        icon: createElement(IconTrashOutline16),
+        icon: createElement(IconTrashOutlineMedium),
         disabled: props.state.mutationPending,
         onClick: () => { void props.controller.confirm() },
       }, props.state.mutationPending ? '正在清理…' : '确认清理'),
@@ -690,7 +690,7 @@ export function PurgeSettingsSection(props: {
     createElement('div', { className: css.actions },
     createElement(Button, {
       variant: 'outline',
-      icon: createElement(IconTrashOutline16),
+      icon: createElement(IconTrashOutlineMedium),
       disabled,
       onClick: (event) => {
         restoreRef.current = event.currentTarget
@@ -714,7 +714,7 @@ export function PurgeSettingsSection(props: {
                 createElement('p', { role: 'alert' }, `清理失败：${active.lastError.code}`),
                 createElement(Button, {
                   variant: 'outline',
-                  icon: createElement(IconRefreshOutline16),
+                  icon: createElement(IconRefreshOutlineMedium),
                   disabled: state.mutationPending,
                   onClick: () => { void props.controller.retry() },
                 }, state.mutationPending ? '正在重试…' : '重试清理'),

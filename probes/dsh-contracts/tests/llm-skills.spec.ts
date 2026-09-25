@@ -133,7 +133,6 @@ describe('CP-LLM-001 bounded inherited-route learning calls', () => {
       session.append('request/header', {
         header: {
           config: { provider: 'session-provider', model: 'session-model' },
-          system: 'Original Agent system prompt that Learning must not inherit.',
           tools: [{
             name: 'dangerous-tool',
             description: 'Must not reach Learning.',

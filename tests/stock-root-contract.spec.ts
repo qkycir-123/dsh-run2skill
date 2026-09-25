@@ -1,18 +1,17 @@
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { canonicalJson } from '../src/domain/learn/identity.js'
+import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import {
   STOCK_DSH_BASELINE_COMMIT,
   STOCK_PRESET_COMPOSITION_DIGESTS,
   StockDshRootContractResolver,
   StockSkillRuntimeConfigurationCache,
   deriveStockResolutionContractDigest,
-  resolvePinnedStockPresetConfiguration,
-  resolvePinnedStockPresetConfigurationById,
   resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
 import { RootBindingV2Schema } from '../src/domain/review/index.js'
-import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 
 const workspace = resolve('stock-contract-workspace')
 const dshHome = resolve('stock-contract-dsh-home')
@@ -48,71 +47,11 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('accepts the alpha.2 stock preset composition and rejects an unpinned digest', async () => {
-    const agent = { ctx: {} }
-    const rc7Content = '- id: skill-filesystem\n  name: rc.7\n'
-    const rc2Content = '- id: skill-filesystem\n  name: rc.2\n'
-    let content = rc2Content
-    const service = {
-      composedPreset: (ctx: object) => ctx === agent.ctx ? 'standard' : undefined,
-      resolve: async () => ({ id: 'standard', trust: 'system' as const }),
-      read: async () => content,
-    }
-    const digests = { standard: [sha256Utf8(rc2Content)] }
-
-    await expect(resolvePinnedStockPresetConfiguration(service, agent, digests))
-      .resolves.toEqual(configuration())
-    content = rc7Content
-    await expect(resolvePinnedStockPresetConfiguration(service, agent, digests)).resolves.toBeUndefined()
-    await expect(resolvePinnedStockPresetConfiguration({
-      ...service,
-      read: async () => `${rc2Content}# unknown\n`,
-    }, agent, digests)).resolves.toBeUndefined()
-    await expect(resolvePinnedStockPresetConfiguration({
-      ...service,
-      resolve: async () => ({ id: 'standard', trust: 'user' as const }),
-    }, agent, digests)).resolves.toBeUndefined()
-  })
-
-  it('restores a pinned stock preset by durable id without a live Agent context', async () => {
-    const content = '- id: skill-filesystem\n  name: stock\n'
-    const presets = {
-      resolve: async (id: string) => ({ id, trust: 'system' as const }),
-      read: async () => content,
-    }
-    const digests = { standard: [sha256Utf8(content)] }
-
-    await expect(resolvePinnedStockPresetConfigurationById(
-      presets,
-      'standard',
-      true,
-      digests,
-    )).resolves.toEqual(configuration({ usesContextFileSystem: true }))
-    await expect(resolvePinnedStockPresetConfigurationById(
-      presets,
-      'standard',
-      false,
-      digests,
-    )).resolves.toEqual(configuration())
-    await expect(resolvePinnedStockPresetConfigurationById(
-      presets,
-      'standard',
-      false,
-      { ...digests, standard: ['0'.repeat(64)] },
-    )).resolves.toBeUndefined()
-    await expect(resolvePinnedStockPresetConfigurationById(
-      presets,
-      'custom',
-      false,
-      digests,
-    )).resolves.toBeUndefined()
-  })
-
-  it('pins the 0.1.3-alpha.2 baseline and exact stock preset digest allowlist', () => {
-    expect(STOCK_DSH_BASELINE_COMMIT).toBe('82a5fd61a7cf5c293cec4bdff68f455398d685e9')
+  it('pins the 0.1.7-rc.2 baseline and exact stock preset digest allowlist', () => {
+    expect(STOCK_DSH_BASELINE_COMMIT).toBe('477b4f420553e8a52c2fbccc464d7561b239c443')
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        'b04961ebbee01fe0cf26a5cb4fdaeaea28c6c9ef9f980834443c5ed0fe35826a',
+        'ad344050d18ed7bc2582c1ce691b5f56334b84a85ee67a928895f7b0e0b3b5ff',
       ],
     })
   })
@@ -146,9 +85,13 @@ describe('stock DSH root contract', () => {
     }
     const mounts = {
       standingMountFor: (ctx: object) => ctx === agent.ctx
-        ? { presetId: 'standard', fiber: mount }
+        ? { presetId: 'standard', fiber: mount, tree: { root: { data: [{ id: 'skill-filesystem' }] } } }
         : undefined,
     }
+
+    const fixtureDigest = sha256Utf8(canonicalJson([{ id: 'skill-filesystem' }]))
+    await expect(resolveStockSkillRuntimeConfiguration(mounts, agent, fixtureDigest)).resolves.toBeDefined()
+    await expect(resolveStockSkillRuntimeConfiguration(mounts, agent, '0'.repeat(64))).resolves.toBeUndefined()
 
     await expect(resolveStockSkillRuntimeConfiguration(mounts, agent)).resolves.toEqual({
       profile: 'web',

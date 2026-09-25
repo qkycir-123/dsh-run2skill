@@ -600,7 +600,7 @@ describe('run2skill native settings surface', () => {
         $mount: vi.fn(async () => async () => undefined),
         run2skill: { query: vi.fn(), command: vi.fn() },
       },
-      settingsScope: { bind: vi.fn(() => ({
+      configForms: { get: vi.fn(() => ({
         getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
         subscribe: () => () => undefined,
         set: vi.fn(),
@@ -838,7 +838,7 @@ describe('run2skill native settings surface', () => {
         $mount: vi.fn(async () => async () => undefined),
         run2skill: { query: vi.fn(), command: vi.fn() },
       },
-      settingsScope: { bind: vi.fn(() => ({
+      configForms: { get: vi.fn(() => ({
         getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
         subscribe: () => () => undefined, set: vi.fn(),
       })) },

@@ -12,11 +12,11 @@
 - publication 跨平台探针需要带 Node.js 的 WSL2/Linux；
 - 安装生命周期探针需要 Microsoft Edge、Google Chrome 或 DSH Playwright 可用的 Chromium。
 
-准备一个官方、干净、固定 commit 的 DSH checkout。仓库 `main` 的未发布 `0.5.0-alpha.1` 源码候选当前默认验证 `0.1.3-alpha.2`：
+准备一个官方、干净、固定 commit 的 DSH checkout。未发布的 `0.5.0-alpha.2` 源码候选验证 `0.1.7-rc.2`：
 
 ```powershell
 git clone https://github.com/deepseek-ai/deepseek-harness.git <dsh-source>
-git -C <dsh-source> checkout 82a5fd61a7cf5c293cec4bdff68f455398d685e9
+git -C <dsh-source> checkout 477b4f420553e8a52c2fbccc464d7561b239c443
 git -C <dsh-source> status --porcelain
 ```
 
@@ -27,9 +27,8 @@ git -C <dsh-source> status --porcelain
 在 dsh-run2skill 仓库根目录执行：
 
 ```powershell
-powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source>
-powershell -File probes/run-dsh-root-contract-probe.ps1 -DshSource <dsh-source>
-powershell -File probes/run-dsh-rc1-profile-probe.ps1 -DshSource <dsh-source>
+powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source> -ExpectedDshHead 477b4f420553e8a52c2fbccc464d7561b239c443
+powershell -File probes/run-dsh-rc2-profile-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1
 ```
 
@@ -38,8 +37,8 @@ powershell -File probes/run-publication-contract-probe.ps1
 这些命令分别覆盖：
 
 - Session、Storage、Learning、LLM/Skill Adapter、Remote/API Gateway、Settings 和 Purge 契约；
-- 默认 `PROJECT` / `USER` Skill roots、CREATE/MERGE、并发保护和 Registry 回读；
-- alpha.2 Profile 的真实候选包 add、disable、upgrade、uninstall、认证 Web 调用和 Client 加载；
+- 官方 `standard` 组合摘要、真实 Skill registry、默认 `PROJECT` / `USER` roots、Session、LLM、Settings 和 Remote 契约；
+- rc.2 Profile 的真实候选包 add、disable、upgrade、uninstall、认证与未认证 Web 调用、Client 加载，以及设置的重启保留；
 - Windows 与 Linux/WSL 上的原子发布和崩溃恢复；
 
 旧版 `run-install-lifecycle-probe.ps1` 是 `0.3.1` / DSH `0.1.1-rc.2` 发布线的稳定候选升级探针。维护该版本时仍需显式传入旧 baseline 和精确候选 tarball：

@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
   [string]$ExpectedDshHead = '82a5fd61a7cf5c293cec4bdff68f455398d685e9',
-  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'learning-diagnostics-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'b2-v2-turn-observation.spec.ts', 'b2-v2-session-activity.spec.ts', 'b2-v2-route-manifest.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'd5-settings-behavior.spec.ts')
+  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'learning-diagnostics-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'b2-v2-turn-observation.spec.ts', 'b2-v2-session-activity.spec.ts', 'b2-v2-route-manifest.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'stock-rc2.spec.ts')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,7 +74,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed in the disposable DSH clone.' }
 
   Copy-Item -LiteralPath $manifestSource -Destination $manifestDestination
-  & pnpm install --no-frozen-lockfile --ignore-scripts --filter '@dsh-run2skill/contract-probes'
+  & pnpm install --no-frozen-lockfile --ignore-scripts --no-optional --filter '@dsh-run2skill/contract-probes'
   if ($LASTEXITCODE -ne 0) { throw 'Failed to link the disposable contract-probe workspace package.' }
 
   & pnpm exec vitest run --config run2skill.probe.vitest.config.ts

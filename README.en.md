@@ -16,7 +16,7 @@ Run2Skill does not let an agent silently create permanent rules for itself. Ever
 
 > The current stable release is [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0). It supports DSH Web `0.1.2-rc.1` only.
 
-Repository `main` is validating an unpublished `0.5.0-alpha.1` source candidate for DSH `0.1.3-alpha.2` only. Keep installing the stable version above until that candidate is fully verified and released.
+The repository is validating an unpublished `0.5.0-alpha.2` source candidate for DSH `0.1.7-rc.2` only. Keep installing the stable version above until that candidate is fully verified and released.
 
 `0.4.0` uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and adapts its Session, Storage/Profile, Settings, and plugin-lifecycle changes. It supports only the retained built-in `standard` preset. Continue using `dsh-run2skill@0.3.1` with the older DSH `0.1.1-rc.2` line.
 

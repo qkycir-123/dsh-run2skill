@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
 import type { Run2skillRemoteService } from '../src/adapters/dsh-remote/service.js'
-import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
 import type {
   DshSessionEvent,
   DshSessionHeader,
@@ -11,14 +10,7 @@ import type {
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 
-function settingsService(): DshSettingsPort {
-  return {
-    register<T>(_namespace: string, schema: (value?: T | null) => T) {
-      const value = schema({} as T)
-      return { get: () => value, watch: () => () => {} }
-    },
-  }
-}
+const automaticLearningConfig = { automaticLearning: { get: () => true } }
 
 function turnEvents(header: DshSessionHeader): DshSessionEvent[] {
   return [
@@ -71,7 +63,6 @@ function alpha2Persistence(legacy: SessionPersistencePort): DshSessionPersistenc
 
 function services() {
   return {
-    settings: settingsService(),
     sessions: { get: () => undefined },
     agents: { get: () => undefined },
     llm: {
@@ -83,10 +74,7 @@ function services() {
       async get() { return undefined },
     },
     agentPresets: {
-      composedPreset() { return undefined },
-      async resolve(id: string) { return { id, trust: 'system' as const } },
-      async read() { return '' },
-      async standingKeyFor(id?: string) { return { agentPreset: id ?? 'standard' } },
+      async acquireScope() { return { key: {}, async [Symbol.asyncDispose]() {} } },
     },
     fs: {},
     reflect: { provide() {} },
@@ -105,7 +93,6 @@ describe('Host plugin v2 production cutover', () => {
       'workspaceRegistry',
       'llm',
       'skills',
-      'settings',
       'agentPresets',
       'fs',
     ])
@@ -151,7 +138,7 @@ describe('Host plugin v2 production cutover', () => {
       },
     }
 
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     expect(order.indexOf('listener:session/event')).toBeLessThan(order.indexOf('run2skill_v2-open'))
     present = true
     revision = 'rev-2'
@@ -199,7 +186,7 @@ describe('Host plugin v2 production cutover', () => {
       on() {},
     }
 
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     expect(domain.turnObservations.size).toBe(0)
     expect(Object.values(domain.global.get().sessions)[0]?.observedThroughTurnEndSeq).toBe(4)
     await dispose()
@@ -220,7 +207,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     const agent = {
       id: 'agent-session',
       ctx: { registry: { values: () => [] } },
@@ -282,7 +269,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     const agent = {
       id: header.id,
       ctx: { registry: { values: () => [] } },
@@ -324,7 +311,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     const agent = {
       id: 'agent-session',
       ctx: { registry: { values: () => [] } },
@@ -351,7 +338,7 @@ describe('Host plugin v2 production cutover', () => {
       workspaceRegistry: { async resolveByPath() { return undefined } },
       on() {},
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
 
     await expect(dispose()).resolves.toBeUndefined()
     expect(close).toHaveBeenCalledOnce()

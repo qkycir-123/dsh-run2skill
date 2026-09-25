@@ -290,7 +290,9 @@ describe('B2 v2 frozen route and ownership manifest on real DSH services', () =>
           : undefined,
       })
       await expect(runtimeCatalog.observeOwnershipCatalog('sl_duplicate'))
-        .resolves.toMatchObject({ complete: false, candidates: [] })
+        .resolves.toMatchObject({ complete: true, candidates: [{
+          name: 'duplicate-skill', writable: false,
+        }] })
     } finally {
       await filesystemFiber.dispose()
       await skillsFiber.dispose()

@@ -53,14 +53,14 @@ describe('Automatic Learning native settings card', () => {
         },
       } as never,
       workspaces: { list: { getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }) } },
-      settingsScope: { bind: bind as never },
+      configForms: { get: bind as never },
       slots: { inject: install, register },
     })
 
-    expect(bind).toHaveBeenCalledWith({ namespace: 'run2skill' })
-    expect(install).toHaveBeenCalledWith('settings.plugin.item', expect.any(Function))
+    expect(bind).toHaveBeenCalledWith('run2skill')
+    expect(install).toHaveBeenCalledWith('plugins.item', expect.any(Function))
     expect(register).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'settings.plugin.item', key: 'run2skill',
+      name: 'plugins.item', id: 'run2skill',
     }), expect.any(Function))
 
     const [options, component] = register.mock.calls[0]!
@@ -122,7 +122,7 @@ describe('Automatic Learning native settings card', () => {
           getSnapshot: () => ({ items: [], recentWorkspaceId: undefined }),
         },
       },
-      settingsScope: { bind: (() => fixture.scope) as never },
+      configForms: { get: (() => fixture.scope) as never },
       slots: { inject: (_name, install) => { install() }, register },
     })
 
