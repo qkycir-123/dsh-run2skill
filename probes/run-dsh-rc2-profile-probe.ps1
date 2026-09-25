@@ -2,15 +2,15 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = '82a5fd61a7cf5c293cec4bdff68f455398d685e9'
+  [string]$ExpectedDshHead = '477b4f420553e8a52c2fbccc464d7561b239c443'
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $dshPath = (Resolve-Path -LiteralPath $DshSource).Path
-$probe = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot 'dsh-rc1-profile') 'probe.mjs')).Path
+$probe = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot 'dsh-rc2-profile') 'probe.mjs')).Path
 $id = "$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-$work = Join-Path (Join-Path $repoRoot '.probe-work') "rc1-profile-$id"
+$work = Join-Path (Join-Path $repoRoot '.probe-work') "rc2-profile-$id"
 $clone = Join-Path $work 'deepseek-harness'
 $installLog = Join-Path $work 'pnpm-install.log'
 $buildLog = Join-Path $work 'dsh-build.log'
@@ -25,7 +25,7 @@ function Assert-DshUnmodified {
 }
 
 Assert-DshUnmodified
-Write-Output "CP_INS_ALPHA2_RUN_ID=$id"
+Write-Output "CP_INS_RC2_RUN_ID=$id"
 New-Item -ItemType Directory -Path $work | Out-Null
 
 Push-Location $repoRoot
@@ -66,7 +66,7 @@ try {
 }
 
 & node $probe $clone $repoRoot (Join-Path $work 'lifecycle')
-if ($LASTEXITCODE -ne 0) { throw "Alpha.2 Profile lifecycle probe failed: $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "RC2 Profile lifecycle probe failed: $LASTEXITCODE" }
 
 Assert-DshUnmodified
-Write-Output 'ALPHA2_PROFILE_PROBE=PASS'
+Write-Output 'RC2_PROFILE_PROBE=PASS'

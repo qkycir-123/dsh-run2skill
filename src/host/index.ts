@@ -1,4 +1,7 @@
-import { DshSessionGapReader } from '../adapters/dsh-session/gap-reader.js'
+import {
+  DshSessionGapReader,
+  DshSessionPersistenceAdapter,
+} from '../adapters/dsh-session/gap-reader.js'
 import {
   RestrictedLearningClient,
   type DshLlmPort,
@@ -21,7 +24,7 @@ import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 import type {
   DshSessionEvent,
   DshSessionHeader,
-  SessionPersistencePort,
+  DshSessionPersistencePort,
   TurnIngressCandidate,
 } from '../adapters/dsh-session/types.js'
 import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
@@ -77,19 +80,24 @@ import { DshPublicationReadbackAdapter } from '../adapters/dsh-skills/publicatio
 import {
   StockDshRootContractResolver,
   StockSkillRuntimeConfigurationCache,
+  STOCK_PRESET_COMPOSITION_DIGESTS,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
-  resolvePinnedStockPresetConfiguration,
-  resolvePinnedStockPresetConfigurationById,
   type StockSkillRuntimeConfiguration,
   type StockWorkspaceContractBinding,
 } from '../adapters/dsh-skills/stock-root-contract.js'
-import { stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
+import { stockColdPresetMounts, stockPresetMounts } from '../adapters/dsh-skills/stock-preset-mount.js'
+import {
+  acquireStockColdPreset,
+  currentStockPresetMount,
+  type StockColdPresetRegistry,
+} from '../adapters/dsh-skills/stock-cold-preset.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
 import {
-  registerAutomaticLearningSettings,
+  createAutomaticLearningSettings,
+  AutomaticLearningSettingsSchema,
+  type AutomaticLearningConfig,
   type AutomaticLearningSettingsPolicy,
-  type DshSettingsPort,
 } from '../adapters/dsh-settings/automatic-learning.js'
 import { PurgeVisibility } from '../adapters/dsh-storage/purge-visibility.js'
 import {
@@ -113,6 +121,7 @@ export { PublicationTargetSingleFlight } from '../adapters/dsh-publication/targe
 export * from '../application/publication/index.js'
 
 export const name = 'run2skill'
+export const Config = AutomaticLearningSettingsSchema
 export const inject = [
   'agents',
   'sessions',
@@ -121,7 +130,6 @@ export const inject = [
   'workspaceRegistry',
   'llm',
   'skills',
-  'settings',
   'agentPresets',
   'fs',
 ] as const
@@ -132,9 +140,7 @@ interface DshSessionProjection {
 
 type Run2skillAgent = object & AgentScopeProjection & Parameters<typeof resolveStockSkillRuntimeConfiguration>[1]
 
-type Run2skillAgentPresets = Parameters<typeof resolvePinnedStockPresetConfiguration>[0] & {
-  standingKeyFor(id?: string): Promise<object>
-}
+type Run2skillAgentPresets = StockColdPresetRegistry
 
 function exactAgentFileSystem(agent: Run2skillAgent): unknown {
   try {
@@ -156,11 +162,10 @@ interface AgentDisposedPayload {
 export interface Run2skillHostContext extends Run2skillStorageContext {
   readonly agents: unknown
   readonly sessions: unknown
-  readonly sessionPersistence: SessionPersistencePort
+  readonly sessionPersistence: DshSessionPersistencePort
   readonly workspaceRegistry: DshWorkspaceRegistryPort
   readonly llm: DshLlmPort
   readonly skills: DshSkillRegistryPort<LearningSkillView<Run2skillAgent>>
-  readonly settings: DshSettingsPort
   readonly agentPresets: Run2skillAgentPresets
   /** Host-plane DSH filesystem used by the supported web presets. */
   readonly fs: unknown
@@ -203,8 +208,7 @@ export class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     private readonly mutationGate: HostMutationGate,
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
-      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
-        ?? await resolvePinnedStockPresetConfiguration(this.context.agentPresets, agent),
+      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]!),
     )
   }
 
@@ -678,8 +682,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     private readonly automaticLearning: AutomaticLearningSettingsPolicy,
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
-      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent)
-        ?? await resolvePinnedStockPresetConfiguration(this.context.agentPresets, agent),
+      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]!),
     )
   }
 
@@ -696,8 +699,17 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     else this.#workspaceBindings.set(agent, workspaceBinding)
     const presetId = configuration.presetId ?? header.agentPreset
     if (presetId === undefined) throw new Error('V2_SESSION_PRESET_UNAVAILABLE')
-    const scope = await this.context.agentPresets.standingKeyFor(presetId)
-    this.#rememberDormantSession(header, scope, configuration, workspaceBinding)
+    const retained = await acquireStockColdPreset(
+      this.context.agentPresets, stockColdPresetMounts, this.context, presetId,
+    )
+    if (retained === undefined) throw new Error('V2_SESSION_PRESET_GENERATION_UNAVAILABLE')
+    try {
+      const joined = await stockPresetMounts.standingMountFor(agent.ctx)
+      if (joined?.key !== retained.lease.key) throw new Error('V2_SESSION_PRESET_GENERATION_UNAVAILABLE')
+      this.#rememberDormantSession(header, retained.lease.key, retained.configuration, workspaceBinding)
+    } finally {
+      await retained.lease[Symbol.asyncDispose]()
+    }
   }
 
   releaseRootConfiguration(agent: Run2skillAgent): void {
@@ -744,25 +756,32 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     })
   }
 
+  #currentDormant(session: { readonly scope: object }): boolean {
+    return currentStockPresetMount(stockColdPresetMounts, this.context, session.scope) !== undefined
+  }
+
   async #hydrateDormantSessions(): Promise<void> {
     let snapshots: readonly { readonly header: DshSessionHeader }[]
     try {
-      snapshots = await this.context.sessionPersistence.listSnapshots()
+      const listed = await new DshSessionGapReader(this.context.sessionPersistence).listSnapshots()
+      if (listed.status === 'UNAVAILABLE') return
+      snapshots = listed.snapshots
     } catch {
       return
     }
     for (const { header } of snapshots) {
       if (classifySessionRoot(header).status !== 'ROOT') continue
       try {
-        const configuration = await resolvePinnedStockPresetConfigurationById(
-          this.context.agentPresets,
-          header.agentPreset,
-          true,
+        const retained = await acquireStockColdPreset(
+          this.context.agentPresets, stockColdPresetMounts, this.context, header.agentPreset,
         )
-        if (configuration === undefined) continue
-        const scope = await this.context.agentPresets.standingKeyFor(configuration.presetId)
-        const workspaceBinding = await this.#workspaceBinding(header.cwd)
-        this.#rememberDormantSession(header, scope, configuration, workspaceBinding)
+        if (retained === undefined) continue
+        try {
+          const workspaceBinding = await this.#workspaceBinding(header.cwd)
+          this.#rememberDormantSession(header, retained.lease.key, retained.configuration, workspaceBinding)
+        } finally {
+          await retained.lease[Symbol.asyncDispose]()
+        }
       } catch {
         // One unavailable historical Session must not block recovery of others.
       }
@@ -772,6 +791,8 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
   #dormantForView(view: LearningSkillView<Run2skillAgent>) {
     const cwdDigest = deriveSessionCwdDigest(view.cwd)
     return [...this.#dormantSessions.values()].find(session => (
+      this.#currentDormant(session)
+      &&
       session.scope === view.scope
       && deriveSessionCwdDigest(session.header.cwd) === cwdDigest
     ))
@@ -806,7 +827,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
           }
         }
         const dormant = this.#dormantSessions.get(lifecycleKey)
-        if (dormant === undefined) return undefined
+        if (dormant === undefined || !this.#currentDormant(dormant)) return undefined
         return {
           header: dormant.header,
           view: {
@@ -823,6 +844,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         const dormant = this.#dormantForView(view)
         const configuration = this.#stockConfigurations.get(view.scope) ?? dormant?.configuration
         if (configuration === undefined) return undefined
+        if (dormant === undefined && !('session' in view.scope)) return undefined
         const workspaceBinding = this.#workspaceBindings.get(view.scope) ?? dormant?.workspaceBinding
         const filesystem = exactAgentFileSystem(view.scope) ?? dormant?.filesystem
         return {
@@ -846,7 +868,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         ? this.context.agents as { get(id: string): never }
         : { get: (_id: string) => undefined }
       runtime = new DshV2ProductionRuntime(domain, {
-        persistence: this.context.sessionPersistence,
+        persistence: new DshSessionPersistenceAdapter(this.context.sessionPersistence),
         sessions,
         agents,
         llm: this.context.llm,
@@ -878,12 +900,17 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
           publicationAbort.abort()
           if (this.currentV2Runtime === activeRuntime) this.currentV2Runtime = undefined
           if (this.currentV2Domain === domain) this.currentV2Domain = undefined
-          await activeRuntime.close()
+          try {
+            await activeRuntime.close()
+          } finally {
+            this.#dormantSessions.clear()
+          }
         },
       }
     } catch (error) {
       if (runtime !== undefined) await runtime.close().catch(() => undefined)
       else if (domain !== undefined) await domain.close().catch(() => undefined)
+      this.#dormantSessions.clear()
       throw error
     }
   }
@@ -936,8 +963,8 @@ function v2Summary(
   })
 }
 
-export async function apply(context: Run2skillHostContext): Promise<() => Promise<void>> {
-  const automaticLearning = registerAutomaticLearningSettings(context.settings)
+export async function apply(context: Run2skillHostContext, config: AutomaticLearningConfig): Promise<() => Promise<void>> {
+  const automaticLearning = createAutomaticLearningSettings({ config, on: context.on.bind(context) })
   const notices = new RuntimeNotices()
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()

@@ -7,14 +7,14 @@ import {
   ROOT_RESOLVER_VERSION_V2,
 } from '../../domain/review/schemas.js'
 
-export const STOCK_DSH_BASELINE_COMMIT = 'a66e4702047846cdaa10c66c9d3df3951f5ea70d'
+export const STOCK_DSH_BASELINE_COMMIT = '477b4f420553e8a52c2fbccc464d7561b239c443'
 export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard'])
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
   standard: Object.freeze([
-    'f18dd942686aa71f43ffc4fd328a712f79af113fb67a35b54cb6de4fc3b84bda',
+    'ad344050d18ed7bc2582c1ce691b5f56334b84a85ee67a928895f7b0e0b3b5ff',
   ]),
 })
 
@@ -43,6 +43,19 @@ interface StockPluginRuntimeProjection {
 export interface StockPresetMountProjection {
   readonly presetId: string
   readonly fiber: StockFiberProjection
+  readonly key?: object | undefined
+  readonly tree?: { readonly root: { readonly data: unknown } } | undefined
+}
+
+export function hasStockPresetComposition(mount: StockPresetMountProjection, expectedDigest: string): boolean {
+  if (mount.presetId !== 'standard') return false
+  try {
+    const rows = mount.tree?.root.data
+    return Array.isArray(rows)
+      && sha256Utf8(canonicalJson(JSON.parse(JSON.stringify(rows)))) === expectedDigest
+  } catch {
+    return false
+  }
 }
 
 export interface StockPresetMountPort {
@@ -58,59 +71,12 @@ export interface StockComposedAgentProjection {
   }
 }
 
-export interface StockAgentPresetObservationPort {
-  composedPreset(agentContext: object): string | undefined
-  resolve(id: string): Promise<{ readonly id: string; readonly trust: 'system' | 'user' }>
-  read(id: string): Promise<string>
-}
-
-type StockAgentPresetReadPort = Pick<StockAgentPresetObservationPort, 'resolve' | 'read'>
-
 function contextUsesFileSystem(context: object): boolean {
   if (!('get' in context) || typeof context.get !== 'function') return false
   try {
     return context.get('fs') !== undefined
   } catch {
     return true
-  }
-}
-
-export async function resolvePinnedStockPresetConfiguration(
-  presets: StockAgentPresetObservationPort,
-  agent: { readonly ctx: object },
-  expectedDigests: Readonly<Record<'standard', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
-): Promise<StockSkillRuntimeConfiguration | undefined> {
-  const presetId = presets.composedPreset(agent.ctx)
-  return resolvePinnedStockPresetConfigurationById(
-    presets,
-    presetId,
-    contextUsesFileSystem(agent.ctx),
-    expectedDigests,
-  )
-}
-
-export async function resolvePinnedStockPresetConfigurationById(
-  presets: StockAgentPresetReadPort,
-  presetId: string | undefined,
-  usesContextFileSystem: boolean,
-  expectedDigests: Readonly<Record<'standard', readonly string[]>> = STOCK_PRESET_COMPOSITION_DIGESTS,
-): Promise<StockSkillRuntimeConfiguration | undefined> {
-  if (presetId !== 'standard') return undefined
-  try {
-    const preset = await presets.resolve(presetId)
-    if (preset.id !== presetId || preset.trust !== 'system') return undefined
-    const content = await presets.read(presetId)
-    if (!expectedDigests[presetId].includes(sha256Utf8(content))) return undefined
-    return {
-      profile: 'web',
-      presetId,
-      providerName: 'filesystem',
-      includeDefaultRoots: true,
-      customSkillDirs: [],
-      ...(usesContextFileSystem ? { usesContextFileSystem: true as const } : {}),
-    }
-  } catch {
-    return undefined
   }
 }
 
@@ -210,9 +176,17 @@ function isWithinFiber(candidate: StockFiberProjection, root: StockFiberProjecti
 export async function resolveStockSkillRuntimeConfiguration(
   mounts: StockPresetMountPort,
   agent: StockComposedAgentProjection,
+  expectedDigest?: string,
 ): Promise<StockSkillRuntimeConfiguration | undefined> {
   const mount = await mounts.standingMountFor(agent.ctx)
-  if (mount === undefined) return undefined
+  if (mount === undefined || (expectedDigest !== undefined && !hasStockPresetComposition(mount, expectedDigest))) return undefined
+  return resolveMountedStockSkillRuntimeConfiguration(mount, agent)
+}
+
+export function resolveMountedStockSkillRuntimeConfiguration(
+  mount: StockPresetMountProjection,
+  agent: StockComposedAgentProjection,
+): StockSkillRuntimeConfiguration | undefined {
   const fibers = [...agent.ctx.registry.values()]
     .filter(runtime => runtime.name === 'skill-filesystem')
     .flatMap(runtime => [...runtime.fibers])

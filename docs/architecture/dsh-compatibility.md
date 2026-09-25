@@ -1,43 +1,30 @@
 # DSH 兼容层
 
-状态：`0.4.0` npm 稳定兼容层
-更新时间：2026-09-04
-上游基线：DeepSeek Harness `0.1.2-rc.1`，commit `a66e4702047846cdaa10c66c9d3df3951f5ea70d`
+状态：`0.5.0-alpha.2` 未发布兼容候选
 
-## 目的
+更新时间：2026-09-25
 
-DSH `0.1.2-rc.1` 删除了 run2skill `0.3.1` 使用的私有 `ApiProxy` / `dsh-client-runtime` 通道，并把 Web 调用统一到 Remote/API Gateway 与浏览器认证。`0.4.0` 只替换这一宿主兼容层，不改变 SessionBatch、学习、审核、发布、Storage Domain 或公开产品行为。
+上游基线：DeepSeek Harness `dsh-v0.1.7-rc.2`，commit `477b4f420553e8a52c2fbccc464d7561b239c443`
 
 ## 固定边界
 
-- Host 与 Client 共享同一份 Zod codec 和两条 Typert descriptor：`run2skill/query`、`run2skill/command`。
-- query 只接受只读 endpoint；command 只接受会改变 run2skill 状态的 endpoint。路由不匹配、未知字段、非法 payload 和取消一律 fail closed。
-- Host 使用 DSH `TypertRemoteService` 挂载；Client 使用 `remote.$mount()`，不自行建立 HTTP、WebSocket 或认证层。
-- DSH API Gateway 负责请求传输、一次性启动令牌换取 Cookie 和浏览器会话认证；run2skill 继续负责 DTO、业务权限、revision/digest 和发布安全门。
-- Typert Host manifest 与运行时 descriptor 直接复用同一对象，避免手写声明与真实 codec 漂移。
-- 外部包当前没有可用的官方自动生成产物，因此 `./typert` 与 `./remote` 是最小手写桥；真实 registry round trip 探针必须证明它与 RC1 Host/Client 图一致。
+- Host 与 Client 共享 Zod codec 和 `run2skill/query`、`run2skill/command` 两条 Typert descriptor。读写路由、严格 DTO、revision/digest 和发布权限继续由插件验证。
+- DSH Remote/API Gateway 承担浏览器传输和一次性启动令牌换取 Cookie 的认证；插件不建立旁路服务。
+- 精确支持 DSH Web、官方 `standard` preset、默认 filesystem Skill provider 与默认 Skill roots。自定义组合无法通过代际和摘要核验时停止学习和发布。
 
-## RC1 适配点
+## rc.2 适配
 
-| 承重契约 | `0.3.1` | `0.4.0` |
-|---|---|---|
-| Web 请求 | 私有 `/run2skill` loopback RPC | DSH Remote/API Gateway |
-| 浏览器信任 | loopback Host/Origin fence | DSH 一次性令牌与认证 Cookie |
-| Session 读取 | 公开 events 视图 | `snapshotEvents()` |
-| Session 持久化 | 旧 Session 存储组合 | RC1 JSONL Session 日志 |
-| Client 加载 | 单插件 bundle 地址 | RC1 client module 组合地址与 revision |
-| Skill preset | `standard`、`code` | `standard`；上游已删除 `code` |
-| DSH baseline | `0.1.1-rc.2` / `b150a551...` | `0.1.2-rc.1` / `a66e4702...` |
+| 契约 | 插件做法 |
+|---|---|
+| Session 持久化 | `list()` 与 `open(id, 'read')`；每次 detached 读取都关闭 handle；V4 的已知 `assistant/attempt` 不进入用户证据，未知必需事件拒绝投影。 |
+| live Session | 在本精确 tag 上读取尚存但已弃用的同步 `snapshotEvents()`；新 tag 必须重新验证。 |
+| live preset | 从 Agent 实际绑定的 `standingMountFor` 取得 mount；不从当前默认 preset 推断其组合。 |
+| 冷会话 preset | `acquireScope('standard')` 保留 generation，查找相同 `lease.key` 的唯一 live mount，核对从官方 bundle 固定的组合摘要，从该代唯一 filesystem Skill fiber 取根目录；结束或失效时释放 lease。 |
+| 设置 | 插件 `Config` 声明 volatile `automaticLearning`；Host 响应 `loader/volatile-update`，Client 用 `configForms.get('run2skill')`，DSH Profile 负责持久化及旧 `settings.yaml` 导入。 |
+| Web 与热刷新 | Host Typert Remote 和 Client module 经 DSH 加载；认证与未认证请求、禁用、升级、卸载和浏览器资源均由真实 DSH profile 探针验证。 |
 
-## 版本与数据
-
-`0.3.1` 继续作为 DSH `0.1.1-rc.2` 的维护线；`0.4.0` 面向 DSH `0.1.2-rc.1`，两者不宣称跨 DSH 主线混装。此次变更不提升 `run2skill_v2` Domain version，不迁移或删除既有 run2skill 数据，卸载仍保留 Storage Domain 和已发布原生 Skill。
+run2skill 的 SessionBatch、学习、审核、发布、Storage Domain 与产品权限不变。`0.5.0-alpha.1` 的 alpha.2 适配包含在本分支，rc.2 候选另修 preset 和设置接口；旧 `0.4.0` 与 `0.3.1` 仍按各自 DSH 基线使用。
 
 ## 验收
 
-进入支持表前必须同时满足：
-
-1. Session、Skill、LLM、Settings、Web、Storage/Profile、插件加载和热刷新源码/运行探针通过；
-2. Remote registry 对共享 descriptor 做真实 encode/decode round trip；
-3. 候选包在未修改 RC1 上完成 add、disable、upgrade、uninstall 与认证 Web 调用；
-4. typecheck、lint、完整单元测试、候选包验证和精确 HEAD 评审无阻塞问题。
+本候选进入[支持表](../compatibility.md)前，须有固定上游 commit 的 Session、Skill、LLM、Settings、Web、Storage/Profile、插件装载和热刷新探针，真实候选包安装生命周期，typecheck、lint、完整测试、CI，以及精确 HEAD 的无阻塞评审。npm 发布另行处理。

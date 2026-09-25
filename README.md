@@ -18,6 +18,8 @@
 
 > 当前稳定版为 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)。目前仅支持 DSH Web `0.1.2-rc.1`。
 
+仓库正在验证未发布的 `0.5.0-alpha.2` 源码候选，它只面向 DSH `0.1.7-rc.2`；在候选验证和发布完成前，请继续按上面的稳定版本安装。
+
 `0.4.0` 改用 DSH `0.1.2-rc.1` 的 Remote/API Gateway 与浏览器认证契约，并适配 Session、Storage/Profile、Settings 和插件生命周期变化。它只支持 RC1 保留的内置 `standard` preset；使用旧 DSH `0.1.1-rc.2` 时请继续安装 `dsh-run2skill@0.3.1`。
 
 低噪声整理状态、“立即整理本次经验”、按意见生成新版草稿，以及长工作流关键证据保留继续保留。“立即整理”仍会等待 Agent 停止运行和事实完整，并继续经过查重、审核与发布安全门；设置页不会展示内部批次计数。

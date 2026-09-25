@@ -169,7 +169,7 @@ async function browserExecutable() {
   throw new Error('No Chromium-compatible browser executable is installed')
 }
 
-async function observe(present) {
+async function observe(present, expectedLearning = true, setLearning) {
   const running = await startWeb()
   let browser
   let browserContext
@@ -186,10 +186,10 @@ async function observe(present) {
     assert.equal(index.status, 200)
     const html = await index.text()
     assert.equal(html.includes(packageName), present)
-    const bundlePath = new RegExp(`/plugins/\\?\\?${packageName}/client\\.js&rev=[A-Za-z0-9_-]+`, 'u')
-      .exec(html)?.[0]
+    const bundlePath = new RegExp(`plugins/\\?\\?[^"<>]*${packageName}/client\\.js[^"<>]*&amp;rev=[A-Za-z0-9_-]+`, 'u')
+      .exec(html)?.[0]?.replaceAll('&amp;', '&')
     assert.equal(bundlePath !== undefined, present)
-    const bundle = await fetch(`${launchUrl.origin}${bundlePath ?? `/plugins/${packageName}/client.js`}`, { headers })
+    const bundle = await fetch(`${launchUrl.origin}/${bundlePath ?? `plugins/${packageName}/client.js`}`, { headers })
     assert.equal(bundle.status, present ? 200 : 404)
 
     const rpc = await fetch(`${launchUrl.origin}/api/run2skill/query`, {
@@ -197,22 +197,57 @@ async function observe(present) {
       headers: { ...headers, 'content-type': 'application/json' },
       body: JSON.stringify({
         type: 'client-request',
-        rpcId: 'run2skill-rc1-profile',
+        rpcId: 'run2skill-rc2-profile',
         method: 'run2skill/query',
         payload: { args: { request: { endpoint: 'observe-summary', payload: { apiVersion: 1 } } } },
       }),
     })
     assert.equal(rpc.status, present ? 200 : 404)
     if (present) {
+      const remote = async (method, args) => {
+        const response = await fetch(`${launchUrl.origin}/api/${method}`, {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'client-request', rpcId: `run2skill-rc2-${method}`, method, payload: { args },
+          }),
+        })
+        assert.equal(response.status, 200, `${method} HTTP status`)
+        const body = await response.json()
+        assert.equal(body.result?.ok, true, `${method}: ${JSON.stringify(body.result?.error)}`)
+        return body.result.value
+      }
+      const unauthenticated = await fetch(`${launchUrl.origin}/api/run2skill/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: 'no-cookie', method: 'run2skill/query', payload: {} }),
+      })
+      assert.ok([401, 403].includes(unauthenticated.status))
       const body = await rpc.json()
       assert.equal(body.type, 'server-response')
-      assert.equal(body.rpcId, 'run2skill-rc1-profile')
+      assert.equal(body.rpcId, 'run2skill-rc2-profile')
       assert.equal(body.result?.ok, true)
       assert.equal(body.result?.value?.ok, true)
       assert.equal(body.result?.value?.value?.apiVersion, 1)
 
+      const described = await remote('settings/describe', {})
+      assert.equal(described.writable, true)
+      const namespace = described.namespaces.find(item => item.ns === 'run2skill')
+      assert.ok(namespace, 'settings/describe omitted run2skill')
+      assert.equal(namespace.value.automaticLearning, expectedLearning)
+      if (setLearning !== undefined) {
+        const changed = await remote('settings/mutate', {
+          ns: 'run2skill',
+          ops: [{ op: 'set', path: ['automaticLearning'], value: setLearning }],
+          expectedRevision: namespace.revision,
+        })
+        assert.equal(changed.value.automaticLearning, setLearning)
+        const reread = await remote('settings/describe', {})
+        assert.equal(reread.namespaces.find(item => item.ns === 'run2skill')?.value.automaticLearning, setLearning)
+      }
+
       browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
-      browserContext = await browser.newContext()
+      browserContext = await browser.newContext({ locale: 'zh-CN' })
       const separator = cookie.indexOf('=')
       assert.ok(separator > 0)
       await browserContext.addCookies([{
@@ -236,30 +271,39 @@ async function observe(present) {
   }
 }
 
-const v1 = await stage('0.5.0-alpha.1.probe.1')
-const v2 = await stage('0.5.0-alpha.1.probe.2')
+const v1 = await stage('0.5.0-alpha.2.probe.1')
+const v2 = await stage('0.5.0-alpha.2.probe.2')
 
-console.log('CP_INS_ALPHA2_STAGE=add')
+console.log('CP_INS_RC2_STAGE=add')
 await dsh(['plugin', '--profile', 'web', 'add', v1])
 let manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 assert.ok(manifest.dsh.profile.bundles.includes(packageName))
 assert.ok((await dsh(['--profile', 'web', '--dump-config'])).stdout.includes('id: run2skill'))
-await observe(true)
+await observe(true, true, false)
+const savedSettingsPatch = await readFile(patchPath, 'utf8')
+assert.match(savedSettingsPatch, /automaticLearning: false/u)
+assert.match(savedSettingsPatch, /- id: run2skill/u)
 
-console.log('CP_INS_ALPHA2_STAGE=disable')
-await writeFile(patchPath, '- id: run2skill\n  disabled: true\n')
+console.log('CP_INS_RC2_STAGE=disable')
+await writeFile(patchPath, savedSettingsPatch.replace('- id: run2skill', '- id: run2skill\n  disabled: true'))
 await observe(false)
 
-console.log('CP_INS_ALPHA2_STAGE=upgrade')
-await writeFile(patchPath, '[]\n')
+console.log('CP_INS_RC2_STAGE=upgrade')
+await writeFile(patchPath, savedSettingsPatch)
 await dsh(['plugin', '--profile', 'web', 'add', v2])
 const installed = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-assert.equal(installed.version, '0.5.0-alpha.1.probe.2')
-await observe(true)
+assert.equal(installed.version, '0.5.0-alpha.2.probe.2')
+await observe(true, false, true)
 const retainedStorage = (await readdir(join(home, 'storages'))).filter(entry => /run2skill/iu.test(entry))
 assert.ok(retainedStorage.length > 0)
 
-console.log('CP_INS_ALPHA2_STAGE=uninstall')
+console.log('CP_INS_RC2_STAGE=legacy-settings-migration')
+const legacySettings = join(home, 'settings.yaml')
+await writeFile(legacySettings, 'run2skill:\n  automaticLearning: false\n')
+await observe(true, false, true)
+await access(`${legacySettings}.imported`)
+
+console.log('CP_INS_RC2_STAGE=uninstall')
 await dsh(['plugin', '--profile', 'web', 'remove', packageName])
 manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 assert.equal(manifest.dsh.profile.bundles.includes(packageName), false)
@@ -270,4 +314,4 @@ assert.deepEqual(
   retainedStorage.sort(),
 )
 
-console.log('CP_INS_ALPHA2=PASS')
+console.log('CP_INS_RC2=PASS')

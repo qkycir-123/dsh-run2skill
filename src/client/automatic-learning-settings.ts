@@ -26,7 +26,7 @@ export interface ClientSettingsScopeSnapshot<T> {
 export interface ClientSettingsScope<T> {
   getSnapshot(): ClientSettingsScopeSnapshot<T>
   subscribe(listener: () => void): () => void
-  set(field: string, value: unknown): Promise<void>
+  set(field: string, value: unknown): Promise<boolean | void>
 }
 
 export interface AutomaticLearningCardState {
@@ -63,9 +63,9 @@ export class AutomaticLearningSettingsController {
     this.#error = undefined
     this.#publish()
     try {
-      await this.scope.set('automaticLearning', value)
+      const accepted = await this.scope.set('automaticLearning', value)
       const after = this.scope.getSnapshot()
-      this.#error = after.status === 'ready' && after.value?.automaticLearning === value
+      this.#error = accepted !== false && after.status === 'ready' && after.value?.automaticLearning === value
         ? undefined
         : 'SETTINGS_CHANGED'
     } catch {
@@ -152,8 +152,8 @@ export interface AutomaticLearningSettingsClientContext {
       }
     }
   }
-  readonly settingsScope: {
-    bind<T>(spec: { readonly namespace: string }): ClientSettingsScope<T>
+  readonly configForms: {
+    get<T>(entryId: string): ClientSettingsScope<T>
   }
   readonly slots: {
     inject(name: string, install: () => unknown): void
@@ -172,7 +172,7 @@ async function applyAutomaticLearningSettingsClientRemote(
   context: AutomaticLearningSettingsClientContext,
 ): Promise<TypertDisposer> {
   const mounted = await createRun2skillRemoteCaller(context.remote)
-  const scope = context.settingsScope.bind<AutomaticLearningClientSettings>({ namespace: 'run2skill' })
+  const scope = context.configForms.get<AutomaticLearningClientSettings>('run2skill')
   const controller = new AutomaticLearningSettingsController(scope)
   const callPurge: PurgeCall = mounted.call
   const purgeController = new PurgeSettingsController(callPurge, () => {
@@ -184,9 +184,9 @@ async function applyAutomaticLearningSettingsClientRemote(
     controller.dispose()
     purgeController.dispose()
   }, 'run2skill: settings and purge')
-  context.slots.inject('settings.plugin.item', () => context.slots.register({
-    name: 'settings.plugin.item',
-    key: 'run2skill',
+  context.slots.inject('plugins.item', () => context.slots.register({
+    name: 'plugins.item',
+    id: 'run2skill',
     inject: () => ({ controller, purgeController }),
   }, AutomaticLearningSettingsCard))
   return mounted.dispose

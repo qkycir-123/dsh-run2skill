@@ -5,8 +5,9 @@
   "dependencies": {
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",
+    "@deepseek-ai/cordis-plugin-include": "workspace:^",
     "@deepseek-ai/dsh-api-gateway": "workspace:^",
-    "@deepseek-ai/dsh-agent-presets": "workspace:^",
+    "@deepseek-ai/dsh-agent-preset-registry": "workspace:^",
     "@deepseek-ai/dsh-home-paths": "workspace:^",
     "@deepseek-ai/dsh-client-connection": "workspace:^",
     "@deepseek-ai/dsh-client-ui-primitives": "workspace:^",
@@ -31,7 +32,8 @@
     "@deepseek-ai/dsh-workspace": "workspace:^",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "js-yaml": "^4.2.0"
   },
   "devDependencies": {
     "jsdom": "^29.1.1",

@@ -14,7 +14,7 @@ export const inject = [
   'workspaces',
   'sessions',
   'remote',
-  'settingsScope',
+  'configForms',
 ] as const
 
 export async function apply(context: Run2skillClientContext): Promise<() => Promise<void>> {

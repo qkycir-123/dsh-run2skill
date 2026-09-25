@@ -1,19 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { apply, inject, name } from '../src/host/index.js'
 import type { Run2skillRemoteService } from '../src/adapters/dsh-remote/service.js'
-import type { DshSettingsPort } from '../src/adapters/dsh-settings/automatic-learning.js'
-import type { DshSessionEvent, DshSessionHeader } from '../src/adapters/dsh-session/types.js'
+import type {
+  DshSessionEvent,
+  DshSessionHeader,
+  DshSessionPersistencePort,
+  SessionPersistencePort,
+} from '../src/adapters/dsh-session/types.js'
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 
-function settingsService(): DshSettingsPort {
-  return {
-    register<T>(_namespace: string, schema: (value?: T | null) => T) {
-      const value = schema({} as T)
-      return { get: () => value, watch: () => () => {} }
-    },
-  }
-}
+const automaticLearningConfig = { automaticLearning: { get: () => true } }
 
 function turnEvents(header: DshSessionHeader): DshSessionEvent[] {
   return [
@@ -40,9 +37,32 @@ function turnEvents(header: DshSessionHeader): DshSessionEvent[] {
   ]
 }
 
+function alpha2Persistence(legacy: SessionPersistencePort): DshSessionPersistencePort {
+  return {
+    async list(options) {
+      return await legacy.listSnapshots(options?.signal)
+    },
+    async open(sessionId, _access, options) {
+      const snapshot = (await legacy.listSnapshots(options?.signal))
+        .find(candidate => candidate.header.id === sessionId)
+      if (snapshot === undefined) throw new Error('SESSION_NOT_FOUND')
+      return {
+        header: snapshot.header,
+        async read(offset = 0, length, readOptions) {
+          const loaded = await legacy.readFrom(sessionId, offset, readOptions?.signal)
+          return {
+            eventState: 'detached',
+            events: length === undefined ? loaded.events : loaded.events.slice(0, length),
+          }
+        },
+        async close() {},
+      }
+    },
+  }
+}
+
 function services() {
   return {
-    settings: settingsService(),
     sessions: { get: () => undefined },
     agents: { get: () => undefined },
     llm: {
@@ -54,10 +74,7 @@ function services() {
       async get() { return undefined },
     },
     agentPresets: {
-      composedPreset() { return undefined },
-      async resolve(id: string) { return { id, trust: 'system' as const } },
-      async read() { return '' },
-      async standingKeyFor(id?: string) { return { agentPreset: id ?? 'standard' } },
+      async acquireScope() { return { key: {}, async [Symbol.asyncDispose]() {} } },
     },
     fs: {},
     reflect: { provide() {} },
@@ -76,7 +93,6 @@ describe('Host plugin v2 production cutover', () => {
       'workspaceRegistry',
       'llm',
       'skills',
-      'settings',
       'agentPresets',
       'fs',
     ])
@@ -97,7 +113,7 @@ describe('Host plugin v2 production cutover', () => {
     const context = {
       ...services(),
       llm: { async resolveModelInfo() { return { context: { contextWindow: 16_384 } } }, stream },
-      sessionPersistence: {
+      sessionPersistence: alpha2Persistence({
         async listSnapshots() {
           order.push('list-snapshots')
           return present ? [{ header, revision }] : []
@@ -105,7 +121,7 @@ describe('Host plugin v2 production cutover', () => {
         async readFrom(_id: string, fromSeq: number) {
           return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
         },
-      },
+      }),
       storageDomain: { async open() { order.push('run2skill_v2-open'); return domain } },
       workspaceRegistry: {
         async resolveByPath() { return { id: 'workspace-1', path: 'D:/workspace' } },
@@ -122,7 +138,7 @@ describe('Host plugin v2 production cutover', () => {
       },
     }
 
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     expect(order.indexOf('listener:session/event')).toBeLessThan(order.indexOf('run2skill_v2-open'))
     present = true
     revision = 'rev-2'
@@ -158,19 +174,19 @@ describe('Host plugin v2 production cutover', () => {
     const events = turnEvents(header)
     const context = {
       ...services(),
-      sessionPersistence: {
+      sessionPersistence: alpha2Persistence({
         async listSnapshots() { return [{ header, revision: 'rev-1' }] },
         async readFrom(_id: string, fromSeq: number) {
           return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
         },
-      },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
       on() {},
     }
 
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     expect(domain.turnObservations.size).toBe(0)
     expect(Object.values(domain.global.get().sessions)[0]?.observedThroughTurnEndSeq).toBe(4)
     await dispose()
@@ -181,7 +197,9 @@ describe('Host plugin v2 production cutover', () => {
     let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
-      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      sessionPersistence: alpha2Persistence({
+        async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
@@ -189,7 +207,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     const agent = {
       id: 'agent-session',
       ctx: { registry: { values: () => [] } },
@@ -234,12 +252,12 @@ describe('Host plugin v2 production cutover', () => {
     let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
-      sessionPersistence: {
+      sessionPersistence: alpha2Persistence({
         async listSnapshots() { return present ? [{ header, revision: 'jsonl:4' }] : [] },
         async readFrom(_id: string, fromSeq: number) {
           return { meta: header, events: events.filter(event => event.seq >= fromSeq) }
         },
-      },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: {
         async resolveByPath() { return { id: 'workspace-1', path: 'D:/workspace' } },
@@ -251,7 +269,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     const agent = {
       id: header.id,
       ctx: { registry: { values: () => [] } },
@@ -283,7 +301,9 @@ describe('Host plugin v2 production cutover', () => {
     let preStep: ((payload: { agent: never; step: number }, next: () => Promise<unknown>) => Promise<unknown>) | undefined
     const context = {
       ...services(),
-      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      sessionPersistence: alpha2Persistence({
+        async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       connection: { rpc: { handle() { return async () => undefined } } },
@@ -291,7 +311,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
     const agent = {
       id: 'agent-session',
       ctx: { registry: { values: () => [] } },
@@ -311,12 +331,14 @@ describe('Host plugin v2 production cutover', () => {
     domain.close = close
     const context = {
       ...services(),
-      sessionPersistence: { async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') } },
+      sessionPersistence: alpha2Persistence({
+        async listSnapshots() { return [] }, async readFrom() { throw new Error('unused') },
+      }),
       storageDomain: { async open() { return domain } },
       workspaceRegistry: { async resolveByPath() { return undefined } },
       on() {},
     }
-    const dispose = await apply(context)
+    const dispose = await apply(context, automaticLearningConfig)
 
     await expect(dispose()).resolves.toBeUndefined()
     expect(close).toHaveBeenCalledOnce()

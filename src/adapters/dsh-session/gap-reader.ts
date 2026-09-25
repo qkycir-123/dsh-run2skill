@@ -1,6 +1,8 @@
 import type {
   DshSessionEvent,
   DshSessionHeader,
+  DshSessionPersistencePort,
+  DshSessionReadHandlePort,
   SessionLogReadResult,
   SessionPersistencePort,
   SessionPersistenceSnapshot,
@@ -64,11 +66,13 @@ function validSnapshot(snapshot: unknown): snapshot is SessionPersistenceSnapsho
 }
 
 export class DshSessionGapReader {
-  constructor(private readonly persistence: SessionPersistencePort) {}
+  constructor(private readonly persistence: DshSessionPersistencePort | SessionPersistencePort) {}
 
   async listSnapshots(signal?: AbortSignal): Promise<SnapshotReadResult> {
     try {
-      const snapshots = await this.persistence.listSnapshots(signal)
+      const snapshots = 'list' in this.persistence
+        ? await this.persistence.list(signal === undefined ? undefined : { signal })
+        : await this.persistence.listSnapshots(signal)
       if (!Array.isArray(snapshots) || snapshots.some((snapshot) => !validSnapshot(snapshot))) {
         return { status: 'UNAVAILABLE', healthCode: 'SESSION_SNAPSHOTS_UNAVAILABLE' }
       }
@@ -96,23 +100,85 @@ export class DshSessionGapReader {
       fromSeq,
     }
     if (!Number.isSafeInteger(fromSeq) || fromSeq < 0) return unavailable
+    let handle: DshSessionReadHandlePort | undefined
+    let result: SessionLogReadResult = unavailable
     try {
-      const result = await this.persistence.readFrom(sessionId, fromSeq, signal)
-      if (
-        !isRecord(result)
-        || !validHeader(result['meta'])
-        || result.meta.id !== sessionId
-        || !validEvents(result.events)
-      ) {
+      if (!('open' in this.persistence)) {
+        const legacy = await this.persistence.readFrom(sessionId, fromSeq, signal)
+        if (
+          isRecord(legacy)
+          && validHeader(legacy['meta'])
+          && legacy.meta.id === sessionId
+          && validEvents(legacy.events)
+        ) {
+          return {
+            status: 'AVAILABLE',
+            header: cloneHeader(legacy.meta),
+            events: cloneEvents(legacy.events),
+          }
+        }
         return unavailable
       }
-      return {
-        status: 'AVAILABLE',
-        header: cloneHeader(result.meta),
-        events: cloneEvents(result.events),
+      handle = await this.persistence.open(
+        sessionId,
+        'read',
+        signal === undefined ? undefined : { signal },
+      )
+      const read = await handle.read(
+        fromSeq,
+        undefined,
+        signal === undefined ? undefined : { signal },
+      )
+      if (
+        !validHeader(handle.header)
+        || handle.header.id !== sessionId
+        || !isRecord(read)
+        || (read['eventState'] !== 'detached' && read['eventState'] !== 'shared-frozen')
+        || !validEvents(read['events'])
+      ) {
+        result = unavailable
+      } else {
+        result = {
+          status: 'AVAILABLE',
+          header: cloneHeader(handle.header),
+          events: cloneEvents(read.events),
+        }
       }
     } catch {
-      return unavailable
+      result = unavailable
     }
+    if (handle !== undefined) {
+      try {
+        await handle.close()
+      } catch {
+        return unavailable
+      }
+    }
+    return result
+  }
+}
+
+/** Converts the lifecycle-owned DSH service into run2skill's detached reader port. */
+export class DshSessionPersistenceAdapter implements SessionPersistencePort {
+  readonly #reader: DshSessionGapReader
+
+  constructor(persistence: DshSessionPersistencePort) {
+    this.#reader = new DshSessionGapReader(persistence)
+  }
+
+  async listSnapshots(signal?: AbortSignal): Promise<readonly SessionPersistenceSnapshot[]> {
+    const result = await this.#reader.listSnapshots(signal)
+    if (result.status === 'UNAVAILABLE') throw new Error(result.healthCode)
+    return result.snapshots
+  }
+
+  async readFrom(
+    sessionId: string,
+    fromSeq: number,
+    signal?: AbortSignal,
+  ): Promise<{ readonly meta: DshSessionHeader; readonly events: readonly DshSessionEvent[] }> {
+    const result = await this.#reader.readFrom(sessionId, fromSeq, signal)
+    if (result.status === 'UNAVAILABLE') throw new Error(result.healthCode)
+    return { meta: result.header, events: result.events }
   }
 }

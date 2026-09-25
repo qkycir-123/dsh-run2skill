@@ -128,15 +128,7 @@ const context = {
     get: async () => undefined,
   },
   agentPresets: {
-    composedPreset: () => undefined,
-    resolve: async id => ({ id, trust: 'system' }),
-    read: async () => '',
-  },
-  settings: {
-    register: (_namespace, schema) => {
-      const value = schema({})
-      return { get: () => value, watch: () => () => {} }
-    },
+    acquireScope: async () => { throw new Error('No preset mounted in crash fixture') },
   },
   storageDomain: {
     open: async spec => {
@@ -146,13 +138,17 @@ const context = {
     },
   },
   sessionPersistence: {
-    listSnapshots: async () => {
+    list: async () => {
       const events = readJson(sessionPath, [])
       return events.length === 0 ? [] : [{ header, revision: `json:${String(events.length)}` }]
     },
-    readFrom: async (_id, fromSeq) => ({
-      meta: header,
-      events: readJson(sessionPath, []).filter(event => event.seq >= fromSeq),
+    open: async () => ({
+      header,
+      read: async (fromSeq = 0) => ({
+        eventState: 'detached',
+        events: readJson(sessionPath, []).filter(event => event.seq >= fromSeq),
+      }),
+      close: async () => {},
     }),
   },
   workspaceRegistry: {
@@ -164,5 +160,5 @@ const context = {
   on: () => {},
 }
 
-const dispose = await host.apply(context)
+const dispose = await host.apply(context, { automaticLearning: { get: () => true } })
 await dispose()

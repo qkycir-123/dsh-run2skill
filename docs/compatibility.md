@@ -1,42 +1,27 @@
 # DSH 兼容性
 
-run2skill 按 DSH 主线分成两条明确的兼容线：
-
-| run2skill | 状态 | DSH 版本 | 官方 commit | 结果 |
+| run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
-| `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | Remote/API Gateway、认证 Web、Session、Skill、LLM、Settings、Storage/Profile 与根目录契约通过 |
-| `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 完整契约、原生 UI、存储、发布和真实安装生命周期通过 |
+| `0.5.0-alpha.2` | 未发布源码候选 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | 本分支的 CI 与精确 HEAD 评审完成后才能列为支持版本 |
+| `0.5.0-alpha.1` | 未发布 alpha.2 候选 | `0.1.3-alpha.2` | `82a5fd61a7cf5c293cec4bdff68f455398d685e9` | SessionHandle/v2 适配和 alpha.2 探针；未进入 npm 稳定版 |
+| `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | 已发布的 Web、Session、Skill、LLM、Settings、Storage/Profile 兼容线 |
+| `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 旧版兼容线 |
 
-核验日期：2026-09-04。
+核验日期：2026-09-25。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 当前稳定版仍是 `0.4.0`。最新候选尚未发布到 npm。
 
-`0.4.0` 是 DSH `0.1.2-rc.1` 的当前 npm 稳定版。`0.3.1` 继续只支持 DSH `0.1.1-rc.2`；不要跨两条 DSH 主线混装。
+## rc.2 候选范围
 
-## `0.4.0` 当前支持范围
+- 官方、未修改、精确固定在 `dsh-v0.1.7-rc.2` 的 DSH `web` profile；
+- 内置 `standard` agent preset 的官方组合，以及唯一的 filesystem Skill provider 和默认 `PROJECT` / `USER` roots；
+- Web profile 的 JSON Storage 主路径；不改变 run2skill 的 Storage Domain 版本或数据格式；
+- Windows 的插件 Host、认证 Web Client、设置、草稿审核、清理和 Skill 发布。
 
-- 官方、未修改的 DSH `0.1.2-rc.1` `web` profile；
-- RC1 保留的内置 `standard` agent preset；
-- DSH 默认 filesystem Skill provider 和默认 `PROJECT` / `USER` roots；
-- Web profile 的 JSON Storage 主路径，以及 SQLite Storage 的兼容对照路径；
-- Windows 上的插件 Host、认证 Web Client、Settings、技能草稿审核、数据清理和 Skill 发布；
-- Windows 与 Linux/WSL 上的原子 Skill 发布协议。
+其他 DSH profile、自定义 preset/Skill provider/roots、修改过的上游源码及后续 DSH tag 尚无兼容承诺。无法证明 preset 代际、官方组合或安全写入位置时，run2skill 停止相应学习和发布，不影响 DSH 主 Agent。
 
-DSH RC1 已删除旧 `code` preset，因此它不属于 `0.4.0` 的支持范围。`0.3.1` 在旧 DSH baseline 上的 `standard` / `code` 支持不受影响。
+## 从 alpha.2 到 rc.2
 
-以下情况尚未作为 `0.4.0` 的兼容承诺：
+Session 持久化继续使用 `list` / `open` 和 read-only `SessionHandle`；rc.2 日志格式为 V4。插件复制只读事件并关闭 handle，保留对已知 `assistant/attempt` 的过滤和未知必需事件的拒绝。live Session 的同步 `snapshotEvents()` 在上游已弃用，因此本候选只承诺该精确 tag。
 
-- DSH 的其他 profile；
-- 自定义 Skill provider、自定义 Skill roots 或 `includeDefaultRoots=false`；
-- 修改过源码或带本地补丁的 DSH；
-- 比表中更新、但尚未完成验证的 DSH 版本。
+rc.2 移除了 `dsh-agent-presets`：插件改用 `agent-preset-registry` 的 live mount 和 `acquireScope('standard')` lease。冷会话绑定同代 mount，核对官方组合摘要，再读取其中唯一 filesystem Skill fiber。设置从旧 `settings.register` 改为插件 `Config` 的 volatile 字段；浏览器经 `configForms` 读写，并由 DSH Profile 持久化。
 
-遇到不受支持或无法证明安全的组合时，run2skill 会停止相应的学习、审核变更或发布操作，不会猜测 Skill 写入位置，也不会阻断 DSH 主 Agent。
-
-## RC1 的重大变化
-
-DSH `0.1.2-rc.1` 删除了 `0.3.1` 依赖的私有 `ApiProxy` / `dsh-client-runtime` 通道，改为 Remote/API Gateway、一次性浏览器启动令牌与认证 Cookie；Session 查询、持久化、Client bundle/Profile 和 stock preset 契约也发生变化。因此必须使用新的 `0.4.0` 兼容层，不能只修改依赖版本。架构证据见 [`docs/architecture/dsh-compatibility.md`](architecture/dsh-compatibility.md)。
-
-## 如何验证新 DSH 版本
-
-项目的 `probes/` 目录保留了可复现的兼容性与发布候选探针。维护者可以针对官方、干净、固定 commit 的 DSH checkout 运行它们；探针在临时 clone 中工作，不要求修改 DSH 源码。命令见 [维护者兼容性探针](../probes/README.md)。
-
-新的 DSH 版本只有在相关源码契约、自动化测试、真实候选包安装/禁用/升级/卸载和 Web 行为全部通过后，才会加入对应版本的支持表。仅看到上游发布新版本不等于已经兼容。
+本地已通过固定上游的完整构建、候选包 add/disable/upgrade/uninstall、认证与未认证 Web RPC、浏览器加载、设置读写与跨重启保留。最终兼容结论以本分支完整契约探针、CI 和精确 HEAD 评审为准。复现方法见 [维护者兼容性探针](../probes/README.md)。

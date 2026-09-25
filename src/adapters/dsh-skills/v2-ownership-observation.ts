@@ -62,14 +62,14 @@ const DIRECT_FILE_TOOLS = new Set(['write', 'edit', 'str_replace_editor'])
 const STR_REPLACE_EDITOR_WRITE_COMMANDS = new Set(['create', 'str_replace', 'insert'])
 const SKILL_MARKER = /(?:SKILL\.md|[\\/]\.(?:dsh|agents)[\\/]skills[\\/]|[\\/]skills[\\/])/iu
 const SUPPORTED_TURN_EVENTS = new Set([
-  // DSH rc.8 emits these control-plane records inside the Turn envelope.
+  // DSH emits these control-plane records inside the Turn envelope.
   // They only manage the Agent inbox or the log-backed Session title and
   // cannot mutate files; the tool/call + tool/result pairs below remain the
   // authoritative evidence for filesystem activity.
   'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
   'approval/asked', 'approval/decided',
   'turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'assistant/chunk',
-  'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
+  'assistant/attempt', 'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
   'request/context', 'session/end-seed',
 ])
 const OWNERSHIP_ANALYSIS_EVENTS = new Set([

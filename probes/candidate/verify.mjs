@@ -171,10 +171,18 @@ function scan(name, content) {
     const bundledZodOutputName = name === 'package/lib/client.js'
       && normalized === 'out_key'
       && assignedValue === 'keyResult.value'
+    const bundledZodPrototypeGuard = name === 'package/lib/client.js'
+      && normalized === 'out_key'
+      && assignedValue === '== "__proto__") continue'
+    const bundledZodIssueCode = name === 'package/lib/client.js'
+      && normalized === 'invalid_key'
+      && assignedValue === 'return `Invalid key in ${issue.origin'
     const safeFixture = literalValue === '[REDACTED]'
       || permittedSyntheticSecrets.has(literalValue)
       || permittedFixtureLocations.has(location)
       || bundledZodOutputName
+      || bundledZodPrototypeGuard
+      || bundledZodIssueCode
     if (!coordinateKey && !selfDescribingConstant && !safeFixture) {
       findings.push(location)
     }
@@ -249,7 +257,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.4.0',
+  version: '0.5.0-alpha.2',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   keywords: [
     'deepseek-harness',
@@ -289,10 +297,10 @@ assert.deepEqual({
     },
   },
   peerDependencies: {
-    '@deepseek-ai/cordis': '4.0.2',
-    '@deepseek-ai/dsh-agent-presets': '0.1.2-rc.1',
-    '@deepseek-ai/dsh-client-ui-primitives': '0.1.2-rc.1',
-    '@deepseek-ai/dsh-typert-protocol': '0.1.2-rc.1',
+    '@deepseek-ai/cordis': '4.0.4',
+    '@deepseek-ai/dsh-agent-preset-registry': '0.1.7-rc.2',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.1.7-rc.2',
+    '@deepseek-ai/dsh-typert-protocol': '0.1.7-rc.2',
   },
 }, 'candidate package metadata changed')
 assert.equal(

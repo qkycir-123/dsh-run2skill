@@ -14,11 +14,11 @@ import { z } from 'zod'
 import {
   Button,
   DisclosureRow,
-  IconRefreshOutline16,
-  IconSettingsOutline16,
-  IconSparkle16,
-  IconTrashOutline16,
-  IconWarningOutline16,
+  IconRefreshOutlineMedium,
+  IconSettingsOutlineMedium,
+  IconSparkleMedium,
+  IconTrashOutlineMedium,
+  IconWarningOutlineMedium,
   Input,
   Modal,
   Pill,
@@ -232,7 +232,7 @@ export function LearningStatusSection(props: {
           'aria-label': '刷新整理状态',
           disabled: !props.active || props.sessionId === undefined || submitting,
           onClick: () => { setState({ phase: 'LOADING' }); setRefreshGeneration(value => value + 1) },
-        }, createElement(IconRefreshOutline16)),
+        }, createElement(IconRefreshOutlineMedium)),
       ),
     ),
   )
@@ -590,7 +590,7 @@ export function Run2skillAttentionToast(props: {
   if (toast === undefined) return null
   return createElement(Toast, {
     key: toast.sequence,
-    icon: createElement(IconWarningOutline16),
+    icon: createElement(IconWarningOutlineMedium),
     text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往设置 → 插件 → Run2Skill`,
     onDone: () => { setToast(undefined) },
   })
@@ -717,7 +717,7 @@ function ProposalSettingsSection(props: {
       createElement(Button, {
         variant: 'outline',
         size: 'sm',
-        icon: createElement(IconRefreshOutline16),
+        icon: createElement(IconRefreshOutlineMedium),
         onClick: () => { void controller.open() },
       }, '刷新'),
     ),
@@ -884,7 +884,7 @@ export function LearningFailureSection(props: {
       createElement(Button, {
         variant: 'outline',
         size: 'sm',
-        icon: createElement(IconRefreshOutline16),
+        icon: createElement(IconRefreshOutlineMedium),
         disabled: !props.active || pending !== undefined,
         onClick: () => { setRefreshGeneration(value => value + 1) },
       }, '刷新详情'),
@@ -1244,7 +1244,7 @@ export function Run2skillSettingsPage(props: {
   )
   return createElement('div', { ref: hostTab.ref, className: css.page, 'data-run2skill-settings-page': true },
     createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里展示当前状态、需要处理的事项和持久设置。'),
-    props.callLearningStatus === undefined ? null : disclosure('status', '整理状态', createElement(IconSparkle16),
+    props.callLearningStatus === undefined ? null : disclosure('status', '整理状态', createElement(IconSparkleMedium),
       createElement(LearningStatusSection, {
         key: JSON.stringify([sessionId ?? null, workspaceId ?? null, scopeGeneration, purgeState.hostDataEpoch]),
         ...(sessionId === undefined ? {} : { sessionId }),
@@ -1253,7 +1253,7 @@ export function Run2skillSettingsPage(props: {
         active: hostTab.visible && open.has('status') && !purgeDataChanging,
         call: props.callLearningStatus,
       })),
-    disclosure('attention', '需要处理', createElement(IconWarningOutline16),
+    disclosure('attention', '需要处理', createElement(IconWarningOutlineMedium),
       createElement('div', { className: css.sectionBody },
         createElement(AttentionSettingsSummary, {
           active: hostTab.visible && open.has('attention'),
@@ -1283,7 +1283,7 @@ export function Run2skillSettingsPage(props: {
         }),
         attentionEmpty ? createElement('p', { className: css.empty }, '暂无') : null,
       )),
-    disclosure('activity', '最近活动', createElement(IconSparkle16),
+    disclosure('activity', '最近活动', createElement(IconSparkleMedium),
       createElement(RecentSkillActivitySection, {
         key: JSON.stringify([
           workspaceId ?? null,
@@ -1297,9 +1297,9 @@ export function Run2skillSettingsPage(props: {
         scopeGeneration,
         hostDataEpoch: purgeState.hostDataEpoch,
       }), createElement(Pill, null, '最近 7 天')),
-    disclosure('automatic', '自动学习', createElement(IconSettingsOutline16),
+    disclosure('automatic', '自动学习', createElement(IconSettingsOutlineMedium),
       createElement(AutomaticLearningSection, { controller: props.controller })),
-    disclosure('purge', '缓存清理', createElement(IconTrashOutline16),
+    disclosure('purge', '缓存清理', createElement(IconTrashOutlineMedium),
       createElement('div', { className: css.sectionBody },
         createElement(PurgeSettingsSection, {
           controller: props.purgeController,
@@ -1312,7 +1312,7 @@ export function Run2skillSettingsPage(props: {
 
 export interface Run2skillClientContext {
   readonly remote: TypertClientRemote
-  readonly settingsScope: { bind<T>(spec: { readonly namespace: string }): ClientSettingsScope<T> }
+  readonly configForms: { get<T>(entryId: string): ClientSettingsScope<T> }
   readonly sessions?: { readonly list: {
     getSnapshot(): { readonly current?: string }
     subscribe?(listener: () => void): () => void
@@ -1341,7 +1341,7 @@ function workspaceFor(context: Run2skillClientContext, sessionId: string | undef
 export async function applyRun2skillClient(context: Run2skillClientContext): Promise<TypertDisposer> {
   const mounted = await createRun2skillRemoteCaller(context.remote)
   const controller = new AutomaticLearningSettingsController(
-    context.settingsScope.bind<AutomaticLearningClientSettings>({ namespace: 'run2skill' }),
+    context.configForms.get<AutomaticLearningClientSettings>('run2skill'),
   )
   const callReview: ProposalReviewCall = mounted.call
   const callAttention: AttentionCall = async (payload, signal) => await mounted.call('attention', payload, signal)

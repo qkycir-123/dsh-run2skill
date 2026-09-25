@@ -88,14 +88,14 @@ function descriptor(
       codec: {
         mode: 'strict',
         typeSymbol: method === 'query' ? 'Run2skillQueryRequest' : 'Run2skillCommandRequest',
-        schema: requestSchema,
+        create: () => requestSchema,
       },
     }],
     cancellation: { parameter: 'signal' },
     result: {
       mode: 'strict',
       typeSymbol: 'Run2skillRpcResult',
-      schema: rpcResult,
+      create: () => rpcResult,
     },
   }
   return Object.freeze(value)

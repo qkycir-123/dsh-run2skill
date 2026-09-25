@@ -1,13 +1,13 @@
 # dsh-run2skill v0.2 核心流程产品需求文档
 
-状态：`0.2.0` 核心需求已接受并落地；`0.4.0` 继续适用
+状态：`0.2.0` 核心需求已接受并落地；`0.4.0` 与未发布 `0.5.0-alpha.2` 继续适用
 文档版本：v0.2
-更新时间：2026-09-04
-适用版本：`0.2.0`–`0.4.0`
+更新时间：2026-09-08
+适用版本：`0.2.0`–`0.5.0-alpha.2`
 
 修订记录：维护者于 2026-08-19 接受 v0.1 需求设计；2026-08-21 接受“无感自动沉淀且同一保存意图不能让 Agent 与 Run2Skill 各生成一次”的单一所有者原则。2026-08-22，#84 将逐 Turn Cheap Trigger/单阶段 Learning 修订为 SessionBatch 检测、ExperienceIntent 所有权、完整 Catalog 召回、独立 coverage 与 generation；不扩大自动发布权限。该修订已随 `0.2.0` 发布；`0.3.0` 在此核心边界上完善真实 Web 草稿生成、审核/刷新体验与 DSH 兼容性；`0.3.1` 增加低噪声整理状态、手动整理、长证据选择和不可变草稿修订。
 
-`0.3.1` 已发布三项增量：设置页低噪声整理状态与“立即整理本次经验”；长工作流在 TurnObservation、Detector evidence 和真实 route envelope 上使用严格共享预算；待审核 Proposal 按一条有界修改意见生成新的不可变 revision 并重新审核。它们不公开内部批次计数，不增加逐 Turn 模型调用，也不改变 Agent-first、完整查重、人工批准和安全发布边界。`0.4.0` 只替换 DSH 兼容层，不增加新的产品行为；完整版本差异见 [`CHANGELOG.md`](../../CHANGELOG.md)。
+`0.3.1` 已发布三项增量：设置页低噪声整理状态与“立即整理本次经验”；长工作流在 TurnObservation、Detector evidence 和真实 route envelope 上使用严格共享预算；待审核 Proposal 按一条有界修改意见生成新的不可变 revision 并重新审核。它们不公开内部批次计数，不增加逐 Turn 模型调用，也不改变 Agent-first、完整查重、人工批准和安全发布边界。`0.4.0` 与未发布的 `0.5.0-alpha.2` 只替换 DSH 兼容层，不增加新的产品行为；完整版本差异见 [`CHANGELOG.md`](../../CHANGELOG.md)。
 
 ## 1. 文档目的与效力
 
@@ -517,7 +517,7 @@ Publication Outcome 才能记为 `PUBLISHED`。
 run2skill 只负责 Skill publication，不负责 source-control publication；不得自动执行 `git add`、`git commit`、`git push` 或创建 PR。
 
 **REQ-PUB-009**
-Proposal/Review/Publication RPC 只允许 DSH 已认证的 Web profile 浏览器上下文使用，必须复用 DSH 提供的 browser-trust/reachability/authentication fence，不能由插件另开未认证端口或自建旁路。`0.3.1` 在 DSH `0.1.1-rc.2` 上使用 loopback Host/Origin fence；`0.4.0` 在 DSH `0.1.2-rc.1` 上使用一次性启动令牌换取的 Cookie 与 Remote/API Gateway。网络监听和远程可达策略由 DSH 控制；run2skill 仍须在业务 dispatch 前校验严格 DTO、读写路由、revision/digest 与发布权限，不增加独立的远程认证或公开 API。
+Proposal/Review/Publication RPC 只允许 DSH 已认证的 Web profile 浏览器上下文使用，必须复用 DSH 提供的 browser-trust/reachability/authentication fence，不能由插件另开未认证端口或自建旁路。`0.3.1` 在 DSH `0.1.1-rc.2` 上使用 loopback Host/Origin fence；`0.4.0` 在 DSH `0.1.2-rc.1` 上使用一次性启动令牌换取的 Cookie 与 Remote/API Gateway；未发布 `0.5.0-alpha.2` 在 DSH `0.1.7-rc.2` 上保持同一认证边界。网络监听和远程可达策略由 DSH 控制；run2skill 仍须在业务 dispatch 前校验严格 DTO、读写路由、revision/digest 与发布权限，不增加独立的远程认证或公开 API。
 
 **REQ-PUB-010**
 真正写文件前必须再次取得 complete Runtime/Pending Catalog 并验证 Proposal 仍未被覆盖、CREATE expected-absence 或 MERGE Base 仍成立。该检查与 target 文件 CAS 共同 fail closed；外部 Catalog 变化最多使 Proposal 进入 `NEEDS_REFRESH`/`DISCARDED`，不得发布重复 Skill。

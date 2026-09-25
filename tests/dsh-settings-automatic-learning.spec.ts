@@ -2,60 +2,58 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AUTOMATIC_LEARNING_DEFAULT,
   RUN2SKILL_SETTINGS_NAMESPACE,
-  registerAutomaticLearningSettings,
+  AutomaticLearningSettingsSchema,
+  createAutomaticLearningSettings,
 } from '../src/adapters/dsh-settings/automatic-learning.js'
 
-describe('DSH Automatic Learning settings adapter', () => {
-  it('registers the live run2skill namespace with a default-ON boolean schema', () => {
-    const register = vi.fn((_namespace, schema, _options) => ({
-      get: () => schema({}),
-      watch: () => () => {},
-    }))
-
-    const scope = registerAutomaticLearningSettings({ register: register as never })
-
-    expect(register).toHaveBeenCalledOnce()
-    const [namespace, schema, options] = register.mock.calls[0]!
-    expect(namespace).toBe(RUN2SKILL_SETTINGS_NAMESPACE)
-    expect(options).toEqual({ applies: 'live' })
-    expect(schema({})).toEqual({ automaticLearning: AUTOMATIC_LEARNING_DEFAULT })
-    expect(() => schema({ automaticLearning: 'yes' })).toThrow()
-    expect(scope.snapshot()).toEqual({ automaticLearning: true })
+describe('DSH Automatic Learning volatile configuration', () => {
+  it('declares the existing entry and a default-ON volatile boolean', () => {
+    expect(RUN2SKILL_SETTINGS_NAMESPACE).toBe('run2skill')
+    expect(AutomaticLearningSettingsSchema({}).automaticLearning.get()).toBe(AUTOMATIC_LEARNING_DEFAULT)
+    expect(() => AutomaticLearningSettingsSchema({ automaticLearning: 'yes' as unknown as boolean })).toThrow()
   })
 
-  it('reads live frozen snapshots from the registered DSH scope', () => {
-    let current = { automaticLearning: true }
-    const scope = registerAutomaticLearningSettings({
-      register: (() => ({ get: () => current, watch: () => () => {} })) as never,
+  it('reads an immutable operation snapshot from the live config reference', () => {
+    let current = true
+    const policy = createAutomaticLearningSettings({
+      config: { automaticLearning: { get: () => current } },
+      on: () => {},
     })
-    const before = scope.snapshot()
-    current = { automaticLearning: false }
+    const before = policy.snapshot()
+    current = false
 
-    expect(Object.isFrozen(before)).toBe(true)
     expect(before).toEqual({ automaticLearning: true })
-    expect(scope.snapshot()).toEqual({ automaticLearning: false })
+    expect(Object.isFrozen(before)).toBe(true)
+    expect(policy.snapshot()).toEqual({ automaticLearning: false })
   })
 
-  it('forwards live changes and detaches the native settings watcher', async () => {
-    const dispose = vi.fn()
-    let notify: ((next: { automaticLearning: boolean }, previous: { automaticLearning: boolean }) => Promise<void>) | undefined
-    const policy = registerAutomaticLearningSettings({
-      register: (() => ({
-        get: () => ({ automaticLearning: true }),
-        watch: (callback: typeof notify) => { notify = callback; return dispose },
-      })) as never,
+  it('notifies only on this field changing and detaches its listener', () => {
+    let current = false
+    let notify: ((paths: readonly (readonly string[])[]) => void) | undefined
+    const policy = createAutomaticLearningSettings({
+      config: { automaticLearning: { get: () => current } },
+      on: (name, listener) => {
+        expect(name).toBe('loader/volatile-update')
+        notify = listener
+      },
     })
     const listener = vi.fn()
     const detach = policy.watch(listener)
 
-    await notify?.({ automaticLearning: false }, { automaticLearning: true })
-
+    notify?.([['unrelated']])
+    current = true
+    notify?.([['automaticLearning']])
+    notify?.([['automaticLearning']])
+    expect(listener).toHaveBeenCalledOnce()
     expect(listener).toHaveBeenCalledWith(
-      { automaticLearning: false },
       { automaticLearning: true },
+      { automaticLearning: false },
     )
     expect(Object.isFrozen(listener.mock.calls[0]![0])).toBe(true)
+
     detach()
-    expect(dispose).toHaveBeenCalledOnce()
+    current = false
+    notify?.([['automaticLearning']])
+    expect(listener).toHaveBeenCalledOnce()
   })
 })

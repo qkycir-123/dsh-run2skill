@@ -11,45 +11,39 @@ export interface AutomaticLearningSettings {
   readonly automaticLearning: boolean
 }
 
-export const AutomaticLearningSettingsSchema: z<AutomaticLearningSettings> = z.object({
-  automaticLearning: z.boolean().default(AUTOMATIC_LEARNING_DEFAULT),
+export interface AutomaticLearningConfig {
+  readonly automaticLearning: { get(): boolean }
+}
+
+export const AutomaticLearningSettingsSchema = z.object({
+  automaticLearning: z.boolean().default(AUTOMATIC_LEARNING_DEFAULT).volatile(),
 })
 
-interface DshSettingsScope<T> {
-  get(): T
-  watch(callback: (next: T, previous: T) => void | Promise<void>): () => void
-}
-
-export interface DshSettingsPort {
-  register<T>(
-    namespace: string,
-    schema: z<T>,
-    options: { readonly applies: 'live' },
-  ): DshSettingsScope<T>
-}
-
 export interface AutomaticLearningSettingsPolicy extends AutomaticLearningPolicyPort {
-  watch(callback: (
-    next: AutomaticLearningSnapshot,
-    previous: AutomaticLearningSnapshot,
-  ) => void | Promise<void>): () => void
+  watch(callback: (next: AutomaticLearningSnapshot, previous: AutomaticLearningSnapshot) => void): () => void
 }
 
-export function registerAutomaticLearningSettings(
-  settings: DshSettingsPort,
-): AutomaticLearningSettingsPolicy {
-  const scope = settings.register(
-    RUN2SKILL_SETTINGS_NAMESPACE,
-    AutomaticLearningSettingsSchema,
-    { applies: 'live' },
-  )
-  const freeze = (value: AutomaticLearningSettings): AutomaticLearningSnapshot => Object.freeze({
-    automaticLearning: value.automaticLearning,
+export function createAutomaticLearningSettings(context: {
+  readonly config: AutomaticLearningConfig
+  on(event: 'loader/volatile-update', listener: (paths: readonly (readonly string[])[]) => void): void
+}): AutomaticLearningSettingsPolicy {
+  const listeners = new Set<(next: AutomaticLearningSnapshot, previous: AutomaticLearningSnapshot) => void>()
+  let previous = context.config.automaticLearning.get()
+  const freeze = (value: boolean): AutomaticLearningSnapshot => Object.freeze({ automaticLearning: value })
+  context.on('loader/volatile-update', paths => {
+    if (!paths.some(path => path.length === 1 && path[0] === 'automaticLearning')) return
+    const next = context.config.automaticLearning.get()
+    if (next === previous) return
+    const before = freeze(previous)
+    previous = next
+    const after = freeze(next)
+    for (const listener of listeners) listener(after, before)
   })
   return {
-    snapshot: () => freeze(scope.get()),
-    watch: callback => scope.watch(async (next, previous) => {
-      await callback(freeze(next), freeze(previous))
-    }),
+    snapshot: () => freeze(context.config.automaticLearning.get()),
+    watch: callback => {
+      listeners.add(callback)
+      return () => { listeners.delete(callback) }
+    },
   }
 }
