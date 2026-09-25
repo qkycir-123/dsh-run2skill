@@ -2,12 +2,12 @@
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
-| `0.5.0-alpha.2` | 未发布源码候选 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | 本分支的 CI 与精确 HEAD 评审完成后才能列为支持版本 |
+| `0.5.0-alpha.2` | npm `next` 预发布 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | CI、精确 HEAD 评审与真实 DSH Web 安装生命周期已通过 |
 | `0.5.0-alpha.1` | 未发布 alpha.2 候选 | `0.1.3-alpha.2` | `82a5fd61a7cf5c293cec4bdff68f455398d685e9` | SessionHandle/v2 适配和 alpha.2 探针；未进入 npm 稳定版 |
 | `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | 已发布的 Web、Session、Skill、LLM、Settings、Storage/Profile 兼容线 |
 | `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 旧版兼容线 |
 
-核验日期：2026-09-25。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 当前稳定版仍是 `0.4.0`。最新候选尚未发布到 npm。
+核验日期：2026-09-25。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 默认 `latest` 仍是稳定版 `0.4.0`；`0.5.0-alpha.2` 使用 `next` 标签。
 
 ## rc.2 候选范围
 

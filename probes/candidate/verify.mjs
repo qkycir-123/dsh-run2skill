@@ -276,7 +276,7 @@ assert.deepEqual({
   },
   bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
   homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
-  publishConfig: { access: 'public', tag: 'latest' },
+  publishConfig: { access: 'public', tag: 'next' },
   exports: {
     '.': { types: './lib/index.d.ts', default: './lib/index.js' },
     './client': { default: './lib/client.js' },

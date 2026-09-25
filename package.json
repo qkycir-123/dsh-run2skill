@@ -21,7 +21,7 @@
   "homepage": "https://github.com/qkycir-123/dsh-run2skill#readme",
   "publishConfig": {
     "access": "public",
-    "tag": "latest"
+    "tag": "next"
   },
   "type": "module",
   "main": "./lib/index.js",

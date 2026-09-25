@@ -51,7 +51,7 @@ describe('published package contract', () => {
       },
       bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
       homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
-      publishConfig: { access: 'public', tag: 'latest' },
+      publishConfig: { access: 'public', tag: 'next' },
     })
     expect(manifest.private).not.toBe(true)
   })

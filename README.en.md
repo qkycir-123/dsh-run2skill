@@ -14,9 +14,7 @@ Have you run into any of these situations?
 
 Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
 
-> The current stable release is [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0). It supports DSH Web `0.1.2-rc.1` only.
-
-The repository is validating an unpublished `0.5.0-alpha.2` source candidate for DSH `0.1.7-rc.2` only. Keep installing the stable version above until that candidate is fully verified and released.
+> The current stable release is [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0), for DSH Web `0.1.2-rc.1` only. The `0.5.0-alpha.2` preview is available under npm's `next` tag for DSH Web `0.1.7-rc.2` only.
 
 `0.4.0` uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and adapts its Session, Storage/Profile, Settings, and plugin-lifecycle changes. It supports only the retained built-in `standard` preset. Continue using `dsh-run2skill@0.3.1` with the older DSH `0.1.1-rc.2` line.
 
@@ -44,7 +42,13 @@ Low-noise learning status, **Synthesize this experience now**, revision requests
 
 ## Install
 
-First confirm that you use DSH Web `0.1.2-rc.1`, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available in your terminal. Then run:
+Check your DSH Web version, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available. For DSH `0.1.7-rc.2`, install the preview:
+
+```bash
+dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.2
+```
+
+For DSH `0.1.2-rc.1`, continue using the stable release:
 
 ```bash
 dsh plugin --profile web add dsh-run2skill@0.4.0
