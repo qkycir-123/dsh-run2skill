@@ -1,5 +1,13 @@
 # 版本变化
 
+## 0.5.0-alpha.2 — 2026-09-25（npm `next` 预发布）
+
+面向官方 DSH `0.1.7-rc.2`（`477b4f420553e8a52c2fbccc464d7561b239c443`），仅支持 Web profile 的内置 `standard` preset 与默认 Skill roots。此版本不改变 `run2skill_v2` 数据格式、人工审核或安全发布边界。
+
+- 适配 V4 Session 记录、`agent-preset-registry`、Profile 设置和认证 Web Client。
+- 官方 DSH 契约、PROJECT/USER 根目录发布与回读、插件安装/升级/卸载和 CI 已通过。
+- 使用 npm `next` 标签发布；默认 `latest` 继续指向稳定版 `0.4.0`。
+
 ## 0.5.0-alpha.1 — 未发布
 
 `0.5.0-alpha.1` 是面向官方 DSH `0.1.3-alpha.2`（`82a5fd61a7cf5c293cec4bdff68f455398d685e9`）的源码兼容候选，不是 npm 稳定版。

@@ -16,9 +16,7 @@
 
 它不会让 Agent 偷偷给自己立规矩。每份技能草稿都可以先看来源、适用范围和完整内容，然后由你决定确认保存还是放弃草稿。只有确认后，它才会写入 DSH 的原生 Skill 目录。
 
-> 当前稳定版为 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)。目前仅支持 DSH Web `0.1.2-rc.1`。
-
-仓库正在验证未发布的 `0.5.0-alpha.2` 源码候选，它只面向 DSH `0.1.7-rc.2`；在候选验证和发布完成前，请继续按上面的稳定版本安装。
+> 当前稳定版为 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)，仅支持 DSH Web `0.1.2-rc.1`。`0.5.0-alpha.2` 通过 npm `next` 标签提供预览，仅支持 DSH Web `0.1.7-rc.2`。
 
 `0.4.0` 改用 DSH `0.1.2-rc.1` 的 Remote/API Gateway 与浏览器认证契约，并适配 Session、Storage/Profile、Settings 和插件生命周期变化。它只支持 RC1 保留的内置 `standard` preset；使用旧 DSH `0.1.1-rc.2` 时请继续安装 `dsh-run2skill@0.3.1`。
 
@@ -46,7 +44,13 @@
 
 ## 安装
 
-先确认你使用 DSH Web `0.1.2-rc.1`，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。然后执行：
+先确认你使用的 DSH Web 版本，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。DSH `0.1.7-rc.2` 安装预发布版：
+
+```bash
+dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.2
+```
+
+DSH `0.1.2-rc.1` 继续安装稳定版：
 
 ```bash
 dsh plugin --profile web add dsh-run2skill@0.4.0
