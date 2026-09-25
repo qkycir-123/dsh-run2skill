@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, normalize, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import AgentPresets from '@deepseek-ai/dsh-agent-presets'
+import AgentPresets, { type PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -22,7 +21,6 @@ import { DshSkillCatalogAdapter } from '../src/adapters/dsh-skills/skill-catalog
 import { DshPublicationReadbackAdapter } from '../src/adapters/dsh-skills/publication-readback.js'
 import {
   StockDshRootContractResolver,
-  STOCK_PRESET_COMPOSITION_DIGESTS,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
   type StockSkillRuntimeConfiguration,
@@ -113,40 +111,19 @@ function compositionWitness(
 function fileSystemComposition(
   agentsHome: string,
   overrides: FileSystemCompositionOverrides = {},
-): string {
-  const rows = [
-    '- id: skill-filesystem',
-    '  name: "@deepseek-ai/dsh-skill-filesystem"',
-    '  config:',
-    `    agentsHome: ${JSON.stringify(agentsHome)}`,
-    '    watch: true',
-    '    watchUsePolling: true',
-    '    watchStabilityThresholdMs: 20',
-    '    watchPollIntervalMs: 10',
-  ]
-  if (overrides.providerName !== undefined) {
-    rows.push(`    providerName: ${JSON.stringify(overrides.providerName)}`)
-  }
-  if (overrides.includeDefaultRoots !== undefined) {
-    rows.push(`    includeDefaultRoots: ${String(overrides.includeDefaultRoots)}`)
-  }
-  if (overrides.dshHome !== undefined) rows.push(`    dshHome: ${JSON.stringify(overrides.dshHome)}`)
-  if (overrides.customSkillDirs !== undefined) {
-    rows.push('    customSkillDirs:')
-    for (const root of overrides.customSkillDirs) rows.push(`      - ${JSON.stringify(root)}`)
-  }
-  return `${rows.join('\n')}\n`
-}
-
-async function writePresetComposition(
-  presetRoot: string,
-  presetId: string,
-  agentsHome: string,
-  overrides: FileSystemCompositionOverrides,
-): Promise<void> {
-  const directory = join(presetRoot, presetId)
-  await mkdir(directory, { recursive: true })
-  await writeFile(join(directory, 'agent.cordis.yml'), fileSystemComposition(agentsHome, overrides))
+): PresetDefinition['plugins'] {
+  return [{
+    id: 'skill-filesystem',
+    name: '@deepseek-ai/dsh-skill-filesystem',
+    config: {
+      agentsHome,
+      watch: true,
+      watchUsePolling: true,
+      watchStabilityThresholdMs: 20,
+      watchPollIntervalMs: 10,
+      ...overrides,
+    },
+  }]
 }
 
 async function mountStockDsh(
@@ -154,8 +131,6 @@ async function mountStockDsh(
   agentsHome: string,
   composition: StockCompositionWitness,
 ) {
-  const presetRoot = join(base, 'presets')
-  await writePresetComposition(presetRoot, composition.presetId, agentsHome, composition.fileSystem)
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(join(process.cwd(), 'apps', 'cli', 'package.json')).href
   const disposers: Array<() => Promise<void>> = []
@@ -168,6 +143,7 @@ async function mountStockDsh(
   const agent = {} as { ctx: Context }
   const agentScope = createScope(ctx, agent)
   agent.ctx = agentScope.ctx
+  let unregister!: () => Promise<void>
   const dispose = async () => {
     await agentScope.dispose()
     for (const release of [...disposers].reverse()) await release()
@@ -175,12 +151,12 @@ async function mountStockDsh(
   try {
     await track(ctx.plugin(SkillRegistry))
     await track(ctx.plugin(SessionProjectionRegistry))
-    await track(ctx.plugin(AgentPresets, {
-      default: composition.presetId,
-      roots: [{ path: presetRoot, trust: 'system' }],
-      includeShippedRoot: false,
-      includeUserRoot: false,
-    }))
+    await track(ctx.plugin(AgentPresets, { default: composition.presetId }))
+    unregister = await ctx.agentPresets.register({
+      id: composition.presetId,
+      plugins: fileSystemComposition(agentsHome, composition.fileSystem),
+    })
+    disposers.push(async () => { await unregister() })
     await ctx.agentPresets.mount(agentScope.ctx, composition.presetId)
     await track(ctx.plugin(Storage))
     await track(ctx.plugin(StorageSqlite, { path: join(base, 'storage.db') }))
@@ -198,11 +174,14 @@ async function mountStockDsh(
     ctx,
     agent,
     async recompose(next: StockCompositionWitness) {
-      await writePresetComposition(presetRoot, next.presetId, agentsHome, next.fileSystem)
+      await unregister()
+      unregister = await ctx.agentPresets.register({
+        id: next.presetId,
+        plugins: fileSystemComposition(agentsHome, next.fileSystem),
+      })
       await ctx.agentPresets.recompose(agentScope.ctx, next.presetId)
     },
     async remountSkills() {
-      await writePresetComposition(presetRoot, 'standard', agentsHome, {})
       await ctx.agentPresets.recompose(agentScope.ctx, 'standard')
     },
     dispose,
@@ -480,21 +459,6 @@ async function publish(scope: Scope, decision: Decision, verifyRemount: boolean)
 }
 
 describe('CP-ROOT-003 stock DSH publication root contract', () => {
-  it('pins the exact supported standard preset composition', async () => {
-    expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
-      standard: [
-        'b04961ebbee01fe0cf26a5cb4fdaeaea28c6c9ef9f980834443c5ed0fe35826a',
-      ],
-    })
-    for (const presetId of ['standard'] as const) {
-      const content = await readFile(join(
-        process.cwd(), 'packages', 'preset', 'agent-presets', 'presets', presetId, 'agent.cordis.yml',
-      ))
-      expect(STOCK_PRESET_COMPOSITION_DIGESTS[presetId])
-        .toContain(createHash('sha256').update(content).digest('hex'))
-    }
-  })
-
   it.each([
     ['PROJECT', 'CREATE', false],
     ['PROJECT', 'MERGE', false],

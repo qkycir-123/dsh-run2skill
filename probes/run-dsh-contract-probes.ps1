@@ -2,8 +2,8 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = '82a5fd61a7cf5c293cec4bdff68f455398d685e9',
-  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'learning-diagnostics-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'b2-v2-turn-observation.spec.ts', 'b2-v2-session-activity.spec.ts', 'b2-v2-route-manifest.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'stock-rc2.spec.ts')
+  [string]$ExpectedDshHead = '477b4f420553e8a52c2fbccc464d7561b239c443',
+  [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'learning-diagnostics-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'b2-v2-turn-observation.spec.ts', 'b2-v2-session-activity.spec.ts', 'b2-v2-route-manifest.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'stock-rc2.spec.ts', 'cp-root-003.spec.ts')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,35 +46,32 @@ if ($LASTEXITCODE -ne 0) { throw 'Failed to create disposable DSH clone.' }
 & git -c core.longpaths=true -C $cloneRoot checkout --detach $ExpectedDshHead
 if ($LASTEXITCODE -ne 0) { throw 'Failed to check out the pinned DSH commit.' }
 
-$probeDestination = Join-Path (Join-Path (Join-Path (Join-Path $cloneRoot 'packages') 'run2skill') 'contract-probes') 'tests'
-New-Item -ItemType Directory -Path $probeDestination -Force | Out-Null
-foreach ($testFile in $TestFiles) {
-  $sourceTest = Join-Path (Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'tests') $testFile
-  if (-not (Test-Path -LiteralPath $sourceTest)) {
-    throw "Probe test does not exist: $testFile"
-  }
-  Copy-Item -LiteralPath $sourceTest -Destination $probeDestination
-}
-$sourceDestination = Join-Path (Split-Path -Parent $probeDestination) 'src'
-Copy-Item -LiteralPath (Join-Path $projectRoot 'src') -Destination $sourceDestination -Recurse
-$testSupportDestination = Join-Path $probeDestination 'support'
-New-Item -ItemType Directory -Path $testSupportDestination -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path (Join-Path (Join-Path $projectRoot 'tests') 'support') 'work-item-fixture.ts') -Destination $testSupportDestination
-Copy-Item -LiteralPath (Join-Path (Join-Path (Join-Path $projectRoot 'tests') 'support') 'memory-run2skill-v2-domain.ts') -Destination $testSupportDestination
-Copy-Item -LiteralPath (Join-Path (Join-Path (Join-Path $projectRoot 'tests') 'support') 'v2-fixtures.ts') -Destination $testSupportDestination
-$configSource = Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'vitest.config.ts'
-$configDestination = Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts'
-Copy-Item -LiteralPath $configSource -Destination $configDestination
-$manifestSource = Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'package.json'
-$manifestDestination = Join-Path (Split-Path -Parent $probeDestination) 'package.json'
-
 Push-Location $cloneRoot
 try {
   & pnpm install --frozen-lockfile
   if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed in the disposable DSH clone.' }
+  & pnpm run build:lib:host
+  if ($LASTEXITCODE -ne 0) { throw 'DSH host package build failed.' }
+
+  $probeDestination = Join-Path (Join-Path (Join-Path (Join-Path $cloneRoot 'packages') 'run2skill') 'contract-probes') 'tests'
+  New-Item -ItemType Directory -Path $probeDestination -Force | Out-Null
+  foreach ($testFile in $TestFiles) {
+    $sourceTest = Join-Path (Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'tests') $testFile
+    if (-not (Test-Path -LiteralPath $sourceTest)) { throw "Probe test does not exist: $testFile" }
+    Copy-Item -LiteralPath $sourceTest -Destination $probeDestination
+  }
+  Copy-Item -LiteralPath (Join-Path $projectRoot 'src') -Destination (Join-Path (Split-Path -Parent $probeDestination) 'src') -Recurse
+  $testSupportDestination = Join-Path $probeDestination 'support'
+  New-Item -ItemType Directory -Path $testSupportDestination -Force | Out-Null
+  foreach ($supportFile in @('work-item-fixture.ts', 'memory-run2skill-v2-domain.ts', 'v2-fixtures.ts', 'learning-fixture.ts', 'memory-run2skill-domain.ts', 'review-fixture.ts')) {
+    Copy-Item -LiteralPath (Join-Path (Join-Path (Join-Path $projectRoot 'tests') 'support') $supportFile) -Destination $testSupportDestination
+  }
+  Copy-Item -LiteralPath (Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'vitest.config.ts') -Destination (Join-Path $cloneRoot 'run2skill.probe.vitest.config.ts')
+  $manifestSource = Join-Path (Join-Path $PSScriptRoot 'dsh-contracts') 'package.json'
+  $manifestDestination = Join-Path (Split-Path -Parent $probeDestination) 'package.json'
 
   Copy-Item -LiteralPath $manifestSource -Destination $manifestDestination
-  & pnpm install --no-frozen-lockfile --ignore-scripts --no-optional --filter '@dsh-run2skill/contract-probes'
+  & pnpm install --no-frozen-lockfile --ignore-scripts --filter '@dsh-run2skill/contract-probes'
   if ($LASTEXITCODE -ne 0) { throw 'Failed to link the disposable contract-probe workspace package.' }
 
   & pnpm exec vitest run --config run2skill.probe.vitest.config.ts
