@@ -42,6 +42,18 @@ Low-noise learning status, **Synthesize this experience now**, revision requests
 
 ## Install
 
+### DSH Desktop / Web 0.2.0-rc.2 source candidate
+
+The repository candidate `0.5.0-alpha.3` has passed Windows Desktop compatibility checks; it has not been published to npm. The current npm package cannot be installed on DSH `0.2.0-rc.2`. On Windows Desktop, use the dsh command provided by **Manage dsh Command…**. Launch Desktop once to initialize it, quit completely, then install the built candidate archive:
+
+```bash
+dsh plugin --profile desktop add <dsh-run2skill-0.5.0-alpha.3.tgz>
+```
+
+Reopen Desktop and find dsh-run2skill in **Plugins**. The matching Web release uses `--profile web`. See [compatibility](docs/compatibility.md) for evidence and scope; macOS/Linux Desktop have not been validated.
+
+### Current npm release
+
 Check your DSH Web version, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available. For DSH `0.1.7-rc.2`, install the current npm default:
 
 ```bash

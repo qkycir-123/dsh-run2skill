@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = '477b4f420553e8a52c2fbccc464d7561b239c443'
+  [string]$ExpectedDshHead = '639ed015397290b3745d163aafe02ffee4aa3f84'
 )
 
 $ErrorActionPreference = 'Stop'

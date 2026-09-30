@@ -12,11 +12,11 @@
 - publication 跨平台探针需要带 Node.js 的 WSL2/Linux；
 - 安装生命周期探针需要 Microsoft Edge、Google Chrome 或 DSH Playwright 可用的 Chromium。
 
-准备一个官方、干净、固定 commit 的 DSH checkout。未发布的 `0.5.0-alpha.2` 源码候选验证 `0.1.7-rc.2`：
+准备一个官方、干净、固定 commit 的 DSH checkout。未发布的 `0.5.0-alpha.3` 源码候选验证 `0.2.0-rc.2`：
 
 ```powershell
 git clone https://github.com/deepseek-ai/deepseek-harness.git <dsh-source>
-git -C <dsh-source> checkout 477b4f420553e8a52c2fbccc464d7561b239c443
+git -C <dsh-source> checkout 639ed015397290b3745d163aafe02ffee4aa3f84
 git -C <dsh-source> status --porcelain
 ```
 
@@ -27,12 +27,24 @@ git -C <dsh-source> status --porcelain
 在 dsh-run2skill 仓库根目录执行：
 
 ```powershell
-powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source> -ExpectedDshHead 477b4f420553e8a52c2fbccc464d7561b239c443
+powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source> -ExpectedDshHead 639ed015397290b3745d163aafe02ffee4aa3f84
 powershell -File probes/run-dsh-rc2-profile-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1
 ```
 
-验证另一个已支持 commit 时，给 DSH 相关 runner 传入 `-ExpectedDshHead <commit>`。
+维护旧兼容线时，使用对应插件版本的探针和精确 baseline，不能仅改变当前探针的 commit 参数。Windows 构建目录应足够短，避免上游 pnpm 的依赖路径超过系统限制。
+
+## 官方 Windows Desktop
+
+从官方 `win-x64/nightly.yml` feed 下载 `0.2.0-rc.2` 安装包，先核对 SHA-512 和 Authenticode 签名，再解包到隔离目录；不要运行系统安装器。使用单独的工具目录安装 Playwright，构建候选后执行：
+
+```powershell
+node probes/dsh-desktop/probe.mjs <official-extracted-exe> <candidate-root> <new-work-root> <playwright-module>
+```
+
+`new-work-root` 必须尚不存在，并置于 ignored 证据目录。探针在应用入口前核验并设置 Electron 数据路径，抑制系统 `dsh://` 注册，配置默认 Documents workspace 到测试目录，并建立独立 Git 工作区边界，核验协议关联始末一致。它使用官方包内 CLI 操作 `desktop` profile，经实际 `dsh-app://app` 认证页面验证插件、设置、query/command、重启、禁用、同候选内容的不同 probe 版本升级和卸载保留数据。预先完成的 onboarding 设置是生命周期 fixture；该探针不调用模型，不覆盖系统安装器或账号登录。
+
+真实模型验收另用隔离工作区，只从本地环境变量 `deepseek_key` 传入 Provider，工作区须有自己的 Git 边界，避免 DSH 选中上层项目。确认两轮对话、请求学习、草稿详情、人工批准和默认 PROJECT/USER Skill 回读。模型草稿受输入和模型响应影响，不把固定 fixture 数据冒充模型生成结果。实际证据范围见 [兼容性记录](../docs/compatibility.md)。
 
 这些命令分别覆盖：
 
