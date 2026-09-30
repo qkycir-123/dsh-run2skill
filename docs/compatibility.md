@@ -10,6 +10,10 @@
 
 核验日期：2026-09-30。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 默认 `latest` 与 `next` 均指向 `0.5.0-alpha.2`；使用旧 DSH `0.1.2-rc.1` 时须明确安装 `0.4.0`。
 
+2026-10-01 的实际页面自测发现，会话列表的旧 `current` 读取和动态 Remote namespace 的依赖声明使候选审核页面不可用；此前 HTTP API 验收没有覆盖这两个 Client 边界。候选修正为读取唯一的 `retainedBy.mainView` 会话，并在挂载后注入 `remote.run2skill`。单元回归覆盖真实 Cordis 作用域、项目切换及无唯一会话；Desktop probe 增加实际打开设置页和空会话状态读取。
+
+修正后的实际 Desktop 自测完成：真实 DeepSeek 对话自动生成 PROJECT 草稿，界面修改意见生成精简新版本，人工确认保存后 `SKILL.md` 与新版本审核字节一致。全新同项目会话自主调用原生 `skill` 工具加载该 Skill，并遵守其中的汇报格式；另一个全新数学问答会话直接回答，未调用 Skill。这是一组真实用例，不代表总体复用率或误触发率。
+
 ## 0.2.0-rc.2 Desktop / Web 候选
 
 候选精确使用 DSH `0.2.0-rc.2` peers，内部 Web root contract 对应 Desktop 复用的 Web 模板，不代表安装 profile 必须为 `web`。实际安装位置是 `desktop` profile。共享 `standard` 组合摘要未变化，额外 Office provider 只读，Skill 写入仍限定默认 PROJECT/USER filesystem roots。

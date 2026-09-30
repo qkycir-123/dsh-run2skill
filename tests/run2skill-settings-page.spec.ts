@@ -3,6 +3,8 @@
 import { createElement, useRef, useState, useSyncExternalStore } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { apply as applyClient, inject as clientInject } from '../src/client/index.js'
 import {
   Run2skillAttentionToast,
   AttentionSettingsSummary,
@@ -30,6 +32,79 @@ afterEach(() => {
 })
 
 describe('run2skill native settings surface', () => {
+  it('calls the mounted namespace from a Cordis context that declares remote.run2skill', async () => {
+    const ctx = new Context()
+    const query = vi.fn(async () => ({ ok: true, value: { ok: true, value: {} } }))
+    const registrations: Array<Record<string, unknown>> = []
+    ctx.provide('remote', { $mount: async () => {
+      ctx.provide('remote.run2skill', { query, command: vi.fn() })
+      return async () => undefined
+    } } as never)
+    ctx.provide('configForms', { get: () => ({
+      getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+      subscribe: () => () => undefined, set: vi.fn(),
+    }) } as never)
+    ctx.provide('sessions', { list: { getSnapshot: () => ({ byId: {} }) } } as never)
+    ctx.provide('workspaces', { list: { getSnapshot: () => ({ items: [] }) } } as never)
+    ctx.provide('slots', {
+      inject: (_name: string, install: () => unknown) => { install() },
+      register: (options: Record<string, unknown>) => { registrations.push(options) },
+    } as never)
+    const fiber = ctx.plugin({ inject: [...clientInject], apply: applyClient as never })
+    try {
+      await fiber
+      const tab = registrations.find(item => item.id === 'run2skill')!
+      const props = (tab.inject as () => { callLearningStatus: (endpoint: string, payload: unknown) => Promise<unknown> })()
+      await expect(props.callLearningStatus('learning/status', { apiVersion: 1 })).resolves.toEqual({ ok: true, value: {} })
+      expect(query).toHaveBeenCalledOnce()
+    } finally {
+      await fiber.dispose()
+    }
+  })
+  it('uses the DSH 0.2 main-view reference to organize the open session and switches project scope', async () => {
+    const automatic = new AutomaticLearningSettingsController({
+      getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+      subscribe: () => () => undefined, set: vi.fn(),
+    })
+    const purge = new PurgeSettingsController(vi.fn(), () => undefined)
+    const learning = vi.fn(async (endpoint: string) => ({ ok: true, value: endpoint === 'learning/status'
+      ? { apiVersion: 1, state: 'RECORDED', canRequest: true }
+      : { apiVersion: 1, changed: true, disposition: 'QUEUED' } }))
+    const attention = vi.fn(async (_payload: unknown) => ({ ok: true, value: {
+      apiVersion: 1, userCompleteness: 'KNOWN', projectCompleteness: 'KNOWN',
+      actions: [], runtimeCompleteness: 'KNOWN', runtimeWarnings: [],
+    } }))
+    const element = (sessionId: string | undefined, ambiguous = false) => createElement(Run2skillSettingsPage, {
+      controller: automatic, purgeController: purge,
+      useSessions: select => select({ byId: {
+        a: { id: 'session-a', retainedBy: { mainView: sessionId === 'session-a' ? 1 : 0 } },
+        b: { id: 'session-b', retainedBy: { mainView: sessionId === 'session-b' || ambiguous ? 1 : 0 } },
+        background: { id: 'background', retainedBy: { running: 1 } },
+      } } as never),
+      useWorkspaces: select => select({ items: [
+        { workspaceId: 'workspace-a', sessionIds: ['session-a'] },
+        { workspaceId: 'workspace-b', sessionIds: ['session-b'] },
+      ] }),
+      callAttention: attention, callReview: vi.fn(), callActivity: vi.fn(), callLearningStatus: learning,
+    })
+    const view = render(element('session-a'))
+    await screen.findByText('已记下，待本次会话结束后整理。')
+    fireEvent.click(screen.getByRole('button', { name: '立即整理本次经验' }))
+    await waitFor(() => expect(learning).toHaveBeenCalledWith('learning/request', expect.objectContaining({
+      sessionId: 'session-a', currentScope: expect.objectContaining({ kind: 'WORKSPACE', workspaceId: 'workspace-a' }),
+    }), expect.any(AbortSignal)))
+    view.rerender(element('session-b'))
+    await waitFor(() => expect(learning).toHaveBeenCalledWith('learning/status', expect.objectContaining({
+      sessionId: 'session-b', currentScope: expect.objectContaining({ workspaceId: 'workspace-b' }),
+    }), expect.any(AbortSignal)))
+    view.rerender(element('session-a', true))
+    expect(await screen.findByText('请先打开一个会话。')).toBeTruthy()
+    view.rerender(element(undefined))
+    expect(screen.getByText('请先打开一个会话。')).toBeTruthy()
+    await waitFor(() => expect(attention.mock.calls.at(-1)?.[0]).toMatchObject({ currentScope: { kind: 'USER_ONLY' } }))
+    purge.dispose(); automatic.dispose()
+  })
+
   function deferred<T>() {
     let resolve!: (value: T) => void
     const promise = new Promise<T>(yes => { resolve = yes })
@@ -596,6 +671,10 @@ describe('run2skill native settings surface', () => {
   it('registers one independent settings.plugins.tab and a header lifecycle mount with no persistent DOM', async () => {
     const registrations: Array<{ name: string; id?: string; label?: string }> = []
     const context = {
+      inject: (_deps: unknown, callback: (child: unknown) => void) => {
+        callback({ get: () => context.remote.run2skill })
+        return Object.assign(Promise.resolve(), { dispose: async () => undefined })
+      },
       remote: {
         $mount: vi.fn(async () => async () => undefined),
         run2skill: { query: vi.fn(), command: vi.fn() },
@@ -605,7 +684,7 @@ describe('run2skill native settings surface', () => {
         subscribe: () => () => undefined,
         set: vi.fn(),
       })) },
-      sessions: { list: { getSnapshot: () => ({ current: 'session-a' }), subscribe: () => () => undefined } },
+      sessions: { list: { getSnapshot: () => ({ byId: { 'session-a': { id: 'session-a', retainedBy: { mainView: 1 } } } }), subscribe: () => () => undefined } },
       workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'workspace-a', sessionIds: ['session-a'] }] }), subscribe: () => () => undefined } },
       slots: {
         inject: vi.fn((_name: string, install: () => () => void) => { install() }),
@@ -670,7 +749,7 @@ describe('run2skill native settings surface', () => {
     render(createElement(Run2skillAttentionToast, {
       sessionId: 'session-a', workspaceId: 'workspace-a', callAttention: call,
     }))
-    expect((await screen.findByRole('alert')).textContent).toContain('设置 → 插件 → Run2Skill')
+    expect((await screen.findByRole('alert')).textContent).toContain('设置 → 内置插件 → Run2Skill')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
   })
 
@@ -834,6 +913,10 @@ describe('run2skill native settings surface', () => {
       },
     }))
     const context = {
+      inject: (_deps: unknown, callback: (child: unknown) => void) => {
+        callback({ get: () => context.remote.run2skill })
+        return Object.assign(Promise.resolve(), { dispose: async () => undefined })
+      },
       remote: {
         $mount: vi.fn(async () => async () => undefined),
         run2skill: { query: vi.fn(), command: vi.fn() },

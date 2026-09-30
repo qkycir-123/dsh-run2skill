@@ -158,6 +158,16 @@ async function observe(present, expectedLearning = true, setLearning) {
     }
     await page.getByRole('button', { name: /^(插件|Plugins)$/u }).click()
     await page.getByText('dsh-run2skill', { exact: true }).waitFor()
+    // Catalog presence and successful RPC do not prove the settings UI can
+    // resolve the selected session. Exercise the host's actual selector hooks.
+    await page.getByRole('button', { name: '新建会话', exact: true }).first().click()
+    await page.getByRole('button', { name: '账号菜单', exact: true }).click()
+    await page.getByText('设置', { exact: true }).click()
+    await page.getByRole('button', { name: '内置插件', exact: true }).click()
+    await page.getByRole('tab', { name: 'Run2Skill', exact: true }).click()
+    const settingsPage = page.locator('[data-run2skill-settings-page]')
+    await settingsPage.getByText('暂无可整理的经验。', { exact: true }).waitFor()
+    assert.equal(await settingsPage.getByText('请先打开一个会话。', { exact: true }).count(), 0)
   })
 }
 async function cli(args) {

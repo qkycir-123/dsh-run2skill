@@ -25,6 +25,7 @@ import {
   Toast,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TypertClientRemote, TypertDisposer } from '@deepseek-ai/dsh-typert-protocol'
+import type { Context } from '@deepseek-ai/cordis'
 import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
 import {
   AutomaticLearningSettingsController,
@@ -591,7 +592,7 @@ export function Run2skillAttentionToast(props: {
   return createElement(Toast, {
     key: toast.sequence,
     icon: createElement(IconWarningOutlineMedium),
-    text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往设置 → 插件 → Run2Skill`,
+    text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往设置 → 内置插件 → Run2Skill`,
     onDone: () => { setToast(undefined) },
   })
 }
@@ -1184,12 +1185,12 @@ export function Run2skillSettingsPage(props: {
   readonly callReview: ProposalReviewCall
   readonly callActivity: RecentSkillActivityCall
   readonly callLearningStatus?: LearningStatusCall
-  readonly useSessions?: <T>(selector: (state: { readonly current?: string }) => T) => T
+  readonly useSessions?: <T>(selector: (state: SessionSelectionSnapshot) => T) => T
   readonly useWorkspaces?: <T>(selector: (state: {
     readonly items: readonly { readonly workspaceId: string; readonly sessionIds?: readonly string[] }[]
   }) => T) => T
 }): ReactElement {
-  const liveSessionId = props.useSessions?.(state => state.current)
+  const liveSessionId = props.useSessions?.(selectedSessionId)
   const liveWorkspaceId = props.useWorkspaces?.(state => state.items
     .find(workspace => workspace.sessionIds?.includes(liveSessionId ?? ''))?.workspaceId)
   const workspaceId = props.useSessions === undefined ? props.workspaceId : liveWorkspaceId
@@ -1311,10 +1312,11 @@ export function Run2skillSettingsPage(props: {
 }
 
 export interface Run2skillClientContext {
+  readonly inject: Context['inject']
   readonly remote: TypertClientRemote
   readonly configForms: { get<T>(entryId: string): ClientSettingsScope<T> }
   readonly sessions?: { readonly list: {
-    getSnapshot(): { readonly current?: string }
+    getSnapshot(): SessionSelectionSnapshot
     subscribe?(listener: () => void): () => void
   } }
   readonly workspaces: { readonly list: {
@@ -1328,8 +1330,21 @@ export interface Run2skillClientContext {
   effect(install: () => (() => void), label?: string): void
 }
 
+interface SessionSelectionSnapshot {
+  readonly byId: Readonly<Record<string, {
+    readonly id: string
+    readonly retainedBy: Readonly<{ readonly mainView?: number }>
+  }>>
+}
+
+function selectedSessionId(state: SessionSelectionSnapshot): string | undefined {
+  const selected = Object.values(state.byId).filter(session => (session.retainedBy.mainView ?? 0) > 0)
+  return selected.length === 1 ? selected[0]!.id : undefined
+}
+
 function currentSessionId(context: Run2skillClientContext): string | undefined {
-  return context.sessions?.list.getSnapshot().current
+  const snapshot = context.sessions?.list.getSnapshot()
+  return snapshot === undefined ? undefined : selectedSessionId(snapshot)
 }
 
 function workspaceFor(context: Run2skillClientContext, sessionId: string | undefined): string | undefined {
@@ -1339,7 +1354,7 @@ function workspaceFor(context: Run2skillClientContext, sessionId: string | undef
 }
 
 export async function applyRun2skillClient(context: Run2skillClientContext): Promise<TypertDisposer> {
-  const mounted = await createRun2skillRemoteCaller(context.remote)
+  const mounted = await createRun2skillRemoteCaller(context.remote, context)
   const controller = new AutomaticLearningSettingsController(
     context.configForms.get<AutomaticLearningClientSettings>('run2skill'),
   )
