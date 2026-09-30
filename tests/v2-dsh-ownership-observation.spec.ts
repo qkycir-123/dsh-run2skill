@@ -167,6 +167,16 @@ async function decideWithRealAdapter(
 }
 
 describe('real DSH Agent-first ownership observation adapter', () => {
+  it.each(['system/message', 'session-log-deepseek/delivery-accepted', 'model/selection'])(
+    'does not treat Desktop %s records as missing windows or Agent file writes',
+    async type => {
+      const observed = harness({ between: [event(type, 2, {})] })
+      await expect(observed.adapter.observe({
+        batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
+      })).resolves.toMatchObject({ status: 'OBSERVED', agentActivity: 'NONE' })
+    },
+  )
+
   it('attributes Agent writes with the exact context-filesystem target identity', async () => {
     const targetPathDigest = sha256Utf8(canonicalJson({
       contract: 'dsh-fs-target-v1',

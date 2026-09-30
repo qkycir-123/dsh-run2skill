@@ -257,7 +257,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.5.0-alpha.2',
+  version: '0.5.0-alpha.3',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   keywords: [
     'deepseek-harness',
@@ -276,7 +276,7 @@ assert.deepEqual({
   },
   bugs: { url: 'https://github.com/qkycir-123/dsh-run2skill/issues' },
   homepage: 'https://github.com/qkycir-123/dsh-run2skill#readme',
-  publishConfig: { access: 'public', tag: 'next' },
+  publishConfig: { access: 'public', tag: 'latest' },
   exports: {
     '.': { types: './lib/index.d.ts', default: './lib/index.js' },
     './client': { default: './lib/client.js' },
@@ -298,9 +298,9 @@ assert.deepEqual({
   },
   peerDependencies: {
     '@deepseek-ai/cordis': '4.0.4',
-    '@deepseek-ai/dsh-agent-preset-registry': '0.1.7-rc.2',
-    '@deepseek-ai/dsh-client-ui-primitives': '0.1.7-rc.2',
-    '@deepseek-ai/dsh-typert-protocol': '0.1.7-rc.2',
+    '@deepseek-ai/dsh-agent-preset-registry': '0.2.0-rc.2',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.2.0-rc.2',
+    '@deepseek-ai/dsh-typert-protocol': '0.2.0-rc.2',
   },
 }, 'candidate package metadata changed')
 assert.equal(

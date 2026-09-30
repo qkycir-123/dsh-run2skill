@@ -44,6 +44,18 @@
 
 ## 安装
 
+### DSH Desktop / Web 0.2.0-rc.2 源码候选
+
+本仓库的 `0.5.0-alpha.3` 已完成 Windows 桌面兼容验收，尚未发布 npm；当前 npm 版不能安装到 DSH `0.2.0-rc.2`。Windows Desktop 使用应用 **Manage dsh Command…** 提供的 dsh 命令。首次启动初始化后完全退出，再安装已构建的候选包：
+
+```bash
+dsh plugin --profile desktop add <dsh-run2skill-0.5.0-alpha.3.tgz>
+```
+
+重新打开桌面版，在 **插件** 页面查看 dsh-run2skill。同版本 Web 使用 `--profile web`。运行边界和证据见 [兼容性](docs/compatibility.md)；macOS/Linux Desktop 尚未验收。
+
+### 当前 npm 版本
+
 先确认你使用的 DSH Web 版本，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。DSH `0.1.7-rc.2` 安装当前 npm 默认版本：
 
 ```bash

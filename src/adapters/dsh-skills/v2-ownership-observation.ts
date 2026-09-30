@@ -67,6 +67,7 @@ const SUPPORTED_TURN_EVENTS = new Set([
   // cannot mutate files; the tool/call + tool/result pairs below remain the
   // authoritative evidence for filesystem activity.
   'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
+  'system/message', 'session-log-deepseek/delivery-accepted', 'model/selection',
   'approval/asked', 'approval/decided',
   'turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'assistant/chunk',
   'assistant/attempt', 'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',

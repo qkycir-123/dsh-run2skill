@@ -30,6 +30,10 @@ const SUPPORTED_TURN_EVENT_TYPES = new Set([
   'step/start',
   'step/end',
   'user/message',
+  // Host system surface and upload receipts are not direct user evidence.
+  'system/message',
+  'session-log-deepseek/delivery-accepted',
+  'model/selection', // Only request/header supplies the route actually used.
   'assistant/chunk',
   'assistant/attempt',
   'assistant/message',

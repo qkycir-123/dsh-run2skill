@@ -119,6 +119,26 @@ const workspace = {
 }
 
 describe('DSH TurnObservationV2 projection', () => {
+  it.each(['system/message', 'session-log-deepseek/delivery-accepted', 'model/selection'])(
+    'observes a completed Desktop turn containing %s without treating it as user evidence',
+    async type => {
+      const events = insertTurnEvent(completeTurn(), 'step/start', {
+        type,
+        data: type === 'system/message'
+          ? { message: { id: 'system-desktop', role: 'system', content: [{ type: 'text', text: 'SYSTEM_ONLY_FIXTURE' }] }, surfaceOp: 'append' }
+          : type === 'model/selection'
+            ? { provider: 'selector-only-provider', model: 'selector-only-model', reasoningEffort: 'high' }
+            : { sessionId: header.id, throughSeq: 1, sessionFormatVersion: 4 },
+      })
+      const result = await projectDshTurnObservationV2(header, events, events.at(-1)!.seq, workspace)
+      expect(result.status).toBe('OBSERVED')
+      expect(JSON.stringify(result)).not.toContain('SYSTEM_ONLY_FIXTURE')
+      if (result.status !== 'OBSERVED') throw new Error('expected an observation')
+      expect(result.observation.directUserEvidence).toHaveLength(1)
+      expect(result.observation.routeObservation.model).toBe('deepseek-chat')
+    },
+  )
+
   it('projects one complete root Turn without an LLM call and keeps only bounded redacted facts', async () => {
     const result = await projectDshTurnObservationV2(header, completeTurn(), 8, workspace)
 
