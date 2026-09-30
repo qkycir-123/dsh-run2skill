@@ -12,7 +12,8 @@
 - `apps/desktop/README.md` 的 Installation ownership / Runtime and plugin activation 说明 Desktop 使用 Web 模板的内置 bundles，插件界面和管理通过现有认证 HTTP API；Electron 只向所属 `dsh-app://app` 页面附加宿主认证。插件继续使用 DSH Remote，不另建认证或 Electron IPC 通道。
 - 官方 `packages/bundle/web-app/presets/standard.patch.yml` 相比 `0.1.7-rc.2` 未改变。精确 mounted generation 和唯一 filesystem fiber 的核验保持有效；内部 `profile: web` 标识这一共享模板的 root contract，不替代真实安装目录的判断。Desktop 额外 Office provider 由宿主提供，只作为现有 Catalog 的只读输入，不扩大写入根目录。
 - 所消费的 Session、SessionPersistence、Skill filesystem、agent-preset-registry 和 Typert 源接口相比旧基线未变。Remote client 新增宿主贡献；插件沿用 query/command descriptor 和 configForms 设置契约。peer/dev 依赖精确提升到 `0.2.0-rc.2`，不能用宽版本范围绕过宿主版本门。
-- 官方 Windows feed 的版本是 `0.2.0-rc.2`；下载产物须核对 feed 的 SHA-512、签名和包内 runtime descriptor。测试使用独立 DSH_HOME、浏览器数据、工作区和随机调试端口，不改用户现有环境。
+- 官方 Windows feed 的版本是 `0.2.0-rc.2`；下载产物须核对 feed 的 SHA-512、签名和包内 runtime descriptor。公开 tag 是源码契约基线；官方签名产物的构建标识另行记录，不能把二者说成同一个 commit。支持声明须绑定实际验收的产物摘要和 runtime 版本。
+- 只解包官方 Windows 产物，不运行系统安装器。启动使用独立 `DSH_HOME`、agents、工作区和随机调试端口。在应用入口执行前，通过主进程调试器核验 `--user-data-dir` 的实际 `app.getPath('userData')`，显式将 `sessionData`、logs 和 crashDumps 指向测试目录，并抑制 `app.setAsDefaultProtocolClient('dsh')` 的系统注册。这是测试环境隔离，不修改官方包文件，也不替换插件、认证或发布逻辑。开始前和结束后检查系统协议关联未改变，退出时确认所属进程已结束。该验收不覆盖系统安装器、默认协议注册和自动更新。
 
 ## 实施与验收
 
@@ -22,4 +23,4 @@
 4. 模型联调只读取环境变量 `deepseek_key`，不记录其值；缺失时明确停止模型调用验收。任何上游本地补丁不能作为兼容证据。
 5. 只在运行证据、CI 和当前提交的 `gpt-6-sol / high` 评审无阻塞问题后填写支持表。npm 发布作为单独动作处理；未发布候选不替换当前 npm 安装指引。
 
-若官方桌面 runtime 的组成或文件完整性与 tag 无法对齐，先记录精确 artifact 证据并停止支持声明。若出现需要改变发布权限、数据格式或 preset 所有权的断点，返回主会话决策。
+若官方桌面产物的 feed 摘要、签名、runtime 文件完整性或所消费的接口无法核验，先记录精确 artifact 证据并停止支持声明。若出现需要改变发布权限、数据格式或 preset 所有权的断点，返回主会话决策。
