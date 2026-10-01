@@ -14,7 +14,7 @@ Have you run into any of these situations?
 
 Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
 
-> npm's default `latest` and `next` tags both point to the preview [`0.5.0-alpha.2`](https://www.npmjs.com/package/dsh-run2skill/v/0.5.0-alpha.2), for DSH Web `0.1.7-rc.2` only. For DSH Web `0.1.2-rc.1`, explicitly install the stable [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0) release.
+> npm's default `latest` and `next` tags both point to the preview [`0.5.0-alpha.3`](https://www.npmjs.com/package/dsh-run2skill/v/0.5.0-alpha.3), for Windows x64 Desktop and Web on DSH `0.2.0-rc.2`. For DSH Web `0.1.7-rc.2`, install `0.5.0-alpha.2`; for DSH Web `0.1.2-rc.1`, install the stable [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0) release.
 
 `0.4.0` uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and adapts its Session, Storage/Profile, Settings, and plugin-lifecycle changes. It supports only the retained built-in `standard` preset. Continue using `dsh-run2skill@0.3.1` with the older DSH `0.1.1-rc.2` line.
 
@@ -42,22 +42,28 @@ Low-noise learning status, **Synthesize this experience now**, revision requests
 
 ## Install
 
-### DSH Desktop / Web 0.2.0-rc.2 source candidate
+### DSH Desktop / Web 0.2.0-rc.2
 
-The repository candidate `0.5.0-alpha.3` has passed Windows Desktop compatibility checks; it has not been published to npm. The current npm package cannot be installed on DSH `0.2.0-rc.2`. On Windows Desktop, use the dsh command provided by **Manage dsh Command…**. Launch Desktop once to initialize it, quit completely, then install the built candidate archive:
+`0.5.0-alpha.3` has passed Windows Desktop compatibility checks. On Windows Desktop, use the dsh command provided by **Manage dsh Command…**. Launch Desktop once to initialize it, quit completely, then install the plugin:
 
 ```bash
-dsh plugin --profile desktop add <dsh-run2skill-0.5.0-alpha.3.tgz>
+dsh plugin --profile desktop add dsh-run2skill@0.5.0-alpha.3
 ```
 
 Reopen Desktop and find dsh-run2skill in **Plugins**. The matching Web release uses `--profile web`. See [compatibility](docs/compatibility.md) for evidence and scope; macOS/Linux Desktop have not been validated.
 
-### Current npm release
+### Web installation and older DSH versions
 
-Check your DSH Web version, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available. For DSH `0.1.7-rc.2`, install the current npm default:
+Check your DSH Web version, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available. For DSH `0.2.0-rc.2`, install the current npm default:
 
 ```bash
 dsh plugin --profile web add dsh-run2skill
+```
+
+For DSH `0.1.7-rc.2`, use the matching release:
+
+```bash
+dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.2
 ```
 
 For DSH `0.1.2-rc.1`, continue using the stable release:

@@ -16,7 +16,7 @@
 
 它不会让 Agent 偷偷给自己立规矩。每份技能草稿都可以先看来源、适用范围和完整内容，然后由你决定确认保存还是放弃草稿。只有确认后，它才会写入 DSH 的原生 Skill 目录。
 
-> npm 默认 `latest` 与 `next` 均指向预发布版 [`0.5.0-alpha.2`](https://www.npmjs.com/package/dsh-run2skill/v/0.5.0-alpha.2)，仅支持 DSH Web `0.1.7-rc.2`。使用 DSH Web `0.1.2-rc.1` 时，请明确安装稳定版 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)。
+> npm 默认 `latest` 与 `next` 均指向预发布版 [`0.5.0-alpha.3`](https://www.npmjs.com/package/dsh-run2skill/v/0.5.0-alpha.3)，支持 DSH `0.2.0-rc.2` 的 Windows x64 Desktop 和同版本 Web。DSH Web `0.1.7-rc.2` 请安装 `0.5.0-alpha.2`；DSH Web `0.1.2-rc.1` 请安装稳定版 [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0)。
 
 `0.4.0` 改用 DSH `0.1.2-rc.1` 的 Remote/API Gateway 与浏览器认证契约，并适配 Session、Storage/Profile、Settings 和插件生命周期变化。它只支持 RC1 保留的内置 `standard` preset；使用旧 DSH `0.1.1-rc.2` 时请继续安装 `dsh-run2skill@0.3.1`。
 
@@ -44,22 +44,28 @@
 
 ## 安装
 
-### DSH Desktop / Web 0.2.0-rc.2 源码候选
+### DSH Desktop / Web 0.2.0-rc.2
 
-本仓库的 `0.5.0-alpha.3` 已完成 Windows 桌面兼容验收，尚未发布 npm；当前 npm 版不能安装到 DSH `0.2.0-rc.2`。Windows Desktop 使用应用 **Manage dsh Command…** 提供的 dsh 命令。首次启动初始化后完全退出，再安装已构建的候选包：
+`0.5.0-alpha.3` 已完成 Windows 桌面兼容验收。Windows Desktop 使用应用 **Manage dsh Command…** 提供的 dsh 命令。首次启动初始化后完全退出，再安装插件：
 
 ```bash
-dsh plugin --profile desktop add <dsh-run2skill-0.5.0-alpha.3.tgz>
+dsh plugin --profile desktop add dsh-run2skill@0.5.0-alpha.3
 ```
 
 重新打开桌面版，在 **插件** 页面查看 dsh-run2skill。同版本 Web 使用 `--profile web`。运行边界和证据见 [兼容性](docs/compatibility.md)；macOS/Linux Desktop 尚未验收。
 
-### 当前 npm 版本
+### Web 安装与旧版 DSH
 
-先确认你使用的 DSH Web 版本，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。DSH `0.1.7-rc.2` 安装当前 npm 默认版本：
+先确认你使用的 DSH Web 版本，已经安装 Node.js `^22.19.0 || >=24.0.0`，并能在终端运行 `dsh` 和 `pnpm`。DSH `0.2.0-rc.2` 安装当前 npm 默认版本：
 
 ```bash
 dsh plugin --profile web add dsh-run2skill
+```
+
+DSH `0.1.7-rc.2` 使用对应版本：
+
+```bash
+dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.2
 ```
 
 DSH `0.1.2-rc.1` 继续安装稳定版：
