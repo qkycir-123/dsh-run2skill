@@ -44,7 +44,7 @@ node probes/dsh-desktop/probe.mjs <official-extracted-exe> <candidate-root> <new
 
 `new-work-root` 必须尚不存在，并置于 ignored 证据目录。探针在应用入口前核验并设置 Electron 数据路径，抑制系统 `dsh://` 注册，配置默认 Documents workspace 到测试目录，并建立独立 Git 工作区边界，核验协议关联始末一致。它使用官方包内 CLI 操作 `desktop` profile，经实际 `dsh-app://app` 认证页面验证插件、设置、query/command、重启、禁用、同候选内容的不同 probe 版本升级和卸载保留数据。预先完成的 onboarding 设置是生命周期 fixture；该探针不调用模型，不覆盖系统安装器或账号登录。
 
-先退出同一官方 Desktop 程序的其他测试实例，避免内置 Host 端口冲突。探针也会实际进入“左侧栏 → 插件 → dsh-run2skill 卡片”，检查当前空会话能读取整理状态，并核验“设置 → 内置插件”不再有 Run2Skill 标签页；插件卡片出现或直接 HTTP 调用成功不能替代此项 UI 验收。当前 UI 路径探针使用中文界面。
+先退出同一官方 Desktop 程序的其他测试实例，避免内置 Host 端口冲突。探针也会实际进入“左侧栏 → 插件 → Run2Skill 卡片”，检查当前空会话能读取整理状态，并核验“设置 → 内置插件”不再有 Run2Skill 标签页；插件卡片出现或直接 HTTP 调用成功不能替代此项 UI 验收。当前 UI 路径探针使用中文界面。
 
 真实模型验收另用隔离工作区，只从本地环境变量 `deepseek_key` 传入 Provider，工作区须有自己的 Git 边界，避免 DSH 选中上层项目。确认两轮对话、请求学习、草稿详情、人工批准和默认 PROJECT/USER Skill 回读。模型草稿受输入和模型响应影响，不把固定 fixture 数据冒充模型生成结果。实际证据范围见 [兼容性记录](../docs/compatibility.md)。
 

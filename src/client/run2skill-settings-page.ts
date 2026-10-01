@@ -386,7 +386,6 @@ export function RecentSkillActivitySection(props: {
     scopeIdentity,
   ])
   return createElement('div', { className: css.sectionBody },
-    createElement('p', { className: css.muted }, '展示最近沉淀的 Skill'),
     visibleState.phase === 'LOADING' ? createElement('p', { role: 'status' }, '正在读取最近活动…') : null,
     visibleState.phase === 'ERROR' ? createElement('p', { role: 'alert' }, '最近活动暂不可用。') : null,
     visibleState.phase === 'READY' && visibleState.items.length === 0
@@ -616,7 +615,7 @@ function AutomaticLearningSection(props: {
   const disabled = state.status !== 'ready' || !state.writable || state.saving
   return createElement('div', { className: css.sectionBody },
     createElement('p', { className: css.muted },
-      '在后台识别可复用经验并生成待确认的技能草稿；关闭后，明确说“保存为 Skill”仍然有效。',
+      '自动生成技能草稿；关闭后可手动请求保存。',
     ),
     createElement('div', { className: css.actions },
       createElement(Button, {
@@ -625,7 +624,6 @@ function AutomaticLearningSection(props: {
         disabled,
         onClick: () => { void props.controller.setAutomaticLearning(state.automaticLearning !== true) },
       }, state.saving ? '正在保存…' : state.automaticLearning ? '自动学习已开启' : '自动学习已关闭'),
-      createElement(Pill, null, '沿用当前会话模型'),
     ),
     state.error === undefined
       ? null
@@ -956,8 +954,8 @@ export function LearningFailureSection(props: {
         ? '使用已有 Skill，不生成新草稿？'
         : '确认关闭此待处理事项？',
       description: dismiss?.failureCode === 'COVERED_NEEDS_CONFIRMATION'
-        ? '确认后，此项将从待处理列表移除，Run2Skill 不会为这次经验生成新草稿；已有 Skill 和 DSH 原始会话记录不会改变。'
-        : '关闭后，本次自动沉淀不会继续，也不会生成草稿；已有 Skill 和 DSH 的原始会话记录不会改变。',
+        ? '移除此待处理项，继续使用已有 Skill。'
+        : '结束本次整理，保留已有 Skill 和会话记录。',
       disabled: pending !== undefined,
       triggerRef: dismissTriggerRef,
       onClose: () => { setDismiss(undefined) },
@@ -981,7 +979,7 @@ export function RejectProposalModal(props: {
   return createElement(ManagedConfirmationModal, {
     ...props,
     title: '确认放弃这份技能草稿？',
-    description: '现有 Skill 不会改变；这份技能草稿将离开待处理队列。',
+    description: '移除这份待处理草稿，保留已有 Skill。',
     confirmLabel: '确认放弃',
   })
 }
@@ -1266,7 +1264,6 @@ export function Run2skillSettingsPage(props: {
     }, content),
   )
   return createElement('div', { ref: hostTab.ref, className: css.page, 'data-run2skill-settings-page': true },
-    createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里展示当前状态、需要处理的事项和持久设置。'),
     visibleFeedback === undefined ? null : createElement('div', { className: css.publicationFeedback },
       createElement('p', { role: 'status', 'aria-live': 'polite', 'aria-atomic': true },
         visibleFeedback.publicationOutcome === 'PUBLISHED'

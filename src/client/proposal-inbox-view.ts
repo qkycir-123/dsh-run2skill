@@ -441,7 +441,6 @@ export function ProposalDetailView(props: {
       createElement('p', null, makeSafeText(experience.lesson)),
     )),
     createElement('h4', null, '参考的对话内容'),
-    createElement('p', { className: css.muted }, '以下片段来自本次对话，并已过滤不可安全展示的内容。'),
     ...detail.evidenceRefs.map((evidence, index) => createElement('article', { key: `${String(evidence.messageSeq)}:${evidence.excerptDigest}` },
       createElement('strong', null,
         `对话片段 ${String(index + 1)}${evidence.truncated ? '（内容较长，已节选）' : ''}`,
@@ -511,11 +510,6 @@ export function ProposalDetailView(props: {
       }, '按原文显示'),
     ),
     createElement('h4', null, coveringCandidate === undefined ? '确认要保存的技能说明' : '用于判断的草稿内容'),
-    createElement('p', { className: css.muted },
-      coveringCandidate === undefined
-        ? '这是 Agent 以后会遵循的完整说明。开头是技能名称和设置，标题下方是具体规则。'
-        : '这份草稿不会保存，仅用于核对已有技能是否已经包含相同经验。',
-    ),
     createElement(ProposalTextView, {
       value: proposal.exactSkillBytes,
       mode: props.textMode,
@@ -542,7 +536,7 @@ export function ProposalDetailView(props: {
       : createElement('section', { className: css.revisionBox, 'aria-label': '要求修改技能草稿' },
           createElement('label', { htmlFor: `run2skill-revision-${proposal.proposalId}` }, '想怎么修改？'),
           createElement('p', { id: `run2skill-revision-help-${proposal.proposalId}`, className: css.muted },
-            '写一条简短意见。Run2Skill 会重新生成完整草稿，原草稿不会直接发布。',
+            '根据意见生成新版草稿，审核后保存。',
           ),
           createElement('textarea', {
             id: `run2skill-revision-${proposal.proposalId}`,
@@ -610,7 +604,7 @@ export function RejectConfirmationBody(props: {
   return createElement(Fragment, null,
     createElement('h3', { id: 'run2skill-reject-title' }, '确认放弃这份技能草稿？'),
     createElement('p', { id: 'run2skill-reject-description' },
-      '现有 Skill 不会改变；这份技能草稿将离开待处理队列；经过筛选的学习材料仍按项目规则保留。',
+      '移除这份待处理草稿，保留已有 Skill 和学习材料。',
     ),
     createElement('button', {
       type: 'button', 'data-initial-focus': true, disabled: props.disabled, onClick: props.onCancel,

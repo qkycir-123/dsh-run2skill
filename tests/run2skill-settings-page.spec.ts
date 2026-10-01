@@ -456,7 +456,6 @@ describe('run2skill native settings surface', () => {
       workspaceId: 'workspace-a', call, active: false, scopeGeneration: 1,
     }))
     expect(call).not.toHaveBeenCalled()
-    expect(screen.getByText('展示最近沉淀的 Skill')).toBeTruthy()
 
     rendered.rerender(createElement(RecentSkillActivitySection, {
       workspaceId: 'workspace-a', call, active: true, scopeGeneration: 1,
@@ -813,7 +812,7 @@ describe('run2skill native settings surface', () => {
       callReview: review,
       callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, items: [] } })),
     }))
-    await waitFor(() => expect(page.container.textContent).toContain('Run2Skill'))
+    await waitFor(() => expect(page.container.textContent).toContain('暂无'))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(review).not.toHaveBeenCalled()
     expect(page.container.textContent).not.toContain('当前 PROJECT 与 USER 没有待处理事项')

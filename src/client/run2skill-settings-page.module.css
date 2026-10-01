@@ -9,7 +9,6 @@
   line-height: 1.6;
 }
 
-.intro,
 .muted {
   margin: 0;
   color: var(--dsw-alias-label-secondary);
