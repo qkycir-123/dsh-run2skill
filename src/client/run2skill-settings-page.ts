@@ -34,11 +34,13 @@ import {
 } from './automatic-learning-settings.js'
 import {
   ProposalInboxController,
+  describeProposalOutcome,
   describePersistenceScope,
   describeProposalKind,
   describeProposalListItem,
   describeProposalScope,
   type ProposalListItem,
+  type ProposalMutationFeedback,
   type ProposalReviewCall,
   type ProposalScopeAccess,
 } from './proposal-inbox.js'
@@ -631,6 +633,7 @@ function ProposalSettingsSection(props: {
   readonly active: boolean
   readonly actions: readonly AttentionAction[]
   readonly onMutationSettled: () => void
+  readonly onPublicationFeedback: (feedback: ProposalMutationFeedback) => void
   readonly scopeGeneration: number
 }): ReactElement {
   const scopeAccessRef = useRef<ProposalScopeAccess>({
@@ -756,12 +759,16 @@ function ProposalSettingsSection(props: {
           textMode,
           setTextMode,
           mutationPending: state.mutationPending,
-          onApprove: () => { void controller.mutate('APPROVE').finally(props.onMutationSettled) },
+          onApprove: () => { void controller.mutate('APPROVE').then(feedback => {
+            if (feedback !== undefined) props.onPublicationFeedback(feedback)
+          }).finally(props.onMutationSettled) },
           onReject: trigger => {
             rejectTriggerRef.current = trigger ?? null
             setRejectConfirm(true)
           },
-          onRetry: () => { void controller.mutate('RETRY').finally(props.onMutationSettled) },
+          onRetry: () => { void controller.mutate('RETRY').then(feedback => {
+            if (feedback !== undefined) props.onPublicationFeedback(feedback)
+          }).finally(props.onMutationSettled) },
           onRefresh: () => { void controller.mutate('REFRESH').finally(props.onMutationSettled) },
           onRevise: feedback => { void controller.revise(feedback).finally(props.onMutationSettled) },
           canRevise: props.actions.some(action => (
@@ -1200,6 +1207,10 @@ export function Run2skillSettingsPage(props: {
   const [attention, setAttention] = useState<AttentionProjection>()
   const [attentionRefresh, setAttentionRefresh] = useState(0)
   const [scopeGeneration, setScopeGeneration] = useState(1)
+  const [publicationFeedback, setPublicationFeedback] = useState<{
+    readonly scopeKey: string
+    readonly value: ProposalMutationFeedback
+  }>()
   const purgeState = useSyncExternalStore(
     props.purgeController.subscribe,
     props.purgeController.snapshot,
@@ -1208,6 +1219,13 @@ export function Run2skillSettingsPage(props: {
   const purgeDataChanging = purgeState.mutationPending
     || purgeState.status?.state === 'IN_PROGRESS'
     || purgeState.inProgressReceipt?.state === 'IN_PROGRESS'
+  const feedbackScopeKey = JSON.stringify([sessionId, workspaceId, scopeGeneration, purgeState.hostDataEpoch, purgeDataChanging])
+  const feedbackScopeRef = useRef(feedbackScopeKey)
+  feedbackScopeRef.current = feedbackScopeKey
+  const visibleFeedback = publicationFeedback?.scopeKey === feedbackScopeKey ? publicationFeedback.value : undefined
+  useEffect(() => {
+    setPublicationFeedback(undefined)
+  }, [sessionId, workspaceId, purgeState.hostDataEpoch, purgeDataChanging])
   useEffect(() => {
     setAttention(undefined)
     setScopeGeneration(value => value + 1)
@@ -1245,6 +1263,17 @@ export function Run2skillSettingsPage(props: {
   )
   return createElement('div', { ref: hostTab.ref, className: css.page, 'data-run2skill-settings-page': true },
     createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里展示当前状态、需要处理的事项和持久设置。'),
+    visibleFeedback === undefined ? null : createElement('div', { className: css.sectionBody },
+      createElement('p', { role: 'status', 'aria-live': 'polite', 'aria-atomic': true },
+        visibleFeedback.publicationOutcome === 'PUBLISHED'
+          ? `已保存「${visibleFeedback.name}」· ${describePersistenceScope(visibleFeedback.persistenceScope)}`
+          : describeProposalOutcome(visibleFeedback)),
+      visibleFeedback.publicationOutcome === 'PUBLISHED' ? createElement(Fragment, null,
+        createElement('p', null, '下次相关任务时，Agent 可加载此 Skill。'),
+        createElement(Button, {
+          variant: 'outline', size: 'sm', onClick: () => { setOpen(previous => new Set([...previous, 'activity'])) },
+        }, '查看最近活动')) : null,
+    ),
     props.callLearningStatus === undefined ? null : disclosure('status', '整理状态', createElement(IconSparkleMedium),
       createElement(LearningStatusSection, {
         key: JSON.stringify([sessionId ?? null, workspaceId ?? null, scopeGeneration, purgeState.hostDataEpoch]),
@@ -1266,11 +1295,17 @@ export function Run2skillSettingsPage(props: {
         }),
         attention?.actions.some(action => ['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')) === true
           ? createElement(ProposalSettingsSection, {
+              key: feedbackScopeKey,
               ...(workspaceId === undefined ? {} : { workspaceId }),
               callReview: props.callReview,
-              active: hostTab.visible && open.has('attention'),
+              active: hostTab.visible && open.has('attention') && !purgeDataChanging,
               actions: attention.actions,
               onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
+              onPublicationFeedback: value => {
+                if (feedbackScopeRef.current === feedbackScopeKey && !purgeDataChanging) {
+                  setPublicationFeedback({ scopeKey: feedbackScopeKey, value })
+                }
+              },
               scopeGeneration,
             })
           : null,

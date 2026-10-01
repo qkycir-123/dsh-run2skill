@@ -86,6 +86,13 @@ export interface ProposalAttentionAction {
 
 export type ProposalMutation = 'APPROVE' | 'REJECT' | 'REFRESH' | 'RETRY' | 'CONFIRM_DISCARD'
 
+export interface ProposalMutationFeedback {
+  readonly name: string
+  readonly persistenceScope: 'PROJECT' | 'USER'
+  readonly processingState: ProposalDetail['processingState']
+  readonly publicationOutcome: ProposalDetail['publicationOutcome']
+}
+
 export function describeProposalKind(kind: ProposalListItem['kind']): string {
   if (kind === 'CREATE') return '新建技能'
   if (kind === 'MERGE') return '更新已有技能'
@@ -418,7 +425,7 @@ export class ProposalInboxController {
     })
   }
 
-  async mutate(action: ProposalMutation): Promise<void> {
+  async mutate(action: ProposalMutation): Promise<ProposalMutationFeedback | undefined> {
     await this.whenIdle()
     const detail = this.#state.detail
     if (this.#disposed || detail === undefined || this.#state.mutationPending) return
@@ -446,11 +453,23 @@ export class ProposalInboxController {
         ?? this.#scopeAccess().actions.find(candidate => candidate.proposalRef.proposalId === proposalRef.proposalId),
       ...(action === 'REJECT' ? { confirm: true as const } : {}),
     }
+    let feedback: ProposalMutationFeedback | undefined
     await this.#execute(async signal => {
       if (request.action === undefined) throw new Error('proposal action is stale')
       this.#publish({ ...this.#state, mutationPending: true, announcement: '' })
       const receipt = parseMutationReceipt(await this.call(targetEndpoint, request, signal))
       if (receipt === undefined) throw new Error('invalid mutation receipt')
+      if (this.#disposed || signal.aborted) return
+      if ((action === 'APPROVE' || action === 'RETRY') && (receipt.workItemId !== detail.workItemId
+        || receipt.proposalRef.proposalId !== proposalRef.proposalId
+        || receipt.proposalRef.revision !== proposalRef.revision
+        || receipt.proposalRef.digest !== proposalRef.digest)) throw new Error('unrelated mutation receipt')
+      if (action === 'APPROVE' || action === 'RETRY') feedback = {
+        name: detail.proposal.name,
+        persistenceScope: detail.proposal.persistenceScope,
+        processingState: receipt.processingState,
+        publicationOutcome: receipt.publicationOutcome,
+      }
       const announcement = describeProposalOutcome(receipt) || '技能草稿状态已更新'
       this.#publish({
         ...this.#state,
@@ -480,6 +499,7 @@ export class ProposalInboxController {
         announcement: '操作未完成，请刷新后重试',
       })
     })
+    return this.#disposed ? undefined : feedback
   }
 
   async revise(feedback: string): Promise<void> {
