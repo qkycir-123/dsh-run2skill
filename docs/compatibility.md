@@ -2,13 +2,13 @@
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
-| `0.5.0-alpha.3` | 源码候选，未发布 npm | `0.2.0-rc.2` | `639ed015397290b3745d163aafe02ffee4aa3f84` | Windows x64 官方 Desktop 和同版本 Web；证据见下文，CI 与精确 HEAD 评审作为合入门 |
-| `0.5.0-alpha.2` | npm `latest` / `next` 预发布 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | CI、精确 HEAD 评审与真实 DSH Web 安装生命周期已通过 |
+| `0.5.0-alpha.3` | npm `latest` / `next` 预发布 | `0.2.0-rc.2` | `639ed015397290b3745d163aafe02ffee4aa3f84` | Windows x64 官方 Desktop 和同版本 Web；证据见下文，CI 与精确 HEAD 评审作为合入门 |
+| `0.5.0-alpha.2` | 已发布的旧版兼容线 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | CI、精确 HEAD 评审与真实 DSH Web 安装生命周期已通过 |
 | `0.5.0-alpha.1` | 未发布 alpha.2 候选 | `0.1.3-alpha.2` | `82a5fd61a7cf5c293cec4bdff68f455398d685e9` | SessionHandle/v2 适配和 alpha.2 探针；未进入 npm 稳定版 |
 | `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | 已发布的 Web、Session、Skill、LLM、Settings、Storage/Profile 兼容线 |
 | `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 旧版兼容线 |
 
-核验日期：2026-09-30。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 默认 `latest` 与 `next` 均指向 `0.5.0-alpha.2`；使用旧 DSH `0.1.2-rc.1` 时须明确安装 `0.4.0`。
+核验日期：2026-10-01。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 默认 `latest` 与 `next` 均指向 `0.5.0-alpha.3`；DSH `0.1.7-rc.2` 须明确安装 `0.5.0-alpha.2`，DSH `0.1.2-rc.1` 须明确安装 `0.4.0`。
 
 2026-10-01 的实际页面自测发现，会话列表的旧 `current` 读取和动态 Remote namespace 的依赖声明使候选审核页面不可用；此前 HTTP API 验收没有覆盖这两个 Client 边界。候选修正为读取唯一的 `retainedBy.mainView` 会话，并在挂载后注入 `remote.run2skill`。单元回归覆盖真实 Cordis 作用域、项目切换及无唯一会话；Desktop probe 增加实际打开设置页和空会话状态读取。
 
@@ -28,7 +28,7 @@
 
 实际对话发现系统消息、日志上传回执及模型选择记录会阻断原有投影和 Agent 写入归属检查。候选只增加这三个已知事件的识别；系统内容不成为直接用户证据，模型选择记录不代替 `request/header`，上传回执不成为文件写入证据。未知必需事件继续拒绝。
 
-测试只解包官方程序，独立设置 DSH、Electron 数据和 Documents 工作区，入口前抑制系统协议注册并检查关联始末一致。系统安装器、默认协议关联、自动更新、账号登录，以及 macOS/Linux Desktop 未验收。本次不修改 Storage Domain 格式。当前 npm `0.5.0-alpha.2` 无法安装到新 Desktop，候选通过验收后仍需单独发布才能使用普通 npm 安装命令。
+测试只解包官方程序，独立设置 DSH、Electron 数据和 Documents 工作区，入口前抑制系统协议注册并检查关联始末一致。系统安装器、默认协议关联、自动更新、账号登录，以及 macOS/Linux Desktop 未验收。本次不修改 Storage Domain 格式。旧 npm `0.5.0-alpha.2` 无法安装到新 Desktop；DSH `0.2.0-rc.2` 使用 `0.5.0-alpha.3`。
 
 ## 历史版本 0.5.0-alpha.2：DSH 0.1.7-rc.2 范围
 
