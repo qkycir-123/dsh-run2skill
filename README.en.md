@@ -39,7 +39,7 @@ The navigation below applies to the current source and has not been released to 
 
 ![Real DSH Web flow from a pending Run2Skill draft through human review to a successfully saved Skill](docs/assets/run2skill-demo.gif)
 
-1. **Find the draft** — Run2Skill only notifies you when action is required. Open **Sidebar → Plugins → the dsh-run2skill card** to review drafts.
+1. **Find the draft** — Run2Skill only notifies you when action is required. Open **Sidebar → Plugins → the Run2Skill card** to review drafts.
 2. **Review its evidence and scope** — inspect the rationale, filtered conversation evidence, target scope, and the complete `SKILL.md` that would be written.
 3. **Request a revision if needed** — leave one short instruction and Run2Skill generates a new complete draft; the old version is not published and the new one still needs review.
 4. **Save only after approval** — successful results appear under Recent activity and remain ordinary native DSH Skills.
@@ -105,7 +105,7 @@ After each conversation turn, Run2Skill records only low-cost observations; it d
 
 When something needs your attention, DSH shows one native notification. To review a draft:
 
-1. Open **Sidebar → Plugins → the dsh-run2skill card** (published versions use the Settings entry described above).
+1. Open **Sidebar → Plugins → the Run2Skill card** (published versions use the Settings entry described above).
 2. Review the draft, its intended scope, evidence, and complete content.
 3. Approve and save it, request a revision, discard it, or retry a failed save.
 4. After a successful save, it is an ordinary native DSH Skill and remains usable even if Run2Skill is later uninstalled.

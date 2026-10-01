@@ -65,6 +65,7 @@ describe('published package contract', () => {
       './typert': { default: './lib/typert.host.js' },
       './remote': { default: './lib/typert.remote-client.js' },
       './package.json': './package.json',
+      './locale/*.json': './locale/*.json',
     })
     expect(manifest.files).toEqual([
       'lib',
@@ -74,6 +75,7 @@ describe('published package contract', () => {
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
       'assets/run2skill-logo.webp',
+      'locale/*.json',
     ])
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.4',
@@ -92,6 +94,13 @@ describe('published package contract', () => {
         ],
       },
     })
+  })
+
+  it('uses Run2Skill as its display title in English and Chinese', () => {
+    for (const language of ['en', 'zh']) {
+      const locale = JSON.parse(readPortableText(`../locale/${language}.json`)) as { meta: { title: string } }
+      expect(locale.meta.title).toBe('Run2Skill')
+    }
   })
 
   it('ships the license notice for the Zod code embedded in the Client bundle', () => {

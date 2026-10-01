@@ -85,7 +85,7 @@ async function dsh(args) {
 async function stage(version) {
   const root = join(stages, version)
   await mkdir(root, { recursive: true })
-  for (const entry of ['lib', 'assets', 'cordis.patch.yml', 'README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
+  for (const entry of ['lib', 'assets', 'locale', 'cordis.patch.yml', 'README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     await cp(join(candidate, entry), join(root, entry), { recursive: true })
   }
   const sourceManifest = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8'))

@@ -21,6 +21,8 @@ const fixedPackageFiles = [
   'lib/typert.remote-client.d.ts',
   'lib/typert.remote-client.js',
   'LICENSE',
+  'locale/en.json',
+  'locale/zh.json',
   'package.json',
   'README.en.md',
   'README.md',
@@ -272,7 +274,7 @@ assert.deepEqual({
   ],
   private: undefined,
   license: 'MIT',
-  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'assets/run2skill-logo.webp'],
+  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'assets/run2skill-logo.webp', 'locale/*.json'],
   repository: {
     type: 'git',
     url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
@@ -286,6 +288,7 @@ assert.deepEqual({
     './typert': { types: './lib/typert.host.d.ts', default: './lib/typert.host.js' },
     './remote': { types: './lib/typert.remote-client.d.ts', default: './lib/typert.remote-client.js' },
     './package.json': './package.json',
+    './locale/*.json': './locale/*.json',
   },
   dsh: {
     bundle: { patch: './cordis.patch.yml' },

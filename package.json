@@ -43,7 +43,8 @@
       "types": "./lib/typert.remote-client.d.ts",
       "default": "./lib/typert.remote-client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib",
@@ -52,7 +53,8 @@
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "assets/run2skill-logo.webp"
+    "assets/run2skill-logo.webp",
+    "locale/*.json"
   ],
   "dsh": {
     "bundle": {
