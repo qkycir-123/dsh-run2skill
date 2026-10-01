@@ -663,6 +663,7 @@ function ProposalSettingsSection(props: {
       {
         attentionDriven: true,
         scopeAccess: () => scopeAccessRef.current,
+        onPublicationFeedback: props.onPublicationFeedback,
       },
     ),
     [props.callReview, props.scopeGeneration, props.workspaceId],
@@ -759,16 +760,12 @@ function ProposalSettingsSection(props: {
           textMode,
           setTextMode,
           mutationPending: state.mutationPending,
-          onApprove: () => { void controller.mutate('APPROVE').then(feedback => {
-            if (feedback !== undefined) props.onPublicationFeedback(feedback)
-          }).finally(props.onMutationSettled) },
+          onApprove: () => { void controller.mutate('APPROVE').finally(props.onMutationSettled) },
           onReject: trigger => {
             rejectTriggerRef.current = trigger ?? null
             setRejectConfirm(true)
           },
-          onRetry: () => { void controller.mutate('RETRY').then(feedback => {
-            if (feedback !== undefined) props.onPublicationFeedback(feedback)
-          }).finally(props.onMutationSettled) },
+          onRetry: () => { void controller.mutate('RETRY').finally(props.onMutationSettled) },
           onRefresh: () => { void controller.mutate('REFRESH').finally(props.onMutationSettled) },
           onRevise: feedback => { void controller.revise(feedback).finally(props.onMutationSettled) },
           canRevise: props.actions.some(action => (
@@ -1208,7 +1205,7 @@ export function Run2skillSettingsPage(props: {
   const [attentionRefresh, setAttentionRefresh] = useState(0)
   const [scopeGeneration, setScopeGeneration] = useState(1)
   const [publicationFeedback, setPublicationFeedback] = useState<{
-    readonly scopeKey: string
+    readonly scopeIdentity: string
     readonly value: ProposalMutationFeedback
   }>()
   const purgeState = useSyncExternalStore(
@@ -1219,10 +1216,10 @@ export function Run2skillSettingsPage(props: {
   const purgeDataChanging = purgeState.mutationPending
     || purgeState.status?.state === 'IN_PROGRESS'
     || purgeState.inProgressReceipt?.state === 'IN_PROGRESS'
-  const feedbackScopeKey = JSON.stringify([sessionId, workspaceId, scopeGeneration, purgeState.hostDataEpoch, purgeDataChanging])
-  const feedbackScopeRef = useRef(feedbackScopeKey)
-  feedbackScopeRef.current = feedbackScopeKey
-  const visibleFeedback = publicationFeedback?.scopeKey === feedbackScopeKey ? publicationFeedback.value : undefined
+  const feedbackScopeIdentity = JSON.stringify([sessionId, workspaceId, scopeGeneration, purgeState.hostDataEpoch, purgeDataChanging])
+  const feedbackScopeRef = useRef(feedbackScopeIdentity)
+  feedbackScopeRef.current = feedbackScopeIdentity
+  const visibleFeedback = publicationFeedback?.scopeIdentity === feedbackScopeIdentity ? publicationFeedback.value : undefined
   useEffect(() => {
     setPublicationFeedback(undefined)
   }, [sessionId, workspaceId, purgeState.hostDataEpoch, purgeDataChanging])
@@ -1295,15 +1292,15 @@ export function Run2skillSettingsPage(props: {
         }),
         attention?.actions.some(action => ['REVIEW_PROPOSAL', 'REFRESH_PROPOSAL', 'RETRY_PUBLICATION'].includes(action.kind ?? '')) === true
           ? createElement(ProposalSettingsSection, {
-              key: feedbackScopeKey,
+              key: feedbackScopeIdentity,
               ...(workspaceId === undefined ? {} : { workspaceId }),
               callReview: props.callReview,
               active: hostTab.visible && open.has('attention') && !purgeDataChanging,
               actions: attention.actions,
               onMutationSettled: () => { setAttentionRefresh(value => value + 1) },
               onPublicationFeedback: value => {
-                if (feedbackScopeRef.current === feedbackScopeKey && !purgeDataChanging) {
-                  setPublicationFeedback({ scopeKey: feedbackScopeKey, value })
+                if (feedbackScopeRef.current === feedbackScopeIdentity && !purgeDataChanging) {
+                  setPublicationFeedback({ scopeIdentity: feedbackScopeIdentity, value })
                 }
               },
               scopeGeneration,

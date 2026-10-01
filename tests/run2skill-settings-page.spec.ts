@@ -1290,7 +1290,7 @@ describe('run2skill native settings surface', () => {
   })
 })
 
-function draftSaveFixture(outcome: 'PUBLISHED' | 'PUBLISH_FAILED' | 'PENDING_REVIEW', pending?: Promise<unknown>) {
+function draftSaveFixture(outcome: 'PUBLISHED' | 'PUBLISH_FAILED' | 'PENDING_REVIEW', pending?: Promise<unknown>, listAfterApproval?: Promise<void>) {
   return (async () => {
     const domain = createMemoryRun2skillDomain()
     const item = makeLearnedWorkItem()
@@ -1323,6 +1323,7 @@ function draftSaveFixture(outcome: 'PUBLISHED' | 'PUBLISH_FAILED' | 'PENDING_REV
           settled = true
           return value
         }
+        if (settled && endpoint === 'proposals/list' && listAfterApproval !== undefined) await listAfterApproval
         return await host(endpoint, payload, signal)
       },
       callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, visibilityRevision: `visibility_${'e'.repeat(64)}`, items: [] } })),
@@ -1376,6 +1377,21 @@ describe('page-owned publication feedback', () => {
     }))
     expect(screen.queryByText(/已保存「/)).toBeNull()
     fixture.dispose()
+  })
+
+  it('acknowledges a confirmed save before the follow-up list refresh completes', async () => {
+    let resolve!: () => void
+    const promise = new Promise<void>(done => { resolve = done })
+    const fixture = await draftSaveFixture('PUBLISHED', undefined, promise)
+    render(createElement(Run2skillSettingsPage, fixture.props))
+    fireEvent.click(await screen.findByRole('button', { name: /generated-file-hygiene/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认并保存' }))
+    try {
+      await screen.findByText('已保存「generated-file-hygiene」· 仅当前项目可用')
+    } finally {
+      await act(async () => { resolve() })
+      fixture.dispose()
+    }
   })
 
 })
