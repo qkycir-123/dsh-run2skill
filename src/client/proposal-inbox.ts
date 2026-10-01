@@ -86,6 +86,13 @@ export interface ProposalAttentionAction {
 
 export type ProposalMutation = 'APPROVE' | 'REJECT' | 'REFRESH' | 'RETRY' | 'CONFIRM_DISCARD'
 
+export interface ProposalMutationFeedback {
+  readonly name: string
+  readonly persistenceScope: 'PROJECT' | 'USER'
+  readonly processingState: ProposalDetail['processingState']
+  readonly publicationOutcome: ProposalDetail['publicationOutcome']
+}
+
 export function describeProposalKind(kind: ProposalListItem['kind']): string {
   if (kind === 'CREATE') return '新建技能'
   if (kind === 'MERGE') return '更新已有技能'
@@ -313,6 +320,7 @@ export class ProposalInboxController {
     private readonly options: {
       readonly attentionDriven?: boolean
       readonly scopeAccess?: () => ProposalScopeAccess
+      readonly onPublicationFeedback?: (feedback: ProposalMutationFeedback) => void
     } = {},
   ) {}
 
@@ -451,6 +459,17 @@ export class ProposalInboxController {
       this.#publish({ ...this.#state, mutationPending: true, announcement: '' })
       const receipt = parseMutationReceipt(await this.call(targetEndpoint, request, signal))
       if (receipt === undefined) throw new Error('invalid mutation receipt')
+      if (this.#disposed || signal.aborted) return
+      if ((action === 'APPROVE' || action === 'RETRY') && (receipt.workItemId !== detail.workItemId
+        || receipt.proposalRef.proposalId !== proposalRef.proposalId
+        || receipt.proposalRef.revision !== proposalRef.revision
+        || receipt.proposalRef.digest !== proposalRef.digest)) throw new Error('unrelated mutation receipt')
+      if (action === 'APPROVE' || action === 'RETRY') this.options.onPublicationFeedback?.({
+        name: detail.proposal.name,
+        persistenceScope: detail.proposal.persistenceScope,
+        processingState: receipt.processingState,
+        publicationOutcome: receipt.publicationOutcome,
+      })
       const announcement = describeProposalOutcome(receipt) || '技能草稿状态已更新'
       this.#publish({
         ...this.#state,

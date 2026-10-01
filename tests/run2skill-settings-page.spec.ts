@@ -1289,3 +1289,109 @@ describe('run2skill native settings surface', () => {
     expect(trigger).toBe(document.activeElement)
   })
 })
+
+function draftSaveFixture(outcome: 'PUBLISHED' | 'PUBLISH_FAILED' | 'PENDING_REVIEW', pending?: Promise<unknown>, listAfterApproval?: Promise<void>) {
+  return (async () => {
+    const domain = createMemoryRun2skillDomain()
+    const item = makeLearnedWorkItem()
+    domain.workItems.set(item.workItemId, item)
+    const staged = await new ProposalReviewStore(domain).stage(item.workItemId, item.revision, makeCreateProposalSnapshot(item))
+    const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({ workspaceId, canonicalPath: 'D:\\workspace' }))
+    const actions = await authorizer.project(domain, { kind: 'WORKSPACE', generation: 0, workspaceId: 'workspace-fixture' }, new PurgeVisibility(domain))
+    const host = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
+    const automatic = new AutomaticLearningSettingsController({
+      getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+      subscribe: () => () => undefined, set: vi.fn(),
+    })
+    const purge = new PurgeSettingsController(vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })), () => 'workspace-fixture')
+    let settled = false
+    const receipt = { ok: true, value: {
+      apiVersion: 1, workItemId: staged.item.workItemId, workItemRevision: staged.item.revision + 1,
+      proposalRef: actions[0]!.proposalRef, changed: true, reviewDecision: 'APPROVED',
+      processingState: outcome === 'PUBLISHED' ? 'TERMINAL' : outcome === 'PUBLISH_FAILED' ? 'NEEDS_ATTENTION' : 'PUBLISHING',
+      publicationOutcome: outcome,
+    } }
+    const props = {
+      controller: automatic, purgeController: purge, workspaceId: 'workspace-fixture',
+      callAttention: vi.fn(async () => ({ ok: true, value: {
+        apiVersion: 1, userCompleteness: 'KNOWN', projectCompleteness: 'KNOWN', actions: settled ? [] : actions,
+        runtimeCompleteness: 'KNOWN', runtimeWarnings: [],
+      } })),
+      callReview: async (endpoint: string, payload: unknown, signal: AbortSignal) => {
+        if (endpoint === 'proposals/approve') {
+          const value = pending === undefined ? receipt : await pending
+          settled = true
+          return value
+        }
+        if (settled && endpoint === 'proposals/list' && listAfterApproval !== undefined) await listAfterApproval
+        return await host(endpoint, payload, signal)
+      },
+      callActivity: vi.fn(async () => ({ ok: true, value: { apiVersion: 1, visibilityRevision: `visibility_${'e'.repeat(64)}`, items: [] } })),
+    }
+    return { props, receipt, dispose: () => { automatic.dispose(); purge.dispose() } }
+  })()
+}
+
+describe('page-owned publication feedback', () => {
+  it.each(['PUBLISHED', 'PUBLISH_FAILED', 'PENDING_REVIEW'] as const)('keeps the authoritative %s receipt after the review card disappears', async outcome => {
+    const fixture = await draftSaveFixture(outcome)
+    render(createElement(Run2skillSettingsPage, fixture.props))
+    fireEvent.click(await screen.findByRole('button', { name: /generated-file-hygiene/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认并保存' }))
+    const expected = outcome === 'PUBLISHED' ? '已保存「generated-file-hygiene」· 仅当前项目可用' : outcome === 'PUBLISH_FAILED' ? '保存失败，可重试' : '已确认，正在保存'
+    await screen.findByText(expected)
+    await waitFor(() => { expect(screen.queryByRole('button', { name: /generated-file-hygiene/ })).toBeNull() })
+    expect(screen.getByText(expected)).toBeTruthy()
+    if (outcome === 'PUBLISHED') {
+      fireEvent.click(screen.getByRole('button', { name: '查看最近活动' }))
+      await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
+    } else expect(screen.queryByText(/已保存「/)).toBeNull()
+    fixture.dispose()
+  })
+
+  it('clears feedback on scope changes and ignores late receipts from an old scope', async () => {
+    let resolve!: (value: unknown) => void
+    const promise = new Promise<unknown>(done => { resolve = done })
+    const fixture = await draftSaveFixture('PUBLISHED', promise)
+    const view = render(createElement(Run2skillSettingsPage, fixture.props))
+    fireEvent.click(await screen.findByRole('button', { name: /generated-file-hygiene/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认并保存' }))
+    view.rerender(createElement(Run2skillSettingsPage, { ...fixture.props, workspaceId: 'other-workspace' }))
+    await act(async () => { resolve(fixture.receipt) })
+    expect(screen.queryByText(/已保存「/)).toBeNull()
+    fixture.dispose()
+  })
+  it.each(['session', 'workspace', 'purge'] as const)('clears a saved acknowledgement after a %s change', async change => {
+    const fixture = await draftSaveFixture('PUBLISHED')
+    const view = render(createElement(Run2skillSettingsPage, fixture.props))
+    fireEvent.click(await screen.findByRole('button', { name: /generated-file-hygiene/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认并保存' }))
+    await screen.findByText('已保存「generated-file-hygiene」· 仅当前项目可用')
+    if (change === 'purge') vi.spyOn(fixture.props.purgeController, 'snapshot').mockReturnValue({
+      ...fixture.props.purgeController.snapshot(), hostDataEpoch: 1,
+    })
+    view.rerender(createElement(Run2skillSettingsPage, {
+      ...fixture.props,
+      ...(change === 'session' ? { sessionId: 'new-session' } : {}),
+      ...(change === 'workspace' ? { workspaceId: 'new-workspace' } : {}),
+    }))
+    expect(screen.queryByText(/已保存「/)).toBeNull()
+    fixture.dispose()
+  })
+
+  it('acknowledges a confirmed save before the follow-up list refresh completes', async () => {
+    let resolve!: () => void
+    const promise = new Promise<void>(done => { resolve = done })
+    const fixture = await draftSaveFixture('PUBLISHED', undefined, promise)
+    render(createElement(Run2skillSettingsPage, fixture.props))
+    fireEvent.click(await screen.findByRole('button', { name: /generated-file-hygiene/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认并保存' }))
+    try {
+      await screen.findByText('已保存「generated-file-hygiene」· 仅当前项目可用')
+    } finally {
+      await act(async () => { resolve() })
+      fixture.dispose()
+    }
+  })
+
+})
