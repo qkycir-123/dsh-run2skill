@@ -20,7 +20,6 @@ describe('run2skill CSS lifecycle', () => {
     for (const token of [
       '--dsw-alias-label-primary',
       '--dsw-alias-label-secondary',
-      '--dsw-alias-border-l1',
       '--dsw-alias-border-l2',
       '--dsw-alias-bg-layer-1',
       '--dsw-alias-bg-layer-2',
