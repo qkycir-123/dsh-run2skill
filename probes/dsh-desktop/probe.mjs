@@ -25,8 +25,8 @@ const browserCredentialPattern = new RegExp(`([?&]${['to', 'ken'].join('')}=)[^\
 const sanitize = value => String(value).replace(browserCredentialPattern, '$1<redacted>')
 const protocolSnapshot = () => {
   const result = spawnSync('powershell.exe', ['-NoProfile', '-Command',
-    "if(Test-Path -LiteralPath 'HKCU:\\Software\\Classes\\dsh'){@(Get-Item -LiteralPath 'HKCU:\\Software\\Classes\\dsh'; Get-ChildItem -LiteralPath 'HKCU:\\Software\\Classes\\dsh' -Recurse) | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | ConvertTo-Json -Depth 8 -Compress}"],
-  { encoding: 'utf8', windowsHide: true })
+    "if(Test-Path -LiteralPath 'HKCU:\\Software\\Classes\\dsh'){@(Get-Item -LiteralPath 'HKCU:\\Software\\Classes\\dsh'; Get-ChildItem -LiteralPath 'HKCU:\\Software\\Classes\\dsh' -Recurse) | Sort-Object Name | ForEach-Object { $key=$_; $values=[ordered]@{}; $key.GetValueNames() | Sort-Object | ForEach-Object { $values[$_]=$key.GetValue($_) }; [ordered]@{path=$key.Name; values=$values} } | ConvertTo-Json -Depth 5 -Compress}"],
+  { encoding: 'utf8', windowsHide: true, timeout: 10_000 })
   assert.equal(result.status, 0, 'protocol association snapshot failed')
   return result.stdout
 }
