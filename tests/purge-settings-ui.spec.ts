@@ -491,8 +491,7 @@ describe('Purge native settings UI', () => {
     })))
 
     fireEvent.click(screen.getByRole('button', { name: /Run2Skill/ }))
-    expect(screen.getByRole('heading', { name: '缓存清理' })).toBeTruthy()
-    expect(screen.getByText('清理 Run2Skill 自己产生的中间缓存数据')).toBeTruthy()
+    expect(screen.getByRole('region', { name: '缓存清理' })).toBeTruthy()
     const purgeButton = screen.getByRole('button', { name: '清理所有缓存' })
     expect(screen.queryByRole('button', { name: /PROJECT/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /USER/ })).toBeNull()

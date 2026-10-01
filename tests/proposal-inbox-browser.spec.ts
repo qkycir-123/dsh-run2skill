@@ -157,7 +157,7 @@ describe('Proposal Inbox browser accessibility', () => {
     }))
 
     expect(screen.getByText(`无需新建技能：继续使用 ${coveringName}`)).toBeTruthy()
-    expect(screen.getAllByText(/这份草稿不会保存/)).toHaveLength(2)
+    expect(screen.getByText(/这份草稿不会保存/)).toBeTruthy()
     expect(screen.queryByText('保存后在哪里可用')).toBeNull()
     expect(screen.queryByText('确认要保存的技能说明')).toBeNull()
     expect(screen.getByText('用于判断的草稿内容')).toBeTruthy()

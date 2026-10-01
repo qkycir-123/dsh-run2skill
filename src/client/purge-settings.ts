@@ -607,7 +607,7 @@ function PurgeConfirmationDialog(props: {
   return createElement(Modal, {
     open: true,
     title: scope === 'ALL' ? '确认清理所有缓存？' : `确认清理 ${scope} Run2Skill 数据？`,
-    description: '此操作只清理 Run2Skill 自己产生的中间缓存数据，不会卸载插件。',
+    description: '清理 Run2Skill 的待处理草稿和中间缓存。',
     closeLabel: '关闭清理确认框',
     onClose: () => { props.controller.cancelPreview() },
     footer: createElement('div', { className: css.actions },
@@ -684,9 +684,7 @@ export function PurgeSettingsSection(props: {
   const activeReceipt = state.inProgressReceipt?.state === 'IN_PROGRESS' ? state.inProgressReceipt : undefined
   const activePhase = active?.phase ?? activeReceipt?.phase ?? (activeReceipt === undefined ? undefined : 'HIDING')
   const disabled = state.previewPending || state.mutationPending || active !== undefined || activeReceipt !== undefined
-  return createElement('section', { 'aria-labelledby': 'run2skill-purge-heading' },
-    createElement('h3', { id: 'run2skill-purge-heading' }, '缓存清理'),
-    createElement('p', null, '清理 Run2Skill 自己产生的中间缓存数据'),
+  return createElement('section', { 'aria-label': '缓存清理' },
     createElement('div', { className: css.actions },
     createElement(Button, {
       variant: 'outline',

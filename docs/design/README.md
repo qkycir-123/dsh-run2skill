@@ -4,6 +4,7 @@
 
 | 文档 | 当前状态 | 适用版本 | 对应 Issue |
 |---|---|---|---|
+| [页面文案与当前界面演示](issue-187-concise-copy-demo.md) | 负责人已要求精简 | 当前页面与 README | [#187](https://github.com/qkycir-123/dsh-run2skill/issues/187) |
 | [Run2Skill 品牌视觉](issue-184-branding.md) | 负责人已授权设计与接入 | 当前源码；未发布品牌变更 | [#184](https://github.com/qkycir-123/dsh-run2skill/issues/184) |
 | [Run2Skill 插件详情入口](issue-182-plugin-detail-entry.md) | 负责人已确认方案 | 当前源码；未发布入口变更 | [#182](https://github.com/qkycir-123/dsh-run2skill/issues/182) |
 | [设置页视觉整理](ui-polish.md) | 待负责人视觉审核 | 当前源码候选 | [#179](https://github.com/qkycir-123/dsh-run2skill/issues/179) |

@@ -15,170 +15,90 @@
   <a href="#install">Install</a> · <a href="#see-the-complete-flow">Full flow</a> · <a href="docs/compatibility.md">Compatibility</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="README.md">中文</a>
 </p>
 
-Have you run into any of these situations?
-
-- You teach an agent the same workflow today, then teach it again in a new session tomorrow.
-- You keep correcting the agent step by step: “Do not edit that file,” “write the test first,” or “this check is required.”
-- The agent finally learns the right approach, but the lesson disappears when the conversation ends.
-
-`dsh-run2skill` turns the corrections, constraints, and workflows you explicitly teach a DeepSeek Harness (DSH) agent into reviewable, reusable native Skills.
-
-> You teach once while doing real work. Run2Skill prepares a Skill draft from the reusable parts. Nothing is saved until you approve it.
-
-Run2Skill does not let an agent silently create permanent rules for itself. Every draft shows its source, intended scope, and complete content before you decide whether to save or discard it. Only an approved draft is written to DSH's native Skill directory.
-
-> npm's default `latest` and `next` tags both point to the preview [`0.5.0-alpha.3`](https://www.npmjs.com/package/dsh-run2skill/v/0.5.0-alpha.3), for Windows x64 Desktop and Web on DSH `0.2.0-rc.2`. For DSH Web `0.1.7-rc.2`, install `0.5.0-alpha.2`; for DSH Web `0.1.2-rc.1`, install the stable [`0.4.0`](https://www.npmjs.com/package/dsh-run2skill/v/0.4.0) release.
-
-`0.4.0` uses the Remote/API Gateway and browser-authentication contracts from DSH `0.1.2-rc.1`, and adapts its Session, Storage/Profile, Settings, and plugin-lifecycle changes. It supports only the retained built-in `standard` preset. Continue using `dsh-run2skill@0.3.1` with the older DSH `0.1.1-rc.2` line.
-
-Low-noise learning status, **Synthesize this experience now**, revision requests that generate a new draft, and bounded preservation of important long-workflow evidence remain available. An immediate request still waits for the agent to stop and for complete facts, then follows the existing lookup, review, and publication safety gates. Internal batch counters are not shown in the settings page.
+Run2Skill turns the corrections, constraints, and workflows you teach an Agent in DeepSeek Harness (DSH) into reusable Skills. Review a draft, request changes, and approve it to save.
 
 ## See the complete flow
 
-The navigation below applies to the current source and has not been released to npm. Published `0.5.0-alpha.3` and earlier versions still use **Settings → Built-in plugins → Run2Skill**. The demo and screenshots retain the earlier interface.
+![Run2Skill: open the plugin, review a draft, and save](docs/assets/run2skill-demo.gif)
 
-![Real DSH Web flow from a pending Run2Skill draft through human review to a successfully saved Skill](docs/assets/run2skill-demo.gif)
+*Main-branch interface · sample draft walkthrough*
 
-1. **Find the draft** — Run2Skill only notifies you when action is required. Open **Sidebar → Plugins → the Run2Skill card** to review drafts.
-2. **Review its evidence and scope** — inspect the rationale, filtered conversation evidence, target scope, and the complete `SKILL.md` that would be written.
-3. **Request a revision if needed** — leave one short instruction and Run2Skill generates a new complete draft; the old version is not published and the new one still needs review.
-4. **Save only after approval** — successful results appear under Recent activity and remain ordinary native DSH Skills.
+1. Open **Sidebar → Plugins → Run2Skill**.
+2. Review the draft’s purpose, scope, source conversation, and full content.
+3. Request changes or **approve and save**.
+4. Check **Recent activity**. The Skill is ready for a related task.
 
 <details>
-<summary>View the three key screenshots</summary>
+<summary>View key screens</summary>
 
-![A pending Skill draft in the Run2Skill settings page](docs/assets/01-proposal-inbox.png)
+![Draft inbox](docs/assets/01-proposal-inbox.png)
 
-![Evidence, target scope, and review content for a Run2Skill Skill draft](docs/assets/02-review-details.png)
+![Draft sources and content](docs/assets/02-review-details.png)
 
-![A successfully created native Skill shown in Run2Skill Recent activity](docs/assets/03-saved-activity.png)
+![Saved Skill and recent activity](docs/assets/03-saved-activity.png)
 
 </details>
 
 ## Install
 
-### DSH Desktop / Web 0.2.0-rc.2
+Supports DSH **0.2.0-rc.2** on Windows Desktop and Web.
 
-`0.5.0-alpha.3` has passed Windows Desktop compatibility checks. On Windows Desktop, use the dsh command provided by **Manage dsh Command…**. Launch Desktop once to initialize it, quit completely, then install the plugin:
+**Desktop**: set up the command through **Manage dsh Command…** in the app. Complete the first launch, exit the app, and run:
 
 ```bash
-dsh plugin --profile desktop add dsh-run2skill@0.5.0-alpha.3
+dsh plugin --profile desktop add dsh-run2skill
 ```
 
-Reopen Desktop and find dsh-run2skill in **Plugins**. The matching Web release uses `--profile web`. See [compatibility](docs/compatibility.md) for evidence and scope; macOS/Linux Desktop have not been validated.
-
-### Web installation and older DSH versions
-
-Check your DSH Web version, install Node.js `^22.19.0 || >=24.0.0`, and make sure both `dsh` and `pnpm` are available. For DSH `0.2.0-rc.2`, install the current npm default:
+**Web**: install Node.js `^22.19.0 || >=24.0.0` and make sure `pnpm` and `dsh` are available. Then run:
 
 ```bash
 dsh plugin --profile web add dsh-run2skill
 ```
 
-For DSH `0.1.7-rc.2`, use the matching release:
+Restart DSH after installation. Run2Skill uses the model selected in the current session. See [Compatibility](docs/compatibility.md) for version details.
 
-```bash
-dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.2
-```
+## Use
 
-For DSH `0.1.2-rc.1`, continue using the stable release:
+Work with your Agent as usual and describe the practices you want to reuse:
 
-```bash
-dsh plugin --profile web add dsh-run2skill@0.4.0
-```
+- **Correction**: “Write a failing test before changing the implementation.”
+- **Constraint**: “Use Chinese for GitHub copy in this project.”
+- **Workflow**: “Check the upstream version, then run compatibility checks.”
+- **Save request**: “Save this workflow as a Skill for reuse.”
 
-Restart DSH Web. On DSH `0.2.0-rc.2`, the **Plugins** page in the sidebar shows a **dsh-run2skill** card. Older hosts use the plugin interface provided by their DSH version.
+Run2Skill organizes lessons when the session is idle or you request a save. DSH notifies you when a draft needs review. You can also open the plugin and choose **Organize this session now**.
 
-Run2Skill does not need a separate model key. When it analyzes a Skill draft, it uses the model already selected for the current DSH session. If the session has no available model, learning stops and reports the reason instead of silently switching providers.
+Each draft includes its source conversation. Approve it, request changes, or discard it. Save Skills for the **current project** or **all projects**, using DSH’s default Skill directories.
 
-## Use it while you work
+## Settings
 
-Continue talking to DSH normally. For example:
+- **Automatic learning**: organize lessons from conversations automatically. When off, explicit “save as a Skill” requests still work.
+- **Recent activity**: see Skills created or updated in the last seven days.
+- **Clear all caches**: preview and clear pending drafts and intermediate data, keeping saved Skills, conversations, and DSH settings.
 
-```text
-Save this workflow as a Skill so it can be reused later.
-```
-
-You can also give an explicit correction, describe a durable constraint, or teach a reusable ordered workflow during ordinary work. You do not need to stop and manually reconstruct a `SKILL.md` file.
-
-After each conversation turn, Run2Skill records only low-cost observations; it does not call a model to review every turn. Batch detection runs at bounded batch boundaries, when the session becomes idle, or when you explicitly request saving or immediate synthesis. Only reusable experience proceeds to Skill lookup and draft generation.
-
-When something needs your attention, DSH shows one native notification. To review a draft:
-
-1. Open **Sidebar → Plugins → the Run2Skill card** (published versions use the Settings entry described above).
-2. Review the draft, its intended scope, evidence, and complete content.
-3. Approve and save it, request a revision, discard it, or retry a failed save.
-4. After a successful save, it is an ordinary native DSH Skill and remains usable even if Run2Skill is later uninstalled.
-
-If a draft is not right, submit one revision request of at most 2,048 UTF-8 bytes. The Host uses the current complete draft to generate a new immutable version, records the parent/child relationship, and invalidates the old approval. You must inspect and approve the new version. This is not a free-form editor and does not bypass lookup, human review, or safe publication.
-
-Drafts can target the current project (`PROJECT`) or the current user (`USER`). The current release writes only to DSH's default Skill storage. If you replace or disable that storage, Run2Skill stops safely instead of guessing a path.
-
-## What it learns
-
-Run2Skill focuses on reusable experience that you state explicitly:
-
-- **Correction:** “Do not fix the implementation first; write a failing test.”
-- **Durable constraint:** “All GitHub copy in this project must be written in Chinese.”
-- **Workflow:** “Check the upstream version, run compatibility probes, then update the evidence.”
-- **Explicit save request:** “Save this process as a Skill.”
-
-It does not turn every successful agent action into a permanent rule. It learns what you clearly taught, rather than trying to guess your intent.
-
-## You remain in control
-
-You can turn **Automatic learning** off on the same Run2Skill page:
-
-- On: explicit corrections, durable constraints, and workflows may produce Skill drafts.
-- Off: ordinary automatic learning pauses, while an explicit “save this as a Skill” request still works.
-
-Run2Skill is local-first. It does not store model keys or copy the whole session. Only the necessary, filtered, truncated, and redacted context is sent to the session's selected model for analysis. Every Skill draft requires your approval before it is saved.
-
-The settings page also provides **Clear all cache**. It removes Run2Skill-owned intermediate cache, pending Skill drafts, failures, and non-sensitive diagnostics, but never removes:
-
-- original DSH session records;
-- already published native Skills;
-- provider, agent, or other DSH settings.
-
-See [Storage and upgrades](docs/storage-and-upgrades.md) for the detailed retention and migration rules.
+Run2Skill manages drafts locally and sends selected, redacted conversation excerpts to the current model. See [Storage and upgrades](docs/storage-and-upgrades.md).
 
 ## Update and uninstall
 
-Install another explicit version:
+Update, then restart DSH:
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@<version>
+dsh plugin --profile desktop add dsh-run2skill
 ```
 
 Uninstall:
 
 ```bash
-dsh plugin --profile web remove dsh-run2skill
+dsh plugin --profile desktop remove dsh-run2skill
 ```
 
-Restart DSH Web after either command. Uninstalling does not delete published Skills and keeps Run2Skill data by default. Use **Clear all cache** on the settings page before uninstalling if you want to remove that data.
+For Web, replace `desktop` with `web`. Saved Skills and plugin data remain after uninstalling. To clear caches, use the plugin’s cleanup action before uninstalling.
 
-## Troubleshooting
+## Help and contribute
 
-- **The Run2Skill tab is missing:** confirm that you use the DSH `web` profile and restarted DSH Web after installation.
-- **“Run2Skill is currently limited” (`DEGRADED`):** do not manually delete storage files. Retry, then report the issue if the state persists.
-- **“This Run2Skill version is incompatible” (`INCOMPATIBLE`):** verify your DSH version and restore a compatible Run2Skill version.
-- **No Skill draft appears:** confirm that the current session has an available model, or say “Save this workflow as a Skill.”
-- **A `PROJECT` draft cannot be saved:** the current session must belong to a project workspace recognized by DSH.
-- **You changed DSH Skill storage:** the current release supports only the default storage and stops safely instead of guessing where to write.
+- [Report an issue](https://github.com/qkycir-123/dsh-run2skill/issues)
+- [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md) · [Maintainer probes](probes/README.md)
+- [Product requirements](docs/product/prd.md) · [Architecture and design](docs/architecture/baseline.md)
 
-Report problems through [GitHub Issues](https://github.com/qkycir-123/dsh-run2skill/issues). Do not attach keys, complete sessions, private paths, or logs containing sensitive information.
-
-## Learn more
-
-- [Changelog](CHANGELOG.md)
-- [DSH compatibility](docs/compatibility.md)
-- [Storage and upgrades](docs/storage-and-upgrades.md)
-- [Product requirements](docs/product/prd.md)
-- [Architecture baseline](docs/architecture/baseline.md)
-- [Design document index](docs/design/README.md)
-- [Single-owner design for one Skill-save intent](docs/design/single-owner-skill-save.md)
-- [Contributing](CONTRIBUTING.md)
-- [Maintainer compatibility probes](probes/README.md)
-
-This project is licensed under the [MIT License](LICENSE). Licenses for dependencies embedded in the client bundle are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT License](LICENSE) · [Third-party licenses](THIRD_PARTY_NOTICES.md)

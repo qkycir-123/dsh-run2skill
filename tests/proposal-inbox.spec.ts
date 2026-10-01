@@ -281,8 +281,8 @@ describe('Proposal Inbox client', () => {
     const copy = children.find(child => child.type === 'p')?.props.children
     const buttons = children.filter(child => child.type === 'button')
     expect(buttons).toHaveLength(2)
-    expect(copy).toContain('现有 Skill 不会改变')
-    expect(copy).toContain('经过筛选的学习材料仍按项目规则保留')
+    expect(copy).toContain('保留已有 Skill')
+    expect(copy).toContain('和学习材料')
     ;(buttons[0]!.props.onClick as () => void)()
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onConfirm).not.toHaveBeenCalled()
