@@ -12,7 +12,7 @@
 - publication 跨平台探针需要带 Node.js 的 WSL2/Linux；
 - 安装生命周期探针需要 Microsoft Edge、Google Chrome 或 DSH Playwright 可用的 Chromium。
 
-准备一个官方、干净、固定 commit 的 DSH checkout。未发布的 `0.5.0-alpha.3` 源码候选验证 `0.2.0-rc.2`：
+准备一个官方、干净、固定 commit 的 DSH checkout。`0.5.0-alpha.4` 发布候选验证 `0.2.0-rc.2`：
 
 ```powershell
 git clone https://github.com/deepseek-ai/deepseek-harness.git <dsh-source>

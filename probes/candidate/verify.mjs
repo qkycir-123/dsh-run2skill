@@ -261,7 +261,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.5.0-alpha.3',
+  version: '0.5.0-alpha.4',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   icon: './assets/run2skill-logo.webp',
   keywords: [
