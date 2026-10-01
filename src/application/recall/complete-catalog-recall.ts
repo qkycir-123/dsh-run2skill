@@ -6,6 +6,7 @@ import { preprocessPersistentText } from '../../domain/observe/redaction.js'
 import {
   deriveCatalogScanBindingDigestV2,
   deriveCatalogScanCallIdV2,
+  deriveCatalogScanRetryCallIdV2,
   deriveCatalogScanMembershipDigestV2,
   deriveCatalogScanOutputDigestV2,
   deriveCatalogScanPlanDigestV2,
@@ -112,6 +113,16 @@ export interface CatalogRecallClassifier {
   }): Promise<unknown>
 }
 
+/** Only a confirmed provider rejection may authorize one manual scan retry. */
+export class CatalogRecallTemporaryError extends Error {
+  readonly code = 'CATALOG_SCAN_TEMPORARY_FAILED'
+
+  constructor() {
+    super('CATALOG_SCAN_TEMPORARY_FAILED')
+    this.name = 'CatalogRecallTemporaryError'
+  }
+}
+
 export interface CompleteCatalogRecallPolicy {
   readonly catalogScanReserveBytes: number
   readonly coverageReserveBytes: number
@@ -182,6 +193,13 @@ function callId(intentId: string, scanPlanDigest: string, ordinal: number): `cal
   return deriveCatalogScanCallIdV2(intentId, scanPlanDigest, ordinal)
 }
 
+function effectiveCallId(intent: ExperienceIntentV2, planDigest: string, ordinal: number): `call_${string}` {
+  const original = callId(intent.intentId, planDigest, ordinal)
+  return original === intent.catalogRetry?.failedCallId
+    ? deriveCatalogScanRetryCallIdV2(original, intent.catalogRetry.authorizationRevision)
+    : original
+}
+
 export class CompleteCatalogRecallWorker {
   readonly #intents
   readonly #batches
@@ -247,7 +265,7 @@ export class CompleteCatalogRecallWorker {
           call.stage === 'CATALOG_SCAN'
           && call.outcome === 'RESERVED'
           && call.ordinal <= intent.recall.scanPageCount!
-          && call.callId === callId(intent.intentId, intent.recall.scanPlanDigest!, call.ordinal)
+          && call.callId === effectiveCallId(intent, intent.recall.scanPlanDigest!, call.ordinal)
         ))
       if (reserved === undefined) continue
       await this.#intents.update(intent.intentId, current => {
@@ -306,7 +324,7 @@ export class CompleteCatalogRecallWorker {
     for (const page of plan.pages) {
       intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
       if (intent.status !== 'RECALLING') return
-      const expectedCallId = callId(intent.intentId, plan.digest, page.ordinal)
+      const expectedCallId = effectiveCallId(intent, plan.digest, page.ordinal)
       if (intent.stageCalls.some(call => (
         call.stage === 'CATALOG_SCAN'
         && call.callId === expectedCallId
@@ -324,17 +342,17 @@ export class CompleteCatalogRecallWorker {
           intent: this.#intentProjection(intent), summaries: page.summaries,
           pageOrdinal: page.ordinal, inputDigest: page.inputDigest, route: batch.routeSnapshot,
         })
-      } catch {
-        await this.#finishFailedCall(intentId, callId(intent.intentId, plan.digest, page.ordinal), 'CATALOG_SCAN_FAILED')
+      } catch (error) {
+        await this.#finishFailedCall(intentId, expectedCallId, error instanceof CatalogRecallTemporaryError ? error.code : 'CATALOG_SCAN_FAILED')
         return
       }
       const parsed = classifierOutputSchema.safeParse(raw)
       if (!parsed.success || !this.#classificationsMatchPage(parsed.data.classifications, page)) {
-        await this.#finishInvalidCall(intentId, callId(intent.intentId, plan.digest, page.ordinal), this.#outputDigest(raw))
+        await this.#finishInvalidCall(intentId, effectiveCallId(intent, plan.digest, page.ordinal), this.#outputDigest(raw))
         return
       }
       const outputDigest = deriveCatalogScanOutputDigestV2(parsed.data.classifications)
-      await this.#finishSuccessfulPage(intentId, page, plan, parsed.data.classifications, outputDigest)
+      await this.#finishSuccessfulPage(intentId, page, expectedCallId, parsed.data.classifications, outputDigest)
     }
 
     intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
@@ -486,7 +504,7 @@ export class CompleteCatalogRecallWorker {
 
   async #reservePage(intent: ExperienceIntentV2, batch: SessionBatchV2, plan: ScanPlan, page: ScanPage): Promise<boolean> {
     let didReserve = false
-    const id = callId(intent.intentId, plan.digest, page.ordinal)
+    const id = effectiveCallId(intent, plan.digest, page.ordinal)
     await this.#intents.update(intent.intentId, current => {
       const parsed = ExperienceIntentV2Schema.parse(current)
       if (parsed.status !== 'RECALLING') return parsed
@@ -510,11 +528,10 @@ export class CompleteCatalogRecallWorker {
   async #finishSuccessfulPage(
     intentId: string,
     page: ScanPage,
-    plan: ScanPlan,
+    id: string,
     classifications: readonly { candidateId: string; classification: 'RELEVANT' | 'POSSIBLE' | 'UNRELATED' }[],
     outputDigest: string,
   ): Promise<void> {
-    const id = callId(intentId, plan.digest, page.ordinal)
     await this.#intents.update(intentId, current => {
       const intent = ExperienceIntentV2Schema.parse(current)
       if (intent.status !== 'RECALLING') return intent

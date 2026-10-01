@@ -375,6 +375,8 @@ Learning Model 必须是只接收有界 Envelope、返回结构化语义结果�
 **REQ-LRN-007**
 每个阶段的调用次数、输入输出和重试必须独立有界。系统至少记录 stage、input digest、provider、model、input/output usage 和 outcome；阶段不能借用其他阶段预算。相同输入、相同策略的确定性失败不得机械重试，崩溃后 outcome unknown 不得自动重复同一调用。
 
+已有 Skill 检索发生经 DSH 结构化错误确认的临时模型失败时，允许用户为当前 ExperienceIntent 授权一次重试失败分页。授权必须先持久化，并绑定原失败调用与当前作用域；执行前重新核验完整目录、扫描计划、路由、策略和输入摘要。已完成检测与成功分页保留，初次失败诊断不改写。重复点击、刷新或重启不得增加调用；再次失败或崩溃后结果未知时停止。具体分类、账本和验收见 [一次手动重试检索 Design](../design/issue-177-catalog-manual-retry.md)。
+
 **REQ-LRN-008（`0.3.1`）**
 direct-user evidence 必须先脱敏，再在 TurnObservation 共享 UTF-8 字节预算内确定性保留显式保存、禁止项、验收/验证、顺序步骤、约束和真实最新尾部；每类同时具有最低保留量与上限，单个超长片段不能吞掉其他必要类别。Detector 再对整个 batch 使用第二层 evidence 总预算，并以真实 system prompt 与序列化 user envelope 校验 route 总输入；durable claim 与实际发送共用同一投影和 `inputDigest`。最小安全 envelope 无法容纳时 fail closed，不发送完整 Session，也不增加逐 Turn 模型调用。
 

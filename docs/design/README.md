@@ -7,6 +7,7 @@
 | [无感提醒与插件设置页](issue-72-unobtrusive-ui.md) | 已发布核心 + `0.3.1` 状态/立即整理增量 | `0.1.1-alpha`–`0.5.0-alpha.2` | [#72](https://github.com/qkycir-123/dsh-run2skill/issues/72)、[#141](https://github.com/qkycir-123/dsh-run2skill/issues/141) |
 | [同一 Skill 保存意图的单一生成所有者](single-owner-skill-save.md) | 原则已落地；逐 Turn 机制已被 #84 取代 | `0.2.0`–`0.5.0-alpha.2` | [#71](https://github.com/qkycir-123/dsh-run2skill/issues/71) |
 | [SessionBatch 语义检测、完整召回与分阶段学习](issue-84-session-batch-learning.md) | 已发布核心 + `0.3.1` 调度/证据增量 | `0.2.0`–`0.5.0-alpha.2` | [#84](https://github.com/qkycir-123/dsh-run2skill/issues/84)、[#141](https://github.com/qkycir-123/dsh-run2skill/issues/141)、[#143](https://github.com/qkycir-123/dsh-run2skill/issues/143) |
+| [一次手动重试检索](issue-177-catalog-manual-retry.md) | 负责人已确认方案 | 当前源码候选 | [#177](https://github.com/qkycir-123/dsh-run2skill/issues/177) |
 | [草稿精简与保存反馈](issue-175-draft-save-feedback.md) | 负责人已确认方案 | 当前源码候选 | [#175](https://github.com/qkycir-123/dsh-run2skill/issues/175) |
 | [DSH 0.1.7-rc.2 兼容层](issue-162-dsh-017-compatibility.md) | 本地评审通过；未进入支持表 | 后续候选 | [#162](https://github.com/qkycir-123/dsh-run2skill/issues/162) |
 

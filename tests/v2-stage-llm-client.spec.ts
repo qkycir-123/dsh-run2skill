@@ -492,4 +492,22 @@ describe('DshV2StageLlmClient', () => {
 
     expect(llm.calls[0]?.maxTokens).toBe(512)
   })
+  it.each([
+    ['RATE_LIMIT', 429, true], ['SERVER', 500, true], ['SERVER', 502, true], ['SERVER', 503, true],
+    ['SERVER', 504, true], ['SERVER', 529, true], ['AUTH', 401, false], ['AUTH', 403, false],
+    ['SERVER', 501, false], ['SERVER', undefined, false], ['UNKNOWN', 503, false],
+  ] as const)('classifies structured Catalog failure %s/%s without an implicit call replay', async (code, status, temporary) => {
+    const failure = { code, status, message: 'sensitive provider message' }
+    const terminal: DshStreamChunk[] = [{ type: 'finish', reason: { kind: 'error', failure } }]
+    const thrown = Object.assign(new Error('sensitive provider message'), { failure })
+    const llm = new RecordingLlm([terminal, thrown])
+    const client = new DshV2StageLlmClient(llm)
+    const input = {
+      intent: { intentId: `intent_${digest('2')}`, persistenceScope: 'PROJECT' as const, experienceType: 'CONSTRAINT' as const, applicabilitySummary: 'Use this rule', keySteps: ['Test'], prohibitions: [] },
+      summaries: [], pageOrdinal: 1, inputDigest: digest('3'), route,
+    }
+    for (let attempt = 0; attempt < 2; attempt += 1) await expect(client.classifyCatalog(input)).rejects.toMatchObject({ code: temporary ? 'CATALOG_SCAN_TEMPORARY_FAILED' : 'MODEL_STREAM_FAILED' })
+    expect(llm.calls).toHaveLength(2)
+  })
+
 })

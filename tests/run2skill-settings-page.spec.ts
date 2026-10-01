@@ -1395,3 +1395,30 @@ describe('page-owned publication feedback', () => {
   })
 
 })
+
+
+describe('temporary Catalog failure UI', () => {
+  it.each([true, false])('offers one explicit retry only with a Host action (available: %s)', async retryable => {
+    const workItemId = `wi_${'e'.repeat(64)}`
+    const call = vi.fn(async (_endpoint: string) => ({ ok: true, value: { apiVersion: 1, items: [{
+      workItemId, workItemRevision: 8, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:01.000Z',
+      failureCode: 'CATALOG_SCAN_TEMPORARY_FAILED', retryable, attempt: 2, requestBudgetUsed: 2, calls: [],
+      attentionKind: 'PROCESSING_FAILURE', currentStage: 'RECALL',
+    }] } }))
+    render(createElement(LearningFailureSection, {
+      call, active: true, workspaceId: 'workspace-v2', scopeGeneration: 1,
+      actions: [{ actionKey: `act_${'a'.repeat(64)}`, subjectId: workItemId, kind: retryable ? 'RETRY_LEARNING' : 'DISMISS_LEARNING',
+        reasonCode: 'CATALOG_SCAN_TEMPORARY_FAILED', availableActions: retryable ? ['RETRY', 'DISMISS'] : ['DISMISS'] }],
+      onMutationSettled: vi.fn(),
+    }))
+    await screen.findByText('已有 Skill 检索暂时失败')
+    expect(screen.queryByText('CATALOG_SCAN_TEMPORARY_FAILED')).toBeNull()
+    if (retryable) {
+      fireEvent.click(screen.getByRole('button', { name: '重试检索一次' }))
+      await waitFor(() => { expect(call.mock.calls.some(([endpoint]) => endpoint === 'learning/issues/retry')).toBe(true) })
+    } else {
+      expect(screen.queryByRole('button', { name: '重试检索一次' })).toBeNull()
+      expect(screen.getByText('本次检索已停止。已完成的检测和失败信息已保留。')).toBeTruthy()
+    }
+  })
+})
