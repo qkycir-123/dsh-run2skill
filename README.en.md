@@ -22,9 +22,11 @@ Low-noise learning status, **Synthesize this experience now**, revision requests
 
 ## See the complete flow
 
+The navigation below applies to the current source and has not been released to npm. Published `0.5.0-alpha.3` and earlier versions still use **Settings → Built-in plugins → Run2Skill**. The demo and screenshots retain the earlier interface.
+
 ![Real DSH Web flow from a pending Run2Skill draft through human review to a successfully saved Skill](docs/assets/run2skill-demo.gif)
 
-1. **Find the draft** — Run2Skill only notifies you when action is required and places the draft under **Settings → Plugins → Run2Skill**.
+1. **Find the draft** — Run2Skill only notifies you when action is required. Open **Sidebar → Plugins → the dsh-run2skill card** to review drafts.
 2. **Review its evidence and scope** — inspect the rationale, filtered conversation evidence, target scope, and the complete `SKILL.md` that would be written.
 3. **Request a revision if needed** — leave one short instruction and Run2Skill generates a new complete draft; the old version is not published and the new one still needs review.
 4. **Save only after approval** — successful results appear under Recent activity and remain ordinary native DSH Skills.
@@ -72,7 +74,7 @@ For DSH `0.1.2-rc.1`, continue using the stable release:
 dsh plugin --profile web add dsh-run2skill@0.4.0
 ```
 
-Restart DSH Web. Open **Settings → Plugins**; the plugin is loaded when the **Run2Skill** tab appears.
+Restart DSH Web. On DSH `0.2.0-rc.2`, the **Plugins** page in the sidebar shows a **dsh-run2skill** card. Older hosts use the plugin interface provided by their DSH version.
 
 Run2Skill does not need a separate model key. When it analyzes a Skill draft, it uses the model already selected for the current DSH session. If the session has no available model, learning stops and reports the reason instead of silently switching providers.
 
@@ -90,7 +92,7 @@ After each conversation turn, Run2Skill records only low-cost observations; it d
 
 When something needs your attention, DSH shows one native notification. To review a draft:
 
-1. Open **Settings → Plugins → Run2Skill**.
+1. Open **Sidebar → Plugins → the dsh-run2skill card** (published versions use the Settings entry described above).
 2. Review the draft, its intended scope, evidence, and complete content.
 3. Approve and save it, request a revision, discard it, or retry a failed save.
 4. After a successful save, it is an ordinary native DSH Skill and remains usable even if Run2Skill is later uninstalled.
@@ -112,7 +114,7 @@ It does not turn every successful agent action into a permanent rule. It learns 
 
 ## You remain in control
 
-You can turn **Automatic learning** off under **Settings → Plugins → Run2Skill**:
+You can turn **Automatic learning** off on the same Run2Skill page:
 
 - On: explicit corrections, durable constraints, and workflows may produce Skill drafts.
 - Off: ordinary automatic learning pauses, while an explicit “save this as a Skill” request still works.
