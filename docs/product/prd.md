@@ -561,7 +561,7 @@ Purge 确认必须明确区分：
 用户发起 Purge 后，已清除数据不得继续出现在正常产品界面。
 
 **REQ-CFG-005（`0.3.1`）**
-低噪声学习状态和“立即整理本次经验”只出现在 Run2Skill 操作页，不恢复会话 Header 常驻状态，也不因内部调度变化弹 Toast。已发布 `0.5.0-alpha.3` 及更早版本从设置进入；当前源码按 [#182](../design/issue-182-plugin-detail-entry.md) 从“左侧栏 → 插件 → dsh-run2skill 卡片”进入，审核、配置和缓存清理同页保留。按钮必须在无可处理 durable observation、作用域不可证明、请求已排队、Agent 正在运行或插件不可用时给出准确的等待/禁用状态；重复点击、刷新与重启不得重复 Detector 或 generation。
+低噪声学习状态和“立即整理本次经验”只出现在 Run2Skill 操作页，不恢复会话 Header 常驻状态，也不因内部调度变化弹 Toast。已发布 `0.5.0-alpha.3` 及更早版本从设置进入；当前源码按 [#182](../design/issue-182-plugin-detail-entry.md) 从“左侧栏 → 插件 → Run2Skill 卡片”进入，审核、配置和缓存清理同页保留。按钮必须在无可处理 durable observation、作用域不可证明、请求已排队、Agent 正在运行或插件不可用时给出准确的等待/禁用状态；重复点击、刷新与重启不得重复 Detector 或 generation。
 
 ## 11. 状态语义与恢复
 

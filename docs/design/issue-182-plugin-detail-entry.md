@@ -4,7 +4,7 @@
 
 ## 范围与契约
 
-用户从 **左侧栏 → 插件 → dsh-run2skill 卡片** 打开现有 Run2Skill 页面。页面注册在 DSH `0.2.0-rc.2` 的 `plugins.bundle.config` keyed slot，key 为 npm 组合包名 `dsh-run2skill`。官方插件管理器在组合包详情、组件列表之前渲染这一槽位；它负责卡片、标题、返回与启停控件。源码证据见固定基线的 [PluginManagerPage](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/client/ui-plugin-manager/src/client/PluginManagerPage.tsx) 与 [slot 契约](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/client/ui-plugin-manager/src/client/slot-contract.ts)。
+用户从 **左侧栏 → 插件 → Run2Skill 卡片** 打开现有 Run2Skill 页面。页面注册在 DSH `0.2.0-rc.2` 的 `plugins.bundle.config` keyed slot，key 为 npm 组合包名 `dsh-run2skill`。官方插件管理器在组合包详情、组件列表之前渲染这一槽位；它负责卡片、标题、返回与启停控件。源码证据见固定基线的 [PluginManagerPage](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/client/ui-plugin-manager/src/client/PluginManagerPage.tsx) 与 [slot 契约](https://github.com/deepseek-ai/deepseek-harness/blob/639ed015397290b3745d163aafe02ffee4aa3f84/packages/client/ui-plugin-manager/src/client/slot-contract.ts)。
 
 移除 `settings.plugins.tab` 中的 Run2Skill 注册，并把可操作事项提醒中的导航改为“插件 → Run2Skill”。浏览器模块声明插件管理器为加载依赖。现有当前会话/项目解析、审核、整理、自动学习、清理、默认展开与权限行为沿用原实现；不增加侧栏按钮、常驻 Header、通知按钮或数据迁移。插件禁用时页面按原有 Client 生命周期卸载。
 

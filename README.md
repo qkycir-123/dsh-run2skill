@@ -1,6 +1,19 @@
-# dsh-run2skill
+<p align="center">
+  <img src="docs/assets/run2skill-hero.png" alt="Run2Skill — Teach once. Reuse the skill." width="1000" />
+</p>
 
-中文 | [English](README.en.md)
+<p align="center"><strong>把对话经验，变成下次可用的 Skill。</strong></p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-run2skill"><img src="https://img.shields.io/npm/v/dsh-run2skill?color=247C78&amp;label=npm" alt="npm 版本" /></a>
+  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-153B3C" alt="支持 DSH 0.2.0-rc.2" /></a>
+  <a href="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml"><img src="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml/badge.svg" alt="CI 状态" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EAB45C" alt="MIT 许可证" /></a>
+</p>
+
+<p align="center">
+  <a href="#安装">安装</a> · <a href="#看一遍完整流程">完整流程</a> · <a href="docs/compatibility.md">兼容性</a> · <a href="CHANGELOG.md">更新记录</a> · <a href="README.en.md">English</a>
+</p>
 
 你是否遇到过这些场景？
 
@@ -28,7 +41,7 @@
 
 ![Run2Skill 从待审核技能草稿、人工核对到成功沉淀的真实 DSH Web 流程](docs/assets/run2skill-demo.gif)
 
-1. **发现技能草稿**：Run2Skill 只在有事项需要处理时提醒你。打开 **左侧栏 → 插件 → dsh-run2skill 卡片**，即可审核草稿。
+1. **发现技能草稿**：Run2Skill 只在有事项需要处理时提醒你。打开 **左侧栏 → 插件 → Run2Skill 卡片**，即可审核草稿。
 2. **核对来源与范围**：查看生成理由、经过过滤的对话证据、保存范围以及将要写入的完整 `SKILL.md`。
 3. **不满意就要求修改**：写一条简短意见，Run2Skill 会生成新的完整草稿；旧版本不会直接发布，新版本仍需你审核。
 4. **确认后才保存**：成功结果会进入“最近活动”；保存下来的内容是普通的 DSH 原生 Skill。
@@ -94,7 +107,7 @@ run2skill 会在每轮对话完成后只做低成本记录，不会每轮调用�
 
 当有需要你处理的事项时，DSH 会显示一条原生通知；平时页面顶部不会常驻 run2skill 状态框。处理技能草稿时：
 
-1. 打开 **左侧栏 → 插件 → dsh-run2skill 卡片**（已发布版本使用上面的设置入口）。
+1. 打开 **左侧栏 → 插件 → Run2Skill 卡片**（已发布版本使用上面的设置入口）。
 2. 在待处理列表中查看技能草稿、适用范围和内容差异。
 3. 选择确认并保存、要求修改、放弃草稿，或在保存失败后重试。
 4. 保存成功后，结果就是普通的 DSH 原生 Skill；即使以后卸载 run2skill，它仍然可以被 DSH 使用。

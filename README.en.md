@@ -1,6 +1,19 @@
-# dsh-run2skill
+<p align="center">
+  <img src="docs/assets/run2skill-hero.png" alt="Run2Skill — Teach once. Reuse the skill." width="1000" />
+</p>
 
-[中文](README.md) | English
+<p align="center"><strong>Turn today's lessons into tomorrow's skills.</strong></p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-run2skill"><img src="https://img.shields.io/npm/v/dsh-run2skill?color=247C78&amp;label=npm" alt="npm version" /></a>
+  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-153B3C" alt="Supports DSH 0.2.0-rc.2" /></a>
+  <a href="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml"><img src="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EAB45C" alt="MIT license" /></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> · <a href="#see-the-complete-flow">Full flow</a> · <a href="docs/compatibility.md">Compatibility</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="README.md">中文</a>
+</p>
 
 Have you run into any of these situations?
 
@@ -26,7 +39,7 @@ The navigation below applies to the current source and has not been released to 
 
 ![Real DSH Web flow from a pending Run2Skill draft through human review to a successfully saved Skill](docs/assets/run2skill-demo.gif)
 
-1. **Find the draft** — Run2Skill only notifies you when action is required. Open **Sidebar → Plugins → the dsh-run2skill card** to review drafts.
+1. **Find the draft** — Run2Skill only notifies you when action is required. Open **Sidebar → Plugins → the Run2Skill card** to review drafts.
 2. **Review its evidence and scope** — inspect the rationale, filtered conversation evidence, target scope, and the complete `SKILL.md` that would be written.
 3. **Request a revision if needed** — leave one short instruction and Run2Skill generates a new complete draft; the old version is not published and the new one still needs review.
 4. **Save only after approval** — successful results appear under Recent activity and remain ordinary native DSH Skills.
@@ -92,7 +105,7 @@ After each conversation turn, Run2Skill records only low-cost observations; it d
 
 When something needs your attention, DSH shows one native notification. To review a draft:
 
-1. Open **Sidebar → Plugins → the dsh-run2skill card** (published versions use the Settings entry described above).
+1. Open **Sidebar → Plugins → the Run2Skill card** (published versions use the Settings entry described above).
 2. Review the draft, its intended scope, evidence, and complete content.
 3. Approve and save it, request a revision, discard it, or retry a failed save.
 4. After a successful save, it is an ordinary native DSH Skill and remains usable even if Run2Skill is later uninstalled.
