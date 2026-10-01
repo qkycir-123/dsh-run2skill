@@ -45,7 +45,7 @@ const COMMON_RULES = [
 
 const CONCISE_SKILL_RULES = [
   'Match the amount of detail to the experience. For a simple constraint, aim for 150–300 Chinese characters in the Markdown body, or comparable concise prose in its language; this is a soft target.',
-  'State each rule once. Avoid repeating requirements across overview, steps, prohibitions, and templates. Include examples or templates only when necessary to apply the rule correctly.',
+  'State each rule once. For a simple CONSTRAINT or CORRECTION, prefer a short applicability sentence and one compact rule list. Omit overview, examples, templates, and separate prohibitions sections unless explicitly required or essential to resolve ambiguity; never use them to restate the rule list.',
   'Complete requirements take precedence over brevity: preserve applicability, required steps, prohibitions, verification, and explicit formatting requirements. Preserve the complete existing behavior for MERGE and the requested changes for REVISION.',
 ].join('\n')
 
