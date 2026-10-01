@@ -85,8 +85,7 @@ describe('published package contract', () => {
         platform: 'web',
         inject: [
           '@deepseek-ai/dsh-client-ui-primitives',
-          '@deepseek-ai/dsh-client-ui-settings',
-          '@deepseek-ai/dsh-client-ui-settings-plugins',
+          '@deepseek-ai/dsh-client-ui-plugin-manager',
           '@deepseek-ai/dsh-api-remotes',
         ],
       },

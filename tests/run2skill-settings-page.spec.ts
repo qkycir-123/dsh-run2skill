@@ -53,7 +53,7 @@ describe('run2skill native settings surface', () => {
     const fiber = ctx.plugin({ inject: [...clientInject], apply: applyClient as never })
     try {
       await fiber
-      const tab = registrations.find(item => item.id === 'run2skill')!
+      const tab = registrations.find(item => item.name === 'plugins.bundle.config' && item.key === 'dsh-run2skill')!
       const props = (tab.inject as () => { callLearningStatus: (endpoint: string, payload: unknown) => Promise<unknown> })()
       await expect(props.callLearningStatus('learning/status', { apiVersion: 1 })).resolves.toEqual({ ok: true, value: {} })
       expect(query).toHaveBeenCalledOnce()
@@ -668,8 +668,9 @@ describe('run2skill native settings surface', () => {
     await screen.findByText('最近 7 天没有成功沉淀的 Skill。')
   })
 
-  it('registers one independent settings.plugins.tab and a header lifecycle mount with no persistent DOM', async () => {
-    const registrations: Array<{ name: string; id?: string; label?: string }> = []
+  it('mounts the existing page only in its bundle detail and keeps the quiet header lifecycle', async () => {
+    const registrations: Array<{ name: string; id?: string; key?: string }> = []
+    const components: Array<unknown> = []
     const context = {
       inject: (_deps: unknown, callback: (child: unknown) => void) => {
         callback({ get: () => context.remote.run2skill })
@@ -688,8 +689,9 @@ describe('run2skill native settings surface', () => {
       workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'workspace-a', sessionIds: ['session-a'] }] }), subscribe: () => () => undefined } },
       slots: {
         inject: vi.fn((_name: string, install: () => () => void) => { install() }),
-        register: vi.fn((options: { name: string; id?: string }) => {
+        register: vi.fn((options: { name: string; id?: string }, component: unknown) => {
           registrations.push(options)
+          components.push(component)
           return () => undefined
         }),
       },
@@ -699,8 +701,11 @@ describe('run2skill native settings surface', () => {
     await applyRun2skillClient(context as never)
 
     expect(registrations).toContainEqual(expect.objectContaining({
-      name: 'settings.plugins.tab', id: 'run2skill', label: 'Run2Skill',
+      name: 'plugins.bundle.config', key: 'dsh-run2skill',
     }))
+    expect(components[registrations.findIndex(item => item.name === 'plugins.bundle.config')]).toBe(Run2skillSettingsPage)
+    expect(registrations.filter(item => item.name === 'plugins.bundle.config')).toHaveLength(1)
+    expect(registrations.some(item => item.name === 'settings.plugins.tab' || item.name === 'sidebar.panellist')).toBe(false)
     expect(registrations).toContainEqual(expect.objectContaining({
       name: 'conversation.session.header.actions', id: 'run2skill-attention',
     }))
@@ -749,7 +754,8 @@ describe('run2skill native settings surface', () => {
     render(createElement(Run2skillAttentionToast, {
       sessionId: 'session-a', workspaceId: 'workspace-a', callAttention: call,
     }))
-    expect((await screen.findByRole('alert')).textContent).toContain('设置 → 内置插件 → Run2Skill')
+    expect((await screen.findByRole('alert')).textContent).toContain('插件 → Run2Skill')
+    expect(screen.getByRole('alert').textContent).not.toContain('内置插件')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
   })
 

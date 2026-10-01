@@ -23,6 +23,8 @@
 
 2026-08-20 的 Slice D 复核确认，固定 DSH baseline 已原生提供 Settings namespace、`expectedRevision`、loopback Settings RPC 和外部插件设置卡片 Slot。run2skill 因此直接注册 `run2skill` namespace 并复用 DSH Settings Client 接口，不再重复实现 `/run2skill` 私有 settings endpoint；该窄修订不改变 PRD 的设置字段、默认值或生效语义。
 
+2026-10-01 的 [#182 入口修订](../design/issue-182-plugin-detail-entry.md) 把现有 Client 操作页迁至 DSH `0.2.0-rc.2` 的 `plugins.bundle.config`，以 `dsh-run2skill` 组合包名绑定插件详情。移除旧设置标签页并更新提醒导航；当前会话解析、功能、权限和数据格式沿用原实现。该入口变更尚未发布到 npm。
+
 2026-08-21 的 D2 exact-HEAD 复核确认，active Purge journal 在完成后清除，不能独自阻止旧 Session gap 或迟到 Learning 在 runtime/进程重启后重新形成已清除数据。本文以下窄修订在同一 global 中增加可选、版本化、path-free 的 durable completed fences，并要求与 active journal 清除原子转换；这是同一 domain version 下的向后兼容可选字段扩展，不改变 PRD，也不增加 table、backend、History、Retention 或 migration framework。
 
 2026-08-21，维护者进一步接受“无感自动沉淀且同一保存意图不能让 Agent 与 run2skill 各生成一次”的产品决定。显式保存和其他 `HIGH` evidence 在 run2skill Learning 前必须先做 durable ownership arbitration：有效 Agent Skill 已经与当前意图精确绑定时以 `RESOLVED_BY_AGENT` 静默完成；只有完整证据证明本回合没有发生 Skill 生成行为时，run2skill 才取得生成所有权。该窄修订不授权自动发布，也不能退化为两边生成后再去重。

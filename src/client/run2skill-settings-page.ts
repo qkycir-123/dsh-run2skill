@@ -600,7 +600,7 @@ export function Run2skillAttentionToast(props: {
   return createElement(Toast, {
     key: toast.sequence,
     icon: createElement(IconWarningOutlineMedium),
-    text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往设置 → 内置插件 → Run2Skill`,
+    text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往左侧栏 → 插件 → Run2Skill`,
     onDone: () => { setToast(undefined) },
   })
 }
@@ -1414,13 +1414,11 @@ export async function applyRun2skillClient(context: Run2skillClientContext): Pro
       purgeController.dispose()
       disposeStyle()
     }
-  }, 'run2skill: native settings surface')
+  }, 'run2skill: native plugin detail surface')
 
-  context.slots.inject('settings.plugins.tab', () => context.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'run2skill',
-    order: 20,
-    label: 'Run2Skill',
+  context.slots.inject('plugins.bundle.config', () => context.slots.register({
+    name: 'plugins.bundle.config',
+    key: 'dsh-run2skill',
     inject: () => ({
       controller,
       purgeController,
