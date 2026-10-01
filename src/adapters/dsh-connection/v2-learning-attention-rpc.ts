@@ -6,11 +6,14 @@ import type { Run2skillV2Domain } from '../dsh-storage/v2-types.js'
 import {
   ExperienceIntentV2Schema,
   SessionBatchV2Schema,
+  retryableCatalogCall,
   deriveProposalCatalogMutationAnchorV2,
   deriveProposalCatalogMutationIdV2,
   type ExperienceIntentV2,
   type SessionBatchV2,
 } from '../../domain/v2/index.js'
+import { canonicalJson } from '../../domain/learn/identity.js'
+import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { deriveProjectScopeIdentityDigest } from '../../domain/purge/index.js'
 import {
   AttentionActionIdentityV1Schema,
@@ -143,7 +146,7 @@ function stageFacts(value: Subject, batch: SessionBatchV2 | undefined, stage: Le
 function action(
   value: Subject,
   scope: 'PROJECT' | 'USER',
-  override?: { readonly revision: number; readonly reasonCode: string; readonly coveredDispute?: boolean },
+  override?: { readonly revision?: number; readonly reasonCode?: string; readonly coveredDispute?: boolean; readonly catalogRetryEligible?: boolean },
 ): ProjectedAttentionAction {
   const revision = override?.revision ?? (value.kind === 'BATCH' ? value.batch.revision : value.intent.revision)
   const id = value.kind === 'BATCH' ? value.batch.batchId : value.intent.intentId
@@ -154,13 +157,15 @@ function action(
     && value.intent.status === 'COVERED_NEEDS_CONFIRMATION'
     && !value.intent.coverage.retryUsed
   )
+  const retryable = coveredDispute || (override?.catalogRetryEligible !== false
+    && value.kind === 'INTENT' && retryableCatalogCall(value.intent) !== undefined)
   return {
     actionKey: `act_${hash(['run2skill-v2-learning-action', subject, String(revision), reasonCode])}`,
     subjectId: subject,
-    kind: coveredDispute ? 'RETRY_LEARNING' : 'DISMISS_LEARNING',
+    kind: retryable ? 'RETRY_LEARNING' : 'DISMISS_LEARNING',
     reasonCode,
     scope,
-    availableActions: coveredDispute ? ['RETRY', 'DISMISS'] : ['DISMISS'],
+    availableActions: retryable ? ['RETRY', 'DISMISS'] : ['DISMISS'],
     createdAt: value.kind === 'BATCH' ? value.batch.createdAt : value.intent.createdAt,
     updatedAt: value.kind === 'BATCH' ? value.batch.updatedAt : value.intent.updatedAt,
   }
@@ -183,6 +188,7 @@ export class V2LearningAttentionService {
     private readonly domain: Run2skillV2Domain,
     private readonly resolveWorkspace: CurrentWorkspaceResolver,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly onRetryRequested: () => void = () => undefined,
   ) {
     this.#global = Run2skillV2GlobalStore.for(domain)
     this.#batches = domain.table('session_batches')
@@ -219,7 +225,11 @@ export class V2LearningAttentionService {
       ].includes(parsed.data.status)) continue
       const scope = parsed.data.persistenceScope
       if (scope === 'PROJECT' && !visibleProject(parsed.data.evidenceRefs.map(item => item.observationId))) continue
-      actions.push(action({ kind: 'INTENT', intent: parsed.data }, scope))
+      actions.push(action({ kind: 'INTENT', intent: parsed.data }, scope, {
+        catalogRetryEligible: this.#global.get().purgeJournal === undefined
+          && SessionBatchV2Schema.safeParse(this.#batches.get(parsed.data.batchId)).success
+          && parsed.data.evidenceRefs.every(ref => this.domain.table('turn_observations').get(ref.observationId) !== undefined),
+      }))
     }
     return actions.sort((left, right) => (
       left.createdAt.localeCompare(right.createdAt) || left.actionKey.localeCompare(right.actionKey)
@@ -283,7 +293,8 @@ export class V2LearningAttentionService {
           createdAt: projected.createdAt,
           updatedAt: projected.updatedAt,
           failureCode: projected.reasonCode,
-          retryable: false,
+          retryable: projected.availableActions.includes('RETRY')
+            && subject.kind === 'INTENT' && retryableCatalogCall(subject.intent) !== undefined,
           attempt: Math.min(3, callHistory.length),
           requestBudgetUsed: Math.min(2, callHistory.length),
           ...(route === undefined ? {} : { modelRoute: { provider: route.provider, model: route.model } }),
@@ -345,6 +356,10 @@ export class V2LearningAttentionService {
       const subject = this.#find(request.data.workItemId)
       if (subject?.kind !== 'INTENT') throw new CurrentScopeAuthorizationError('ACTION_STALE')
       const current = subject.intent
+      if (retryableCatalogCall(current) !== undefined
+        || current.catalogRetry?.actionIdentity === request.data.action.actionKey) {
+        return await this.#retryCatalog(request.data)
+      }
       const alreadyAuthorized = current.status === 'COVERAGE_RETRY_AUTHORIZED'
         && current.coverage.retryUsed
         && current.revision === request.data.workItemRevision + 1
@@ -409,6 +424,7 @@ export class V2LearningAttentionService {
           updatedAt: this.now(),
         })
       })
+      this.#wakeRetry()
       return { ok: true, value: {
         apiVersion: 1,
         workItemId: request.data.workItemId,
@@ -419,6 +435,79 @@ export class V2LearningAttentionService {
       } }
     } catch {
       return error('conflict')
+    }
+  }
+
+  async #retryCatalog(request: z.infer<typeof retryRequest>): Promise<ObserveRpcResult<unknown>> {
+    try {
+      const result = await this.#global.runExclusive(async global => {
+        if (global.purgeJournal !== undefined) throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        const subject = this.#find(request.workItemId)
+        if (subject?.kind !== 'INTENT') throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        const intent = subject.intent
+        if (!await this.#retryScopeAllows(intent, request.currentScope)) {
+          throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        }
+        const scopeDigest = sha256Utf8(canonicalJson(request.currentScope))
+        if (intent.catalogRetry !== undefined) {
+          const authorization = intent.catalogRetry
+          if (authorization.actionIdentity !== request.action.actionKey
+            || authorization.authorizationRevision !== request.workItemRevision + 1
+            || authorization.scopeDigest !== scopeDigest
+            || request.action.subjectId !== request.workItemId
+            || request.action.kind !== 'RETRY_LEARNING') throw new CurrentScopeAuthorizationError('ACTION_STALE')
+          return { value: { intent, changed: false } }
+        }
+        const projected = (await this.project(request.currentScope)).find(candidate => (
+          candidate.actionKey === request.action.actionKey && candidate.subjectId === request.action.subjectId
+          && candidate.kind === request.action.kind && candidate.availableActions.includes('RETRY')
+        ))
+        const failed = retryableCatalogCall(intent)
+        if (projected?.subjectId !== request.workItemId || intent.revision !== request.workItemRevision
+          || failed === undefined) throw new CurrentScopeAuthorizationError('ACTION_STALE')
+        const recordedAt = this.now()
+        const updated = await this.#intents.update(intent.intentId, raw => {
+          const current = ExperienceIntentV2Schema.parse(raw)
+          if (current.revision !== intent.revision || retryableCatalogCall(current)?.callId !== failed.callId) {
+            throw new CurrentScopeAuthorizationError('ACTION_STALE')
+          }
+          const authorizationRevision = current.revision + 1
+          const { incompleteReason: _reason, ...recall } = current.recall
+          return ExperienceIntentV2Schema.parse({
+            ...current,
+            revision: authorizationRevision,
+            status: 'RECALLING',
+            recall: { ...recall, state: 'SCANNING' },
+            catalogRetry: { authorizationRevision, failedCallId: failed.callId, actionIdentity: request.action.actionKey, scopeDigest, recordedAt },
+            reasonReceipts: [...current.reasonReceipts, { revision: authorizationRevision, reasonCode: 'CATALOG_SCAN_RETRY_AUTHORIZED', recordedAt }],
+            updatedAt: recordedAt,
+          })
+        })
+        return { value: { intent: updated, changed: true } }
+      })
+      if (result.changed) this.#wakeRetry()
+      return { ok: true, value: {
+        apiVersion: 1, workItemId: request.workItemId, workItemRevision: result.intent.revision,
+        changed: result.changed, processingState: 'CAPTURED', disposition: 'RETRY_QUEUED',
+      } }
+    } catch { return error('conflict') }
+  }
+
+  async #retryScopeAllows(intent: ExperienceIntentV2, currentScope: CurrentScopeV1): Promise<boolean> {
+    if (!SessionBatchV2Schema.safeParse(this.#batches.get(intent.batchId)).success) return false
+    const observations = intent.evidenceRefs.map(ref => this.domain.table('turn_observations').get(ref.observationId))
+    if (observations.length === 0 || observations.some(value => value === undefined)) return false
+    if (intent.persistenceScope === 'USER') return true
+    if (currentScope.kind !== 'WORKSPACE') return false
+    const workspace = await this.resolveWorkspace(currentScope.workspaceId).catch(() => undefined)
+    return workspace !== undefined && observations.every(observation => observation?.scopeBinding.status === 'PROJECT'
+      && observation.scopeBinding.workspaceId === workspace.workspaceId
+      && observation.scopeBinding.scopeIdentityDigest === deriveProjectScopeIdentityDigest(workspace.canonicalPath))
+  }
+
+  #wakeRetry(): void {
+    try { this.onRetryRequested() } catch {
+      // Durable authorization survives a failed wake; restart resumes the reserved work.
     }
   }
 

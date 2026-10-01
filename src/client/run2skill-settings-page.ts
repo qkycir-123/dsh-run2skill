@@ -463,6 +463,12 @@ const learningStageLabels: Record<NonNullable<LearningIssue['currentStage']>, st
 }
 
 function learningIssueDescription(item: LearningIssue): { readonly title: string; readonly detail: string } {
+  if (item.failureCode === 'CATALOG_SCAN_TEMPORARY_FAILED') return {
+    title: '已有 Skill 检索暂时失败',
+    detail: item.retryable
+      ? '模型服务暂时不可用。已完成的检测和检索结果已保留，可手动重试检索一次。'
+      : '本次检索已停止。已完成的检测和失败信息已保留。',
+  }
   if (item.failureCode === 'BASELINE_INCOMPLETE') return {
     title: '自动沉淀已停止',
     detail: '缺少任务开始前的 Skill 状态记录，无法确认 Agent 是否已经保存过同类 Skill。为避免重复生成，本次已停止。已有 Skill 和原始会话记录不受影响。',
@@ -905,7 +911,7 @@ export function LearningFailureSection(props: {
             title: '发现可能重复的 Skill',
             detail: 'Run2Skill 发现已有 Skill 可能已经包含这次经验，因此暂停生成新草稿。请选择下一步。',
           }
-        : learningIssueDescription(item)
+        : learningIssueDescription({ ...item, retryable: item.retryable && action?.availableActions?.includes('RETRY') === true })
       return createElement('article', { className: css.detail, key: item.workItemId },
         createElement('strong', null, description.title),
         createElement('p', null, description.detail),
@@ -928,7 +934,8 @@ export function LearningFailureSection(props: {
                 onClick: () => { mutate('learning/issues/retry', item) },
               }, busy
                 ? '正在处理…'
-                : isCoverageConfirmation ? '继续生成新 Skill 草稿' : '重试学习')
+                : isCoverageConfirmation ? '继续生成新 Skill 草稿'
+                  : item.failureCode === 'CATALOG_SCAN_TEMPORARY_FAILED' ? '重试检索一次' : '重试学习')
             : null,
           action?.availableActions?.includes('DISMISS') === true
             ? createElement(Button, {

@@ -204,6 +204,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       domain,
       options.resolveWorkspace,
       options.now === undefined ? undefined : () => new Date(options.now!()).toISOString(),
+      () => { this.pipeline.wake() },
     )
   }
 

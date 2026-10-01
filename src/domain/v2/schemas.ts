@@ -735,6 +735,10 @@ export function deriveCatalogScanCallIdV2(
   return `call_${sha256Utf8(canonicalJson({ intentId, scanPlanDigest, ordinal }))}`
 }
 
+export function deriveCatalogScanRetryCallIdV2(failedCallId: string, authorizationRevision: number): `call_${string}` {
+  return `call_${sha256Utf8(canonicalJson({ failedCallId, authorizationRevision }))}`
+}
+
 export interface CatalogScanBindingFactsV2 {
   readonly intentId: string
   readonly scanBasisRevision: number
@@ -1214,6 +1218,13 @@ export const ExperienceIntentV2Schema = z.object({
     }).strict()).max(32),
   }).strict(),
   duplicateBarrier: GenerationBarrierV2Schema.optional(),
+  catalogRetry: z.object({
+    authorizationRevision: positiveSafeInteger,
+    failedCallId: z.string().regex(/^call_[a-f0-9]{64}$/),
+    actionIdentity: z.string().regex(/^act_[a-f0-9]{64}$/),
+    scopeDigest: sha256Hex,
+    recordedAt: isoDateTime,
+  }).strict().optional(),
   stageCalls: z.array(z.object({
     stage: z.enum(['CATALOG_SCAN', 'COVERAGE', 'GENERATION']),
     intentRevision: positiveSafeInteger,
@@ -1993,9 +2004,21 @@ export const ExperienceIntentV2Schema = z.object({
   if (value.stageCalls.some(call => (call.stage === 'CATALOG_SCAN') !== (call.itemCount !== undefined))) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Only Catalog scan calls require an exact page item count' })
   }
+  const catalogRetry = value.catalogRetry
+  if (catalogRetry !== undefined) {
+    const failed = callsFor('CATALOG_SCAN').find(call => call.callId === catalogRetry.failedCallId)
+    if (failed?.outcome !== 'FAILED' || failed.failureCode !== 'CATALOG_SCAN_TEMPORARY_FAILED'
+      || failed.intentRevision >= catalogRetry.authorizationRevision
+      || catalogRetry.authorizationRevision > value.revision
+      || !value.reasonReceipts.some(receipt => receipt.revision === catalogRetry.authorizationRevision
+        && receipt.reasonCode === 'CATALOG_SCAN_RETRY_AUTHORIZED' && receipt.recordedAt === catalogRetry.recordedAt)) {
+      context.addIssue({ code: 'custom', path: ['catalogRetry'], message: 'Catalog retry requires one confirmed transient failed call and durable authorization' })
+    }
+  }
   const currentCatalogScanCalls = value.recall.scanBasisRevision === undefined
     ? []
-    : callsFor('CATALOG_SCAN').filter(call => call.intentRevision > value.recall.scanBasisRevision!)
+    : callsFor('CATALOG_SCAN').filter(call => call.intentRevision > value.recall.scanBasisRevision!
+      && call.callId !== catalogRetry?.failedCallId)
   if (currentCatalogScanCalls.some(call => (
     call.provider !== value.recall.scanRouteProvider
     || call.model !== value.recall.scanRouteModel
@@ -2006,7 +2029,12 @@ export const ExperienceIntentV2Schema = z.object({
     return page === undefined
       || call.inputDigest !== page.inputDigest
       || call.itemCount !== page.itemCount
-      || call.callId !== deriveCatalogScanCallIdV2(value.intentId, value.recall.scanPlanDigest!, call.ordinal)
+      || call.callId !== (() => {
+        const original = deriveCatalogScanCallIdV2(value.intentId, value.recall.scanPlanDigest!, call.ordinal)
+        return original === catalogRetry?.failedCallId
+          ? deriveCatalogScanRetryCallIdV2(original, catalogRetry.authorizationRevision)
+          : original
+      })()
   }) || new Set(currentCatalogScanCalls.map(call => call.ordinal)).size !== currentCatalogScanCalls.length) {
     context.addIssue({ code: 'custom', path: ['stageCalls'], message: 'Current Catalog scan calls must match unique durable plan pages' })
   }

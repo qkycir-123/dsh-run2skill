@@ -7,6 +7,7 @@ import type {
 } from './restricted-learning-client.js'
 import type { BatchDetectorClient, BatchDetectorInput } from '../../application/detection/index.js'
 import type { CatalogRecallClassifier } from '../../application/recall/index.js'
+import { CatalogRecallTemporaryError } from '../../application/recall/index.js'
 import type { CoverageClassifier } from '../../application/coverage-analysis/index.js'
 import type { SkillGenerator } from '../../application/generation/index.js'
 import type { ProposalRevisionGenerator } from '../../application/review/index.js'
@@ -137,6 +138,14 @@ const INPUT_DATA_PREFIX = 'INPUT_DATA:\n'
 const V2_STAGE_CALL_TIMEOUT_MS = 120_000
 const V2_GENERATION_CALL_TIMEOUT_MS = 300_000
 
+function confirmedTemporaryFailure(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false
+  const failure = value as { readonly code?: unknown; readonly status?: unknown }
+  return (failure.code === 'RATE_LIMIT' && failure.status === 429)
+    || (failure.code === 'SERVER' && typeof failure.status === 'number'
+      && [500, 502, 503, 504, 529].includes(failure.status))
+}
+
 interface PartialBlock {
   readonly type: string
   text: string
@@ -147,7 +156,7 @@ class TextStreamAssembler {
   readonly #blocks = new Map<number, PartialBlock>()
   readonly #order: number[] = []
   usage: DshTokenUsage | undefined
-  finish: { readonly kind: string } | undefined
+  finish: { readonly kind: string; readonly failure?: unknown } | undefined
 
   push(chunk: DshStreamChunk): void {
     switch (chunk.type) {
@@ -461,6 +470,8 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
       if (error instanceof V2StageLlmError) throw error
       if (timedOut) throw new V2StageLlmError('MODEL_TIMEOUT')
       if (controller.signal.aborted) throw new V2StageLlmError('MODEL_ABORTED')
+      if (stage === 'CATALOG_SCAN' && error instanceof Error && 'failure' in error
+        && confirmedTemporaryFailure(error.failure)) throw new CatalogRecallTemporaryError()
       throw new V2StageLlmError('MODEL_STREAM_FAILED')
     } finally {
       removeAbortListener()
@@ -472,7 +483,12 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
     if (assembler.finish?.kind === 'max-tokens' || assembler.finish?.kind === 'length') {
       throw new V2StageLlmError('MODEL_OUTPUT_TRUNCATED')
     }
-    if (assembler.finish?.kind === 'error') throw new V2StageLlmError('MODEL_STREAM_FAILED')
+    if (assembler.finish?.kind === 'error') {
+      if (stage === 'CATALOG_SCAN' && confirmedTemporaryFailure(assembler.finish.failure)) {
+        throw new CatalogRecallTemporaryError()
+      }
+      throw new V2StageLlmError('MODEL_STREAM_FAILED')
+    }
     if (assembler.finish?.kind !== 'stop' || !validUsage(assembler.usage)) {
       throw new V2StageLlmError('MODEL_TERMINAL_INVALID')
     }
