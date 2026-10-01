@@ -1,6 +1,19 @@
-# dsh-run2skill
+<p align="center">
+  <img src="docs/assets/run2skill-hero.png" alt="Run2Skill — Teach once. Reuse the skill." width="1000" />
+</p>
 
-[中文](README.md) | English
+<p align="center"><strong>Turn today's lessons into tomorrow's skills.</strong></p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-run2skill"><img src="https://img.shields.io/npm/v/dsh-run2skill?color=247C78&amp;label=npm" alt="npm version" /></a>
+  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-153B3C" alt="Supports DSH 0.2.0-rc.2" /></a>
+  <a href="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml"><img src="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EAB45C" alt="MIT license" /></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> · <a href="#see-the-complete-flow">Full flow</a> · <a href="docs/compatibility.md">Compatibility</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="README.md">中文</a>
+</p>
 
 Have you run into any of these situations?
 

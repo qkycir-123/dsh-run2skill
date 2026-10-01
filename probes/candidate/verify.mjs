@@ -11,6 +11,7 @@ import {
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const packageDirectory = resolve(root, '.probe-work', 'package')
 const fixedPackageFiles = [
+  'assets/run2skill-logo.webp',
   'cordis.patch.yml',
   'lib/client.js',
   'lib/index.d.ts',
@@ -244,6 +245,7 @@ assert.deepEqual({
   name: packedManifest.name,
   version: packedManifest.version,
   description: packedManifest.description,
+  icon: packedManifest.icon,
   keywords: packedManifest.keywords,
   private: packedManifest.private,
   license: packedManifest.license,
@@ -259,6 +261,7 @@ assert.deepEqual({
   name: 'dsh-run2skill',
   version: '0.5.0-alpha.3',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
+  icon: './assets/run2skill-logo.webp',
   keywords: [
     'deepseek-harness',
     'dsh',
@@ -269,7 +272,7 @@ assert.deepEqual({
   ],
   private: undefined,
   license: 'MIT',
-  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'],
+  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'assets/run2skill-logo.webp'],
   repository: {
     type: 'git',
     url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',

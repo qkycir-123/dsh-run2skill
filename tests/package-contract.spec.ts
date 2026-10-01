@@ -6,6 +6,7 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
   version?: string
   private?: boolean
   description?: string
+  icon?: string
   keywords?: string[]
   license?: string
   repository?: { type?: string; url?: string }
@@ -72,6 +73,7 @@ describe('published package contract', () => {
       'README.md',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
+      'assets/run2skill-logo.webp',
     ])
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.4',
@@ -96,6 +98,15 @@ describe('published package contract', () => {
     expect(thirdPartyNotices).toContain('Zod 4.4.3')
     expect(thirdPartyNotices).toContain('Copyright (c) 2025 Colin McDonnell')
     expect(thirdPartyNotices).toContain('The above copyright notice and this permission notice')
+  })
+
+  it('ships a self-contained WebP logo within the DSH metadata size limit', () => {
+    expect(manifest.icon).toBe('./assets/run2skill-logo.webp')
+    const logo = readFileSync(new URL('../assets/run2skill-logo.webp', import.meta.url))
+    expect(logo.length).toBeLessThanOrEqual(256 * 1024)
+    expect(logo.subarray(0, 4).toString('ascii')).toBe('RIFF')
+    expect(logo.subarray(8, 12).toString('ascii')).toBe('WEBP')
+    expect(manifest.files).toContain(manifest.icon!.slice(2))
   })
 
   it('runs the exact candidate verifier and permits only the required build helper', () => {

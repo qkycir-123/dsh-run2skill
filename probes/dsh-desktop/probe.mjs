@@ -158,6 +158,12 @@ async function observe(present, expectedLearning = true, setLearning) {
     }
     await page.getByRole('button', { name: /^(插件|Plugins)$/u }).click()
     await page.getByText('dsh-run2skill', { exact: true }).waitFor()
+    const cardIcon = page.locator('[data-plugin-package="dsh-run2skill"] img')
+    await cardIcon.waitFor()
+    await cardIcon.evaluate(async img => { await img.decode() })
+    assert.equal(await cardIcon.evaluate(img => img.complete && img.naturalWidth > 0), true)
+    const expectedIcon = `data:image/webp;base64,${(await readFile(join(candidate, 'assets', 'run2skill-logo.webp'))).toString('base64')}`
+    assert.equal((await cardIcon.getAttribute('src')) === expectedIcon, true, 'installed bundle must display its packaged logo')
     // Catalog presence and successful RPC do not prove the bundle detail can
     // resolve the selected session. Exercise the host's actual selector hooks.
     await page.getByRole('button', { name: '新建会话', exact: true }).first().click()
@@ -182,7 +188,7 @@ async function cli(args) {
 async function archive(version) {
   const stage = join(work, version)
   await mkdir(stage)
-  for (const name of ['lib', 'cordis.patch.yml', 'README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
+  for (const name of ['lib', 'assets', 'cordis.patch.yml', 'README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     await cp(join(candidate, name), join(stage, name), { recursive: true })
   }
   const manifest = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8'))

@@ -2,6 +2,7 @@
   "name": "dsh-run2skill",
   "version": "0.5.0-alpha.3",
   "description": "Turn explicit DSH session experience into reviewable native Skills",
+  "icon": "./assets/run2skill-logo.webp",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -50,7 +51,8 @@
     "README.en.md",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "assets/run2skill-logo.webp"
   ],
   "dsh": {
     "bundle": {
