@@ -1267,7 +1267,7 @@ export function Run2skillSettingsPage(props: {
   )
   return createElement('div', { ref: hostTab.ref, className: css.page, 'data-run2skill-settings-page': true },
     createElement('p', { className: css.intro }, 'Run2Skill 在后台自动沉淀经验；这里展示当前状态、需要处理的事项和持久设置。'),
-    visibleFeedback === undefined ? null : createElement('div', { className: css.sectionBody },
+    visibleFeedback === undefined ? null : createElement('div', { className: css.publicationFeedback },
       createElement('p', { role: 'status', 'aria-live': 'polite', 'aria-atomic': true },
         visibleFeedback.publicationOutcome === 'PUBLISHED'
           ? `已保存「${visibleFeedback.name}」· ${describePersistenceScope(visibleFeedback.persistenceScope)}`
