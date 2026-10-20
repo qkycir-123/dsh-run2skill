@@ -261,7 +261,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.5.0-alpha.4',
+  version: '0.5.0-alpha.5',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   icon: './assets/run2skill-logo.webp',
   keywords: [
@@ -303,9 +303,10 @@ assert.deepEqual({
   },
   peerDependencies: {
     '@deepseek-ai/cordis': '4.0.4',
-    '@deepseek-ai/dsh-agent-preset-registry': '0.2.0-rc.2',
-    '@deepseek-ai/dsh-client-ui-primitives': '0.2.0-rc.2',
-    '@deepseek-ai/dsh-typert-protocol': '0.2.0-rc.2',
+    '@deepseek-ai/dsh-agent-preset-registry': '0.2.1-rc.2',
+    '@deepseek-ai/dsh-scope': '0.2.1-rc.2',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.2.1-rc.2',
+    '@deepseek-ai/dsh-typert-protocol': '0.2.1-rc.2',
   },
 }, 'candidate package metadata changed')
 assert.equal(
@@ -313,6 +314,9 @@ assert.equal(
   '- insert:\n    - id: run2skill\n      name: dsh-run2skill\n',
   'candidate bundle patch does not match the package identity',
 )
+// Scope tags must use the Host module's Symbol identity, not a bundled copy.
+const hostBundle = run('tar', ['-xOf', tarballPath, 'package/lib/index.js'])
+assert.match(hostBundle, /from ["']@deepseek-ai\/dsh-scope["']/u, 'scope must remain a Host import')
 const thirdPartyNotices = run('tar', ['-xOf', tarballPath, 'package/THIRD_PARTY_NOTICES.md'])
 assert.match(thirdPartyNotices, /Zod 4\.4\.3/u)
 assert.match(thirdPartyNotices, /Copyright \(c\) 2025 Colin McDonnell/u)

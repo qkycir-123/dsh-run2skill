@@ -54,8 +54,8 @@ export default defineConfig([
     fixedExtension: false,
     clean: true,
     deps: {
-      neverBundle: ['zod', '@deepseek-ai/cordis', '@deepseek-ai/dsh-typert-protocol'],
-      dts: { neverBundle: ['zod', '@deepseek-ai/cordis', '@deepseek-ai/dsh-typert-protocol'] },
+      neverBundle: ['zod', '@deepseek-ai/cordis', '@deepseek-ai/dsh-typert-protocol', '@deepseek-ai/dsh-scope'],
+      dts: { neverBundle: ['zod', '@deepseek-ai/cordis', '@deepseek-ai/dsh-typert-protocol', '@deepseek-ai/dsh-scope'] },
     },
   },
   {

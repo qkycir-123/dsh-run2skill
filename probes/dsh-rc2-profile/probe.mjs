@@ -159,9 +159,9 @@ const { chromium } = requireFromWeb('playwright')
 
 async function browserExecutable() {
   const candidates = [
-    chromium.executablePath(),
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    chromium.executablePath(),
   ]
   for (const path of candidates) {
     try { await access(path); return path } catch { /* continue */ }
@@ -259,6 +259,26 @@ async function observe(present, expectedLearning = true, setLearning) {
       const pageErrors = []
       page.on('pageerror', error => pageErrors.push(String(error)))
       await page.goto(launchUrl.origin, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      await page.getByRole('button', { name: /^(插件|Plugins)$/u }).waitFor()
+      for (const name of [/^(继续|Continue)$/u, /^(关闭|Close)$/u]) {
+        const button = page.getByRole('button', { name, exact: true })
+        const visible = await button.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)
+        if (visible) await button.click()
+      }
+      await page.getByRole('button', { name: /^(插件|Plugins)$/u }).click()
+      await page.getByText('Run2Skill', { exact: true }).first().click()
+      await page.getByText('自动学习', { exact: true }).waitFor({ timeout: 30_000 })
+      await page.getByText('缓存清理', { exact: true }).waitFor({ timeout: 30_000 })
+      if (setLearning === false) {
+        const disabled = await remote('pluginManager/setBundleEnabled', { name: packageName, enabled: false })
+        assert.equal(disabled.application, 'applied', 'live disable must not require a Host restart')
+        const enabled = await remote('pluginManager/setBundleEnabled', { name: packageName, enabled: true })
+        assert.equal(enabled.application, 'applied', 'live enable must not require a Host restart')
+        const restored = await remote('run2skill/query', { request: { endpoint: 'observe-summary', payload: { apiVersion: 1 } } })
+        assert.equal(restored.ok, true)
+        console.log('CP_INS_RC2_LIVE_RELOAD=PASS')
+      }
+      await page.reload({ waitUntil: 'domcontentloaded' })
       await delay(2_000)
       assert.equal(pageErrors.filter(error => /run2skill/iu.test(error)).length, 0)
     }
@@ -271,8 +291,8 @@ async function observe(present, expectedLearning = true, setLearning) {
   }
 }
 
-const v1 = await stage('0.5.0-alpha.3.probe.1')
-const v2 = await stage('0.5.0-alpha.3.probe.2')
+const v1 = await stage('0.5.0-alpha.5.probe.1')
+const v2 = await stage('0.5.0-alpha.5.probe.2')
 
 console.log('CP_INS_RC2_STAGE=add')
 await dsh(['plugin', '--profile', 'web', 'add', v1])
@@ -292,7 +312,7 @@ console.log('CP_INS_RC2_STAGE=upgrade')
 await writeFile(patchPath, savedSettingsPatch)
 await dsh(['plugin', '--profile', 'web', 'add', v2])
 const installed = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-assert.equal(installed.version, '0.5.0-alpha.3.probe.2')
+assert.equal(installed.version, '0.5.0-alpha.5.probe.2')
 await observe(true, false, true)
 const retainedStorage = (await readdir(join(home, 'storages'))).filter(entry => /run2skill/iu.test(entry))
 assert.ok(retainedStorage.length > 0)

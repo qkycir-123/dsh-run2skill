@@ -41,6 +41,8 @@ Run2Skill turns the corrections, constraints, and workflows you teach an Agent i
 
 ## Install
 
+Source candidate `0.5.0-alpha.5` targets DSH `0.2.1-rc.2` Web and awaits npm publication. Installation below describes the published release; see [compatibility](docs/compatibility.md) for validation details.
+
 Supports DSH **0.2.0-rc.2** on Windows Desktop and Web.
 
 **Desktop**: set up the command through **Manage dsh Command…** in the app. Complete the first launch, exit the app, and run:

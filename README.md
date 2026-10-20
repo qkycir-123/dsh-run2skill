@@ -41,6 +41,8 @@ Run2Skill 把你在 DeepSeek Harness（DSH）里教给 Agent 的纠正、约束�
 
 ## 安装
 
+源码候选 `0.5.0-alpha.5` 已适配 DSH `0.2.1-rc.2` Web，尚未发布 npm。下面的安装说明对应已发布版本；验证范围见[兼容性](docs/compatibility.md)。
+
 适用于 DSH **0.2.0-rc.2** 的 Windows Desktop 和 Web。
 
 **Desktop**：在应用中通过 **Manage dsh Command…** 配置命令，完成首次启动后退出应用，再运行：

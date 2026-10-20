@@ -17,7 +17,7 @@ assert(modulesArgument && outputArgument, 'Usage: pnpm exec tsx probes/catalog-r
 const modules = resolve(modulesArgument)
 for (const name of ['dsh-llm', 'dsh-llm-deepseek']) {
   const metadata = JSON.parse(await readFile(join(modules, '@deepseek-ai', name, 'package.json'), 'utf8'))
-  assert.equal(metadata.version, '0.2.0-rc.2')
+  assert.equal(metadata.version, '0.2.1-rc.2')
 }
 const { Context } = await import(pathToFileURL(join(modules, '@deepseek-ai/cordis/lib/index.js')).href)
 const { default: LlmRuntime } = await import(pathToFileURL(join(modules, '@deepseek-ai/dsh-llm/lib/index.js')).href)
@@ -84,7 +84,7 @@ try {
   assert.equal(final.stageCalls.filter(call => call.outcome === 'FAILED').length, 2)
   assert.deepEqual((await attention.project(scope))[0]!.availableActions, ['DISMISS'])
   assert.equal(await worker().runOnce(), 'IDLE')
-  const result = { sdk: '0.2.0-rc.2', controlledStatus: 503, externalModelCalled: false, requests, manualAuthorizations, duplicateRequestsAddedCalls: false, failureHistoryPreserved: true, detectionPreserved: JSON.stringify(domain.sessionBatches.get(batch.batchId)?.detector) === JSON.stringify(batch.detector), secondRetryAvailable: false }
+  const result = { sdk: '0.2.1-rc.2', controlledStatus: 503, externalModelCalled: false, requests, manualAuthorizations, duplicateRequestsAddedCalls: false, failureHistoryPreserved: true, detectionPreserved: JSON.stringify(domain.sessionBatches.get(batch.batchId)?.detector) === JSON.stringify(batch.detector), secondRetryAvailable: false }
   assert(result.detectionPreserved)
   await mkdir(resolve(outputArgument), { recursive: true })
   await writeFile(join(resolve(outputArgument), 'catalog-retry.json'), JSON.stringify(result, null, 2), { flag: 'wx' })

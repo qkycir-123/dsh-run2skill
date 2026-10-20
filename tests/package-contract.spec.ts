@@ -35,7 +35,7 @@ describe('published package contract', () => {
   it('pins the public 0.5 alpha identity and portable repository metadata', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
-      version: '0.5.0-alpha.4',
+      version: '0.5.0-alpha.5',
       description: 'Turn explicit DSH session experience into reviewable native Skills',
       keywords: [
         'deepseek-harness',
@@ -79,9 +79,10 @@ describe('published package contract', () => {
     ])
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.4',
-      '@deepseek-ai/dsh-agent-preset-registry': '0.2.0-rc.2',
-      '@deepseek-ai/dsh-client-ui-primitives': '0.2.0-rc.2',
-      '@deepseek-ai/dsh-typert-protocol': '0.2.0-rc.2',
+      '@deepseek-ai/dsh-agent-preset-registry': '0.2.1-rc.2',
+    '@deepseek-ai/dsh-scope': '0.2.1-rc.2',
+      '@deepseek-ai/dsh-client-ui-primitives': '0.2.1-rc.2',
+      '@deepseek-ai/dsh-typert-protocol': '0.2.1-rc.2',
     })
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },
@@ -121,7 +122,7 @@ describe('published package contract', () => {
   it('runs the exact candidate verifier and permits only the required build helper', () => {
     expect(manifest.scripts?.['verify:candidate']).toContain('probes/candidate/verify.mjs')
     expect(workspace).toContain("packages:\n  - '.'\n\nallowBuilds:\n  esbuild: true\n")
-    expect(workspace).toContain("'@deepseek-ai/dsh-typert-protocol@0.1.2-rc.1||0.1.3-alpha.2||0.2.0-rc.2'")
+    expect(workspace).toContain("'@deepseek-ai/dsh-typert-protocol@0.1.2-rc.1||0.1.3-alpha.2||0.2.0-rc.2||0.2.1-rc.2'")
   })
 
   it('inserts only the run2skill Host row and never mounts later-slice services', () => {

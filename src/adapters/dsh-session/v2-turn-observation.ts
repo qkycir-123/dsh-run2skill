@@ -33,6 +33,8 @@ const SUPPORTED_TURN_EVENT_TYPES = new Set([
   // Host system surface and upload receipts are not direct user evidence.
   'system/message',
   'session-log-deepseek/delivery-accepted',
+  'job/registered', // Host bookkeeping; tool results remain the execution evidence.
+  'job/settled',
   'model/selection', // Only request/header supplies the route actually used.
   'assistant/chunk',
   'assistant/attempt',
@@ -244,7 +246,8 @@ function directUserContentIsTextOnly(events: readonly DshSessionEvent[]): boolea
 
 function hasUnsupportedRequiredEvent(events: readonly DshSessionEvent[]): boolean {
   return events.some(event => (
-    !SUPPORTED_TURN_EVENT_TYPES.has(event.type) && event.ignorable !== true
+    event.type === 'working-directory/change'
+      || (!SUPPORTED_TURN_EVENT_TYPES.has(event.type) && event.ignorable !== true)
   ))
 }
 

@@ -1,11 +1,11 @@
 # 一次手动重试的官方 DSH 协议探针
 
-使用未修改的官方 npm SDK `@deepseek-ai/dsh-llm`、`dsh-llm-deepseek@0.2.0-rc.2` 和 `cordis@4.0.4`，向本地受控 HTTP 服务注入 503。探针不读取凭据、不请求外部模型，也不代表真实模型内容质量验证。
+使用未修改的官方 npm SDK `@deepseek-ai/dsh-llm`、`dsh-llm-deepseek@0.2.1-rc.2` 和 `cordis@4.0.4`，向本地受控 HTTP 服务注入 503。探针不读取凭据、不请求外部模型，也不代表真实模型内容质量验证。
 
 在仓库外安装独立 SDK，再从 clean 的插件源码检出运行：
 
 ```sh
-npm install --prefix ../dsh-native-retry-sdk @deepseek-ai/cordis@4.0.4 @deepseek-ai/dsh-llm@0.2.0-rc.2 @deepseek-ai/dsh-llm-deepseek@0.2.0-rc.2
+npm install --prefix ../dsh-native-retry-sdk @deepseek-ai/cordis@4.0.4 @deepseek-ai/dsh-llm@0.2.1-rc.2 @deepseek-ai/dsh-llm-deepseek@0.2.1-rc.2
 pnpm install --frozen-lockfile
 pnpm exec tsx probes/catalog-retry/probe.ts ../dsh-native-retry-sdk/node_modules .probe-work/catalog-retry
 ```

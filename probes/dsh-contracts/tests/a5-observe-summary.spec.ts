@@ -1,4 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
+import { Peer } from '@deepseek-ai/dsh-client-connection'
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
+import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { apply as applyClientGateway, inject as clientGatewayInject } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
@@ -24,10 +27,11 @@ class FakeHostConnection extends Service {
 
   get rpc() {
     return {
-      intercept: (channel: string, _matches: (endpoint: string) => boolean, handler: RpcHandler) =>
+      intercept: (channel: string, _matches: (endpoint: string) => boolean, handler: (endpoint: string, payload: unknown, signal: AbortSignal, peer: PeerScope) => ReturnType<RpcHandler>) =>
         this.ctx.effect(() => {
           this.channel = channel
-          this.handler = handler
+          const peer = new Peer(this.ctx.root, { principal: { kind: 'owner' } })
+          this.handler = (endpoint, payload, signal) => handler(endpoint, payload, signal, peer)
           return () => {
             this.channel = undefined
             this.handler = undefined
@@ -41,6 +45,7 @@ async function hostBench(): Promise<{ readonly ctx: Context; readonly connection
   const ctx = new Context()
   await ctx.plugin(TypertRegistry)
   await ctx.plugin(FakeHostConnection)
+  await ctx.plugin(RemoteAccessService)
   await ctx.plugin(TypertGatewayService)
   ctx.typert.register(TYPERT as never)
   new Run2skillRemoteService(ctx, createObserveSummaryRpcHandler(() => ({

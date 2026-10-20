@@ -30,6 +30,28 @@ function configuration(
 }
 
 describe('stock DSH root contract', () => {
+  it('rejects a directory transition during asynchronous configuration capture', async () => {
+    const events: Array<{ type: string }> = []
+    const agent = { session: { snapshotEvents: () => events } }
+    const observed = Promise.withResolvers<StockSkillRuntimeConfiguration>()
+    const cache = new StockSkillRuntimeConfigurationCache(async () => await observed.promise)
+    const capture = cache.capture(agent)
+    events.push({ type: 'working-directory/change' })
+    observed.resolve(configuration())
+    await expect(capture).resolves.toBeUndefined()
+    expect(cache.get(agent)).toBeUndefined()
+  })
+
+  it('invalidates cached permissions immediately after a Session directory transition', async () => {
+    const events: Array<{ type: string }> = []
+    const agent = { ctx: {}, session: { snapshotEvents: () => events } }
+    const cache = new StockSkillRuntimeConfigurationCache(async () => configuration())
+    expect(await cache.capture(agent)).toBeDefined()
+    events.push({ type: 'working-directory/change' })
+    expect(cache.get(agent)).toBeUndefined()
+    expect(await cache.capture(agent)).toBeUndefined()
+  })
+
   it('invalidates a cached configuration when authoritative recapture becomes unsupported', async () => {
     const agent = { ctx: {} }
     let mounted = true
@@ -47,11 +69,11 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('pins the 0.2.0-rc.2 baseline and exact shared Web/Desktop preset digest allowlist', () => {
-    expect(STOCK_DSH_BASELINE_COMMIT).toBe('639ed015397290b3745d163aafe02ffee4aa3f84')
+  it('pins the 0.2.1-rc.2 baseline and exact shared Web/Desktop preset digest allowlist', () => {
+    expect(STOCK_DSH_BASELINE_COMMIT).toBe('687f282e8625c6b8d11ff58211a90524be2e4317')
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        'ad344050d18ed7bc2582c1ce691b5f56334b84a85ee67a928895f7b0e0b3b5ff',
+        'd0d7950468550f9478e672c9ff7f41e9bfd76ab242a0e2e5be6f98e5679f1f69',
       ],
     })
   })
