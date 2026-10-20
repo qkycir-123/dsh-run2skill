@@ -771,6 +771,8 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     }
     for (const { header } of snapshots) {
       if (classifySessionRoot(header).status !== 'ROOT') continue
+      const log = await new DshSessionGapReader(this.context.sessionPersistence).readFrom(header.id, 0)
+      if (log.status !== 'AVAILABLE' || log.events.some(event => event.type === 'working-directory/change')) continue
       try {
         const retained = await acquireStockColdPreset(
           this.context.agentPresets, stockColdPresetMounts, this.context, header.agentPreset,

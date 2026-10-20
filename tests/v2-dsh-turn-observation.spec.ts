@@ -119,6 +119,25 @@ const workspace = {
 }
 
 describe('DSH TurnObservationV2 projection', () => {
+  it.each(['job/registered', 'job/settled'])(
+    'accepts DSH rc.2 job bookkeeping %s without adding user evidence', async type => {
+      const events = insertTurnEvent(completeTurn(), 'step/start', {
+        type, data: { jobId: 'job-1', owner: header.id, kind: 'process', label: 'JOB_ONLY_FIXTURE', startedAt: 1000 },
+      })
+      const result = await projectDshTurnObservationV2(header, events, events.at(-1)!.seq, workspace)
+      expect(result.status).toBe('OBSERVED')
+      expect(JSON.stringify(result)).not.toContain('JOB_ONLY_FIXTURE')
+    },
+  )
+  it.each([undefined, true] as const)('stops learning after a working directory change, ignorable=%s', async ignorable => {
+    const events = insertTurnEvent(completeTurn(), 'step/start', {
+      type: 'working-directory/change', data: { cwd: 'D:\\other-project' },
+      ...(ignorable === undefined ? {} : { ignorable }),
+    })
+    const result = await projectDshTurnObservationV2(header, events, events.at(-1)!.seq, workspace)
+    expect(result.status).toBe('UNAVAILABLE')
+  })
+
   it.each(['system/message', 'session-log-deepseek/delivery-accepted', 'model/selection'])(
     'observes a completed Desktop turn containing %s without treating it as user evidence',
     async type => {

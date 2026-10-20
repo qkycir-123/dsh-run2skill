@@ -2,6 +2,7 @@
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
+| `0.5.0-alpha.5` | 源码兼容候选，尚未发布 npm | `0.2.1-rc.2` | `687f282e8625c6b8d11ff58211a90524be2e4317` | 标准 Web profile；官方源码构建、契约、插件生命周期与真实模型调用，详见下文 |
 | `0.5.0-alpha.4` | npm `latest` / `next` 预发布 | `0.2.0-rc.2` | `639ed015397290b3745d163aafe02ffee4aa3f84` | Windows x64 官方 Desktop 和同版本 Web；证据见下文，CI 与精确 HEAD 评审作为合入门 |
 | `0.5.0-alpha.2` | 已发布的旧版兼容线 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | CI、精确 HEAD 评审与真实 DSH Web 安装生命周期已通过 |
 | `0.5.0-alpha.1` | 未发布 alpha.2 候选 | `0.1.3-alpha.2` | `82a5fd61a7cf5c293cec4bdff68f455398d685e9` | SessionHandle/v2 适配和 alpha.2 探针；未进入 npm 稳定版 |
@@ -13,6 +14,18 @@
 2026-10-01 的实际页面自测发现，会话列表的旧 `current` 读取和动态 Remote namespace 的依赖声明使候选审核页面不可用；此前 HTTP API 验收没有覆盖这两个 Client 边界。候选修正为读取唯一的 `retainedBy.mainView` 会话，并在挂载后注入 `remote.run2skill`。单元回归覆盖真实 Cordis 作用域、项目切换及无唯一会话；Desktop probe 增加实际打开设置页和空会话状态读取。
 
 修正后的实际 Desktop 自测完成：真实 DeepSeek 对话自动生成 PROJECT 草稿，界面修改意见生成精简新版本，人工确认保存后 `SKILL.md` 与新版本审核字节一致。全新同项目会话自主调用原生 `skill` 工具加载该 Skill，并遵守其中的汇报格式；另一个全新数学问答会话直接回答，未调用 Skill。这是一组真实用例，不代表总体复用率或误触发率。
+
+
+## 0.2.1-rc.2 npm 默认版适配
+
+候选 `0.5.0-alpha.5` 对应官方 `dsh-v0.2.1-rc.2`、commit `687f282e8625c6b8d11ff58211a90524be2e4317`。本次验证标准 Web profile；已发布 `0.5.0-alpha.4` 保留原 `0.2.0-rc.2` Desktop/Web 兼容线。实现依据见 [兼容设计](design/dsh-021-compatibility.md)。
+
+- Session 继续使用 v4 和 list/open/read/close。插件读取新增 job/registered、job/settled 记录，但直接用户证据和 Skill 写入归属继续来自用户消息、工具调用及结果。
+- 标准组合摘要固定为 `d0d7950468550f9478e672c9ff7f41e9bfd76ab242a0e2e5be6f98e5679f1f69`。通过 Cordis Loader entry、DSH scope 和 registry.composedPreset 定位精确预设实例，保留唯一 filesystem provider、根目录和同代际校验。`dsh-scope` 作为精确 peer 共享宿主作用域身份。
+- Session header.cwd 保留原始项目。记录 working-directory/change 后，停止该会话的学习和保存；在目标目录新建会话即可继续。重启后的历史会话同样检查此记录，既有草稿在操作前重新校验。
+- 官方源码完整构建通过；源码契约覆盖 Session/Storage、Skill、LLM、Settings、Remote 和 PROJECT/USER CREATE/MERGE 与回读。隔离 Web 验证认证访问、实际 Run2Skill 详情页、设置持久化、运行中禁用/重新启用、Client 刷新、候选升级及卸载保留 Storage。
+- 官方 DeepSeek 模型适配器处理一次合成问候输入，DETECTION 返回 NONE；该调用只验证模型传输与阶段解析。PROJECT/USER 文件写入由合成草稿的源码契约验证，未把它描述成模型生成到保存的完整用例。
+- Storage Domain 格式保持不变，已保存的原生 Skill 保留；旧草稿遇到根目录或代际摘要变化时重新校验。新版 Desktop 签名产物、系统安装器和自动更新沿用独立验收流程。
 
 ## 0.2.0-rc.2 Desktop / Web 候选
 

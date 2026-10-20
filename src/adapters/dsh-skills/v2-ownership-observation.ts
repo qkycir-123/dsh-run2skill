@@ -68,6 +68,7 @@ const SUPPORTED_TURN_EVENTS = new Set([
   // authoritative evidence for filesystem activity.
   'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
   'system/message', 'session-log-deepseek/delivery-accepted', 'model/selection',
+  'job/registered', 'job/settled',
   'approval/asked', 'approval/decided',
   'turn/start', 'turn/end', 'step/start', 'step/end', 'user/message', 'assistant/chunk',
   'assistant/attempt', 'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'request/header',
@@ -218,7 +219,8 @@ function batchWindow(
     || !ends.has(batch.lastTurnEndSeq)
     || batch.observationManifest.some(item => !ends.has(item.turnEndSeq))
   ) return undefined
-  if (window.some(event => !SUPPORTED_TURN_EVENTS.has(event.type) && event.ignorable !== true)) return undefined
+  if (window.some(event => event.type === 'working-directory/change'
+    || (!SUPPORTED_TURN_EVENTS.has(event.type) && event.ignorable !== true))) return undefined
   const analysisEvents = window.filter(event => OWNERSHIP_ANALYSIS_EVENTS.has(event.type))
   return analysisEvents.length <= policy.maxAnalysisEvents ? analysisEvents : undefined
 }

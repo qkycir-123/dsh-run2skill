@@ -167,6 +167,19 @@ async function decideWithRealAdapter(
 }
 
 describe('real DSH Agent-first ownership observation adapter', () => {
+  it.each(['job/registered', 'job/settled'])(
+    'keeps log-only %s separate from Skill write evidence', async type => {
+      const observed = harness({ baselineCandidates: [], endCandidates: [], between: [event(type, 3, { label: 'background work' })] })
+      await expect(observed.adapter.observe({ batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64) }))
+        .resolves.toMatchObject({ status: 'OBSERVED', agentActivity: 'NONE', toolEvidenceComplete: true })
+    },
+  )
+  it('rejects an ignorable-marked directory change in the ownership window', async () => {
+    const observed = harness({ between: [{ ...event('working-directory/change', 3, { cwd: 'D:\\elsewhere' }), ignorable: true }] })
+    await expect(observed.adapter.observe({ batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64) }))
+      .resolves.toMatchObject({ status: 'UNAVAILABLE', reasonCode: 'SESSION_WINDOW_INCOMPLETE' })
+  })
+
   it.each(['system/message', 'session-log-deepseek/delivery-accepted', 'model/selection'])(
     'does not treat Desktop %s records as missing windows or Agent file writes',
     async type => {

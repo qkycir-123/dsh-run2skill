@@ -7,14 +7,14 @@ import {
   ROOT_RESOLVER_VERSION_V2,
 } from '../../domain/review/schemas.js'
 
-export const STOCK_DSH_BASELINE_COMMIT = '639ed015397290b3745d163aafe02ffee4aa3f84'
+export const STOCK_DSH_BASELINE_COMMIT = '687f282e8625c6b8d11ff58211a90524be2e4317'
 export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard'])
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
   standard: Object.freeze([
-    'ad344050d18ed7bc2582c1ce691b5f56334b84a85ee67a928895f7b0e0b3b5ff',
+    'd0d7950468550f9478e672c9ff7f41e9bfd76ab242a0e2e5be6f98e5679f1f69',
   ]),
 })
 
@@ -90,7 +90,7 @@ export class StockSkillRuntimeConfigurationCache<TAgent extends object> {
   ) {}
 
   async capture(agent: TAgent): Promise<StockSkillRuntimeConfiguration | undefined> {
-    const observed = await this.observe(agent)
+    const observed = hasUnchangedSessionDirectory(agent) ? await this.observe(agent) : undefined
     if (observed === undefined) {
       this.#entries.delete(agent)
       return undefined
@@ -104,7 +104,7 @@ export class StockSkillRuntimeConfigurationCache<TAgent extends object> {
   }
 
   get(agent: TAgent): StockSkillRuntimeConfiguration | undefined {
-    return this.#entries.get(agent)
+    return hasUnchangedSessionDirectory(agent) ? this.#entries.get(agent) : undefined
   }
 
   release(agent: TAgent): void {
@@ -170,6 +170,20 @@ function isWithinFiber(candidate: StockFiberProjection, root: StockFiberProjecti
     if (parent === current) return false
     current = parent
   }
+}
+
+/** Directory-changing Sessions require a fresh Session before learning or publication. */
+export function hasUnchangedSessionDirectory(agent: object): boolean {
+  if (!('session' in agent)) return true
+  const session = agent.session
+  if (typeof session !== 'object' || session === null || !('snapshotEvents' in session)) return true
+  if (typeof session.snapshotEvents !== 'function') return false
+  try {
+    const events: unknown = session.snapshotEvents()
+    return Array.isArray(events) && !events.some(event => (
+      typeof event === 'object' && event !== null && event.type === 'working-directory/change'
+    ))
+  } catch { return false }
 }
 
 /** Reads the exact stock filesystem fiber mounted for one Agent's joined generation. */

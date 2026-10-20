@@ -12,11 +12,11 @@
 - publication 跨平台探针需要带 Node.js 的 WSL2/Linux；
 - 安装生命周期探针需要 Microsoft Edge、Google Chrome 或 DSH Playwright 可用的 Chromium。
 
-准备一个官方、干净、固定 commit 的 DSH checkout。`0.5.0-alpha.4` 发布候选验证 `0.2.0-rc.2`：
+准备一个官方、干净、固定 commit 的 DSH checkout。`0.5.0-alpha.5` 源码候选验证 `0.2.1-rc.2`：
 
 ```powershell
 git clone https://github.com/deepseek-ai/deepseek-harness.git <dsh-source>
-git -C <dsh-source> checkout 639ed015397290b3745d163aafe02ffee4aa3f84
+git -C <dsh-source> checkout 687f282e8625c6b8d11ff58211a90524be2e4317
 git -C <dsh-source> status --porcelain
 ```
 
@@ -27,7 +27,7 @@ git -C <dsh-source> status --porcelain
 在 dsh-run2skill 仓库根目录执行：
 
 ```powershell
-powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source> -ExpectedDshHead 639ed015397290b3745d163aafe02ffee4aa3f84
+powershell -File probes/run-dsh-contract-probes.ps1 -DshSource <dsh-source> -ExpectedDshHead 687f282e8625c6b8d11ff58211a90524be2e4317
 powershell -File probes/run-dsh-rc2-profile-probe.ps1 -DshSource <dsh-source>
 powershell -File probes/run-publication-contract-probe.ps1
 ```
