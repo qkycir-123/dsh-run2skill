@@ -80,6 +80,7 @@ import { DshPublicationReadbackAdapter } from '../adapters/dsh-skills/publicatio
 import {
   StockDshRootContractResolver,
   StockSkillRuntimeConfigurationCache,
+  hasUnchangedSessionDirectory,
   STOCK_PRESET_COMPOSITION_DIGESTS,
   deriveStockResolutionContractDigest,
   resolveStockSkillRuntimeConfiguration,
@@ -667,6 +668,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     readonly workspaceId: string
     readonly canonicalPath: string
   }>()
+  readonly #changedDirectorySessions = new Set<string>()
   readonly #dormantSessions = new Map<string, {
     readonly header: DshSessionHeader
     readonly scope: object
@@ -706,6 +708,10 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     try {
       const joined = await stockPresetMounts.standingMountFor(agent.ctx)
       if (joined?.key !== retained.lease.key) throw new Error('V2_SESSION_PRESET_GENERATION_UNAVAILABLE')
+      if (!hasUnchangedSessionDirectory(agent)) {
+        this.invalidateSessionDirectory(header)
+        throw new Error('V2_SESSION_DIRECTORY_CHANGED')
+      }
       this.#rememberDormantSession(header, retained.lease.key, retained.configuration, workspaceBinding)
     } finally {
       await retained.lease[Symbol.asyncDispose]()
@@ -713,8 +719,19 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
   }
 
   releaseRootConfiguration(agent: Run2skillAgent): void {
+    if (!hasUnchangedSessionDirectory(agent)) this.invalidateSessionDirectory(agent.session.header as DshSessionHeader)
     this.#workspaceBindings.delete(agent)
     this.#stockConfigurations.release(agent)
+  }
+
+  invalidateSessionDirectory(header: DshSessionHeader): void {
+    const lifecycleKey = deriveSessionLifecycleKey({
+      rootSessionId: header.id,
+      sessionCreatedAt: header.createdAt,
+      sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
+    })
+    this.#changedDirectorySessions.add(lifecycleKey)
+    this.#dormantSessions.delete(lifecycleKey)
   }
 
   async resolveCurrentWorkspace(workspaceId: string) {
@@ -747,6 +764,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
       sessionCreatedAt: header.createdAt,
       sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
     })
+    if (this.#changedDirectorySessions.has(lifecycleKey)) return
     this.#dormantSessions.set(lifecycleKey, {
       header,
       scope,
@@ -813,6 +831,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         signal: publicationAbort.signal,
       })
       const resolveSession = (lifecycleKey: string) => {
+        if (this.#changedDirectorySessions.has(lifecycleKey)) return undefined
         const scope = this.scopes.resolveLifecycleKey(lifecycleKey)
         if (scope.status === 'AVAILABLE') {
           const configuration = this.#stockConfigurations.get(scope.agent)
@@ -827,6 +846,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
               ...(workspaceBinding === undefined ? {} : { workspaceBinding }),
             }
           }
+          return undefined
         }
         const dormant = this.#dormantSessions.get(lifecycleKey)
         if (dormant === undefined || !this.#currentDormant(dormant)) return undefined
@@ -843,6 +863,15 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         }
       }
       const resolveSessionByView = (view: LearningSkillView<Run2skillAgent>) => {
+        if ('session' in view.scope) {
+          const header = view.scope.session.header
+          const lifecycleKey = deriveSessionLifecycleKey({
+            rootSessionId: header.id,
+            sessionCreatedAt: header.createdAt,
+            sessionCwdDigest: deriveSessionCwdDigest(header.cwd),
+          })
+          if (this.#changedDirectorySessions.has(lifecycleKey) || !hasUnchangedSessionDirectory(view.scope)) return undefined
+        }
         const dormant = this.#dormantForView(view)
         const configuration = this.#stockConfigurations.get(view.scope) ?? dormant?.configuration
         if (configuration === undefined) return undefined
@@ -983,7 +1012,10 @@ export async function apply(context: Run2skillHostContext, config: AutomaticLear
   let accepting = true
 
   context.on('session/event', (session: DshSessionProjection, event: DshSessionEvent) => {
-    if (accepting) ingress.observe(session.header, event)
+    if (accepting) {
+      if (event.type === 'working-directory/change') factory.invalidateSessionDirectory(session.header)
+      ingress.observe(session.header, event)
+    }
   })
   context.on('agent/pre-step', async ({ agent, step }: AgentPreStepPayload, next: () => Promise<unknown>) => {
     if (accepting && !scopeDisposers.has(agent)) {

@@ -22,7 +22,7 @@
 
 - Session 继续使用 v4 和 list/open/read/close。插件读取新增 job/registered、job/settled 记录，但直接用户证据和 Skill 写入归属继续来自用户消息、工具调用及结果。
 - 标准组合摘要固定为 `d0d7950468550f9478e672c9ff7f41e9bfd76ab242a0e2e5be6f98e5679f1f69`。通过 Cordis Loader entry、DSH scope 和 registry.composedPreset 定位精确预设实例，保留唯一 filesystem provider、根目录和同代际校验。`dsh-scope` 作为精确 peer 共享宿主作用域身份。
-- Session header.cwd 保留原始项目。记录 working-directory/change 后，停止该会话的学习和保存；在目标目录新建会话即可继续。重启后的历史会话同样检查此记录，既有草稿在操作前重新校验。
+- Session header.cwd 保留原始项目。记录 working-directory/change 后，停止该会话的学习和保存；在目标目录新建会话即可继续。目录事件立即撤销实时及历史快照权限，异步读取结束后再次检查，Agent 退出后也不恢复旧快照。重启后的历史会话同样检查此记录，既有草稿在操作前重新校验。
 - 官方源码完整构建通过；源码契约覆盖 Session/Storage、Skill、LLM、Settings、Remote 和 PROJECT/USER CREATE/MERGE 与回读。隔离 Web 验证认证访问、实际 Run2Skill 详情页、设置持久化、运行中禁用/重新启用、Client 刷新、候选升级及卸载保留 Storage。
 - 官方 DeepSeek 模型适配器处理一次合成问候输入，DETECTION 返回 NONE；该调用只验证模型传输与阶段解析。PROJECT/USER 文件写入由合成草稿的源码契约验证，未把它描述成模型生成到保存的完整用例。
 - Storage Domain 格式保持不变，已保存的原生 Skill 保留；旧草稿遇到根目录或代际摘要变化时重新校验。新版 Desktop 签名产物、系统安装器和自动更新沿用独立验收流程。

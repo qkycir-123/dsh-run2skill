@@ -91,7 +91,7 @@ export class StockSkillRuntimeConfigurationCache<TAgent extends object> {
 
   async capture(agent: TAgent): Promise<StockSkillRuntimeConfiguration | undefined> {
     const observed = hasUnchangedSessionDirectory(agent) ? await this.observe(agent) : undefined
-    if (observed === undefined) {
+    if (observed === undefined || !hasUnchangedSessionDirectory(agent)) {
       this.#entries.delete(agent)
       return undefined
     }

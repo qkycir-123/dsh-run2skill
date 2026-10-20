@@ -30,6 +30,18 @@ function configuration(
 }
 
 describe('stock DSH root contract', () => {
+  it('rejects a directory transition during asynchronous configuration capture', async () => {
+    const events: Array<{ type: string }> = []
+    const agent = { session: { snapshotEvents: () => events } }
+    const observed = Promise.withResolvers<StockSkillRuntimeConfiguration>()
+    const cache = new StockSkillRuntimeConfigurationCache(async () => await observed.promise)
+    const capture = cache.capture(agent)
+    events.push({ type: 'working-directory/change' })
+    observed.resolve(configuration())
+    await expect(capture).resolves.toBeUndefined()
+    expect(cache.get(agent)).toBeUndefined()
+  })
+
   it('invalidates cached permissions immediately after a Session directory transition', async () => {
     const events: Array<{ type: string }> = []
     const agent = { ctx: {}, session: { snapshotEvents: () => events } }
