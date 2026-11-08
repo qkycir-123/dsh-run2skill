@@ -69,11 +69,11 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('pins the 0.2.1-rc.2 baseline and exact shared Web/Desktop preset digest allowlist', () => {
-    expect(STOCK_DSH_BASELINE_COMMIT).toBe('687f282e8625c6b8d11ff58211a90524be2e4317')
+  it('pins the 0.2.2-rc.1 baseline and exact shared Web/Desktop preset digest allowlist', () => {
+    expect(STOCK_DSH_BASELINE_COMMIT).toBe('66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db')
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
-        'd0d7950468550f9478e672c9ff7f41e9bfd76ab242a0e2e5be6f98e5679f1f69',
+        'ee7045e0f3df05c92f00900aa25f288778ca1e81bdaa35d4e151f1513fce3e16',
       ],
     })
   })

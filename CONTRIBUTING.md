@@ -4,7 +4,7 @@
 
 ## 本地开发
 
-需要 Node.js `^22.19.0 || >=24.0.0`、Corepack 和 pnpm 11：
+需要 Node.js `>=24.9.0`、Corepack 和 pnpm 11：
 
 ```bash
 git clone https://github.com/qkycir-123/dsh-run2skill.git

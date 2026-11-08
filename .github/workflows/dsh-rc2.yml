@@ -1,4 +1,4 @@
-name: DSH 0.2.1-rc.2 compatibility
+name: DSH 0.2.2-rc.1 compatibility
 
 on:
   pull_request:
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  DSH_HEAD: 687f282e8625c6b8d11ff58211a90524be2e4317
+  DSH_HEAD: 66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db
 
 jobs:
   contracts:
@@ -34,9 +34,9 @@ jobs:
           path: deepseek-harness
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.19.0
+          node-version: 24.18.0
       - run: corepack enable
-      - name: Run rc.2 contract probes
+      - name: Run DSH contract probes
         shell: pwsh
         run: ./run2skill/probes/run-dsh-contract-probes.ps1 -DshSource ./deepseek-harness -ExpectedDshHead $env:DSH_HEAD
 
@@ -54,11 +54,11 @@ jobs:
           path: deepseek-harness
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.19.0
+          node-version: 24.18.0
       - run: corepack enable
       - name: Install candidate dependencies
         working-directory: run2skill
         run: pnpm install --frozen-lockfile
-      - name: Run rc.2 profile lifecycle probe
+      - name: Run DSH profile lifecycle probe
         shell: pwsh
         run: ./run2skill/probes/run-dsh-rc2-profile-probe.ps1 -DshSource ./deepseek-harness

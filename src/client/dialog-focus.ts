@@ -1,6 +1,6 @@
 export const focusableSelector = [
   'button:not([disabled])',
-  '[href]',
+  'a[href]',
   'input:not([disabled])',
   'select:not([disabled])',
   'textarea:not([disabled])',
