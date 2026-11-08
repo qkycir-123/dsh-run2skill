@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$DshSource,
-  [string]$ExpectedDshHead = '687f282e8625c6b8d11ff58211a90524be2e4317',
+  [string]$ExpectedDshHead = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db',
   [string[]]$TestFiles = @('session-storage.spec.ts', 'a3-storage.spec.ts', 'learning-diagnostics-storage.spec.ts', 'a4-recovery.spec.ts', 'a5-observe-summary.spec.ts', 'b2-learning-window.spec.ts', 'b2-v2-turn-observation.spec.ts', 'b2-v2-session-activity.spec.ts', 'b2-v2-route-manifest.spec.ts', 'llm-skills.spec.ts', 'web.spec.ts', 'd2-purge-storage.spec.ts', 'stock-rc2.spec.ts', 'cp-root-003.spec.ts')
 )
 

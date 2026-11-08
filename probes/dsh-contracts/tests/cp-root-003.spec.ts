@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join, normalize, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentPresets, { type PresetDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore from '@deepseek-ai/dsh-session'
@@ -151,6 +152,7 @@ async function mountStockDsh(
   try {
     await track(ctx.plugin(SkillRegistry))
     await track(ctx.plugin(SessionProjectionRegistry))
+    await track(ctx.plugin(AgentRegistry))
     await track(ctx.plugin(AgentPresets, { default: composition.presetId }))
     unregister = await ctx.agentPresets.register({
       id: composition.presetId,

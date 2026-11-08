@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/dsh-agent-preset": "workspace:^",
     "@deepseek-ai/dsh-api-remote-access": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",
@@ -34,7 +35,7 @@
     "@deepseek-ai/dsh-workspace": "workspace:^",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "zod": "^4.4.3",
+    "zod": "4.6.6",
     "js-yaml": "^4.2.0"
   },
   "devDependencies": {
