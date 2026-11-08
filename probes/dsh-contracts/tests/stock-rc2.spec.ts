@@ -16,7 +16,11 @@ import { load } from 'js-yaml'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
-import { STOCK_PRESET_COMPOSITION_DIGESTS } from '../src/adapters/dsh-skills/stock-root-contract.js'
+import {
+  resolveStockSkillRuntimeConfiguration,
+  STOCK_PRESET_COMPOSITION_DIGESTS,
+  StockDshRootContractResolver,
+} from '../src/adapters/dsh-skills/stock-root-contract.js'
 
 describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
   it('locates the exact live and cold generation through Loader entries and scope identity', async () => {
@@ -26,6 +30,10 @@ describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
     const scope = createScope(ctx, {})
     const rows = [{ id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem', config: { watch: false } }]
     const digest = sha256Utf8(canonicalJson(rows))
+    const stopConfigHook = ctx.on('internal/config', (fiber, next) => {
+      const config = next()
+      return fiber.name === 'skill-filesystem' ? { ...config, includeDefaultRoots: false } : config
+    })
     let lease: Awaited<ReturnType<typeof ctx.agentPresets.acquireScope>> | undefined
     try {
       fibers.push(await ctx.plugin(Loader))
@@ -39,6 +47,12 @@ describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
       const live = await stockPresetMounts.standingMountFor(scope.ctx)
       expect(live?.key).toBe(lease.key)
       expect(currentStockPresetMount(stockColdPresetMounts, ctx, lease.key, digest)?.key).toBe(lease.key)
+      const configuration = await resolveStockSkillRuntimeConfiguration(stockPresetMounts, scope, digest)
+      if (configuration === undefined) throw new Error('expected active filesystem configuration')
+      expect(configuration).toMatchObject({ includeDefaultRoots: false })
+      expect(new StockDshRootContractResolver().resolve({ scope: 'USER', configuration })).toMatchObject({
+        status: 'UNSUPPORTED',
+      })
       expect(currentStockPresetMount(stockColdPresetMounts, ctx, {}, digest)).toBeUndefined()
       expect(currentStockPresetMount(stockColdPresetMounts, ctx, lease.key, '0'.repeat(64))).toBeUndefined()
       expect(stockColdPresetMounts.liveMounts(new Context())).toEqual([])
@@ -53,6 +67,7 @@ describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
       } finally { await replacement[Symbol.asyncDispose]() }
 
     } finally {
+      stopConfigHook()
       await scope.dispose()
       await lease?.[Symbol.asyncDispose]()
       for (const fiber of fibers.reverse()) await fiber.dispose()

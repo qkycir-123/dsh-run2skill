@@ -2,6 +2,8 @@ import {
   STOCK_PRESET_COMPOSITION_DIGESTS,
   hasStockPresetComposition,
   resolveMountedStockSkillRuntimeConfiguration,
+  type StockComposedAgentProjection,
+  type StockPresetMountProjection,
   type StockSkillRuntimeConfiguration,
 } from './stock-root-contract.js'
 
@@ -17,15 +19,8 @@ export interface StockColdPresetRegistry {
 export interface StockColdPresetMount {
   readonly key: object | undefined
   readonly presetId: string
-  readonly fiber: {
-    readonly config: unknown
-    readonly parent: { readonly fiber: StockColdPresetMount['fiber'] }
-    readonly ctx: {
-      readonly registry: { values(): Iterable<{
-        readonly name?: string
-        readonly fibers: Iterable<{ readonly parent: { readonly fiber: StockColdPresetMount['fiber'] }; readonly config: unknown }>
-      }> }
-    }
+  readonly fiber: StockPresetMountProjection['fiber'] & {
+    readonly ctx: StockComposedAgentProjection['ctx']
   }
   readonly tree: { readonly root: { readonly data: unknown } }
 }

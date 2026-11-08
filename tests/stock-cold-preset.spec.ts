@@ -11,10 +11,10 @@ function fixture() {
   const rows = [{ id: 'skill-filesystem', name: '@deepseek-ai/dsh-skill-filesystem' }]
   const digest = sha256Utf8(canonicalJson(rows))
   const key = {}
-  const root = { config: {} } as { config: unknown; parent: { fiber: unknown } }
+  const root = { state: 2, effectiveConfig: {} } as { state: number; effectiveConfig: unknown; parent: { fiber: unknown } }
   root.parent = { fiber: root }
-  const fiber = { config: {}, parent: { fiber: root } }
-  const skill = { config: {}, parent: { fiber } }
+  const fiber = { state: 2, effectiveConfig: {}, parent: { fiber: root } }
+  const skill = { state: 2, effectiveConfig: {}, parent: { fiber } }
   const mount = {
     key,
     presetId: 'standard',

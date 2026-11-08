@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { FiberState } from '@deepseek-ai/cordis'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import {
@@ -12,6 +13,8 @@ export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard'])
+// Cordis publishes FiberState as a const enum without a runtime export.
+const ACTIVE_FIBER_STATE: FiberState.ACTIVE = 2
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
   standard: Object.freeze([
     'ee7045e0f3df05c92f00900aa25f288778ca1e81bdaa35d4e151f1513fce3e16',
@@ -32,7 +35,8 @@ export interface StockSkillRuntimeConfiguration {
 
 interface StockFiberProjection {
   readonly parent: { readonly fiber: StockFiberProjection }
-  readonly config: unknown
+  readonly state: FiberState
+  readonly effectiveConfig: unknown
 }
 
 interface StockPluginRuntimeProjection {
@@ -206,9 +210,10 @@ export function resolveMountedStockSkillRuntimeConfiguration(
     .flatMap(runtime => [...runtime.fibers])
     .filter(fiber => isWithinFiber(fiber, mount.fiber))
   if (fibers.length !== 1) return undefined
-  const raw = fibers[0]!.config
-  if (raw !== undefined && !isRecord(raw)) return undefined
-  const config = raw ?? {}
+  const fiber = fibers[0]!
+  if (fiber.state !== ACTIVE_FIBER_STATE) return undefined
+  const config = fiber.effectiveConfig
+  if (!isRecord(config)) return undefined
   const providerName = config.providerName ?? 'filesystem'
   const includeDefaultRoots = config.includeDefaultRoots ?? true
   const customSkillDirs = config.customSkillDirs ?? []
