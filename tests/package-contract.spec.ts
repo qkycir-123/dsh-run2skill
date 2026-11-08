@@ -105,7 +105,7 @@ describe('published package contract', () => {
   })
 
   it('ships the license notice for the Zod code embedded in the Client bundle', () => {
-    expect(thirdPartyNotices).toContain('Zod 4.4.3')
+    expect(thirdPartyNotices).toContain('Zod 4.6.6')
     expect(thirdPartyNotices).toContain('Copyright (c) 2025 Colin McDonnell')
     expect(thirdPartyNotices).toContain('The above copyright notice and this permission notice')
   })

@@ -2,7 +2,7 @@
 
 The dsh-run2skill Client bundle includes code from the following project.
 
-## Zod 4.4.3
+## Zod 4.6.6
 
 MIT License
 

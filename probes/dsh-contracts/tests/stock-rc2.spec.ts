@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import PresetRegistry from '@deepseek-ai/dsh-agent-preset-registry'
 import AgentPreset from '@deepseek-ai/dsh-agent-preset'
 import Projections from '@deepseek-ai/dsh-session-projection'
@@ -17,7 +18,7 @@ import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import { STOCK_PRESET_COMPOSITION_DIGESTS } from '../src/adapters/dsh-skills/stock-root-contract.js'
 
-describe('DSH rc.2 stock preset evidence', () => {
+describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
   it('locates the exact live and cold generation through Loader entries and scope identity', async () => {
     const ctx = new Context()
     ctx.baseUrl = pathToFileURL(join(process.cwd(), 'apps', 'cli', 'package.json')).href
@@ -29,6 +30,7 @@ describe('DSH rc.2 stock preset evidence', () => {
     try {
       fibers.push(await ctx.plugin(Loader))
       fibers.push(await ctx.plugin(Projections))
+      fibers.push(await ctx.plugin(AgentRegistry))
       fibers.push(await ctx.plugin(SkillRegistry))
       fibers.push(await ctx.plugin(PresetRegistry, { default: 'standard' }))
       fibers.push(await ctx.plugin(AgentPreset, { id: 'standard', plugins: rows }))

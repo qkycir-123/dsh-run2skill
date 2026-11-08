@@ -318,7 +318,7 @@ assert.equal(
 const hostBundle = run('tar', ['-xOf', tarballPath, 'package/lib/index.js'])
 assert.match(hostBundle, /from ["']@deepseek-ai\/dsh-scope["']/u, 'scope must remain a Host import')
 const thirdPartyNotices = run('tar', ['-xOf', tarballPath, 'package/THIRD_PARTY_NOTICES.md'])
-assert.match(thirdPartyNotices, /Zod 4\.4\.3/u)
+assert.match(thirdPartyNotices, /Zod 4\.6\.6/u)
 assert.match(thirdPartyNotices, /Copyright \(c\) 2025 Colin McDonnell/u)
 assert.match(thirdPartyNotices, /The above copyright notice and this permission notice/u)
 
