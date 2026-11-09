@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-run2skill"><img src="https://img.shields.io/npm/v/dsh-run2skill?color=247C78&amp;label=npm" alt="npm version" /></a>
-  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-153B3C" alt="Supports DSH 0.2.0-rc.2" /></a>
+  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH_Web-0.2.2--rc.1-153B3C" alt="Supports DSH 0.2.2-rc.1 Web" /></a>
   <a href="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml"><img src="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EAB45C" alt="MIT license" /></a>
 </p>
@@ -41,20 +41,16 @@ Run2Skill turns the corrections, constraints, and workflows you teach an Agent i
 
 ## Install
 
-Source candidate `0.5.0-alpha.6` targets DSH `0.2.2-rc.1` Web. The installation instructions below apply to the published `0.5.0-alpha.4` release. See [compatibility](docs/compatibility.md) for supported host versions.
-
-Supports DSH **0.2.0-rc.2** on Windows Desktop and Web.
-
-**Desktop**: set up the command through **Manage dsh Command…** in the app. Complete the first launch, exit the app, and run:
+**Web (DSH 0.2.2-rc.1)**: install Node.js `>=24.9.0` and make sure `pnpm` and `dsh` are available. Install `0.5.0-alpha.6`:
 
 ```bash
-dsh plugin --profile desktop add dsh-run2skill
+dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.6
 ```
 
-**Web**: install Node.js `^22.19.0 || >=24.0.0` and make sure `pnpm` and `dsh` are available. Then run:
+**Windows Desktop (DSH 0.2.0-rc.2)**: set up the command through **Manage dsh Command…**. Complete the first launch, exit the app, and install `0.5.0-alpha.4`:
 
 ```bash
-dsh plugin --profile web add dsh-run2skill
+dsh plugin --profile desktop add dsh-run2skill@0.5.0-alpha.4
 ```
 
 Restart DSH after installation. Run2Skill uses the model selected in the current session. See [Compatibility](docs/compatibility.md) for version details.
@@ -82,11 +78,7 @@ Run2Skill manages drafts locally and sends selected, redacted conversation excer
 
 ## Update and uninstall
 
-Update, then restart DSH:
-
-```bash
-dsh plugin --profile desktop add dsh-run2skill
-```
+Follow the installation instructions for your host version, then restart DSH.
 
 Uninstall:
 

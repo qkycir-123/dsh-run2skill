@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-run2skill"><img src="https://img.shields.io/npm/v/dsh-run2skill?color=247C78&amp;label=npm" alt="npm 版本" /></a>
-  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH-0.2.0--rc.2-153B3C" alt="支持 DSH 0.2.0-rc.2" /></a>
+  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH_Web-0.2.2--rc.1-153B3C" alt="支持 DSH 0.2.2-rc.1 Web" /></a>
   <a href="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml"><img src="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml/badge.svg" alt="CI 状态" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EAB45C" alt="MIT 许可证" /></a>
 </p>
@@ -41,20 +41,16 @@ Run2Skill 把你在 DeepSeek Harness（DSH）里教给 Agent 的纠正、约束�
 
 ## 安装
 
-源码候选 `0.5.0-alpha.6` 面向 DSH `0.2.2-rc.1` Web。以下安装说明适用于 npm 已发布版 `0.5.0-alpha.4`。各版本对应的宿主见[兼容性](docs/compatibility.md)。
-
-适用于 DSH **0.2.0-rc.2** 的 Windows Desktop 和 Web。
-
-**Desktop**：在应用中通过 **Manage dsh Command…** 配置命令，完成首次启动后退出应用，再运行：
+**Web（DSH 0.2.2-rc.1）**：准备好 Node.js `>=24.9.0`、`pnpm` 和 `dsh` 命令，安装 `0.5.0-alpha.6`：
 
 ```bash
-dsh plugin --profile desktop add dsh-run2skill
+dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.6
 ```
 
-**Web**：准备好 Node.js `^22.19.0 || >=24.0.0`、`pnpm` 和 `dsh` 命令，再运行：
+**Windows Desktop（DSH 0.2.0-rc.2）**：通过 **Manage dsh Command…** 配置命令，完成首次启动后退出应用，安装 `0.5.0-alpha.4`：
 
 ```bash
-dsh plugin --profile web add dsh-run2skill
+dsh plugin --profile desktop add dsh-run2skill@0.5.0-alpha.4
 ```
 
 安装后重启 DSH。Run2Skill 使用当前会话选择的模型。版本信息见 [兼容性](docs/compatibility.md)。
@@ -82,11 +78,7 @@ Run2Skill 在本地管理草稿，并将经过筛选和脱敏的必要对话片�
 
 ## 更新与卸载
 
-更新后重启 DSH：
-
-```bash
-dsh plugin --profile desktop add dsh-run2skill
-```
+按上方安装说明选择与宿主匹配的版本，安装后重启 DSH。
 
 卸载：
 

@@ -2,15 +2,15 @@
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
-| `0.5.0-alpha.6` | 源码候选，尚未发布 npm | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 标准 Web profile，见 [兼容设计](design/dsh-022-compatibility.md) |
+| `0.5.0-alpha.6` | npm 默认预发布版 | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 标准 Web profile，见 [兼容设计](design/dsh-022-compatibility.md) |
 | `0.5.0-alpha.5` | 源码兼容候选，尚未发布 npm | `0.2.1-rc.2` | `687f282e8625c6b8d11ff58211a90524be2e4317` | 标准 Web profile；官方源码构建、契约、插件生命周期与真实模型调用，详见下文 |
-| `0.5.0-alpha.4` | npm `latest` / `next` 预发布 | `0.2.0-rc.2` | `639ed015397290b3745d163aafe02ffee4aa3f84` | Windows x64 官方 Desktop 和同版本 Web；证据见下文，CI 与精确 HEAD 评审作为合入门 |
+| `0.5.0-alpha.4` | 已发布的旧版兼容线 | `0.2.0-rc.2` | `639ed015397290b3745d163aafe02ffee4aa3f84` | Windows x64 官方 Desktop 和同版本 Web，证据见下文 |
 | `0.5.0-alpha.2` | 已发布的旧版兼容线 | `0.1.7-rc.2` | `477b4f420553e8a52c2fbccc464d7561b239c443` | CI、精确 HEAD 评审与真实 DSH Web 安装生命周期已通过 |
 | `0.5.0-alpha.1` | 未发布 alpha.2 候选 | `0.1.3-alpha.2` | `82a5fd61a7cf5c293cec4bdff68f455398d685e9` | SessionHandle/v2 适配和 alpha.2 探针；未进入 npm 稳定版 |
 | `0.4.0` | npm 稳定版 | `0.1.2-rc.1` | `a66e4702047846cdaa10c66c9d3df3951f5ea70d` | 已发布的 Web、Session、Skill、LLM、Settings、Storage/Profile 兼容线 |
 | `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 旧版兼容线 |
 
-核验日期：2026-10-01。各插件版本只针对表中对应的精确 DSH tag；不要跨版本混装。npm 默认 `latest` 与 `next` 均指向 `0.5.0-alpha.4`；DSH `0.1.7-rc.2` 须明确安装 `0.5.0-alpha.2`，DSH `0.1.2-rc.1` 须明确安装 `0.4.0`。
+按表中的 DSH 版本安装对应插件。使用 DSH `0.2.0-rc.2` 时，请指定 `dsh-run2skill@0.5.0-alpha.4`。
 
 2026-10-01 的实际页面自测发现，会话列表的旧 `current` 读取和动态 Remote namespace 的依赖声明使候选审核页面不可用；此前 HTTP API 验收没有覆盖这两个 Client 边界。候选修正为读取唯一的 `retainedBy.mainView` 会话，并在挂载后注入 `remote.run2skill`。单元回归覆盖真实 Cordis 作用域、项目切换及无唯一会话；Desktop probe 增加实际打开设置页和空会话状态读取。
 
