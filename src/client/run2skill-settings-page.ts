@@ -29,6 +29,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
 import {
   AutomaticLearningSettingsController,
+  RetrievalSettingsSection,
   type AutomaticLearningClientSettings,
   type ClientSettingsScope,
 } from './automatic-learning-settings.js'
@@ -1336,6 +1337,8 @@ export function Run2skillSettingsPage(props: {
       }), createElement(Pill, null, '最近 7 天')),
     disclosure('automatic', '自动学习', createElement(IconSettingsOutlineMedium),
       createElement(AutomaticLearningSection, { controller: props.controller })),
+    disclosure('retrieval', 'Skill 召回', createElement(IconSettingsOutlineMedium),
+      createElement('div', { className: css.sectionBody }, createElement(RetrievalSettingsSection, { controller: props.controller }))),
     disclosure('purge', '缓存清理', createElement(IconTrashOutlineMedium),
       createElement('div', { className: css.sectionBody },
         createElement(PurgeSettingsSection, {

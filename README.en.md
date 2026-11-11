@@ -41,10 +41,10 @@ Run2Skill turns the corrections, constraints, and workflows you teach an Agent i
 
 ## Install
 
-**Web (DSH 0.2.2-rc.1)**: install Node.js `>=24.9.0` and make sure `pnpm` and `dsh` are available. Install `0.5.0-alpha.6`:
+**Web (DSH 0.2.2-rc.1)**: install Node.js `>=24.9.0` and make sure `pnpm` and `dsh` are available. Install `0.6.0-alpha.1`:
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.6
+dsh plugin --profile web add dsh-run2skill@0.6.0-alpha.1
 ```
 
 **Windows Desktop (DSH 0.2.0-rc.2)**: set up the command through **Manage dsh Command…**. Complete the first launch, exit the app, and install `0.5.0-alpha.4`:

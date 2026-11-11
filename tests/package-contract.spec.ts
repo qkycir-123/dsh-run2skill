@@ -32,10 +32,10 @@ const workspace = readPortableText('../pnpm-workspace.yaml')
 const thirdPartyNotices = readPortableText('../THIRD_PARTY_NOTICES.md')
 
 describe('published package contract', () => {
-  it('pins the public 0.5 alpha identity and portable repository metadata', () => {
+  it('pins the public 0.6 alpha identity and portable repository metadata', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
-      version: '0.5.0-alpha.6',
+      version: '0.6.0-alpha.1',
       description: 'Turn explicit DSH session experience into reviewable native Skills',
       keywords: [
         'deepseek-harness',

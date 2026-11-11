@@ -50,6 +50,8 @@ const permittedFixtureLocations = new Set([
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 27],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 62],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 72],
+  // Deliberately rejected synthetic URL in the retrieval transport test.
+  ['tests/retrieval-http.spec.ts', 'CREDENTIAL_URL', 32],
   ['tests/redaction.spec.ts', 'PRIVATE_KEY', 24],
   ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'access_token', 167],
   ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'api_key', 21],
@@ -261,7 +263,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.5.0-alpha.6',
+  version: '0.6.0-alpha.1',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   icon: './assets/run2skill-logo.webp',
   keywords: [
@@ -316,6 +318,9 @@ assert.equal(
 )
 // Scope tags must use the Host module's Symbol identity, not a bundled copy.
 const hostBundle = run('tar', ['-xOf', tarballPath, 'package/lib/index.js'])
+const clientBundle = run('tar', ['-xOf', tarballPath, 'package/lib/client.js'])
+const clientImports = [...new Set([...clientBundle.matchAll(/\brequire\(["']([^"']+)["']\)/gu)].map(match => match[1]))].sort()
+assert.deepEqual(clientImports, ['@deepseek-ai/dsh-client-ui-primitives', 'react'], 'Client bundle may only require modules supplied by the native DSH loader')
 assert.match(hostBundle, /from ["']@deepseek-ai\/dsh-scope["']/u, 'scope must remain a Host import')
 const thirdPartyNotices = run('tar', ['-xOf', tarballPath, 'package/THIRD_PARTY_NOTICES.md'])
 assert.match(thirdPartyNotices, /Zod 4\.6\.6/u)

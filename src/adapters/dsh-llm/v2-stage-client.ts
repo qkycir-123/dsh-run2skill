@@ -13,8 +13,10 @@ import type { SkillGenerator } from '../../application/generation/index.js'
 import type { ProposalRevisionGenerator } from '../../application/review/index.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { selectBoundedEvidenceRefsV2 } from '../../domain/v2/index.js'
+import { selectPendingWindow } from '../../domain/v2/pending-window.js'
+import type { SessionReranker } from '../../application/recall/hybrid-retrieval.js'
 
-type Stage = 'DETECTION' | 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION' | 'REVISION'
+type Stage = 'DETECTION' | 'CATALOG_SCAN' | 'COVERAGE' | 'GENERATION' | 'REVISION' | 'RERANK'
 
 export type V2StageLlmFailureCode =
   | 'INPUT_BUDGET_EXCEEDED'
@@ -57,6 +59,10 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
     system: [
       COMMON_RULES,
       'Only detect stable, reusable experience supported by the frozen observations.',
+      'These observations are a bounded Pending Window. Associate feedback only with the same task and applicability; unrelated later praise is not validation.',
+      'Distinguish explicit lasting constraints and corrections from one-off parameters. Preserve stable project-specific paths only when they are part of the stated rule.',
+      'Use DEFER only for a promising experience missing feedback, verification, or required context. Do not infer acceptance from silence or a successful unrelated tool.',
+      'Carry items identify separate candidate experiences. Re-read their supplied original evidence and cite current feedback when resolving them; expiry is not acceptance.',
       'Choose exactly one result: NONE | DEFER | READY.',
       'NONE schema: {"result":"NONE"}.',
       'DEFER schema: {"result":"DEFER","carry":[{"summary":"string","behaviorSignatureDraft":"64 lowercase hex","evidenceDigests":["64 lowercase hex"]}]}.',
@@ -83,6 +89,8 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
     system: [
       COMMON_RULES,
       'Compare every supplied complete candidate body with the ExperienceIntent.',
+      'Optional retrievalSignal fields are auxiliary ranking evidence, not probabilities or proof of coverage. Consider semanticScore and rerankScore separately; never add their raw scales.',
+      'High retrieval relevance with a missing new requirement is PARTIAL, not COVERED. Low relevance cannot override explicit matching behavior in the body. Closely ranked candidates must be assessed independently.',
       'Classify each candidate exactly once as UNRELATED | COVERED | PARTIAL | AMBIGUOUS.',
       'Use COVERED only when the candidate already contains the complete requested reusable behavior.',
       'Use PARTIAL when the candidate covers the same underlying workflow or use case but the intent adds or corrects a rule, option, constraint, edge case, or verification step.',
@@ -90,6 +98,16 @@ const STAGE_POLICIES: Readonly<Record<Stage, StagePolicy>> = Object.freeze({
       'Use UNRELATED only when the candidate serves a materially different capability or workflow; use AMBIGUOUS when the relationship cannot be established safely.',
       'Schema: {"decisions":[{"candidateId":"exact supplied id","decision":"UNRELATED | COVERED | PARTIAL | AMBIGUOUS","reason":"short evidence-based reason"}]}.',
       'Preserve candidateId exactly. This stage must not generate or rewrite Skill Markdown.',
+    ].join('\n'),
+  },
+  RERANK: {
+    maxTokens: 2_048,
+    maxOutputBytes: 16 * 1024,
+    system: [
+      COMMON_RULES,
+      'Rank all supplied Skill summaries by relevance to the reusable experience. Same-workflow skills missing the new rule are highly relevant.',
+      'Consider applicability, actions and constraints. Do not decide coverage, create or merge.',
+      'Return {"orderedCandidateIds":["exact id"]}, each supplied id exactly once, most relevant first. No invented ids or scores.',
     ].join('\n'),
   },
   GENERATION: {
@@ -303,6 +321,7 @@ function projectDetectionEvidence(input: BatchDetectorInput, maxEvidenceBytes: n
 }
 
 function projectDetectionInput(input: BatchDetectorInput): BatchDetectorInput {
+  input = selectPendingWindow(input)
   const system = stageSystem(
     'DETECTION',
     input.triggerReasons.includes('EXPLICIT') ? EXPLICIT_DETECTION_RULES : undefined,
@@ -372,6 +391,10 @@ export class DshV2StageLlmClient implements BatchDetectorClient {
 
   classifyCatalog(input: Parameters<CatalogRecallClassifier['classify']>[0]): Promise<unknown> {
     return this.#call('CATALOG_SCAN', input, routeOf(input))
+  }
+
+  rank(input: Parameters<SessionReranker['rank']>[0]): Promise<unknown> {
+    return this.#call('RERANK', input, routeOf(input))
   }
 
   classifyCoverage(input: Parameters<CoverageClassifier['classify']>[0]): Promise<unknown> {

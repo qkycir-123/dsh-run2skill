@@ -109,6 +109,8 @@ import {
 import { HostMutationGate } from '../application/host-mutation-gate.js'
 import type { PurgeScopeBindingV1 } from '../domain/purge/index.js'
 import { DshV2ProductionRuntime } from './v2-production-runtime.js'
+import { retrievalSettings, type RetrievalConfig } from '../adapters/dsh-settings/retrieval.js'
+import { PersistentVectorCache, type RetrievalStorageContext } from '../adapters/dsh-storage/retrieval-domain.js'
 
 export {
   PublicationConflict,
@@ -682,6 +684,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
     private readonly automaticLearning: AutomaticLearningSettingsPolicy,
+    private readonly retrievalConfig: RetrievalConfig = {},
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
       async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]!),
@@ -898,7 +901,12 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         && typeof this.context.agents.get === 'function'
         ? this.context.agents as { get(id: string): never }
         : { get: (_id: string) => undefined }
+      const vectorCache = new PersistentVectorCache(this.context as unknown as RetrievalStorageContext)
       runtime = new DshV2ProductionRuntime(domain, {
+        retrieval: {
+          settings: () => retrievalSettings(this.retrievalConfig), cache: vectorCache,
+          clear: () => vectorCache.clear(), close: () => vectorCache.close(),
+        },
         persistence: new DshSessionPersistenceAdapter(this.context.sessionPersistence),
         sessions,
         agents,
@@ -1000,7 +1008,7 @@ export async function apply(context: Run2skillHostContext, config: AutomaticLear
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
   const mutationGate = new HostMutationGate()
-  const factory = new Run2skillV2RuntimeFactory(context, notices, scopes, automaticLearning)
+  const factory = new Run2skillV2RuntimeFactory(context, notices, scopes, automaticLearning, config)
   const stopWatchingSettings = automaticLearning.watch((next, previous) => {
     if (!previous.automaticLearning && next.automaticLearning) factory.wakeLearning()
   })
