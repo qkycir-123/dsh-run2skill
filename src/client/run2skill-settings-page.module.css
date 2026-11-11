@@ -53,6 +53,40 @@
   line-height: 1.6;
 }
 
+.page [data-run2skill-retrieval] {
+  display: grid;
+  gap: 12px;
+}
+
+.page [data-run2skill-retrieval] label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+
+.page [data-run2skill-retrieval] label > span {
+  min-width: 175px;
+  font-size: 13px;
+}
+
+.page [data-run2skill-retrieval] input[type='text'],
+.page [data-run2skill-retrieval] select {
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 180px;
+  padding: 8px 10px;
+  color: inherit;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.page [data-run2skill-retrieval] h4 { margin: 20px 0 8px; }
+.page [data-run2skill-retrieval] p { color: var(--dsw-alias-label-secondary); font-size: 13px; }
+
 .publicationFeedback {
   display: grid;
   gap: 8px;

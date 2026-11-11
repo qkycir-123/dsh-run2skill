@@ -17,6 +17,8 @@
 
 Run2Skill 把你在 DeepSeek Harness（DSH）里教给 Agent 的纠正、约束和工作流，整理成可复用的 Skill。你查看草稿、提出修改意见，确认后保存。
 
+长会话通过有界 Pending Window 保留候选经验和相关反馈，后续判断可回读原始证据。默认保持标准召回；在 **插件 → Run2Skill → Skill 召回** 中可开启高级召回，配置 embedding 服务后使用 **BM25 + 向量 + RRF + 摘要重排**。重排默认沿用会话模型，也可配置专用服务。新建和合并前仍完整复核目录。模型、索引和失败回退说明见[高级召回](docs/features/hybrid-recall.md)。
+
 ## 看一遍完整流程
 
 ![Run2Skill：打开插件、审核草稿、确认保存](docs/assets/run2skill-demo.gif)
@@ -41,10 +43,10 @@ Run2Skill 把你在 DeepSeek Harness（DSH）里教给 Agent 的纠正、约束�
 
 ## 安装
 
-**Web（DSH 0.2.2-rc.1）**：准备好 Node.js `>=24.9.0`、`pnpm` 和 `dsh` 命令，安装 `0.5.0-alpha.6`：
+**Web（DSH 0.2.2-rc.1）**：准备好 Node.js `>=24.9.0`、`pnpm` 和 `dsh` 命令，安装 `0.6.0-alpha.1`：
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.5.0-alpha.6
+dsh plugin --profile web add dsh-run2skill@0.6.0-alpha.1
 ```
 
 **Windows Desktop（DSH 0.2.0-rc.2）**：通过 **Manage dsh Command…** 配置命令，完成首次启动后退出应用，安装 `0.5.0-alpha.4`：

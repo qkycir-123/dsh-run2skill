@@ -3,6 +3,7 @@ import type { Run2skillV2Domain } from '../../adapters/dsh-storage/v2-types.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
 import { preprocessPersistentText } from '../../domain/observe/redaction.js'
+import type { RetrievalSignal } from '../../domain/retrieval/hybrid.js'
 import {
   deriveCoverageBindingDigestV2,
   deriveCoverageCallIdV2,
@@ -29,7 +30,7 @@ const outputSchema = z.object({ decisions: z.array(decisionSchema).max(1024) }).
 export interface CoverageClassifier {
   classify(input: {
     readonly intent: Pick<ExperienceIntentV2, 'intentId' | 'persistenceScope' | 'experienceType' | 'applicabilitySummary' | 'keySteps' | 'prohibitions'>
-    readonly candidates: readonly { readonly candidateId: string; readonly content: string }[]
+    readonly candidates: readonly { readonly candidateId: string; readonly content: string; readonly retrievalSignal?: RetrievalSignal }[]
     readonly pageOrdinal: number
     readonly inputDigest: string
     readonly route: SessionBatchV2['routeSnapshot']
@@ -178,7 +179,7 @@ export class CompleteCoverageWorker {
       coverageBasisRevision: basisRevision,
       provider: batch.data.routeSnapshot.provider,
       model: batch.data.routeSnapshot.model,
-      policyVersion: this.#policy.policyVersion,
+      policyVersion: this.#policyVersion(intent),
       routeMaxInputBytes: batch.data.routeSnapshot.maxInputBytes,
       routeMaxOutputBytes: batch.data.routeSnapshot.maxOutputBytes,
       reserveBytes: this.#policy.reserveBytes,
@@ -238,7 +239,7 @@ export class CompleteCoverageWorker {
       try {
         raw = await this.#classifier.classify({
           intent: this.#intentProjection(intent),
-          candidates: page.candidates.map(item => ({ candidateId: item.candidateId, content: item.content })),
+          candidates: page.candidates.map(item => this.#candidateInput(intent, item)),
           pageOrdinal: page.ordinal,
           inputDigest: page.inputDigest,
           route: batch.data.routeSnapshot,
@@ -299,7 +300,7 @@ export class CompleteCoverageWorker {
   #fits(batch: SessionBatchV2, intent: ExperienceIntentV2, candidates: readonly LoadedCandidate[]): boolean {
     const bytes = Buffer.byteLength(canonicalJson({
       intent: this.#intentProjection(intent),
-      candidates: candidates.map(item => ({ candidateId: item.candidateId, content: item.content })),
+      candidates: candidates.map(item => this.#candidateInput(intent, item)),
       pageOrdinal: 32,
       inputDigest: '0'.repeat(64),
       route: batch.routeSnapshot,
@@ -390,7 +391,7 @@ export class CompleteCoverageWorker {
           routeMaxOutputBytes: batch.routeSnapshot.maxOutputBytes,
           reserveBytes: this.#policy.reserveBytes,
           mergeOutputReserveBytes: this.#policy.mergeOutputReserveBytes,
-          policyVersion: this.#policy.policyVersion,
+          policyVersion: this.#policyVersion(intent),
           bindingDigest: plan.bindingDigest,
           planDigest: plan.planDigest,
           pages: plan.pages,
@@ -416,7 +417,7 @@ export class CompleteCoverageWorker {
         stageCalls: [...intent.stageCalls, {
           stage: 'COVERAGE', intentRevision: basisRevision, callId: id, ordinal, inputDigest,
           provider: batch.routeSnapshot.provider, model: batch.routeSnapshot.model,
-          policyVersion: this.#policy.policyVersion, outcome: 'RESERVED',
+          policyVersion: this.#policyVersion(intent), outcome: 'RESERVED',
         }],
         updatedAt: this.#isoNow(),
       })
@@ -461,6 +462,23 @@ export class CompleteCoverageWorker {
             inputDigest: planDigest,
             targetCandidateId: covered[0]!.candidateId,
           },
+          updatedAt: this.#isoNow(),
+        })
+      })
+      return
+    }
+    if (!intent.recall.summaryScanComplete) {
+      await this.#intents.update(intentId, current => {
+        const parsed = ExperienceIntentV2Schema.parse(current)
+        if (parsed.status !== 'COVERAGE_ANALYZING') return parsed
+        return ExperienceIntentV2Schema.parse({
+          ...parsed, revision: parsed.revision + 1, status: 'RECALLING',
+          recall: {
+            state: 'SCANNING', complete: false, summaryScanComplete: false, candidates: [], summaryClassifications: [],
+            retrieval: { ...parsed.recall.retrieval!, phase: 'FULL' },
+            ...(parsed.recall.selfExclusion ? { selfExclusion: parsed.recall.selfExclusion } : {}),
+          },
+          coverage: { state: 'NOT_STARTED', retryUsed: false },
           updatedAt: this.#isoNow(),
         })
       })
@@ -536,6 +554,17 @@ export class CompleteCoverageWorker {
       keySteps: intent.keySteps,
       prohibitions: intent.prohibitions,
     }
+  }
+
+  #policyVersion(intent: ExperienceIntentV2): string {
+    return intent.recall.retrieval?.mode === 'HYBRID'
+      ? `${this.#policy.policyVersion}-signals-${sha256Utf8(canonicalJson(intent.recall.retrieval.signals))}`
+      : this.#policy.policyVersion
+  }
+
+  #candidateInput(intent: ExperienceIntentV2, candidate: { candidateId: string; content: string }) {
+    const retrievalSignal = intent.recall.retrieval?.signals.find(item => item.candidateId === candidate.candidateId)
+    return { candidateId: candidate.candidateId, content: candidate.content, ...(retrievalSignal ? { retrievalSignal } : {}) }
   }
 
   #isoNow(): string { return new Date(this.#now()).toISOString() }

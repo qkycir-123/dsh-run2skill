@@ -87,6 +87,7 @@ export class V2PurgeService {
   constructor(
     private readonly domain: Run2skillV2Domain,
     private readonly now: () => number = () => Date.now(),
+    private readonly clearDerived?: () => Promise<void>,
   ) {
     this.#global = Run2skillV2GlobalStore.for(domain)
   }
@@ -229,6 +230,7 @@ export class V2PurgeService {
     for (const id of selected.sessionBatches) await this.domain.table('session_batches').delete(id)
     for (const id of selected.turnObservations) await this.domain.table('turn_observations').delete(id)
     for (const id of selected.legacyItems) await this.domain.table('legacy_items').delete(id)
+    await this.clearDerived?.()
     await this.#setPhase(purgeId, 'VALIDATING')
     const residual = candidates(this.domain, hideBefore)
     if (Object.values(residual).some(items => items.length > 0)) throw new PurgeError('PURGE_STORAGE_UNAVAILABLE')

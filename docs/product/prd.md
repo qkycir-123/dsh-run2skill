@@ -147,7 +147,7 @@ v0.2 不以“自动进化一切”为目标，也不承诺从所有执行成功
 
 - `FAILURE_RECOVERY` 自动学习和跨 Run 重复模式学习；
 - 智能 Run segmentation、Session 全量总结和 Subagent 独立学习；
-- Vector DB、Embedding Index、Skill Graph 和自动聚类；
+- 独立 Vector DB、Skill Graph 和自动聚类（0.6.0-alpha.1 已提供可选的持久化 Embedding Index，见 [高级召回](../features/hybrid-recall.md)）；
 - 自动 Skill Split、Rename、Promotion、Local Override、Retirement；
 - Team、Org、Public Scope 和 Cloud Sync；
 - scripts/assets/MCP 自动生成；

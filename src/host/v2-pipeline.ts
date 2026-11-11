@@ -18,6 +18,9 @@ import { SessionQuiescenceCoordinator, type SessionActivityObservationPort } fro
 import { CompleteCatalogRecallWorker, type CompleteRecallCatalogPort } from '../application/recall/index.js'
 import type { WorkspaceBindingPort } from '../application/capture/turn-capture-processor.js'
 import type { SessionBatchV2 } from '../domain/v2/index.js'
+import { HybridSkillRetrieval } from '../application/recall/hybrid-retrieval.js'
+import type { RetrievalSettings } from '../adapters/dsh-settings/retrieval.js'
+import type { PersistentVectorCache } from '../adapters/dsh-storage/retrieval-domain.js'
 
 export interface DshV2PipelineCatalogPorts {
   readonly recall: CompleteRecallCatalogPort
@@ -25,6 +28,7 @@ export interface DshV2PipelineCatalogPorts {
 }
 
 export interface DshV2PipelineRuntimeOptions {
+  readonly retrieval?: { settings(): RetrievalSettings; cache: Pick<PersistentVectorCache, 'table'> }
   readonly llm: DshLlmPort
   readonly baseline: {
     capture(sessionLifecycleKey: string): Promise<SessionBatchV2['batchManifestBaseline']>
@@ -55,6 +59,7 @@ export class DshV2PipelineRuntime {
     options: DshV2PipelineRuntimeOptions,
   ) {
     const stageClient = new DshV2StageLlmClient(options.llm)
+    const retrieval = options.retrieval ? new HybridSkillRetrieval({ ...options.retrieval, reranker: stageClient }) : undefined
     const routeSnapshot = new DshV2RouteSnapshotAdapter(options.llm)
     const coordinator = new SessionBatchCoordinator(domain, {
       captureBaseline: sessionLifecycleKey => options.baseline.capture(sessionLifecycleKey),
@@ -103,6 +108,7 @@ export class DshV2PipelineRuntime {
       ...(options.now === undefined ? {} : { now: options.now }),
     })
     const recall = new CompleteCatalogRecallWorker(domain, {
+      ...(retrieval ? { retrieval } : {}),
       catalog: options.catalog.recall,
       classifier: { classify: input => stageClient.classifyCatalog(input) },
       ...(options.now === undefined ? {} : { now: options.now }),
@@ -130,7 +136,7 @@ export class DshV2PipelineRuntime {
         setTimer: options.internalTimer.set,
         clearTimer: options.internalTimer.clear,
       }),
-      abortActive: () => { stageClient.dispose() },
+      abortActive: () => { stageClient.dispose(); retrieval?.dispose() },
     })
     wakePipeline = () => { this.#runtime.wake() }
   }

@@ -49,6 +49,42 @@ function client(result: Awaited<ReturnType<BatchDetectorClient['detect']>>) {
 }
 
 describe('v2 Batch Detector worker', () => {
+  it('re-reads pending evidence from earlier turns and binds it together with current feedback', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const excerpt = '以后提交前先运行测试；正在等待验证结果。'
+    const directUserEvidence = [{
+      source: 'USER_DIRECT' as const, messageSeq: 1, excerpt, excerptDigest: sha256Utf8(excerpt),
+      redactionKinds: [], truncated: false,
+    }]
+    const facts = { ...fixtures.turnObservation, turn: 1, turnEndSeq: 3, directUserEvidence,
+      evidenceDigest: sha256Utf8(canonicalJson(directUserEvidence)),
+    }
+    const previous = TurnObservationV2Schema.parse({
+      ...facts, observationId: deriveTurnObservationIdV2(facts), contentDigest: deriveTurnObservationContentDigestV2(facts),
+    })
+    await domain.table('turn_observations').put(previous.observationId, previous)
+    const global = domain.global.get()
+    await domain.global.set({ ...global, sessions: { ...global.sessions,
+      [fixtures.sessionBatch.sessionLifecycleKey]: { ...global.sessions[fixtures.sessionBatch.sessionLifecycleKey]!,
+        openExperienceCarry: [{ summary: '等待测试验证', behaviorSignatureDraft: 'a'.repeat(64), evidenceDigests: [previous.evidenceDigest], remainingBatches: 1 }],
+      },
+    } })
+    const worker = new BatchDetectorWorker(domain, { client: {
+      detect: async input => {
+        expect(input.observations.some(item => item.observationId === previous.observationId && item.directUserEvidence[0]?.excerpt === excerpt)).toBe(true)
+        return { result: 'READY', intents: [{
+          persistenceScope: 'PROJECT', experienceType: 'WORKFLOW', applicabilitySummary: '提交代码前',
+          keySteps: ['运行测试'], prohibitions: [], evidenceDigests: [previous.evidenceDigest, fixtures.turnObservation.evidenceDigest],
+          completeness: { status: 'COMPLETE', blockers: [] },
+        }] }
+      },
+    } })
+    await worker.runOnce()
+    const intent = [...domain.experienceIntents.values()][0]!
+    expect(intent.evidenceRefs.map(item => item.observationId)).toEqual(expect.arrayContaining([previous.observationId, fixtures.turnObservation.observationId]))
+    expect(domain.global.get().sessions[fixtures.sessionBatch.sessionLifecycleKey]!.openExperienceCarry).toEqual([])
+  })
+
   it('leaves ordinary frozen batches untouched while automatic learning is off', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
     domain.sessionBatches.set(fixtures.sessionBatch.batchId, SessionBatchV2Schema.parse({

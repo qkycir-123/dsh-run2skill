@@ -306,6 +306,16 @@ export class BatchDetectorWorker {
         }))
         return { value: { rejectedBatch } }
       }
+      // Restore original evidence for pending experiences instead of trusting their summaries alone.
+      const carryDigests = new Set(cursor.openExperienceCarry.flatMap(item => item.evidenceDigests))
+      const currentIds = new Set(observations.map(item => item.observationId))
+      const restored = [...this.#observations.entries()].map(([, item]) => item)
+        .filter(item => item.sessionLifecycleKey === batch.sessionLifecycleKey
+          && carryDigests.has(item.evidenceDigest) && !currentIds.has(item.observationId)
+          && item.turnEndSeq < batch.firstTurnEndSeq)
+        .sort((a, b) => b.turnEndSeq - a.turnEndSeq).slice(0, 16)
+        .map(item => TurnObservationV2Schema.parse(item))
+      observations = [...restored.reverse(), ...observations]
       const boundedEvidence = selectBoundedEvidenceRefsV2(observations.flatMap(item => (
         item.directUserEvidence.map(evidence => ({
           ...evidence,
@@ -540,8 +550,9 @@ export class BatchDetectorWorker {
   }
 
   #evidenceIsBound(output: BatchDetectorOutput, claimed: ClaimedBatch): boolean {
-    const current = new Set(claimed.observations.map(item => item.evidenceDigest))
-    const allowed = new Set([...current, ...claimed.input.carry.flatMap(item => item.evidenceDigests)])
+    const current = new Set(claimed.batch.observationManifest.map(item => item.evidenceDigest))
+    const supplied = claimed.input.observations.map(item => item.evidenceDigest)
+    const allowed = new Set(output.result === 'READY' ? supplied : [...supplied, ...claimed.input.carry.flatMap(item => item.evidenceDigests)])
     const groups = output.result === 'READY' ? output.intents : output.result === 'DEFER' ? output.carry : []
     return groups.every(group => (
       group.evidenceDigests.every(digest => allowed.has(digest))

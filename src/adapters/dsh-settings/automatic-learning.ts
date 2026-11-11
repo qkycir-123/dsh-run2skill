@@ -1,4 +1,5 @@
 import z from '@deepseek-ai/schemastery'
+import { RetrievalSettingsFields, type RetrievalConfig } from './retrieval.js'
 import type {
   AutomaticLearningPolicyPort,
   AutomaticLearningSnapshot,
@@ -11,11 +12,12 @@ export interface AutomaticLearningSettings {
   readonly automaticLearning: boolean
 }
 
-export interface AutomaticLearningConfig {
+export interface AutomaticLearningConfig extends RetrievalConfig {
   readonly automaticLearning: { get(): boolean }
 }
 
 export const AutomaticLearningSettingsSchema = z.object({
+  ...RetrievalSettingsFields,
   automaticLearning: z.boolean().default(AUTOMATIC_LEARNING_DEFAULT).volatile(),
 })
 

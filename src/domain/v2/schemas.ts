@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { RetrievalPlanSchema, retrievalCatalogDigest } from '../retrieval/hybrid.js'
 import { canonicalJson } from '../learn/identity.js'
 import { CaptureWorkItemV1Schema, RedactionKindSchema } from '../observe/schemas.js'
 import { OBSERVE_LIMITS } from '../observe/constants.js'
@@ -1080,6 +1081,7 @@ export const ExperienceIntentV2Schema = z.object({
     resolvedCandidateBodyDigest: sha256Hex.optional(),
   }).strict(),
   recall: z.object({
+    retrieval: RetrievalPlanSchema.optional(),
     state: z.enum(['NOT_STARTED', 'SCANNING', 'COMPLETE', 'INCOMPLETE']),
     runtimeCatalogDigest: sha256Hex.optional(),
     pendingCatalogDigest: sha256Hex.optional(),
@@ -1479,7 +1481,7 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['recall', 'complete'], message: 'Recall completeness must match its state' })
   }
   if (value.recall.state === 'COMPLETE' && (
-    !value.recall.summaryScanComplete
+    (!value.recall.summaryScanComplete && value.recall.retrieval?.phase !== 'SHORTLIST')
     || value.recall.runtimeCatalogDigest === undefined
     || value.recall.pendingCatalogDigest === undefined
     || value.recall.catalogEpoch === undefined
@@ -1513,6 +1515,20 @@ export const ExperienceIntentV2Schema = z.object({
   )) context.addIssue({ code: 'custom', path: ['recall'], message: 'Unstarted recall cannot contain Catalog results' })
   if (value.recall.state === 'INCOMPLETE' && value.recall.incompleteReason === undefined) {
     context.addIssue({ code: 'custom', path: ['recall', 'incompleteReason'], message: 'Incomplete recall requires a reason' })
+  }
+  const retrieval = value.recall.retrieval
+  if (retrieval && value.recall.scanPlanDigest !== undefined) {
+    const catalogDigest = retrievalCatalogDigest({
+      runtimeCatalogDigest: value.recall.runtimeCatalogDigest!, pendingCatalogDigest: value.recall.pendingCatalogDigest!,
+      catalogEpoch: value.recall.catalogEpoch!, catalogMutationReceiptDigest: value.recall.catalogMutationReceiptDigest!,
+    })
+    if (catalogDigest !== retrieval.catalogDigest || (retrieval.phase === 'SHORTLIST' && (
+      value.recall.summaryScanComplete || value.recall.scanSummaryCount !== retrieval.selectedIds.length
+      || (value.recall.summaryClassifications ?? []).some(item => !retrieval.selectedIds.includes(item.candidateId))
+    ))) context.addIssue({ code: 'custom', path: ['recall', 'retrieval'], message: 'Retrieval must bind the exact Catalog and shortlist' })
+  }
+  if (['CREATE', 'MERGE'].includes(value.coverage.state) && !value.recall.summaryScanComplete) {
+    context.addIssue({ code: 'custom', path: ['coverage'], message: 'Mutation decisions require exhaustive Catalog verification' })
   }
   const scanPlanFieldPresence = [
     value.recall.scanBasisRevision,
@@ -1595,6 +1611,10 @@ export const ExperienceIntentV2Schema = z.object({
     || value.recall.selfExclusion.selfExclusionDigest !== deriveRecallSelfExclusionDigestV2(value.recall.selfExclusion)
   )) context.addIssue({ code: 'custom', path: ['recall', 'selfExclusion'], message: 'Self-exclusion is only valid for an exact stale refresh revision' })
   const coverage = value.coverage
+  if (retrieval?.mode === 'HYBRID' && coverage.policyVersion !== undefined
+    && !coverage.policyVersion.endsWith(`-signals-${sha256Utf8(canonicalJson(retrieval.signals))}`)) {
+    context.addIssue({ code: 'custom', path: ['coverage'], message: 'Coverage must bind the exact retrieval signals' })
+  }
   const coveragePlanFields = [
     coverage.basisRevision,
     coverage.routeProvider,
@@ -2077,7 +2097,7 @@ export const ExperienceIntentV2Schema = z.object({
     context.addIssue({ code: 'custom', path: ['recall', 'candidates'], message: 'Recall candidates must have unique identities' })
   }
   if (
-    value.recall.summaryScanComplete
+    value.recall.state === 'COMPLETE'
     && canonicalJson([...candidateIds].sort()) !== canonicalJson([...relevantIds].sort())
   ) context.addIssue({ code: 'custom', path: ['recall', 'candidates'], message: 'Recall candidates must exactly match every relevant or possible classification' })
   if (value.recall.state === 'COMPLETE' && (

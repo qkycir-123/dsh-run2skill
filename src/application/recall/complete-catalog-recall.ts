@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { RetrievalPlanSchema, retrievalCatalogDigest } from '../../domain/retrieval/hybrid.js'
+import type { HybridRetrievalPort } from './hybrid-retrieval.js'
 import type { Run2skillV2Domain } from '../../adapters/dsh-storage/v2-types.js'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
@@ -140,6 +142,7 @@ const DEFAULT_POLICY: CompleteCatalogRecallPolicy = Object.freeze({
 export interface CompleteCatalogRecallOptions {
   readonly catalog: CompleteRecallCatalogPort
   readonly classifier: CatalogRecallClassifier
+  readonly retrieval?: HybridRetrievalPort
   readonly policy?: Partial<CompleteCatalogRecallPolicy>
   readonly now?: () => number
 }
@@ -205,6 +208,7 @@ export class CompleteCatalogRecallWorker {
   readonly #batches
   readonly #catalog: CompleteRecallCatalogPort
   readonly #classifier: CatalogRecallClassifier
+  readonly #retrieval: HybridRetrievalPort | undefined
   readonly #policy: CompleteCatalogRecallPolicy
   readonly #now: () => number
 
@@ -213,6 +217,7 @@ export class CompleteCatalogRecallWorker {
     this.#batches = domain.table('session_batches')
     this.#catalog = options.catalog
     this.#classifier = options.classifier
+    this.#retrieval = options.retrieval
     this.#policy = { ...DEFAULT_POLICY, ...options.policy }
     this.#now = options.now ?? Date.now
     if (
@@ -309,6 +314,20 @@ export class CompleteCatalogRecallWorker {
       await this.#commitIncomplete(intentId, 'CATALOG_INCOMPLETE')
       return
     }
+    if (intent.recall.scanPlanDigest === undefined && intent.recall.retrieval === undefined && this.#retrieval) {
+      const retrieval = RetrievalPlanSchema.parse(await this.#retrieval.prepare(intent, batch, snapshot))
+      intent = await this.#intents.update(intentId, current => {
+        const parsed = ExperienceIntentV2Schema.parse(current)
+        if (parsed.status !== 'RECALLING' || parsed.recall.scanPlanDigest !== undefined || parsed.recall.retrieval !== undefined) return parsed
+        return ExperienceIntentV2Schema.parse({
+          ...parsed, revision: parsed.revision + 1, recall: { ...parsed.recall, retrieval }, updatedAt: this.#isoNow(),
+        })
+      })
+    }
+    if (intent.recall.retrieval && intent.recall.retrieval.catalogDigest !== retrievalCatalogDigest(snapshot)) {
+      await this.#commitIncomplete(intentId, 'CATALOG_CHANGED')
+      return
+    }
     const plan = this.#plan(intent, batch, snapshot)
     if (plan === undefined || plan.pages.length > this.#policy.maxCatalogScanCalls) {
       await this.#commitIncomplete(intentId, 'CATALOG_SCAN_BUDGET_EXHAUSTED')
@@ -393,7 +412,11 @@ export class CompleteCatalogRecallWorker {
   }
 
   #plan(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot): ScanPlan | undefined {
-    const summaries = [...snapshot.summaries].sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    const selected = intent.recall.retrieval?.phase === 'SHORTLIST'
+      ? new Set(intent.recall.retrieval.selectedIds) : undefined
+    const summaries = snapshot.summaries.filter(item => selected === undefined || selected.has(item.candidateId))
+      .sort((left, right) => left.candidateId.localeCompare(right.candidateId))
+    if (selected !== undefined && summaries.length !== selected.size) return undefined
     const scanBindingDigest = deriveCatalogScanBindingDigestV2({
       intentId: intent.intentId,
       scanBasisRevision: intent.recall.scanBasisRevision ?? intent.revision,
@@ -688,7 +711,7 @@ export class CompleteCatalogRecallWorker {
         status: 'COVERAGE_READY',
         recall: {
           ...intent.recall,
-          state: 'COMPLETE', complete: true, summaryScanComplete: true,
+          state: 'COMPLETE', complete: true, summaryScanComplete: intent.recall.retrieval?.phase !== 'SHORTLIST',
           candidates,
         },
         updatedAt: this.#isoNow(),

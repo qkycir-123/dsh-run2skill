@@ -50,6 +50,8 @@ const permittedFixtureLocations = new Set([
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 27],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 62],
   ['tests/redaction.spec.ts', 'CREDENTIAL_URL', 72],
+  // Deliberately rejected synthetic URL in the retrieval transport test.
+  ['tests/retrieval-http.spec.ts', 'CREDENTIAL_URL', 32],
   ['tests/redaction.spec.ts', 'PRIVATE_KEY', 24],
   ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'access_token', 167],
   ['tests/redaction.spec.ts', 'SECRET_ASSIGNMENT', 'api_key', 21],
@@ -261,7 +263,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.5.0-alpha.6',
+  version: '0.6.0-alpha.1',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   icon: './assets/run2skill-logo.webp',
   keywords: [

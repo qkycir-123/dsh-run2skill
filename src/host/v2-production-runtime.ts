@@ -21,7 +21,7 @@ import type { WorkspaceBindingPort } from '../application/capture/turn-capture-p
 import type { RuntimeNotices } from '../application/capture/runtime-notices.js'
 import type { TurnIngressCandidate } from '../adapters/dsh-session/types.js'
 import type { RecoveryRuntime } from '../application/capture/recovery-lifecycle.js'
-import { createDshV2PipelineRuntime, type DshV2PipelineRuntime } from './v2-pipeline.js'
+import { createDshV2PipelineRuntime, type DshV2PipelineRuntime, type DshV2PipelineRuntimeOptions } from './v2-pipeline.js'
 import { V2ProposalHostServices } from './v2-proposal-services.js'
 import { V2PurgeService } from '../application/purge/index.js'
 import { V2LearningAttentionService } from '../adapters/dsh-connection/v2-learning-attention-rpc.js'
@@ -39,6 +39,7 @@ export interface V2ProductionHostSession<TView extends object> {
 }
 
 export interface DshV2ProductionRuntimeOptions<TView extends object> {
+  readonly retrieval?: NonNullable<DshV2PipelineRuntimeOptions['retrieval']> & { clear(): Promise<void>; close(): Promise<void> }
   readonly persistence: SessionPersistencePort
   readonly sessions: DshLiveSessionRegistryPort
   readonly agents: DshLiveAgentRegistryPort
@@ -141,6 +142,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       ...(options.now === undefined ? {} : { now: options.now }),
     })
     this.pipeline = createDshV2PipelineRuntime(domain, {
+      ...(options.retrieval ? { retrieval: options.retrieval } : {}),
       llm: options.llm,
       baseline: manifest,
       activity,
@@ -199,7 +201,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       ...(options.refreshView === undefined ? {} : { refreshView: options.refreshView }),
       ...(options.now === undefined ? {} : { now: () => new Date(options.now!()).toISOString() }),
     })
-    this.purge = new V2PurgeService(domain, options.now)
+    this.purge = new V2PurgeService(domain, options.now, options.retrieval?.clear)
     this.attention = new V2LearningAttentionService(
       domain,
       options.resolveWorkspace,
@@ -280,6 +282,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       await this.pipeline.dispose()
     } finally {
       this.proposals.dispose()
+      await this.options.retrieval?.close()
       await this.#domain.close()
     }
   }
