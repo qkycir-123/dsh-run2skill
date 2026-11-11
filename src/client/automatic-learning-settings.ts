@@ -11,7 +11,7 @@ import {
   PurgeSettingsSection,
   type PurgeCall,
 } from './purge-settings.js'
-import { RETRIEVAL_DEFAULTS, type RetrievalSettings } from '../adapters/dsh-settings/retrieval.js'
+import { RETRIEVAL_DEFAULTS, type RetrievalSettings } from '../domain/retrieval/settings.js'
 
 export interface AutomaticLearningClientSettings extends Partial<RetrievalSettings> {
   readonly automaticLearning: boolean
@@ -159,6 +159,7 @@ export function RetrievalSettingsSection({ controller }: { readonly controller: 
     createElement('span', null, label),
     createElement('input', {
       key: `${key}:${String(settings[key])}`, type: 'text', defaultValue: String(settings[key]), disabled, placeholder,
+      maxLength: key.endsWith('Endpoint') ? 2048 : 256,
       'aria-label': label, spellCheck: false,
       onBlur: (event: { currentTarget: { value: string } }) => {
         if (event.currentTarget.value.trim() !== settings[key]) void controller.setField(key, event.currentTarget.value.trim())

@@ -20,6 +20,7 @@ export const RetrievalPlanSchema = z.object({
   catalogDigest: z.string().regex(/^[a-f0-9]{64}$/),
   configDigest: z.string().regex(/^[a-f0-9]{64}$/),
   selectedIds: z.array(z.string().min(1).max(256)).max(1024),
+  requiredBodyIds: z.array(z.string().min(1).max(256)).max(1024).optional(),
   signals: z.array(RetrievalSignalSchema).max(1024),
   embeddingModel: z.string().max(256),
   reranker: z.enum(['SESSION', 'SERVICE', 'RRF', 'NONE']),
@@ -31,6 +32,11 @@ export const RetrievalPlanSchema = z.object({
     || new Set(value.signals.map(item => item.candidateId)).size !== value.signals.length
     || (value.mode === 'STANDARD' && value.phase !== 'FULL')) {
     context.addIssue({ code: 'custom', message: 'Invalid retrieval membership or phase' })
+  }
+  if (value.requiredBodyIds && (value.phase !== 'FULL'
+    || value.requiredBodyIds.some(id => !value.selectedIds.includes(id))
+    || new Set(value.requiredBodyIds).size !== value.requiredBodyIds.length)) {
+    context.addIssue({ code: 'custom', message: 'Required body checks must come from the original shortlist' })
   }
 })
 

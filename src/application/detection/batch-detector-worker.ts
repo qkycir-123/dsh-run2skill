@@ -309,9 +309,10 @@ export class BatchDetectorWorker {
       // Restore original evidence for pending experiences instead of trusting their summaries alone.
       const carryDigests = new Set(cursor.openExperienceCarry.flatMap(item => item.evidenceDigests))
       const currentIds = new Set(observations.map(item => item.observationId))
+      const unique = this.#uniqueEvidenceDigests(batch.sessionLifecycleKey)
       const restored = [...this.#observations.entries()].map(([, item]) => item)
-        .filter(item => item.sessionLifecycleKey === batch.sessionLifecycleKey
-          && carryDigests.has(item.evidenceDigest) && !currentIds.has(item.observationId)
+        .filter(item => item.sessionLifecycleKey === batch.sessionLifecycleKey && item.directUserEvidence.length > 0
+          && unique.has(item.evidenceDigest) && carryDigests.has(item.evidenceDigest) && !currentIds.has(item.observationId)
           && item.turnEndSeq < batch.firstTurnEndSeq)
         .sort((a, b) => b.turnEndSeq - a.turnEndSeq).slice(0, 16)
         .map(item => TurnObservationV2Schema.parse(item))
@@ -550,14 +551,27 @@ export class BatchDetectorWorker {
   }
 
   #evidenceIsBound(output: BatchDetectorOutput, claimed: ClaimedBatch): boolean {
-    const current = new Set(claimed.batch.observationManifest.map(item => item.evidenceDigest))
-    const supplied = claimed.input.observations.map(item => item.evidenceDigest)
+    const unique = this.#uniqueEvidenceDigests(claimed.batch.sessionLifecycleKey)
+    const supplied = claimed.input.observations.filter(item => item.directUserEvidence.length > 0 && unique.has(item.evidenceDigest))
+      .map(item => item.evidenceDigest)
+    const current = new Set(claimed.batch.observationManifest.filter(item => supplied.includes(item.evidenceDigest)).map(item => item.evidenceDigest))
     const allowed = new Set(output.result === 'READY' ? supplied : [...supplied, ...claimed.input.carry.flatMap(item => item.evidenceDigests)])
     const groups = output.result === 'READY' ? output.intents : output.result === 'DEFER' ? output.carry : []
     return groups.every(group => (
       group.evidenceDigests.every(digest => allowed.has(digest))
       && (output.result !== 'READY' || group.evidenceDigests.some(digest => current.has(digest)))
     ))
+  }
+
+  #uniqueEvidenceDigests(sessionLifecycleKey: string): Set<string> {
+    const counts = new Map<string, number>()
+    for (const [, item] of this.#observations.entries()) {
+      if (item.sessionLifecycleKey !== sessionLifecycleKey) continue
+      counts.set(item.evidenceDigest, (counts.get(item.evidenceDigest) ?? 0) + 1)
+    }
+    // Legacy carry records contain digests rather than observation IDs. Empty
+    // evidence and duplicated digests cannot identify a particular observation.
+    return new Set([...counts].filter(([, count]) => count === 1).map(([digest]) => digest))
   }
 
   async #advanceCursor(batch: SessionBatchV2): Promise<void> {

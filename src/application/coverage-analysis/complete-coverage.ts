@@ -475,7 +475,11 @@ export class CompleteCoverageWorker {
           ...parsed, revision: parsed.revision + 1, status: 'RECALLING',
           recall: {
             state: 'SCANNING', complete: false, summaryScanComplete: false, candidates: [], summaryClassifications: [],
-            retrieval: { ...parsed.recall.retrieval!, phase: 'FULL' },
+            retrieval: { ...parsed.recall.retrieval!, phase: 'FULL',
+              requiredBodyIds: (parsed.coverage.decisions ?? [])
+                .filter(item => item.decision === 'PARTIAL' || item.decision === 'AMBIGUOUS')
+                .map(item => item.candidateId),
+            },
             ...(parsed.recall.selfExclusion ? { selfExclusion: parsed.recall.selfExclusion } : {}),
           },
           coverage: { state: 'NOT_STARTED', retryUsed: false },

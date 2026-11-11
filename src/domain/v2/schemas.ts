@@ -2090,6 +2090,9 @@ export const ExperienceIntentV2Schema = z.object({
     }
   }
   const candidateIds = value.recall.candidates.map(candidate => candidate.candidateId)
+  if (value.recall.state === 'COMPLETE' && value.recall.retrieval?.requiredBodyIds?.some(id => !candidateIds.includes(id))) {
+    context.addIssue({ code: 'custom', path: ['recall'], message: 'Full recall must retain previously established body evidence' })
+  }
   const relevantIds = summaryClassifications
     .filter(item => item.classification !== 'UNRELATED')
     .map(item => item.candidateId)

@@ -28,7 +28,7 @@ export interface DshV2PipelineCatalogPorts {
 }
 
 export interface DshV2PipelineRuntimeOptions {
-  readonly retrieval?: { settings(): RetrievalSettings; cache: Pick<PersistentVectorCache, 'table'> }
+  readonly retrieval?: { settings(): RetrievalSettings; cache: Pick<PersistentVectorCache, 'table' | 'epoch'> }
   readonly llm: DshLlmPort
   readonly baseline: {
     capture(sessionLifecycleKey: string): Promise<SessionBatchV2['batchManifestBaseline']>

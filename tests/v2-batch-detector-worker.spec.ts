@@ -49,6 +49,40 @@ function client(result: Awaited<ReturnType<BatchDetectorClient['detect']>>) {
 }
 
 describe('v2 Batch Detector worker', () => {
+  it('does not mistake an empty evidence digest shared by attachment turns for new feedback', async () => {
+    const { domain, fixtures } = await seedFrozenBatch()
+    const original = fixtures.turnObservation
+    const previousFacts = { ...original, turnEndSeq: 3, turn: 1 }
+    const previous = TurnObservationV2Schema.parse({ ...previousFacts,
+      observationId: deriveTurnObservationIdV2(previousFacts), contentDigest: deriveTurnObservationContentDigestV2(previousFacts),
+    })
+    const emptyFacts = { ...original, directUserEvidence: [], evidenceDigest: sha256Utf8(canonicalJson([])), completeness: 'INCOMPLETE' as const }
+    const current = TurnObservationV2Schema.parse({ ...emptyFacts, contentDigest: deriveTurnObservationContentDigestV2(emptyFacts) })
+    const otherFacts = { ...emptyFacts, turnEndSeq: 5, turn: 1 }
+    const other = TurnObservationV2Schema.parse({ ...otherFacts,
+      observationId: deriveTurnObservationIdV2(otherFacts), contentDigest: deriveTurnObservationContentDigestV2(otherFacts),
+    })
+    for (const item of [previous, other, current]) await domain.table('turn_observations').put(item.observationId, item)
+    const manifest = [{ observationId: current.observationId, turnStartSeq: current.turnStartSeq, turnEndSeq: current.turnEndSeq, evidenceDigest: current.evidenceDigest, completeness: current.completeness }]
+    await domain.table('session_batches').put(fixtures.sessionBatch.batchId, SessionBatchV2Schema.parse({
+      ...fixtures.sessionBatch, observationManifest: manifest, observationManifestDigest: sha256Utf8(canonicalJson(manifest)),
+    }))
+    const global = domain.global.get()
+    await domain.global.set({ ...global, sessions: { ...global.sessions,
+      [current.sessionLifecycleKey]: { ...global.sessions[current.sessionLifecycleKey]!, openExperienceCarry: [{
+        summary: '等待结果', behaviorSignatureDraft: 'a'.repeat(64), evidenceDigests: [previous.evidenceDigest, other.evidenceDigest], remainingBatches: 1,
+      }] },
+    } })
+    await new BatchDetectorWorker(domain, { client: { detect: async input => {
+      expect(input.observations.some(item => item.observationId === other.observationId)).toBe(false)
+      return { result: 'READY', intents: [{ persistenceScope: 'PROJECT', experienceType: 'WORKFLOW', applicabilitySummary: '项目流程',
+        keySteps: ['运行检查'], prohibitions: [], evidenceDigests: [previous.evidenceDigest, current.evidenceDigest], completeness: { status: 'COMPLETE', blockers: [] },
+      }] }
+    } } }).runOnce()
+    expect(domain.experienceIntents.size).toBe(0)
+    expect(domain.sessionBatches.get(fixtures.sessionBatch.batchId)!.state).toBe('NEEDS_ATTENTION')
+  })
+
   it('re-reads pending evidence from earlier turns and binds it together with current feedback', async () => {
     const { domain, fixtures } = await seedFrozenBatch()
     const excerpt = '以后提交前先运行测试；正在等待验证结果。'

@@ -201,7 +201,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
       ...(options.refreshView === undefined ? {} : { refreshView: options.refreshView }),
       ...(options.now === undefined ? {} : { now: () => new Date(options.now!()).toISOString() }),
     })
-    this.purge = new V2PurgeService(domain, options.now, options.retrieval?.clear)
+    this.purge = new V2PurgeService(domain, options.now, options.retrieval?.clear, () => { this.pipeline.wake() })
     this.attention = new V2LearningAttentionService(
       domain,
       options.resolveWorkspace,

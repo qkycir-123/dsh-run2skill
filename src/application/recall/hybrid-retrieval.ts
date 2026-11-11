@@ -11,7 +11,8 @@ import type { PersistentVectorCache } from '../../adapters/dsh-storage/retrieval
 import { embedTexts, rerankTexts } from '../../adapters/retrieval/http-models.js'
 
 export interface HybridRetrievalPort {
-  prepare(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot): Promise<RetrievalPlan>
+  epoch?(): number
+  prepare(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot, epoch?: number): Promise<RetrievalPlan>
 }
 export interface SessionReranker {
   rank(input: {
@@ -25,7 +26,7 @@ export class HybridSkillRetrieval implements HybridRetrievalPort {
   #tail: Promise<unknown> = Promise.resolve()
   constructor(private readonly options: {
     settings(): RetrievalSettings
-    cache: Pick<PersistentVectorCache, 'table'>
+    cache: Pick<PersistentVectorCache, 'table' | 'epoch'>
     reranker: SessionReranker
     embed?: typeof embedTexts
     rerank?: typeof rerankTexts
@@ -34,15 +35,17 @@ export class HybridSkillRetrieval implements HybridRetrievalPort {
 
   dispose(): void { this.#controller.abort() }
 
-  prepare(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot): Promise<RetrievalPlan> {
+  epoch(): number { return this.options.cache.epoch }
+
+  prepare(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot, epoch = this.epoch()): Promise<RetrievalPlan> {
     // Capture once, before waiting: a settings edit never changes an in-flight operation.
     const config = { ...this.options.settings() }
-    const task = this.#tail.then(() => this.#prepare(intent, batch, snapshot, config))
+    const task = this.#tail.then(() => this.#prepare(intent, batch, snapshot, config, epoch))
     this.#tail = task.catch(() => {})
     return task
   }
 
-  async #prepare(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot, config: RetrievalSettings): Promise<RetrievalPlan> {
+  async #prepare(intent: ExperienceIntentV2, batch: SessionBatchV2, snapshot: RecallCatalogSnapshot, config: RetrievalSettings, epoch: number): Promise<RetrievalPlan> {
     const now = this.options.now ?? Date.now
     const started = now()
     const base: RetrievalPlan = {
@@ -54,7 +57,7 @@ export class HybridSkillRetrieval implements HybridRetrievalPort {
     try {
       const signal = AbortSignal.any([this.#controller.signal, AbortSignal.timeout(60_000)])
       if (!snapshot.complete || snapshot.summaries.length > 1024) throw new Error('CATALOG_UNAVAILABLE')
-      const table = await this.options.cache.table()
+      const table = await this.options.cache.table(epoch)
       const fingerprint = sha256Utf8(canonicalJson({
         endpoint: config.embeddingEndpoint, model: config.embeddingModel, textVersion: 'summary-query-v1',
       }))

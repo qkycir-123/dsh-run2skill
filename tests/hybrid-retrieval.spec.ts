@@ -24,7 +24,7 @@ function cache() {
       const value = fn(values.get(key)!); values.set(key, value); return value
     },
   }
-  return { values, table: async () => table }
+  return { values, epoch: 0, table: async () => table }
 }
 
 function snapshot(count = 3) {
@@ -130,6 +130,56 @@ async function pipeline() {
 }
 
 describe('guarded hybrid decisions', () => {
+  it('yields to an active purge instead of repeatedly reporting progress', async () => {
+    const p = await pipeline()
+    const global = p.domain.global.get()
+    await p.domain.global.set({ ...global, purgeJournal: {
+      schemaVersion: 1, purgeId: `purge_${'a'.repeat(64)}`, scopeBinding: { scope: 'ALL' },
+      hideBefore: p.intent.createdAt, phase: 'QUIESCED', updatedAt: p.intent.updatedAt,
+    } })
+    expect(await p.recall.runOnce()).toBe('IDLE')
+    await p.domain.global.set(global)
+    expect(await p.recall.runOnce()).toBe('PROCESSED')
+  })
+
+  it('retains known partial body evidence even if the full summary scan later disagrees', async () => {
+    const p = await pipeline()
+    await p.recall.runOnce()
+    const seen: string[][] = []
+    const coverage = new CompleteCoverageWorker(p.domain, { catalog: p.catalog, classifier: {
+      classify: async input => {
+        seen.push(input.candidates.map(item => item.candidateId))
+        return { decisions: input.candidates.map(item => ({ candidateId: item.candidateId, decision: 'PARTIAL', reason: 'same workflow' })) }
+      },
+    } })
+    await coverage.runOnce()
+    const full = new CompleteCatalogRecallWorker(p.domain, { catalog: p.catalog, classifier: {
+      classify: async input => ({ classifications: input.summaries.map(item => ({
+        candidateId: item.candidateId, classification: item.candidateId === p.firstId ? 'UNRELATED' : 'RELEVANT',
+      })) }),
+    } })
+    await full.runOnce()
+    await coverage.runOnce()
+    expect(seen[1]).toContain(p.firstId)
+    expect(p.domain.experienceIntents.get(p.intent.intentId)).toMatchObject({ status: 'NEEDS_ATTENTION', coverage: { reasonCode: 'COVERAGE_AMBIGUOUS' } })
+  })
+
+  it('does not prepare vectors for a snapshot that spans a completed purge', async () => {
+    const p = await pipeline()
+    const prepare = vi.fn()
+    const snapshot = p.catalog.snapshot
+    p.catalog.snapshot = async () => {
+      const captured = await snapshot()
+      const global = p.domain.global.get()
+      await p.domain.global.set({ ...global, proposalCatalogEpoch: global.proposalCatalogEpoch + 1 })
+      return captured
+    }
+    const worker = new CompleteCatalogRecallWorker(p.domain, { catalog: p.catalog, retrieval: { prepare }, classifier: { classify: async () => ({}) } })
+    await worker.runOnce()
+    expect(prepare).not.toHaveBeenCalled()
+    expect(p.domain.experienceIntents.get(p.intent.intentId)).toMatchObject({ status: 'NEEDS_ATTENTION', recall: { incompleteReason: 'CATALOG_CHANGED' } })
+  })
+
   it('allows a proven covered result after shortlist inspection without claiming exhaustive scan', async () => {
     const p = await pipeline()
     await p.recall.runOnce()
@@ -155,6 +205,33 @@ describe('guarded hybrid decisions', () => {
     await coverage.runOnce()
     expect(p.domain.experienceIntents.get(p.intent.intentId)).toMatchObject({
       status: decision === 'PARTIAL' ? 'MERGE_AUTHORIZED' : 'CREATE_AUTHORIZED', recall: { summaryScanComplete: true, scanSummaryCount: 3 },
+    })
+  })
+
+  it('stops an unreadable shortlist cleanly instead of trapping the worker in RECALLING', async () => {
+    const p = await pipeline()
+    const originalRead = p.catalog.read
+    p.catalog.read = async () => undefined
+    await p.recall.runOnce()
+    expect(p.domain.experienceIntents.get(p.intent.intentId)).toMatchObject({
+      status: 'NEEDS_ATTENTION', recall: { state: 'INCOMPLETE', summaryScanComplete: false, incompleteReason: 'RELEVANT_CANDIDATE_UNAVAILABLE' },
+    })
+    expect(await p.recall.runOnce()).toBe('IDLE')
+    p.catalog.read = originalRead
+  })
+
+  it.each([true, false])('falls back after an invalid retrieval plan with advancedRecall=%s', async advancedRecall => {
+    const p = await pipeline()
+    const retrieval = new HybridSkillRetrieval({
+      settings: () => ({ ...RETRIEVAL_DEFAULTS, advancedRecall, embeddingModel: 'x'.repeat(257) }),
+      cache: cache(), embed: async () => { throw new Error('not configured') }, reranker: { rank: async () => ({}) },
+    })
+    const worker = new CompleteCatalogRecallWorker(p.domain, { catalog: p.catalog, retrieval,
+      classifier: { classify: async input => ({ classifications: input.summaries.map(item => ({ candidateId: item.candidateId, classification: 'RELEVANT' })) }) },
+    })
+    await worker.runOnce()
+    expect(p.domain.experienceIntents.get(p.intent.intentId)).toMatchObject({
+      status: 'COVERAGE_READY', recall: { summaryScanComplete: true, scanSummaryCount: 3, retrieval: { mode: 'STANDARD' } },
     })
   })
 })

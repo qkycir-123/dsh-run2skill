@@ -204,6 +204,7 @@ function effectiveCallId(intent: ExperienceIntentV2, planDigest: string, ordinal
 }
 
 export class CompleteCatalogRecallWorker {
+  readonly #domain: Run2skillV2Domain
   readonly #intents
   readonly #batches
   readonly #catalog: CompleteRecallCatalogPort
@@ -213,6 +214,7 @@ export class CompleteCatalogRecallWorker {
   readonly #now: () => number
 
   constructor(domain: Run2skillV2Domain, options: CompleteCatalogRecallOptions) {
+    this.#domain = domain
     this.#intents = domain.table('experience_intents')
     this.#batches = domain.table('session_batches')
     this.#catalog = options.catalog
@@ -229,6 +231,7 @@ export class CompleteCatalogRecallWorker {
   }
 
   async runOnce(): Promise<'IDLE' | 'PROCESSED'> {
+    if (this.#domain.global.get().purgeJournal !== undefined) return 'IDLE'
     const candidate = [...this.#intents.entries()]
       .map(([, value]) => ExperienceIntentV2Schema.parse(value))
       .filter(intent => intent.status === 'RUN2SKILL_OWNED' || intent.status === 'RECALLING')
@@ -309,13 +312,36 @@ export class CompleteCatalogRecallWorker {
     }
     const batch = batchResult.data
 
+    const catalogEpochBefore = this.#domain.global.get().proposalCatalogEpoch
+    const retrievalEpoch = this.#retrieval?.epoch?.()
     const snapshot = await this.#snapshot(batch, intent)
+    if (!this.#intents.get(intentId) || this.#domain.global.get().purgeJournal) return
+    if (catalogEpochBefore !== this.#domain.global.get().proposalCatalogEpoch) {
+      await this.#commitIncomplete(intentId, 'CATALOG_CHANGED')
+      return
+    }
     if (snapshot === undefined || !snapshot.complete) {
       await this.#commitIncomplete(intentId, 'CATALOG_INCOMPLETE')
       return
     }
     if (intent.recall.scanPlanDigest === undefined && intent.recall.retrieval === undefined && this.#retrieval) {
-      const retrieval = RetrievalPlanSchema.parse(await this.#retrieval.prepare(intent, batch, snapshot))
+      let retrieval
+      try {
+        retrieval = RetrievalPlanSchema.parse(await this.#retrieval.prepare(intent, batch, snapshot, retrievalEpoch))
+      } catch {
+        // Optional retrieval must not make a frozen intent permanently unprocessable.
+        retrieval = RetrievalPlanSchema.parse({
+          mode: 'STANDARD', phase: 'FULL', catalogDigest: retrievalCatalogDigest(snapshot),
+          configDigest: sha256Utf8('invalid-retrieval-plan'), selectedIds: [], signals: [],
+          embeddingModel: '', reranker: 'NONE', durationMs: 0, embeddedCount: 0,
+          fallback: 'SERVICE_UNAVAILABLE',
+        })
+      }
+      if (!this.#intents.get(intentId) || this.#domain.global.get().purgeJournal) return
+      if (catalogEpochBefore !== this.#domain.global.get().proposalCatalogEpoch) {
+        await this.#commitIncomplete(intentId, 'CATALOG_CHANGED')
+        return
+      }
       intent = await this.#intents.update(intentId, current => {
         const parsed = ExperienceIntentV2Schema.parse(current)
         if (parsed.status !== 'RECALLING' || parsed.recall.scanPlanDigest !== undefined || parsed.recall.retrieval !== undefined) return parsed
@@ -370,8 +396,12 @@ export class CompleteCatalogRecallWorker {
         await this.#finishInvalidCall(intentId, effectiveCallId(intent, plan.digest, page.ordinal), this.#outputDigest(raw))
         return
       }
-      const outputDigest = deriveCatalogScanOutputDigestV2(parsed.data.classifications)
-      await this.#finishSuccessfulPage(intentId, page, expectedCallId, parsed.data.classifications, outputDigest)
+      // A later summary-only pass cannot erase already observed full-body evidence.
+      const required = new Set(intent.recall.retrieval?.requiredBodyIds ?? [])
+      const classifications = parsed.data.classifications.map(item => required.has(item.candidateId) && item.classification === 'UNRELATED'
+        ? { ...item, classification: 'POSSIBLE' as const } : item)
+      const outputDigest = deriveCatalogScanOutputDigestV2(classifications)
+      await this.#finishSuccessfulPage(intentId, page, expectedCallId, classifications, outputDigest)
     }
 
     intent = ExperienceIntentV2Schema.parse(this.#intents.get(intentId))
@@ -392,7 +422,7 @@ export class CompleteCatalogRecallWorker {
     }
     const unavailable = loaded.some(candidate => candidate.capability === 'UNAVAILABLE')
     if (unavailable) {
-      await this.#commitIncomplete(intentId, 'RELEVANT_CANDIDATE_UNAVAILABLE', loaded, true)
+      await this.#commitIncomplete(intentId, 'RELEVANT_CANDIDATE_UNAVAILABLE', loaded, intent.recall.retrieval?.phase !== 'SHORTLIST')
       return
     }
     await this.#commitComplete(intentId, loaded)

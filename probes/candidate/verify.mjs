@@ -318,6 +318,9 @@ assert.equal(
 )
 // Scope tags must use the Host module's Symbol identity, not a bundled copy.
 const hostBundle = run('tar', ['-xOf', tarballPath, 'package/lib/index.js'])
+const clientBundle = run('tar', ['-xOf', tarballPath, 'package/lib/client.js'])
+const clientImports = [...new Set([...clientBundle.matchAll(/\brequire\(["']([^"']+)["']\)/gu)].map(match => match[1]))].sort()
+assert.deepEqual(clientImports, ['@deepseek-ai/dsh-client-ui-primitives', 'react'], 'Client bundle may only require modules supplied by the native DSH loader')
 assert.match(hostBundle, /from ["']@deepseek-ai\/dsh-scope["']/u, 'scope must remain a Host import')
 const thirdPartyNotices = run('tar', ['-xOf', tarballPath, 'package/THIRD_PARTY_NOTICES.md'])
 assert.match(thirdPartyNotices, /Zod 4\.6\.6/u)

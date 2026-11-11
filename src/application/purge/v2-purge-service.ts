@@ -88,6 +88,7 @@ export class V2PurgeService {
     private readonly domain: Run2skillV2Domain,
     private readonly now: () => number = () => Date.now(),
     private readonly clearDerived?: () => Promise<void>,
+    private readonly onCompleted?: () => void,
   ) {
     this.#global = Run2skillV2GlobalStore.for(domain)
   }
@@ -262,6 +263,7 @@ export class V2PurgeService {
         },
       }
     })
+    this.onCompleted?.()
   }
 
   async #setPhase(purgeId: string, next: 'DELETING' | 'VALIDATING'): Promise<void> {
