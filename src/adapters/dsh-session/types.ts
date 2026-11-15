@@ -84,6 +84,10 @@ export interface DshSessionReadHandlePort {
 
 /** DSH 0.1.3-alpha.2 persistence service exposed as ctx.sessionPersistence. */
 export interface DshSessionPersistencePort {
+  stat?(sessionId: string, options?: { readonly signal?: AbortSignal }): Promise<(SessionPersistenceSnapshot & {
+    readonly sizeBytes?: number
+    readonly formatStatus?: 'current' | 'migration-required'
+  }) | undefined>
   list(options?: { readonly signal?: AbortSignal }): Promise<readonly SessionPersistenceSnapshot[]>
   open(
     sessionId: string,

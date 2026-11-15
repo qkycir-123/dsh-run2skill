@@ -28,6 +28,7 @@ interface LearningStatusSession {
 
 export interface V2LearningStatusRpcOptions {
   readonly resolveSession: (sessionLifecycleKey: string) => LearningStatusSession | undefined
+  readonly resolveEmptySession?: (sessionId: string, signal: AbortSignal) => Promise<LearningStatusSession | undefined>
   readonly resolveWorkspace: CurrentWorkspaceResolver
   readonly requestSynthesis: (sessionLifecycleKey: string) => Promise<{
     readonly changed: boolean
@@ -138,6 +139,16 @@ export function createV2LearningStatusRpcHandler(
         const session = options.resolveSession(sessionLifecycleKey)
         return session?.sessionId === request.data.sessionId ? [{ sessionLifecycleKey, session }] : []
       })
+      if (matches.length === 0 && endpoint === LEARNING_STATUS_ENDPOINT) {
+        const emptySession = await options.resolveEmptySession?.(request.data.sessionId, signal)
+        if (
+          emptySession?.sessionId === request.data.sessionId
+          && await sessionMatchesCurrentScope(emptySession, request.data.currentScope, options.resolveWorkspace)
+          && !signal.aborted
+        ) {
+          return { ok: true, value: { apiVersion: 1, state: 'EMPTY', canRequest: false } }
+        }
+      }
       if (matches.length !== 1) return error('conflict', 'current Session unavailable')
       const match = matches[0]!
       if (!await sessionMatchesCurrentScope(

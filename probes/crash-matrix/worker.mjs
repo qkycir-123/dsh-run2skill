@@ -160,5 +160,5 @@ const context = {
   on: () => {},
 }
 
-const dispose = await host.apply(context, { automaticLearning: { get: () => true } })
+const dispose = await host.apply(context, {})
 await dispose()

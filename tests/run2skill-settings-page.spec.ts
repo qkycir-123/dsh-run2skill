@@ -17,7 +17,7 @@ import {
   applyRun2skillClient,
   hostTabVisible,
 } from '../src/client/run2skill-settings-page.js'
-import { AutomaticLearningSettingsController } from '../src/client/automatic-learning-settings.js'
+import { RetrievalSettingsController } from '../src/client/retrieval-settings.js'
 import { PurgeSettingsController } from '../src/client/purge-settings.js'
 import { createProposalReviewRpcHandler } from '../src/adapters/dsh-connection/proposal-review-rpc.js'
 import { CurrentScopeAuthorizer } from '../src/adapters/dsh-connection/current-scope-authorizer.js'
@@ -41,7 +41,7 @@ describe('run2skill native settings surface', () => {
       return async () => undefined
     } } as never)
     ctx.provide('configForms', { get: () => ({
-      getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+      getSnapshot: () => ({ status: 'ready', value: {}, revision: 1, writable: true }),
       subscribe: () => () => undefined, set: vi.fn(),
     }) } as never)
     ctx.provide('sessions', { list: { getSnapshot: () => ({ byId: {} }) } } as never)
@@ -62,8 +62,8 @@ describe('run2skill native settings surface', () => {
     }
   })
   it('uses the DSH 0.2 main-view reference to organize the open session and switches project scope', async () => {
-    const automatic = new AutomaticLearningSettingsController({
-      getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+    const automatic = new RetrievalSettingsController({
+      getSnapshot: () => ({ status: 'ready', value: {}, revision: 1, writable: true }),
       subscribe: () => () => undefined, set: vi.fn(),
     })
     const purge = new PurgeSettingsController(vi.fn(), () => undefined)
@@ -143,7 +143,7 @@ describe('run2skill native settings surface', () => {
   })
 
   it.each([
-    ['EMPTY', '暂无可整理的经验。', false],
+    ['EMPTY', '当前没有可整理的经验。', false],
     ['CHECKING', '正在检查已有 Skill…', false],
     ['COVERED', '已有 Skill 已覆盖这次经验。', false],
     ['NEEDS_ATTENTION', '整理结果需要你处理。', false],
@@ -177,7 +177,7 @@ describe('run2skill native settings surface', () => {
     expect(document.activeElement).toBe(refresh)
     fail = false
     fireEvent.click(refresh)
-    expect((await screen.findByRole('status')).textContent).toBe('暂无可整理的经验。')
+    expect((await screen.findByRole('status')).textContent).toBe('当前没有可整理的经验。')
   })
 
   it('disables stale status actions while the host surface is inactive', async () => {
@@ -254,9 +254,9 @@ describe('run2skill native settings surface', () => {
         proposalRef: action.proposalRef,
       }])
     const host = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
-    const automatic = new AutomaticLearningSettingsController({
+    const automatic = new RetrievalSettingsController({
       getSnapshot: () => ({
-        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+        status: 'ready', value: {}, revision: 1, writable: true,
       }),
       subscribe: () => () => undefined,
       set: vi.fn(),
@@ -316,9 +316,9 @@ describe('run2skill native settings surface', () => {
       ok: true,
       value: { apiVersion: 1 as const, items: [] },
     }))
-    const automatic = new AutomaticLearningSettingsController({
+    const automatic = new RetrievalSettingsController({
       getSnapshot: () => ({
-        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+        status: 'ready', value: {}, revision: 1, writable: true,
       }),
       subscribe: () => () => undefined,
       set: vi.fn(),
@@ -374,9 +374,9 @@ describe('run2skill native settings surface', () => {
       ok: true,
       value: { apiVersion: 1 as const, items: [] },
     }))
-    const automatic = new AutomaticLearningSettingsController({
+    const automatic = new RetrievalSettingsController({
       getSnapshot: () => ({
-        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+        status: 'ready', value: {}, revision: 1, writable: true,
       }),
       subscribe: () => () => undefined,
       set: vi.fn(),
@@ -680,7 +680,7 @@ describe('run2skill native settings surface', () => {
         run2skill: { query: vi.fn(), command: vi.fn() },
       },
       configForms: { get: vi.fn(() => ({
-        getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+        getSnapshot: () => ({ status: 'ready', value: {}, revision: 1, writable: true }),
         subscribe: () => () => undefined,
         set: vi.fn(),
       })) },
@@ -783,9 +783,9 @@ describe('run2skill native settings surface', () => {
     expect(screen.queryByText('0 项可操作事项')).toBeNull()
     expect(screen.queryByRole('button', { name: '刷新状态' })).toBeNull()
 
-    const automatic = new AutomaticLearningSettingsController({
+    const automatic = new RetrievalSettingsController({
       getSnapshot: () => ({
-        status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+        status: 'ready', value: {}, revision: 1, writable: true,
       }),
       subscribe: () => () => undefined,
       set: vi.fn(),
@@ -927,7 +927,7 @@ describe('run2skill native settings surface', () => {
         run2skill: { query: vi.fn(), command: vi.fn() },
       },
       configForms: { get: vi.fn(() => ({
-        getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+        getSnapshot: () => ({ status: 'ready', value: {}, revision: 1, writable: true }),
         subscribe: () => () => undefined, set: vi.fn(),
       })) },
       workspaces: { list: { getSnapshot: () => snapshot, subscribe: () => () => undefined } },
@@ -1304,8 +1304,8 @@ function draftSaveFixture(outcome: 'PUBLISHED' | 'PUBLISH_FAILED' | 'PENDING_REV
     const authorizer = new CurrentScopeAuthorizer(async workspaceId => ({ workspaceId, canonicalPath: 'D:\\workspace' }))
     const actions = await authorizer.project(domain, { kind: 'WORKSPACE', generation: 0, workspaceId: 'workspace-fixture' }, new PurgeVisibility(domain))
     const host = createProposalReviewRpcHandler(() => domain, undefined, { authorizer })
-    const automatic = new AutomaticLearningSettingsController({
-      getSnapshot: () => ({ status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true }),
+    const automatic = new RetrievalSettingsController({
+      getSnapshot: () => ({ status: 'ready', value: {}, revision: 1, writable: true }),
       subscribe: () => () => undefined, set: vi.fn(),
     })
     const purge = new PurgeSettingsController(vi.fn(async () => ({ ok: true, value: { apiVersion: 1, state: 'IDLE' } })), () => 'workspace-fixture')

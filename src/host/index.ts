@@ -94,12 +94,7 @@ import {
   type StockColdPresetRegistry,
 } from '../adapters/dsh-skills/stock-cold-preset.js'
 import type { CaptureWorkItemV1 } from '../domain/observe/schemas.js'
-import {
-  createAutomaticLearningSettings,
-  AutomaticLearningSettingsSchema,
-  type AutomaticLearningConfig,
-  type AutomaticLearningSettingsPolicy,
-} from '../adapters/dsh-settings/automatic-learning.js'
+import type { AutomaticLearningPolicyPort } from '../application/automatic-learning-policy.js'
 import { PurgeVisibility } from '../adapters/dsh-storage/purge-visibility.js'
 import {
   PurgeError,
@@ -109,7 +104,7 @@ import {
 import { HostMutationGate } from '../application/host-mutation-gate.js'
 import type { PurgeScopeBindingV1 } from '../domain/purge/index.js'
 import { DshV2ProductionRuntime } from './v2-production-runtime.js'
-import { retrievalSettings, type RetrievalConfig } from '../adapters/dsh-settings/retrieval.js'
+import { retrievalSettings, RetrievalSettingsSchema, type RetrievalConfig } from '../adapters/dsh-settings/retrieval.js'
 import { PersistentVectorCache, type RetrievalStorageContext } from '../adapters/dsh-storage/retrieval-domain.js'
 
 export {
@@ -124,7 +119,7 @@ export { PublicationTargetSingleFlight } from '../adapters/dsh-publication/targe
 export * from '../application/publication/index.js'
 
 export const name = 'run2skill'
-export const Config = AutomaticLearningSettingsSchema
+export const Config = RetrievalSettingsSchema
 export const inject = [
   'agents',
   'sessions',
@@ -207,11 +202,11 @@ export class Run2skillRuntimeFactory implements RecoveryRuntimeFactory {
     private readonly context: Run2skillHostContext,
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
-    private readonly automaticLearning: AutomaticLearningSettingsPolicy,
+    private readonly automaticLearning: AutomaticLearningPolicyPort,
     private readonly mutationGate: HostMutationGate,
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
-      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]!),
+      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard),
     )
   }
 
@@ -683,11 +678,10 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     private readonly context: Run2skillHostContext,
     private readonly notices: RuntimeNotices,
     private readonly scopes: ExactAgentScopeRegistry<Run2skillAgent>,
-    private readonly automaticLearning: AutomaticLearningSettingsPolicy,
     private readonly retrievalConfig: RetrievalConfig = {},
   ) {
     this.#stockConfigurations = new StockSkillRuntimeConfigurationCache<Run2skillAgent>(
-      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]!),
+      async agent => await resolveStockSkillRuntimeConfiguration(stockPresetMounts, agent, STOCK_PRESET_COMPOSITION_DIGESTS.standard),
     )
   }
 
@@ -735,6 +729,34 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
     })
     this.#changedDirectorySessions.add(lifecycleKey)
     this.#dormantSessions.delete(lifecycleKey)
+  }
+
+  async resolveEmptyLearningStatusSession(sessionId: string, signal: AbortSignal) {
+    const persistence = this.context.sessionPersistence
+    const snapshot = await persistence.stat?.(sessionId, { signal })
+    if (
+      snapshot === undefined
+      || snapshot.formatStatus === 'migration-required'
+      || (snapshot.sizeBytes !== undefined && snapshot.sizeBytes > 128 * 1024)
+    ) return undefined
+    const limit = 64
+    const handle = await persistence.open(sessionId, 'read', { signal })
+    try {
+      const header = handle.header
+      if (header.id !== sessionId || classifySessionRoot(header).status !== 'ROOT') return undefined
+      const { events } = await handle.read(0, limit, { signal })
+      if (events.length >= limit || events.some(event =>
+        event.type === 'turn/end' || event.type === 'working-directory/change'
+      )) return undefined
+      if (header.cwd === undefined) return { sessionId }
+      const workspace = await new DshWorkspaceBindingResolver(this.context.workspaceRegistry).resolve(header.cwd)
+      if (workspace.status === 'UNAVAILABLE') return undefined
+      return workspace.status === 'BOUND'
+        ? { sessionId, workspaceBinding: { workspaceId: workspace.workspaceId, canonicalPath: workspace.canonicalPath } }
+        : { sessionId }
+    } finally {
+      await handle.close()
+    }
   }
 
   async resolveCurrentWorkspace(workspaceId: string) {
@@ -917,7 +939,7 @@ class Run2skillV2RuntimeFactory implements RecoveryRuntimeFactory {
         notices: this.notices,
         resolveSession,
         resolveSessionByView,
-        automaticLearning: () => this.automaticLearning.snapshot().automaticLearning,
+        automaticLearning: () => true,
         refreshView: view => view.cwd === undefined
           ? view
           : { ...view, cwd: view.cwd.endsWith(sep) ? `${view.cwd}.${sep}` : `${view.cwd}${sep}` },
@@ -1002,16 +1024,12 @@ function v2Summary(
   })
 }
 
-export async function apply(context: Run2skillHostContext, config: AutomaticLearningConfig): Promise<() => Promise<void>> {
-  const automaticLearning = createAutomaticLearningSettings({ config, on: context.on.bind(context) })
+export async function apply(context: Run2skillHostContext, config: RetrievalConfig): Promise<() => Promise<void>> {
   const notices = new RuntimeNotices()
   const scopes = new ExactAgentScopeRegistry<Run2skillAgent>()
   const scopeDisposers = new WeakMap<Run2skillAgent, () => void>()
   const mutationGate = new HostMutationGate()
-  const factory = new Run2skillV2RuntimeFactory(context, notices, scopes, automaticLearning, config)
-  const stopWatchingSettings = automaticLearning.watch((next, previous) => {
-    if (!previous.automaticLearning && next.automaticLearning) factory.wakeLearning()
-  })
+  const factory = new Run2skillV2RuntimeFactory(context, notices, scopes, config)
   const lifecycle = new RecoveryLifecycle(factory, candidateKey, notices)
   const ingress = new SessionCoordinateIngress(
     candidate => { lifecycle.accept(candidate) },
@@ -1137,6 +1155,7 @@ export async function apply(context: Run2skillHostContext, config: AutomaticLear
     () => factory.currentV2Domain,
     {
       resolveSession: lifecycleKey => factory.currentV2Runtime?.learningStatusSession(lifecycleKey),
+      resolveEmptySession: (id, signal) => factory.resolveEmptyLearningStatusSession(id, signal),
       resolveWorkspace: resolveCurrentWorkspace,
       requestSynthesis: async lifecycleKey => {
         const runtime = factory.currentV2Runtime
@@ -1161,15 +1180,9 @@ export async function apply(context: Run2skillHostContext, config: AutomaticLear
   )
   new Run2skillRemoteService(context as unknown as Context, remoteHandler)
 
-  try {
-    await lifecycle.start()
-  } catch (error) {
-    stopWatchingSettings()
-    throw error
-  }
+  await lifecycle.start()
   return async () => {
     accepting = false
-    stopWatchingSettings()
     try {
       await lifecycle.dispose()
     } finally {

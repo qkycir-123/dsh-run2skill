@@ -63,10 +63,9 @@ const STR_REPLACE_EDITOR_WRITE_COMMANDS = new Set(['create', 'str_replace', 'ins
 const SKILL_MARKER = /(?:SKILL\.md|[\\/]\.(?:dsh|agents)[\\/]skills[\\/]|[\\/]skills[\\/])/iu
 const SUPPORTED_TURN_EVENTS = new Set([
   // DSH emits these control-plane records inside the Turn envelope.
-  // They only manage the Agent inbox or the log-backed Session title and
-  // cannot mutate files; the tool/call + tool/result pairs below remain the
+  // They track settings and Session activity; the tool/call + tool/result pairs remain the
   // authoritative evidence for filesystem activity.
-  'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
+  'team/mode', 'agent/inbox/spliced', 'session/title', 'session/title-llm-request',
   'system/message', 'session-log-deepseek/delivery-accepted', 'model/selection',
   'job/registered', 'job/settled',
   'approval/asked', 'approval/decided',

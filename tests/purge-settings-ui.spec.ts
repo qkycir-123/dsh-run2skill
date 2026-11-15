@@ -4,11 +4,8 @@ import { createElement } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  AutomaticLearningSettingsCard,
-  AutomaticLearningSettingsController,
-} from '../src/client/automatic-learning-settings.js'
-import {
   PurgeSettingsController,
+  PurgeSettingsSection,
   type PurgePollEnvironment,
 } from '../src/client/purge-settings.js'
 
@@ -55,20 +52,6 @@ const ALL_PREVIEW = {
     { reason: 'KEEP_SCOPE' as const, count: 0 },
     { reason: 'KEEP_UNPROVEN' as const, count: 0 },
   ],
-}
-
-function settingsScope() {
-  const snapshot = {
-    status: 'ready' as const,
-    value: { automaticLearning: true },
-    revision: 1,
-    writable: true,
-  }
-  return {
-    getSnapshot: () => snapshot,
-    subscribe: () => () => undefined,
-    set: vi.fn(async () => undefined),
-  }
 }
 
 function environment(initiallyVisible = true): PurgePollEnvironment & {
@@ -479,18 +462,13 @@ describe('Purge native settings UI', () => {
     const purge = new PurgeSettingsController(call, () => 'workspace-a', environment())
     purge.start()
     await purge.whenIdle()
-    const settings = new AutomaticLearningSettingsController(settingsScope())
     const outerEscape = vi.fn()
     render(createElement('div', {
       onKeyDown: (event: { key: string }) => {
         if (event.key === 'Escape') outerEscape()
       },
-    }, createElement(AutomaticLearningSettingsCard, {
-      controller: settings,
-      purgeController: purge,
-    })))
+    }, createElement(PurgeSettingsSection, { controller: purge })))
 
-    fireEvent.click(screen.getByRole('button', { name: /Run2Skill/ }))
     expect(screen.getByRole('region', { name: '缓存清理' })).toBeTruthy()
     const purgeButton = screen.getByRole('button', { name: '清理所有缓存' })
     expect(screen.queryByRole('button', { name: /PROJECT/ })).toBeNull()
@@ -521,6 +499,5 @@ describe('Purge native settings UI', () => {
     })
     expect(screen.queryByRole('dialog', { name: '确认清理所有缓存？' })).toBeNull()
     purge.dispose()
-    settings.dispose()
   })
 })

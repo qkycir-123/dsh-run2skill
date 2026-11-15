@@ -10,7 +10,6 @@ import type {
 import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-domain.js'
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../src/domain/observe/signal-key.js'
 
-const automaticLearningConfig = { automaticLearning: { get: () => true } }
 
 function turnEvents(header: DshSessionHeader): DshSessionEvent[] {
   return [
@@ -138,7 +137,7 @@ describe('Host plugin v2 production cutover', () => {
       },
     }
 
-    const dispose = await apply(context, automaticLearningConfig)
+    const dispose = await apply(context, {})
     expect(order.indexOf('listener:session/event')).toBeLessThan(order.indexOf('run2skill_v2-open'))
     present = true
     revision = 'rev-2'
@@ -186,7 +185,7 @@ describe('Host plugin v2 production cutover', () => {
       on() {},
     }
 
-    const dispose = await apply(context, automaticLearningConfig)
+    const dispose = await apply(context, {})
     expect(domain.turnObservations.size).toBe(0)
     expect(Object.values(domain.global.get().sessions)[0]?.observedThroughTurnEndSeq).toBe(4)
     await dispose()
@@ -207,7 +206,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context, automaticLearningConfig)
+    const dispose = await apply(context, {})
     const agent = {
       id: 'agent-session',
       ctx: { registry: { values: () => [] } },
@@ -269,7 +268,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context, automaticLearningConfig)
+    const dispose = await apply(context, {})
     const agent = {
       id: header.id,
       ctx: { registry: { values: () => [] } },
@@ -311,7 +310,7 @@ describe('Host plugin v2 production cutover', () => {
         if (event === 'agent/pre-step') preStep = listener as unknown as typeof preStep
       },
     }
-    const dispose = await apply(context, automaticLearningConfig)
+    const dispose = await apply(context, {})
     const agent = {
       id: 'agent-session',
       ctx: { registry: { values: () => [] } },
@@ -338,7 +337,7 @@ describe('Host plugin v2 production cutover', () => {
       workspaceRegistry: { async resolveByPath() { return undefined } },
       on() {},
     }
-    const dispose = await apply(context, automaticLearningConfig)
+    const dispose = await apply(context, {})
 
     await expect(dispose()).resolves.toBeUndefined()
     expect(close).toHaveBeenCalledOnce()

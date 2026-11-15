@@ -4,6 +4,7 @@ import { canonicalJson } from '../src/domain/learn/identity.js'
 import { sha256Utf8 } from '../src/domain/observe/hashing.js'
 import {
   STOCK_DSH_BASELINE_COMMIT,
+  STOCK_DSH_RC3_BASELINE_COMMIT,
   STOCK_PRESET_COMPOSITION_DIGESTS,
   StockDshRootContractResolver,
   StockSkillRuntimeConfigurationCache,
@@ -69,11 +70,13 @@ describe('stock DSH root contract', () => {
     expect(cache.get(agent)).toBeUndefined()
   })
 
-  it('pins the 0.2.2-rc.1 baseline and exact shared Web/Desktop preset digest allowlist', () => {
+  it('pins the rc.1 and rc.3 baselines and exact standard preset digests', () => {
     expect(STOCK_DSH_BASELINE_COMMIT).toBe('66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db')
+    expect(STOCK_DSH_RC3_BASELINE_COMMIT).toBe('38a6a5c965aa99ab525161efb7cc5cf1fe62fced')
     expect(STOCK_PRESET_COMPOSITION_DIGESTS).toEqual({
       standard: [
         'ee7045e0f3df05c92f00900aa25f288778ca1e81bdaa35d4e151f1513fce3e16',
+        '6ef17d769662784848918287d7b115566a080e8a89a0e8683075e21be6fdcdd7',
       ],
     })
   })
@@ -220,6 +223,31 @@ describe('stock DSH root contract', () => {
       configuration: configuration(override),
       workspaceBinding: { workspaceId: 'workspace-1', canonicalPath: workspace },
     })).toEqual({ status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' })
+  })
+
+  it('accepts the rc.3 preset Skill directory while keeping both default write targets', () => {
+    const stockPresetSkillDir = resolve('stock-agent-preset', 'skills')
+    const resolver = new StockDshRootContractResolver({ environment: { DSH_HOME: dshHome } })
+    const config = configuration({ stockPresetSkillDir, customSkillDirs: [stockPresetSkillDir] })
+    const workspaceBinding = { workspaceId: 'workspace-1', canonicalPath: workspace }
+    expect(resolver.resolve({ scope: 'PROJECT', configuration: config, workspaceBinding })).toMatchObject({
+      status: 'SUPPORTED',
+      baselineCommit: STOCK_DSH_RC3_BASELINE_COMMIT,
+      expectedSource: 'project-dsh',
+      declaredRootPath: join(workspace, '.dsh', 'skills'),
+    })
+    expect(resolver.resolve({ scope: 'USER', configuration: config })).toMatchObject({
+      status: 'SUPPORTED',
+      baselineCommit: STOCK_DSH_RC3_BASELINE_COMMIT,
+      expectedSource: 'user-dsh',
+      declaredRootPath: join(dshHome, 'skills'),
+    })
+    for (const customSkillDirs of [[], [resolve('other-skills')], [stockPresetSkillDir, resolve('other-skills')]]) {
+      expect(resolver.resolve({
+        scope: 'USER',
+        configuration: { ...config, customSkillDirs },
+      })).toEqual({ status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' })
+    }
   })
 
   it('uses the stock provider explicit DSH Home before the environment', () => {

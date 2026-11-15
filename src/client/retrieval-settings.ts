@@ -1,21 +1,9 @@
 import {
   createElement,
-  useState,
   useSyncExternalStore,
   type ReactElement,
 } from 'react'
-import type { TypertClientRemote, TypertDisposer } from '@deepseek-ai/dsh-typert-protocol'
-import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
-import {
-  PurgeSettingsController,
-  PurgeSettingsSection,
-  type PurgeCall,
-} from './purge-settings.js'
 import { RETRIEVAL_DEFAULTS, type RetrievalSettings } from '../domain/retrieval/settings.js'
-
-export interface AutomaticLearningClientSettings extends Partial<RetrievalSettings> {
-  readonly automaticLearning: boolean
-}
 
 export interface ClientSettingsScopeSnapshot<T> {
   readonly status: 'loading' | 'ready' | 'unavailable'
@@ -30,39 +18,34 @@ export interface ClientSettingsScope<T> {
   set(field: string, value: unknown): Promise<boolean | void>
 }
 
-export interface AutomaticLearningCardState {
+export interface RetrievalSettingsState {
   readonly retrieval: RetrievalSettings
-  readonly status: ClientSettingsScopeSnapshot<AutomaticLearningClientSettings>['status']
-  readonly automaticLearning: boolean | undefined
+  readonly status: ClientSettingsScopeSnapshot<Partial<RetrievalSettings>>['status']
   readonly writable: boolean
   readonly saving: boolean
   readonly error: 'SETTINGS_CHANGED' | undefined
 }
 
-export class AutomaticLearningSettingsController {
+export class RetrievalSettingsController {
   readonly #listeners = new Set<() => void>()
-  #snapshot: AutomaticLearningCardState
+  #snapshot: RetrievalSettingsState
   #saving = false
-  #error: AutomaticLearningCardState['error']
+  #error: RetrievalSettingsState['error']
   readonly #unsubscribe: () => void
 
-  constructor(private readonly scope: ClientSettingsScope<AutomaticLearningClientSettings>) {
+  constructor(private readonly scope: ClientSettingsScope<Partial<RetrievalSettings>>) {
     this.#snapshot = this.#project()
     this.#unsubscribe = scope.subscribe(() => { this.#publish() })
   }
 
-  getSnapshot = (): AutomaticLearningCardState => this.#snapshot
+  getSnapshot = (): RetrievalSettingsState => this.#snapshot
 
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener)
     return () => { this.#listeners.delete(listener) }
   }
 
-  async setAutomaticLearning(value: boolean): Promise<void> {
-    await this.setField('automaticLearning', value)
-  }
-
-  async setField(field: keyof AutomaticLearningClientSettings, value: unknown): Promise<void> {
+  async setField(field: keyof RetrievalSettings, value: unknown): Promise<void> {
     const before = this.scope.getSnapshot()
     if (before.status !== 'ready' || !before.writable || this.#saving) return
     this.#saving = true
@@ -87,12 +70,11 @@ export class AutomaticLearningSettingsController {
     this.#listeners.clear()
   }
 
-  #project(): AutomaticLearningCardState {
+  #project(): RetrievalSettingsState {
     const snapshot = this.scope.getSnapshot()
     return Object.freeze({
       retrieval: { ...RETRIEVAL_DEFAULTS, ...snapshot.value },
       status: snapshot.status,
-      automaticLearning: snapshot.value?.automaticLearning,
       writable: snapshot.writable,
       saving: this.#saving,
       error: this.#error,
@@ -105,53 +87,7 @@ export class AutomaticLearningSettingsController {
   }
 }
 
-export function AutomaticLearningSettingsCard(props: {
-  readonly controller: AutomaticLearningSettingsController
-  readonly purgeController: PurgeSettingsController
-}): ReactElement | null {
-  const state = useSyncExternalStore(
-    props.controller.subscribe,
-    props.controller.getSnapshot,
-    props.controller.getSnapshot,
-  )
-  const [open, setOpen] = useState(false)
-  if (state.status === 'unavailable') return null
-  const disabled = state.status !== 'ready' || !state.writable || state.saving
-  return createElement('li', { 'data-run2skill-settings-card': true },
-    createElement('button', {
-      type: 'button',
-      'aria-expanded': open,
-      onClick: () => { setOpen(value => !value) },
-    }, 'Run2Skill', createElement('span', null, '将真实执行中的明确经验整理为待确认的技能草稿')),
-    open
-      ? createElement('div', null,
-          createElement('label', null,
-            createElement('input', {
-              type: 'checkbox',
-              checked: state.automaticLearning === true,
-              disabled,
-              onChange: (event: { currentTarget: { checked: boolean } }) => {
-                void props.controller.setAutomaticLearning(event.currentTarget.checked)
-              },
-            }),
-            '自动学习',
-          ),
-          createElement('p', null,
-            '关闭后暂停普通自动学习；显式“保存为 Skill”仍会持久保存。已开始的分析继续使用启动时快照。',
-          ),
-          createElement('p', null, '分析时沿用发起会话已经选择的模型。'),
-          createElement(RetrievalSettingsSection, { controller: props.controller }),
-          state.error === undefined
-            ? null
-            : createElement('p', { role: 'status' }, '设置已变化，请刷新后重试。'),
-          createElement(PurgeSettingsSection, { controller: props.purgeController }),
-        )
-      : null,
-  )
-}
-
-/** Both entry points use this same settings section; credential values never enter Client state. */
-export function RetrievalSettingsSection({ controller }: { readonly controller: AutomaticLearningSettingsController }): ReactElement {
+export function RetrievalSettingsSection({ controller }: { readonly controller: RetrievalSettingsController }): ReactElement {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
   const disabled = state.status !== 'ready' || !state.writable || state.saving
   const settings = state.retrieval
@@ -196,54 +132,4 @@ export function RetrievalSettingsSection({ controller }: { readonly controller: 
     ) : null,
     state.error ? createElement('p', { role: 'status' }, '设置未保存，请重试。') : null,
   )
-}
-
-export interface AutomaticLearningSettingsClientContext {
-  readonly remote: TypertClientRemote
-  readonly workspaces: {
-    readonly list: {
-      getSnapshot(): {
-        readonly recentWorkspaceId?: string | undefined
-        readonly items: readonly { readonly workspaceId: string }[]
-      }
-    }
-  }
-  readonly configForms: {
-    get<T>(entryId: string): ClientSettingsScope<T>
-  }
-  readonly slots: {
-    inject(name: string, install: () => unknown): void
-    register(options: Record<string, unknown>, component: unknown): unknown
-  }
-  effect?(install: () => (() => void), label?: string): void
-}
-
-export function applyAutomaticLearningSettingsClient(
-  context: AutomaticLearningSettingsClientContext,
-): Promise<TypertDisposer> {
-  return applyAutomaticLearningSettingsClientRemote(context)
-}
-
-async function applyAutomaticLearningSettingsClientRemote(
-  context: AutomaticLearningSettingsClientContext,
-): Promise<TypertDisposer> {
-  const mounted = await createRun2skillRemoteCaller(context.remote)
-  const scope = context.configForms.get<AutomaticLearningClientSettings>('run2skill')
-  const controller = new AutomaticLearningSettingsController(scope)
-  const callPurge: PurgeCall = mounted.call
-  const purgeController = new PurgeSettingsController(callPurge, () => {
-    const snapshot = context.workspaces.list.getSnapshot()
-    return snapshot.recentWorkspaceId
-  })
-  purgeController.start()
-  context.effect?.(() => () => {
-    controller.dispose()
-    purgeController.dispose()
-  }, 'run2skill: settings and purge')
-  context.slots.inject('plugins.item', () => context.slots.register({
-    name: 'plugins.item',
-    id: 'run2skill',
-    inject: () => ({ controller, purgeController }),
-  }, AutomaticLearningSettingsCard))
-  return mounted.dispose
 }

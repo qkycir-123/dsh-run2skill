@@ -180,10 +180,10 @@ describe('real DSH Agent-first ownership observation adapter', () => {
       .resolves.toMatchObject({ status: 'UNAVAILABLE', reasonCode: 'SESSION_WINDOW_INCOMPLETE' })
   })
 
-  it.each(['system/message', 'session-log-deepseek/delivery-accepted', 'model/selection'])(
+  it.each(['system/message', 'session-log-deepseek/delivery-accepted', 'model/selection', 'team/mode'])(
     'does not treat Desktop %s records as missing windows or Agent file writes',
     async type => {
-      const observed = harness({ between: [event(type, 2, {})] })
+      const observed = harness({ between: [event(type, 2, type === 'team/mode' ? { enabled: true } : {})] })
       await expect(observed.adapter.observe({
         batch: observed.batch, intent: observed.intent, inputDigest: 'd'.repeat(64),
       })).resolves.toMatchObject({ status: 'OBSERVED', agentActivity: 'NONE' })

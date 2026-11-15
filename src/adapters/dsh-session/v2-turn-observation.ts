@@ -35,6 +35,7 @@ const SUPPORTED_TURN_EVENT_TYPES = new Set([
   'session-log-deepseek/delivery-accepted',
   'job/registered', // Host bookkeeping; tool results remain the execution evidence.
   'job/settled',
+  'team/mode', // Session setting; it supplies no turn evidence.
   'model/selection', // Only request/header supplies the route actually used.
   'assistant/chunk',
   'assistant/attempt',

@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Run2Skill",
-    "description": "把对话经验整理成可复用的 Skill"
+    "description": "把对话经验整理成可复用的 Skill",
+    "detail": "locale/detail.zh.md"
   }
 }

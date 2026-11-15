@@ -22,7 +22,7 @@ export interface StockColdPresetMount {
   readonly fiber: StockPresetMountProjection['fiber'] & {
     readonly ctx: StockComposedAgentProjection['ctx']
   }
-  readonly tree: { readonly root: { readonly data: unknown } }
+  readonly tree: NonNullable<StockPresetMountProjection['tree']>
 }
 
 export interface StockColdPresetMounts {
@@ -34,13 +34,12 @@ export function currentStockPresetMount(
   mounts: StockColdPresetMounts,
   hostContext: object,
   key: object,
-  expectedDigest = STOCK_PRESET_COMPOSITION_DIGESTS.standard[0],
+  expectedDigest: string | readonly string[] = STOCK_PRESET_COMPOSITION_DIGESTS.standard,
 ): StockColdPresetMount | undefined {
   const standard = mounts.liveMounts(hostContext).filter(mount => mount.presetId === 'standard')
   if (standard.length !== 1 || standard[0]?.key !== key) return undefined
   const mount = standard[0]
   return mount !== undefined
-    && expectedDigest !== undefined
     && hasStockPresetComposition(mount, expectedDigest)
     ? mount
     : undefined
@@ -51,7 +50,7 @@ export async function acquireStockColdPreset(
   mounts: StockColdPresetMounts,
   hostContext: { readonly fs: unknown },
   id: string | undefined,
-  expectedDigest = STOCK_PRESET_COMPOSITION_DIGESTS.standard[0],
+  expectedDigest: string | readonly string[] = STOCK_PRESET_COMPOSITION_DIGESTS.standard,
 ): Promise<{ readonly lease: StockPresetLease; readonly configuration: StockSkillRuntimeConfiguration } | undefined> {
   if (id !== 'standard') return undefined
   let lease: StockPresetLease

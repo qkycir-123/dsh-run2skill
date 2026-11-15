@@ -3,15 +3,16 @@ import { createElement } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
-  AutomaticLearningSettingsController, RetrievalSettingsSection,
-  type AutomaticLearningClientSettings, type ClientSettingsScopeSnapshot,
-} from '../src/client/automatic-learning-settings.js'
+  RetrievalSettingsController, RetrievalSettingsSection,
+  type ClientSettingsScopeSnapshot,
+} from '../src/client/retrieval-settings.js'
+import type { RetrievalSettings } from '../src/domain/retrieval/settings.js'
 
 afterEach(cleanup)
 
 it('keeps advanced recall off by default and persists model/service selections through the host settings seam', async () => {
-  let snapshot: ClientSettingsScopeSnapshot<AutomaticLearningClientSettings> = {
-    status: 'ready', value: { automaticLearning: true }, revision: 1, writable: true,
+  let snapshot: ClientSettingsScopeSnapshot<Partial<RetrievalSettings>> = {
+    status: 'ready', value: {}, revision: 1, writable: true,
   }
   const listeners = new Set<() => void>()
   const set = vi.fn(async (key: string, value: unknown) => {
@@ -19,7 +20,7 @@ it('keeps advanced recall off by default and persists model/service selections t
     for (const listener of listeners) listener()
     return true
   })
-  const controller = new AutomaticLearningSettingsController({
+  const controller = new RetrievalSettingsController({
     getSnapshot: () => snapshot, subscribe: callback => { listeners.add(callback); return () => { listeners.delete(callback) } }, set,
   })
   render(createElement(RetrievalSettingsSection, { controller }))

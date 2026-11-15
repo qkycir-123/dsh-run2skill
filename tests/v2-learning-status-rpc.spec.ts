@@ -5,6 +5,38 @@ import { createMemoryRun2skillV2Domain } from './support/memory-run2skill-v2-dom
 import { createMinimalV2Fixtures } from './support/v2-fixtures.js'
 
 describe('v2 learning status RPC', () => {
+  it('shows empty status for a verified blank Session without permitting a synthesis request', async () => {
+    const workspace = { workspaceId: 'workspace-a', canonicalPath: 'D:/workspace' }
+    const resolveEmptySession = vi.fn(async (sessionId: string) => ({ sessionId, workspaceBinding: workspace }))
+    const requestSynthesis = vi.fn()
+    const handler = createV2LearningStatusRpcHandler(() => createMemoryRun2skillV2Domain(), {
+      resolveSession: () => undefined,
+      resolveEmptySession,
+      resolveWorkspace: async id => id === workspace.workspaceId ? workspace : undefined,
+      requestSynthesis,
+    })
+    const request = {
+      apiVersion: 1,
+      sessionId: 'blank-session',
+      currentScope: { kind: 'WORKSPACE', generation: 1, workspaceId: workspace.workspaceId },
+    }
+    const signal = new AbortController().signal
+
+    await expect(handler('learning/status', request, signal)).resolves.toEqual({
+      ok: true,
+      value: { apiVersion: 1, state: 'EMPTY', canRequest: false },
+    })
+    await expect(handler('learning/status', {
+      ...request,
+      currentScope: { kind: 'USER_ONLY', generation: 1 },
+    }, signal)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } })
+    await expect(handler('learning/request', request, signal)).resolves.toMatchObject({
+      ok: false, error: { code: 'conflict' },
+    })
+    expect(resolveEmptySession).toHaveBeenCalledTimes(2)
+    expect(requestSynthesis).not.toHaveBeenCalled()
+  })
+
   it('projects a recorded Session and queues one durable idempotent immediate request', async () => {
     const domain = createMemoryRun2skillV2Domain()
     const fixture = createMinimalV2Fixtures()

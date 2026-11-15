@@ -4,7 +4,10 @@ export { RETRIEVAL_DEFAULTS, type RetrievalSettings } from '../../domain/retriev
 
 export type RetrievalConfig = { readonly [K in keyof RetrievalSettings]?: { get(): RetrievalSettings[K] } }
 
-export const RetrievalSettingsFields = {
+export const RetrievalSettingsSchema = z.object({
+  // DSH's legacy settings importer applies the whole namespace at once.
+  // Accept the retired field during import; the runtime no longer consults it.
+  automaticLearning: z.boolean().default(true).volatile(),
   advancedRecall: z.boolean().default(false).volatile(),
   embeddingEndpoint: z.string().default('').volatile(),
   embeddingModel: z.string().default(RETRIEVAL_DEFAULTS.embeddingModel).volatile(),
@@ -13,7 +16,7 @@ export const RetrievalSettingsFields = {
   rerankerEndpoint: z.string().default('').volatile(),
   rerankerModel: z.string().default(RETRIEVAL_DEFAULTS.rerankerModel).volatile(),
   rerankerApiKeyEnv: z.string().default('').volatile(),
-}
+})
 
 export function retrievalSettings(config: RetrievalConfig): RetrievalSettings {
   return Object.freeze(Object.fromEntries(Object.entries(RETRIEVAL_DEFAULTS).map(([key, value]) => [
