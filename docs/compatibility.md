@@ -2,7 +2,7 @@
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
-| `0.6.0-alpha.2` | 源码候选 | `0.2.2-rc.3` | `38a6a5c965aa99ab525161efb7cc5cf1fe62fced` | Mac 桌面版使用的标准预设；继续兼容下列 `0.2.2-rc.1` 标准 Web 预设 |
+| `1.0.0` | 正式版 | `0.2.2-rc.3` | `38a6a5c965aa99ab525161efb7cc5cf1fe62fced` | Mac 桌面版使用的标准预设；同时支持 DSH `0.2.2-rc.1` 的标准 Web 预设 |
 | `0.6.0-alpha.1` | 高级召回预发布版 | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 保留标准 Web 组合，新增可选模型服务配置 |
 | `0.5.0-alpha.6` | npm 默认预发布版 | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 标准 Web profile，见 [兼容设计](design/dsh-022-compatibility.md) |
 | `0.5.0-alpha.5` | 源码兼容候选，尚未发布 npm | `0.2.1-rc.2` | `687f282e8625c6b8d11ff58211a90524be2e4317` | 标准 Web profile；官方源码构建、契约、插件生命周期与真实模型调用，详见下文 |

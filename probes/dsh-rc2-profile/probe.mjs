@@ -292,8 +292,8 @@ async function observe(present, expectedRecall = false, setRecall) {
   }
 }
 
-const v1 = await stage('0.6.0-alpha.2.probe.1')
-const v2 = await stage('0.6.0-alpha.2.probe.2')
+const v1 = await stage('1.0.0-probe.1')
+const v2 = await stage('1.0.0-probe.2')
 
 console.log('CP_INS_RC2_STAGE=add')
 await dsh(['plugin', '--profile', 'web', 'add', v1])
@@ -313,7 +313,7 @@ console.log('CP_INS_RC2_STAGE=upgrade')
 await writeFile(patchPath, savedSettingsPatch)
 await dsh(['plugin', '--profile', 'web', 'add', v2])
 const installed = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-assert.equal(installed.version, '0.6.0-alpha.2.probe.2')
+assert.equal(installed.version, '1.0.0-probe.2')
 await observe(true, true, false)
 const retainedStorage = (await readdir(join(home, 'storages'))).filter(entry => /run2skill/iu.test(entry))
 assert.ok(retainedStorage.length > 0)

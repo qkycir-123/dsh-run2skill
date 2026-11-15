@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-run2skill"><img src="https://img.shields.io/npm/v/dsh-run2skill?color=247C78&amp;label=npm" alt="npm version" /></a>
-  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH_Web-0.2.2--rc.1-153B3C" alt="Supports DSH 0.2.2-rc.1 Web" /></a>
+  <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/DSH-0.2.2--rc.3%20Mac%20%7C%20rc.1%20Web-153B3C" alt="Supports DSH 0.2.2-rc.3 Mac Desktop and 0.2.2-rc.1 Web" /></a>
   <a href="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml"><img src="https://github.com/qkycir-123/dsh-run2skill/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-EAB45C" alt="MIT license" /></a>
 </p>
@@ -41,10 +41,16 @@ Run2Skill turns the corrections, constraints, and workflows you teach an Agent i
 
 ## Install
 
-**Web (DSH 0.2.2-rc.1)**: install Node.js `>=24.9.0` and make sure `pnpm` and `dsh` are available. Install `0.6.0-alpha.1`:
+**Web (DSH 0.2.2-rc.1)**: install Node.js `>=24.9.0` and make sure `pnpm` and `dsh` are available. Install `1.0.0`:
 
 ```bash
-dsh plugin --profile web add dsh-run2skill@0.6.0-alpha.1
+dsh plugin --profile web add dsh-run2skill@1.0.0
+```
+
+**Mac Desktop (DSH 0.2.2-rc.3).** On first launch, use **Manage dsh Command… → Install** in the app menu. Quit DSH completely and run this in a new terminal.
+
+```bash
+dsh plugin --profile desktop add dsh-run2skill@1.0.0
 ```
 
 **Windows Desktop (DSH 0.2.0-rc.2)**: set up the command through **Manage dsh Command…**. Complete the first launch, exit the app, and install `0.5.0-alpha.4`:
