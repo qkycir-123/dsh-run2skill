@@ -1,6 +1,6 @@
 import { applyRun2skillClient, type Run2skillClientContext } from './run2skill-settings-page.js'
 
-export * from './automatic-learning-settings.js'
+export * from './retrieval-settings.js'
 export * from './observe-summary-poller.js'
 export * from './proposal-inbox.js'
 export * from './proposal-inbox-view.js'

@@ -35,7 +35,7 @@ describe('published package contract', () => {
   it('pins the public 0.6 alpha identity and portable repository metadata', () => {
     expect(manifest).toMatchObject({
       name: 'dsh-run2skill',
-      version: '0.6.0-alpha.1',
+      version: '0.6.0-alpha.2',
       description: 'Turn explicit DSH session experience into reviewable native Skills',
       keywords: [
         'deepseek-harness',
@@ -76,13 +76,14 @@ describe('published package contract', () => {
       'THIRD_PARTY_NOTICES.md',
       'assets/run2skill-logo.webp',
       'locale/*.json',
+      'locale/*.md',
     ])
     expect(manifest.peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.1.0',
-      '@deepseek-ai/dsh-agent-preset-registry': '0.2.2-rc.1',
-      '@deepseek-ai/dsh-scope': '0.2.2-rc.1',
-      '@deepseek-ai/dsh-client-ui-primitives': '0.2.2-rc.1',
-      '@deepseek-ai/dsh-typert-protocol': '0.2.2-rc.1',
+      '@deepseek-ai/dsh-agent-preset-registry': '0.2.2-rc.1 || 0.2.2-rc.3',
+      '@deepseek-ai/dsh-scope': '0.2.2-rc.1 || 0.2.2-rc.3',
+      '@deepseek-ai/dsh-client-ui-primitives': '0.2.2-rc.1 || 0.2.2-rc.3',
+      '@deepseek-ai/dsh-typert-protocol': '0.2.2-rc.1 || 0.2.2-rc.3',
     })
     expect(manifest.dsh).toEqual({
       bundle: { patch: './cordis.patch.yml' },
@@ -97,10 +98,16 @@ describe('published package contract', () => {
     })
   })
 
-  it('uses Run2Skill as its display title in English and Chinese', () => {
+  it('ships a short localized documentation link for the DSH detail page', () => {
     for (const language of ['en', 'zh']) {
-      const locale = JSON.parse(readPortableText(`../locale/${language}.json`)) as { meta: { title: string } }
+      const locale = JSON.parse(readPortableText(`../locale/${language}.json`)) as { meta: { title: string; detail: string } }
       expect(locale.meta.title).toBe('Run2Skill')
+      expect(locale.meta.detail).toBe(`locale/detail.${language}.md`)
+      const label = language === 'zh' ? '使用文档' : 'User guide'
+      const readme = language === 'zh' ? 'README.md' : 'README.en.md'
+      expect(readPortableText(`../${locale.meta.detail}`).trim()).toBe(
+        `[${label}](https://github.com/qkycir-123/dsh-run2skill/blob/main/${readme})`,
+      )
     }
   })
 
@@ -122,7 +129,7 @@ describe('published package contract', () => {
   it('runs the exact candidate verifier and permits only the required build helper', () => {
     expect(manifest.scripts?.['verify:candidate']).toContain('probes/candidate/verify.mjs')
     expect(workspace).toContain("packages:\n  - '.'\n\nallowBuilds:\n  esbuild: true\n")
-    expect(workspace).toContain("'@deepseek-ai/dsh-typert-protocol@0.1.2-rc.1||0.1.3-alpha.2||0.2.0-rc.2||0.2.1-rc.2||0.2.2-rc.1'")
+    expect(workspace).toContain("'@deepseek-ai/dsh-typert-protocol@0.1.2-rc.1||0.1.3-alpha.2||0.2.0-rc.2||0.2.1-rc.2||0.2.2-rc.1||0.2.2-rc.3'")
   })
 
   it('inserts only the run2skill Host row and never mounts later-slice services', () => {

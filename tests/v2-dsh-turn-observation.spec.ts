@@ -129,6 +129,12 @@ describe('DSH TurnObservationV2 projection', () => {
       expect(JSON.stringify(result)).not.toContain('JOB_ONLY_FIXTURE')
     },
   )
+  it('accepts rc.3 team mode without changing the projected evidence', async () => {
+    const events = insertTurnEvent(completeTurn(), 'step/start', { type: 'team/mode', data: { enabled: true } })
+    const observed = await projectDshTurnObservationV2(header, events, events.at(-1)!.seq, workspace)
+    expect(observed).toMatchObject({ status: 'OBSERVED', observation: { directUserEvidence: [{}] } })
+  })
+
   it.each([undefined, true] as const)('stops learning after a working directory change, ignorable=%s', async ignorable => {
     const events = insertTurnEvent(completeTurn(), 'step/start', {
       type: 'working-directory/change', data: { cwd: 'D:\\other-project' },

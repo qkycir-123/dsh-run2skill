@@ -21,6 +21,8 @@ const fixedPackageFiles = [
   'lib/typert.remote-client.d.ts',
   'lib/typert.remote-client.js',
   'LICENSE',
+  'locale/detail.en.md',
+  'locale/detail.zh.md',
   'locale/en.json',
   'locale/zh.json',
   'package.json',
@@ -263,7 +265,7 @@ assert.deepEqual({
   peerDependencies: packedManifest.peerDependencies,
 }, {
   name: 'dsh-run2skill',
-  version: '0.6.0-alpha.1',
+  version: '0.6.0-alpha.2',
   description: 'Turn explicit DSH session experience into reviewable native Skills',
   icon: './assets/run2skill-logo.webp',
   keywords: [
@@ -276,7 +278,7 @@ assert.deepEqual({
   ],
   private: undefined,
   license: 'MIT',
-  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'assets/run2skill-logo.webp', 'locale/*.json'],
+  files: ['lib', 'cordis.patch.yml', 'README.en.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'assets/run2skill-logo.webp', 'locale/*.json', 'locale/*.md'],
   repository: {
     type: 'git',
     url: 'git+https://github.com/qkycir-123/dsh-run2skill.git',
@@ -305,10 +307,10 @@ assert.deepEqual({
   },
   peerDependencies: {
     '@deepseek-ai/cordis': '4.1.0',
-    '@deepseek-ai/dsh-agent-preset-registry': '0.2.2-rc.1',
-    '@deepseek-ai/dsh-scope': '0.2.2-rc.1',
-    '@deepseek-ai/dsh-client-ui-primitives': '0.2.2-rc.1',
-    '@deepseek-ai/dsh-typert-protocol': '0.2.2-rc.1',
+    '@deepseek-ai/dsh-agent-preset-registry': '0.2.2-rc.1 || 0.2.2-rc.3',
+    '@deepseek-ai/dsh-scope': '0.2.2-rc.1 || 0.2.2-rc.3',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.2.2-rc.1 || 0.2.2-rc.3',
+    '@deepseek-ai/dsh-typert-protocol': '0.2.2-rc.1 || 0.2.2-rc.3',
   },
 }, 'candidate package metadata changed')
 assert.equal(

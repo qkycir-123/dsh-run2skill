@@ -66,7 +66,7 @@ async function harness() {
     workspaceRegistry: { async resolveByPath() { return { id: 'workspace', path: header.cwd } }, get() { return { id: 'workspace', path: header.cwd } } },
     on(event: string, listener: (...args: never[]) => unknown) { listeners.set(event, listener) },
   }
-  dispose = await apply(context, { automaticLearning: { get: () => true } })
+  dispose = await apply(context, {})
   const dispatch = async (name: string, ...args: unknown[]) => await listeners.get(name)?.(...args as never[])
   const lifecycleKey = deriveSessionLifecycleKey({ rootSessionId: header.id, sessionCreatedAt: header.createdAt, sessionCwdDigest: deriveSessionCwdDigest(header.cwd) })
   return {

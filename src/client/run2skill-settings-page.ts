@@ -1,3 +1,4 @@
+import type { RetrievalSettings } from '../domain/retrieval/settings.js'
 import {
   Fragment,
   createElement,
@@ -28,11 +29,10 @@ import type { TypertClientRemote, TypertDisposer } from '@deepseek-ai/dsh-typert
 import type { Context } from '@deepseek-ai/cordis'
 import { createRun2skillRemoteCaller } from '../adapters/dsh-remote/client.js'
 import {
-  AutomaticLearningSettingsController,
+  RetrievalSettingsController,
   RetrievalSettingsSection,
-  type AutomaticLearningClientSettings,
   type ClientSettingsScope,
-} from './automatic-learning-settings.js'
+} from './retrieval-settings.js'
 import {
   ProposalInboxController,
   describeProposalOutcome,
@@ -130,7 +130,7 @@ const learningRequestResultSchema = z.object({
 }).strict()
 
 const learningStatusCopy = {
-  EMPTY: '暂无可整理的经验。',
+  EMPTY: '当前没有可整理的经验。',
   RECORDED: '已记下，待本次会话结束后整理。',
   PROCESSING: '正在整理本次经验…',
   CHECKING: '正在检查已有 Skill…',
@@ -603,33 +603,6 @@ export function Run2skillAttentionToast(props: {
     text: `Run2Skill 有 ${String(toast.count)} 项需要处理，请前往左侧栏 → 插件 → Run2Skill`,
     onDone: () => { setToast(undefined) },
   })
-}
-
-function AutomaticLearningSection(props: {
-  readonly controller: AutomaticLearningSettingsController
-}): ReactElement {
-  const state = useSyncExternalStore(
-    props.controller.subscribe,
-    props.controller.getSnapshot,
-    props.controller.getSnapshot,
-  )
-  const disabled = state.status !== 'ready' || !state.writable || state.saving
-  return createElement('div', { className: css.sectionBody },
-    createElement('p', { className: css.muted },
-      '自动生成技能草稿；关闭后可手动请求保存。',
-    ),
-    createElement('div', { className: css.actions },
-      createElement(Button, {
-        variant: state.automaticLearning ? 'primary' : 'outline',
-        'aria-pressed': state.automaticLearning === true,
-        disabled,
-        onClick: () => { void props.controller.setAutomaticLearning(state.automaticLearning !== true) },
-      }, state.saving ? '正在保存…' : state.automaticLearning ? '自动学习已开启' : '自动学习已关闭'),
-    ),
-    state.error === undefined
-      ? null
-      : createElement('p', { role: 'status', className: css.danger }, '设置已变化，请刷新后重试。'),
-  )
 }
 
 function ProposalSettingsSection(props: {
@@ -1187,7 +1160,7 @@ export function AttentionSettingsSummary(props: {
 }
 
 export function Run2skillSettingsPage(props: {
-  readonly controller: AutomaticLearningSettingsController
+  readonly controller: RetrievalSettingsController
   readonly purgeController: PurgeSettingsController
   readonly workspaceId?: string
   readonly sessionId?: string
@@ -1335,8 +1308,6 @@ export function Run2skillSettingsPage(props: {
         scopeGeneration,
         hostDataEpoch: purgeState.hostDataEpoch,
       }), createElement(Pill, null, '最近 7 天')),
-    disclosure('automatic', '自动学习', createElement(IconSettingsOutlineMedium),
-      createElement(AutomaticLearningSection, { controller: props.controller })),
     disclosure('retrieval', 'Skill 召回', createElement(IconSettingsOutlineMedium),
       createElement('div', { className: css.sectionBody }, createElement(RetrievalSettingsSection, { controller: props.controller }))),
     disclosure('purge', '缓存清理', createElement(IconTrashOutlineMedium),
@@ -1394,8 +1365,8 @@ function workspaceFor(context: Run2skillClientContext, sessionId: string | undef
 
 export async function applyRun2skillClient(context: Run2skillClientContext): Promise<TypertDisposer> {
   const mounted = await createRun2skillRemoteCaller(context.remote, context)
-  const controller = new AutomaticLearningSettingsController(
-    context.configForms.get<AutomaticLearningClientSettings>('run2skill'),
+  const controller = new RetrievalSettingsController(
+    context.configForms.get<Partial<RetrievalSettings>>('run2skill'),
   )
   const callReview: ProposalReviewCall = mounted.call
   const callAttention: AttentionCall = async (payload, signal) => await mounted.call('attention', payload, signal)

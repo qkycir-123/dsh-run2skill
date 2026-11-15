@@ -3,18 +3,20 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 
-describe('CP-WEB-001 DSH 0.2.2-rc.1 Remote and dual-face extension seams', () => {
+describe('CP-WEB-001 DSH 0.2.2 Remote and dual-face extension seams', () => {
   it('pins the Gateway, Remote protocol, and Client export contracts', async () => {
     const require = createRequire(import.meta.url)
     const gatewayPath = require.resolve('@deepseek-ai/dsh-api-gateway/package.json')
     const protocolPath = require.resolve('@deepseek-ai/dsh-typert-protocol/package.json')
     const connectionPath = require.resolve('@deepseek-ai/dsh-client-connection/package.json')
+    const cli = JSON.parse(await readFile(join(process.cwd(), 'apps', 'cli', 'package.json'), 'utf8')) as { version: string }
+    expect(['0.2.2-rc.1', '0.2.2-rc.3']).toContain(cli.version)
     for (const packagePath of [gatewayPath, protocolPath, connectionPath]) {
       const manifest = JSON.parse(await readFile(packagePath, 'utf8')) as {
         version?: string
         exports?: Record<string, unknown>
       }
-      expect(manifest.version).toBe('0.2.2-rc.1')
+      expect(manifest.version).toBe(cli.version)
       expect(manifest.exports?.['.']).toBeDefined()
     }
     const gateway = JSON.parse(await readFile(gatewayPath, 'utf8')) as {

@@ -29,6 +29,7 @@ import type { CurrentWorkspaceResolver } from '../adapters/dsh-connection/curren
 import { deriveSessionCwdDigest, deriveSessionLifecycleKey } from '../domain/observe/signal-key.js'
 import { classifySessionRoot } from '../adapters/dsh-session/observation.js'
 import type { DshContextFileSystemTarget } from '../adapters/dsh-filesystem/context-filesystem.js'
+import { stockDesktopSkillReads } from '../adapters/dsh-filesystem/stock-desktop-skill-reads.js'
 
 export interface V2ProductionHostSession<TView extends object> {
   readonly header: DshSessionHeader
@@ -105,7 +106,10 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
     const catalog = new DshV2CatalogAdapter(domain, {
       registry: options.skills,
       resolveView: lifecycleKey => options.resolveSession(lifecycleKey)?.view,
-      resolveFileSystem: view => options.resolveSessionByView(view)?.filesystem,
+      resolveFileSystem: view => {
+        const session = options.resolveSessionByView(view)
+        return stockDesktopSkillReads(session?.filesystem, session?.configuration.stockPresetSkillDir)
+      },
       resolveStockWritableRoot: (summary, view) => resolveWritableRoot(summary.source, view),
     })
     const manifest = new DshV2RootManifestAdapter({
@@ -116,7 +120,7 @@ export class DshV2ProductionRuntime<TView extends object> implements RecoveryRun
           : {
               cwd: session.header.cwd,
               configuration: session.configuration,
-              ...(session.filesystem === undefined ? {} : { filesystem: session.filesystem }),
+              filesystem: stockDesktopSkillReads(session.filesystem, session.configuration.stockPresetSkillDir),
             }
       },
       runtimeCatalog: catalog,

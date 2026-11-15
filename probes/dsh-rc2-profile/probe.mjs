@@ -169,7 +169,7 @@ async function browserExecutable() {
   throw new Error('No Chromium-compatible browser executable is installed')
 }
 
-async function observe(present, expectedLearning = true, setLearning) {
+async function observe(present, expectedRecall = false, setRecall) {
   const running = await startWeb()
   let browser
   let browserContext
@@ -234,16 +234,16 @@ async function observe(present, expectedLearning = true, setLearning) {
       assert.equal(described.writable, true)
       const namespace = described.namespaces.find(item => item.ns === 'run2skill')
       assert.ok(namespace, 'settings/describe omitted run2skill')
-      assert.equal(namespace.value.automaticLearning, expectedLearning)
-      if (setLearning !== undefined) {
+      assert.equal(namespace.value.advancedRecall, expectedRecall)
+      if (setRecall !== undefined) {
         const changed = await remote('settings/mutate', {
           ns: 'run2skill',
-          ops: [{ op: 'set', path: ['automaticLearning'], value: setLearning }],
+          ops: [{ op: 'set', path: ['advancedRecall'], value: setRecall }],
           expectedRevision: namespace.revision,
         })
-        assert.equal(changed.value.automaticLearning, setLearning)
+        assert.equal(changed.value.advancedRecall, setRecall)
         const reread = await remote('settings/describe', {})
-        assert.equal(reread.namespaces.find(item => item.ns === 'run2skill')?.value.automaticLearning, setLearning)
+        assert.equal(reread.namespaces.find(item => item.ns === 'run2skill')?.value.advancedRecall, setRecall)
       }
 
       browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() })
@@ -267,9 +267,10 @@ async function observe(present, expectedLearning = true, setLearning) {
       }
       await page.getByRole('button', { name: /^(插件|Plugins)$/u }).click()
       await page.getByText('Run2Skill', { exact: true }).first().click()
-      await page.getByText('自动学习', { exact: true }).waitFor({ timeout: 30_000 })
+      await page.getByRole('button', { name: 'Skill 召回', exact: true }).waitFor({ timeout: 30_000 })
+      assert.equal(await page.getByRole('button', { name: '自动学习', exact: true }).count(), 0)
       await page.getByText('缓存清理', { exact: true }).waitFor({ timeout: 30_000 })
-      if (setLearning === false) {
+      if (setRecall === true) {
         const disabled = await remote('pluginManager/setBundleEnabled', { name: packageName, enabled: false })
         assert.equal(disabled.application, 'applied', 'live disable must not require a Host restart')
         const enabled = await remote('pluginManager/setBundleEnabled', { name: packageName, enabled: true })
@@ -291,17 +292,17 @@ async function observe(present, expectedLearning = true, setLearning) {
   }
 }
 
-const v1 = await stage('0.6.0-alpha.1.probe.1')
-const v2 = await stage('0.6.0-alpha.1.probe.2')
+const v1 = await stage('0.6.0-alpha.2.probe.1')
+const v2 = await stage('0.6.0-alpha.2.probe.2')
 
 console.log('CP_INS_RC2_STAGE=add')
 await dsh(['plugin', '--profile', 'web', 'add', v1])
 let manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 assert.ok(manifest.dsh.profile.bundles.includes(packageName))
 assert.ok((await dsh(['--profile', 'web', '--dump-config'])).stdout.includes('id: run2skill'))
-await observe(true, true, false)
+await observe(true, false, true)
 const savedSettingsPatch = await readFile(patchPath, 'utf8')
-assert.match(savedSettingsPatch, /automaticLearning: false/u)
+assert.match(savedSettingsPatch, /advancedRecall: true/u)
 assert.match(savedSettingsPatch, /- id: run2skill/u)
 
 console.log('CP_INS_RC2_STAGE=disable')
@@ -312,15 +313,15 @@ console.log('CP_INS_RC2_STAGE=upgrade')
 await writeFile(patchPath, savedSettingsPatch)
 await dsh(['plugin', '--profile', 'web', 'add', v2])
 const installed = JSON.parse(await readFile(join(profile, 'node_modules', packageName, 'package.json'), 'utf8'))
-assert.equal(installed.version, '0.6.0-alpha.1.probe.2')
-await observe(true, false, true)
+assert.equal(installed.version, '0.6.0-alpha.2.probe.2')
+await observe(true, true, false)
 const retainedStorage = (await readdir(join(home, 'storages'))).filter(entry => /run2skill/iu.test(entry))
 assert.ok(retainedStorage.length > 0)
 
 console.log('CP_INS_RC2_STAGE=legacy-settings-migration')
 const legacySettings = join(home, 'settings.yaml')
-await writeFile(legacySettings, 'run2skill:\n  automaticLearning: false\n')
-await observe(true, false, true)
+await writeFile(legacySettings, 'run2skill:\n  automaticLearning: false\n  advancedRecall: true\n')
+await observe(true, true)
 await access(`${legacySettings}.imported`)
 
 console.log('CP_INS_RC2_STAGE=uninstall')

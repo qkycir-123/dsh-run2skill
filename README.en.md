@@ -70,7 +70,7 @@ Each draft includes its source conversation. Approve it, request changes, or dis
 
 ## Settings
 
-- **Automatic learning**: organize lessons from conversations automatically. When off, explicit “save as a Skill” requests still work.
+- **Learning status**: see the current session’s progress. Drafts are generated automatically while the plugin is enabled. You can also request immediate processing.
 - **Recent activity**: see Skills created or updated in the last seven days.
 - **Clear all caches**: preview and clear pending drafts and intermediate data, keeping saved Skills, conversations, and DSH settings.
 

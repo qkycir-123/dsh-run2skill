@@ -22,7 +22,7 @@ import {
   StockDshRootContractResolver,
 } from '../src/adapters/dsh-skills/stock-root-contract.js'
 
-describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
+describe('DSH 0.2.2 stock preset evidence', () => {
   it('locates the exact live and cold generation through Loader entries and scope identity', async () => {
     const ctx = new Context()
     ctx.baseUrl = pathToFileURL(join(process.cwd(), 'apps', 'cli', 'package.json')).href
@@ -83,6 +83,11 @@ describe('DSH 0.2.2-rc.1 stock preset evidence', () => {
     const standard = declarations.filter(row => row.id === 'preset-standard' && row.config?.id === 'standard')
     expect(standard).toHaveLength(1)
     expect(Array.isArray(standard[0]?.config?.plugins)).toBe(true)
-    expect(sha256Utf8(canonicalJson(standard[0]?.config?.plugins))).toBe(STOCK_PRESET_COMPOSITION_DIGESTS.standard[0])
+    const manifest = JSON.parse(await readFile(join(process.cwd(), 'apps', 'cli', 'package.json'), 'utf8')) as { version: string }
+    expect(['0.2.2-rc.1', '0.2.2-rc.3']).toContain(manifest.version)
+    const expected = manifest.version === '0.2.2-rc.3'
+      ? STOCK_PRESET_COMPOSITION_DIGESTS.standard[1]
+      : STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]
+    expect(sha256Utf8(canonicalJson(standard[0]?.config?.plugins))).toBe(expected)
   })
 })

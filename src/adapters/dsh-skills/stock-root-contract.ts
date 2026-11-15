@@ -1,5 +1,6 @@
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { FiberState } from '@deepseek-ai/cordis'
 import { canonicalJson } from '../../domain/learn/identity.js'
 import { sha256Utf8 } from '../../domain/observe/hashing.js'
@@ -9,15 +10,18 @@ import {
 } from '../../domain/review/schemas.js'
 
 export const STOCK_DSH_BASELINE_COMMIT = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db'
+export const STOCK_DSH_RC3_BASELINE_COMMIT = '38a6a5c965aa99ab525161efb7cc5cf1fe62fced'
 export const STOCK_ROOT_CONTRACT_VERSION = ROOT_CONTRACT_VERSION_V2
 export const STOCK_ROOT_RESOLVER_VERSION = ROOT_RESOLVER_VERSION_V2
 
 const SUPPORTED_PRESETS = new Set(['standard'])
 // Cordis publishes FiberState as a const enum without a runtime export.
 const ACTIVE_FIBER_STATE: FiberState.ACTIVE = 2
+const RC3_STANDARD_DIGEST = '6ef17d769662784848918287d7b115566a080e8a89a0e8683075e21be6fdcdd7'
 export const STOCK_PRESET_COMPOSITION_DIGESTS = Object.freeze({
   standard: Object.freeze([
     'ee7045e0f3df05c92f00900aa25f288778ca1e81bdaa35d4e151f1513fce3e16',
+    RC3_STANDARD_DIGEST,
   ]),
 })
 
@@ -27,6 +31,7 @@ export interface StockSkillRuntimeConfiguration {
   readonly providerName: string
   readonly includeDefaultRoots: boolean
   readonly customSkillDirs: readonly string[]
+  readonly stockPresetSkillDir?: string | undefined
   readonly configuredDshHome?: string | undefined
   readonly configuredAgentsHome?: string | undefined
   readonly configuredBundledSkillDir?: string | undefined
@@ -48,18 +53,29 @@ export interface StockPresetMountProjection {
   readonly presetId: string
   readonly fiber: StockFiberProjection
   readonly key?: object | undefined
-  readonly tree?: { readonly root: { readonly data: unknown } } | undefined
+  readonly tree?: {
+    readonly ctx?: { readonly baseUrl?: string | undefined }
+    readonly root: { readonly data: unknown }
+  } | undefined
 }
 
-export function hasStockPresetComposition(mount: StockPresetMountProjection, expectedDigest: string): boolean {
-  if (mount.presetId !== 'standard') return false
+function stockPresetCompositionDigest(mount: StockPresetMountProjection): string | undefined {
+  if (mount.presetId !== 'standard') return undefined
   try {
     const rows = mount.tree?.root.data
-    return Array.isArray(rows)
-      && sha256Utf8(canonicalJson(JSON.parse(JSON.stringify(rows)))) === expectedDigest
+    return Array.isArray(rows) ? sha256Utf8(canonicalJson(JSON.parse(JSON.stringify(rows)))) : undefined
   } catch {
-    return false
+    return undefined
   }
+}
+
+export function hasStockPresetComposition(
+  mount: StockPresetMountProjection,
+  expectedDigest: string | readonly string[] = STOCK_PRESET_COMPOSITION_DIGESTS.standard,
+): boolean {
+  const digest = stockPresetCompositionDigest(mount)
+  return digest !== undefined
+    && (typeof expectedDigest === 'string' ? digest === expectedDigest : expectedDigest.includes(digest))
 }
 
 export interface StockPresetMountPort {
@@ -123,7 +139,7 @@ export interface StockWorkspaceContractBinding {
 
 export type StockRootContractResolution = {
   readonly status: 'SUPPORTED'
-  readonly baselineCommit: typeof STOCK_DSH_BASELINE_COMMIT
+  readonly baselineCommit: typeof STOCK_DSH_BASELINE_COMMIT | typeof STOCK_DSH_RC3_BASELINE_COMMIT
   readonly profile: 'web'
   readonly presetId: 'standard'
   readonly expectedProvider: 'filesystem'
@@ -194,7 +210,7 @@ export function hasUnchangedSessionDirectory(agent: object): boolean {
 export async function resolveStockSkillRuntimeConfiguration(
   mounts: StockPresetMountPort,
   agent: StockComposedAgentProjection,
-  expectedDigest?: string,
+  expectedDigest?: string | readonly string[],
 ): Promise<StockSkillRuntimeConfiguration | undefined> {
   const mount = await mounts.standingMountFor(agent.ctx)
   if (mount === undefined || (expectedDigest !== undefined && !hasStockPresetComposition(mount, expectedDigest))) return undefined
@@ -205,6 +221,18 @@ export function resolveMountedStockSkillRuntimeConfiguration(
   mount: StockPresetMountProjection,
   agent: StockComposedAgentProjection,
 ): StockSkillRuntimeConfiguration | undefined {
+  let stockPresetSkillDir: string | undefined
+  if (hasStockPresetComposition(mount, RC3_STANDARD_DIGEST)) {
+    // Resolve from the same Loader base as the official preset's customSkillDirs expression.
+    const baseUrl = mount.tree?.ctx?.baseUrl
+    if (baseUrl === undefined) return undefined
+    try {
+      const manifest = createRequire(new URL(baseUrl)).resolve('@deepseek-ai/dsh-agent-preset/package.json')
+      stockPresetSkillDir = join(dirname(manifest), 'skills')
+    } catch {
+      return undefined
+    }
+  }
   const fibers = [...agent.ctx.registry.values()]
     .filter(runtime => runtime.name === 'skill-filesystem')
     .flatMap(runtime => [...runtime.fibers])
@@ -236,6 +264,7 @@ export function resolveMountedStockSkillRuntimeConfiguration(
     providerName,
     includeDefaultRoots,
     customSkillDirs: [...customSkillDirs],
+    ...(stockPresetSkillDir === undefined ? {} : { stockPresetSkillDir }),
     ...(configuredDshHome === undefined ? {} : { configuredDshHome }),
     ...(configuredAgentsHome === undefined ? {} : { configuredAgentsHome }),
     ...(configuredBundledSkillDir === undefined ? {} : { configuredBundledSkillDir }),
@@ -251,9 +280,12 @@ function expandHomePath(value: string, homeDirectory: string): string {
   return value
 }
 
-function canonicalConfiguration(configuration: StockSkillRuntimeConfiguration) {
+function canonicalConfiguration(
+  configuration: StockSkillRuntimeConfiguration,
+  baselineCommit: StockRootContractResolution['baselineCommit'],
+) {
   return {
-    baselineCommit: STOCK_DSH_BASELINE_COMMIT,
+    baselineCommit,
     profile: configuration.profile,
     presetId: configuration.presetId ?? null,
     providerName: configuration.providerName,
@@ -274,7 +306,10 @@ function supportedConfiguration(
     && SUPPORTED_PRESETS.has(configuration.presetId)
     && configuration.providerName === 'filesystem'
     && configuration.includeDefaultRoots
-    && configuration.customSkillDirs.length === 0
+    && (configuration.stockPresetSkillDir === undefined
+      ? configuration.customSkillDirs.length === 0
+      : configuration.customSkillDirs.length === 1
+        && configuration.customSkillDirs[0] === configuration.stockPresetSkillDir)
 }
 
 export class StockDshRootContractResolver {
@@ -298,15 +333,18 @@ export class StockDshRootContractResolver {
     if (!supportedConfiguration(input.configuration)) {
       return { status: 'UNSUPPORTED', code: 'ROOT_CONTRACT_UNSUPPORTED' }
     }
+    const baselineCommit = input.configuration.stockPresetSkillDir === undefined
+      ? STOCK_DSH_BASELINE_COMMIT
+      : STOCK_DSH_RC3_BASELINE_COMMIT
     const common = {
       status: 'SUPPORTED' as const,
-      baselineCommit: STOCK_DSH_BASELINE_COMMIT,
+      baselineCommit,
       profile: 'web' as const,
       presetId: input.configuration.presetId,
       expectedProvider: 'filesystem' as const,
       resolverVersion: STOCK_ROOT_RESOLVER_VERSION,
       rootContractVersion: STOCK_ROOT_CONTRACT_VERSION,
-      configurationDigest: sha256Utf8(canonicalJson(canonicalConfiguration(input.configuration))),
+      configurationDigest: sha256Utf8(canonicalJson(canonicalConfiguration(input.configuration, baselineCommit))),
     } as const
     if (input.scope === 'PROJECT') {
       if (input.workspaceBinding === undefined) {
