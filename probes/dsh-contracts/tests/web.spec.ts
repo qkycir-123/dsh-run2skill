@@ -10,7 +10,7 @@ describe('CP-WEB-001 DSH 0.2.2 Remote and dual-face extension seams', () => {
     const protocolPath = require.resolve('@deepseek-ai/dsh-typert-protocol/package.json')
     const connectionPath = require.resolve('@deepseek-ai/dsh-client-connection/package.json')
     const cli = JSON.parse(await readFile(join(process.cwd(), 'apps', 'cli', 'package.json'), 'utf8')) as { version: string }
-    expect(['0.2.2-rc.1', '0.2.2-rc.3']).toContain(cli.version)
+    expect(['0.2.2-rc.1', '0.2.2-rc.3', '0.2.2-rc.5']).toContain(cli.version)
     for (const packagePath of [gatewayPath, protocolPath, connectionPath]) {
       const manifest = JSON.parse(await readFile(packagePath, 'utf8')) as {
         version?: string

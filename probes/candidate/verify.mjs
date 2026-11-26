@@ -307,10 +307,10 @@ assert.deepEqual({
   },
   peerDependencies: {
     '@deepseek-ai/cordis': '4.1.0',
-    '@deepseek-ai/dsh-agent-preset-registry': '0.2.2-rc.1 || 0.2.2-rc.3',
-    '@deepseek-ai/dsh-scope': '0.2.2-rc.1 || 0.2.2-rc.3',
-    '@deepseek-ai/dsh-client-ui-primitives': '0.2.2-rc.1 || 0.2.2-rc.3',
-    '@deepseek-ai/dsh-typert-protocol': '0.2.2-rc.1 || 0.2.2-rc.3',
+    '@deepseek-ai/dsh-agent-preset-registry': '0.2.2-rc.1 || 0.2.2-rc.3 || 0.2.2-rc.5',
+    '@deepseek-ai/dsh-scope': '0.2.2-rc.1 || 0.2.2-rc.3 || 0.2.2-rc.5',
+    '@deepseek-ai/dsh-client-ui-primitives': '0.2.2-rc.1 || 0.2.2-rc.3 || 0.2.2-rc.5',
+    '@deepseek-ai/dsh-typert-protocol': '0.2.2-rc.1 || 0.2.2-rc.3 || 0.2.2-rc.5',
   },
 }, 'candidate package metadata changed')
 assert.equal(

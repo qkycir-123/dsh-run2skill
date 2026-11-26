@@ -2,6 +2,7 @@
 
 | run2skill | 状态 | DSH 版本 | 官方 commit | 验证边界 |
 |---|---|---|---|---|
+| 源码候选 | 待发布 | `0.2.2-rc.5` | `9c2670d3bce5275e0d1610272958121af87787bb` | 标准 Web profile。使用官方 npm 宿主验证候选包安装、真实页面加载、会话学习、草稿审核及 PROJECT `SKILL.md` 回读；模型响应由本地服务固定提供。 |
 | `1.0.0` | 正式版 | `0.2.2-rc.3` | `38a6a5c965aa99ab525161efb7cc5cf1fe62fced` | Mac 桌面版使用的标准预设；同时支持 DSH `0.2.2-rc.1` 的标准 Web 预设 |
 | `0.6.0-alpha.1` | 高级召回预发布版 | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 保留标准 Web 组合，新增可选模型服务配置 |
 | `0.5.0-alpha.6` | npm 默认预发布版 | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 标准 Web profile，见 [兼容设计](design/dsh-022-compatibility.md) |
@@ -13,6 +14,8 @@
 | `0.3.1` | 已发布稳定版 | `0.1.1-rc.2` | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | 旧版兼容线 |
 
 按表中的 DSH 版本安装对应插件。使用 DSH `0.2.0-rc.2` 时，请指定 `dsh-run2skill@0.5.0-alpha.4`。
+
+DSH `0.2.2-rc.5` 会拒绝安装 npm 上的 Run2Skill `1.0.0`，因为该包的宿主依赖只声明了 `rc.1` 和 `rc.3`。源码候选增加了精确的 `rc.5` 声明。`rc.5` 的官方标准 Web 预设定义与 `rc.3` 相同，沿用既有组合摘要校验。
 
 2026-10-01 的实际页面自测发现，会话列表的旧 `current` 读取和动态 Remote namespace 的依赖声明使候选审核页面不可用；此前 HTTP API 验收没有覆盖这两个 Client 边界。候选修正为读取唯一的 `retainedBy.mainView` 会话，并在挂载后注入 `remote.run2skill`。单元回归覆盖真实 Cordis 作用域、项目切换及无唯一会话；Desktop probe 增加实际打开设置页和空会话状态读取。
 

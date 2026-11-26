@@ -84,10 +84,10 @@ describe('DSH 0.2.2 stock preset evidence', () => {
     expect(standard).toHaveLength(1)
     expect(Array.isArray(standard[0]?.config?.plugins)).toBe(true)
     const manifest = JSON.parse(await readFile(join(process.cwd(), 'apps', 'cli', 'package.json'), 'utf8')) as { version: string }
-    expect(['0.2.2-rc.1', '0.2.2-rc.3']).toContain(manifest.version)
-    const expected = manifest.version === '0.2.2-rc.3'
-      ? STOCK_PRESET_COMPOSITION_DIGESTS.standard[1]
-      : STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]
+    expect(['0.2.2-rc.1', '0.2.2-rc.3', '0.2.2-rc.5']).toContain(manifest.version)
+    const expected = manifest.version === '0.2.2-rc.1'
+      ? STOCK_PRESET_COMPOSITION_DIGESTS.standard[0]
+      : STOCK_PRESET_COMPOSITION_DIGESTS.standard[1]
     expect(sha256Utf8(canonicalJson(standard[0]?.config?.plugins))).toBe(expected)
   })
 })
